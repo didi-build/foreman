@@ -6,17 +6,17 @@ Principles, from `AGENTS.md`: testing is intentional. Each test names the seam i
 
 ## 1. Seams
 
-| Seam | What it covers | How |
-|---|---|---|
-| Unit: library logic | Transition rules, guards, counters, topic keys, stale marking, cycle rejection | Plain TypeScript tests with an in-memory store and fake evidence. Fast, run on every PR |
-| Contract consistency | Contracts versus `docs/spec.md` | A test parses the spec's transition tables and the `contracts/` files and fails on any difference. Also checks that every transition has a trigger, guard, evidence, timeout and fallback, and that every guard name exists |
-| Database integration | The real Postgres schema and the store implementation | Tests against a real Postgres in CI. Covers transactions, rollbacks, append-only enforcement, the unique open topic key, and concurrency |
-| Adapter contract | GitHub, Linear, agent runtimes, notifications, approvals | Each adapter has a contract test run against a fake and, where possible, against a sandbox account. Recorded fixtures for responses. Real calls only in sandboxes |
-| Flow | Windmill flows with fake adapters | Each flow is run against a fake library environment. Checks idempotency and that no rule lives in the flow |
-| API | The tiny state API per role | Allowed calls work, forbidden calls are rejected, a bot cannot move an item |
-| Rehearsal (end to end) | A throwaway project through every path | Real agents and real adapters, in a project that cannot touch real work |
-| Failure injection | Missed events, outages, exhausted usage | Scripted failures during rehearsal |
-| Security | Credentials and secrets | Checks that agents cannot reach production, the runner has no production deploy credential, and no secret appears in logs or transcripts |
+| Seam                   | What it covers                                                                 | How                                                                                                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit: library logic    | Transition rules, guards, counters, topic keys, stale marking, cycle rejection | Plain TypeScript tests with an in-memory store and fake evidence. Fast, run on every PR                                                                                                                                     |
+| Contract consistency   | Contracts versus `docs/spec.md`                                                | A test parses the spec's transition tables and the `contracts/` files and fails on any difference. Also checks that every transition has a trigger, guard, evidence, timeout and fallback, and that every guard name exists |
+| Database integration   | The real Postgres schema and the store implementation                          | Tests against a real Postgres in CI. Covers transactions, rollbacks, append-only enforcement, the unique open topic key, and concurrency                                                                                    |
+| Adapter contract       | GitHub, Linear, agent runtimes, notifications, approvals                       | Each adapter has a contract test run against a fake and, where possible, against a sandbox account. Recorded fixtures for responses. Real calls only in sandboxes                                                           |
+| Flow                   | Windmill flows with fake adapters                                              | Each flow is run against a fake library environment. Checks idempotency and that no rule lives in the flow                                                                                                                  |
+| API                    | The tiny state API per role                                                    | Allowed calls work, forbidden calls are rejected, a bot cannot move an item                                                                                                                                                 |
+| Rehearsal (end to end) | A throwaway project through every path                                         | Real agents and real adapters, in a project that cannot touch real work                                                                                                                                                     |
+| Failure injection      | Missed events, outages, exhausted usage                                        | Scripted failures during rehearsal                                                                                                                                                                                          |
+| Security               | Credentials and secrets                                                        | Checks that agents cannot reach production, the runner has no production deploy credential, and no secret appears in logs or transcripts                                                                                    |
 
 ## 2. Required tests
 
@@ -106,15 +106,15 @@ Run in a throwaway project, with real agents and adapters.
 
 ## 4. Verification at each milestone
 
-| Milestone | Verified by |
-|---|---|
-| M0 | Spike results recorded, ADRs merged (including 0010 and 0011), CI green, the IaC baseline passes on the scratch project |
-| M1 | Library and database tests, concurrency test, API per-role tests, a clean import report |
-| M2 | Contract consistency test, guard tests with mutation testing, ingestion replay test, a dry-run report with every difference explained |
-| M3 | Rehearsal scenarios 1 to 5 and 7 to 10 |
-| M4 | Gate, notification and daily check tests, and Didi's phone check |
-| M5 | Mirror tests and a hand-change mismatch test |
-| M6 | The go or no-go checklist in `docs/cutover.md` |
+| Milestone | Verified by                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| M0        | Spike results recorded, ADRs merged (including 0110 and 0111), CI green, the IaC baseline passes on the scratch project               |
+| M1        | Library and database tests, concurrency test, API per-role tests, a clean import report                                               |
+| M2        | Contract consistency test, guard tests with mutation testing, ingestion replay test, a dry-run report with every difference explained |
+| M3        | Rehearsal scenarios 1 to 5 and 7 to 10                                                                                                |
+| M4        | Gate, notification and daily check tests, and Didi's phone check                                                                      |
+| M5        | Mirror tests and a hand-change mismatch test                                                                                          |
+| M6        | The go or no-go checklist in `docs/cutover.md`                                                                                        |
 
 ## 5. What not to do
 

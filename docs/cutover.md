@@ -82,7 +82,7 @@ Trigger: the kill switch is set and the problem cannot be fixed within the day, 
 1. Set `kill_switch` to true. Confirm the runner has stopped.
 2. Re-enable the Grok routines that were disabled.
 3. Reconcile Linear by hand against the snapshot taken at the start of cutover. Items that moved during the window are checked one by one.
-4. Write down what failed in `docs/decisions.md` and fix it before the next attempt.
+4. Write down what failed in `docs/decision-log.md` and fix it before the next attempt.
 
 ## 9. After cutover
 

@@ -6,7 +6,7 @@ Status: draft, 2026-10-28. Proposed order; Didi confirms. Milestones run in orde
 
 - Each task says what, why, how, constraints and success. Success is the verification: run it and record the result as evidence in the PR.
 - "Review point" means stop and wait for Didi (or whoever is named) before continuing.
-- Write an ADR (`docs/adr/NNNN-title.md`) before code for anything architectural. The ADR list is in `docs/architecture.md`, section 8.
+- Write an ADR (`docs/decisions/NNNN-title.md`) before code for anything architectural. The ADR list is in `docs/architecture/technical-architecture.md`, section 8.
 - Anything that would spend money, create credentials, or touch real personal data goes through a gate. Do not work around it.
 
 ## Definition of done for any task
@@ -14,7 +14,7 @@ Status: draft, 2026-10-28. Proposed order; Didi confirms. Milestones run in orde
 1. The code or document is merged by squash with CI green on the head commit.
 2. The task's success checks ran, and the results are in the PR description.
 3. New behaviour has tests at the right seam (`docs/test-plan.md`). Guards have tests that exercise both pass and fail.
-4. `docs/decisions.md` and the ADRs are updated.
+4. `docs/decision-log.md` and the ADRs are updated.
 5. No secret, database id or personal data appears in code, logs, the PR or comments.
 
 ## Milestone 0: foundations and spikes
@@ -24,8 +24,8 @@ Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
 ### M0.0 Place the handoff files in the repo's layout
 
 - What: move the handoff files from `handoff/` into the places this repo's existing layout expects, and merge the handoff `AGENTS.md` and `README.md` into the repo's own versions without losing either.
-- Why: the handoff assumes a generic layout (`docs/`, `docs/adr/`, `contracts/`, a root `README.md` and `AGENTS.md`). This repo comes from Launchpad, whose conventions win.
-- How: first read the repo's existing structure, its `AGENTS.md`, its `README.md` and any ADRs. Write a placement plan (old path, new path, reason) and record it in the repo's ADR location as `0000-handoff-placement.md`. Move the files. Update every cross-reference and every path mentioned inside the documents so they point to the new locations. Merge the rules in the handoff `AGENTS.md` into the repo's `AGENTS.md`: keep every existing rule, add the handoff rules under a clear heading, and where two rules conflict, stop and ask. Remove `handoff/` only after the checks below pass.
+- Why: the handoff assumes a generic layout (`docs/`, `docs/decisions/`, `contracts/`, a root `README.md` and `AGENTS.md`). This repo comes from Launchpad, whose conventions win.
+- How: first read the repo's existing structure, its `AGENTS.md`, its `README.md` and any ADRs. Write a placement plan (old path, new path, reason) and record it in the repo's ADR location as `0100-handoff-placement.md`. Move the files. Update every cross-reference and every path mentioned inside the documents so they point to the new locations. Merge the rules in the handoff `AGENTS.md` into the repo's `AGENTS.md`: keep every existing rule, add the handoff rules under a clear heading, and where two rules conflict, stop and ask. Remove `handoff/` only after the checks below pass.
 - Constraints: do not delete or weaken any existing rule or file. Do not overwrite an existing file without merging it. No code changes in this task.
 - Success: a link and path check finds no broken references in the documents. The repo's existing CI still passes. The placement ADR lists every moved file. The README links to the placed documents in reading order. (Review point: Didi skims the placement ADR before M0.1 starts.)
 
@@ -33,15 +33,15 @@ Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
 
 - What: with the handoff placed, set up TypeScript, lint, formatting, test runner and CI inside the repo's existing conventions. Add only what Launchpad does not already provide. (Didi creates the repo from the Launchpad template before the first session.)
 - Why: every later task depends on a consistent base.
-- How: follow `AGENTS.md` section 4. Exact-pinned dependencies, SHA-pinned actions, squash-only merges, a PR template with a Privacy section and the head commit. Write ADR 0001.
+- How: follow `AGENTS.md` section 4. Exact-pinned dependencies, SHA-pinned actions, squash-only merges, a PR template with a Privacy section and the head commit. Write ADR 0101.
 - Constraints: no deploys. No production credentials.
-- Success: CI runs lint, typecheck and a placeholder test on a PR and passes. ADR 0001 is merged.
+- Success: CI runs lint, typecheck and a placeholder test on a PR and passes. ADR 0101 is merged.
 
 ### M0.2 Spike: agent dispatch (V-01, V-04)
 
 - What: prove the runner can start each agent and read its result without a person: Claude Code (non-interactive), Grok (QA), and Cursor agents. Record what works, what does not, and what each needs (API, CLI, credentials).
 - Why: QA is assigned to Grok and Cursor has no role. If Grok cannot be driven, QA moves.
-- How: a throwaway script per runtime that starts an agent on a trivial task in a scratch repo, reads the final message and exit status, and records a run. Check current documentation for each runtime. Write ADR 0007.
+- How: a throwaway script per runtime that starts an agent on a trivial task in a scratch repo, reads the final message and exit status, and records a run. Check current documentation for each runtime. Write ADR 0107.
 - Constraints: scratch repo only. No production access. Any new credential goes through the new-credentials gate.
 - Success: for each runtime, a recorded yes or no with evidence. If Grok is a no, a proposed fallback for QA.
 
@@ -64,7 +64,7 @@ Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
 
 - What: pick a provider and region and create the database.
 - Why: the state store depends on it.
-- How: compare providers on free-tier limits, idle pausing (the loop runs every 5 minutes), backups, connections from Windmill and from a Worker, and a Canadian region. Write ADR 0003.
+- How: compare providers on free-tier limits, idle pausing (the loop runs every 5 minutes), backups, connections from Windmill and from a Worker, and a Canadian region. Write ADR 0103.
 - Constraints: spending money or starting a paid plan is Didi's. Creating credentials is the new-credentials gate.
 - Success: a database exists, credentials are in the vault, and a connection test from Windmill succeeds. (Review point: Didi approves the provider, any spend, and the credentials.)
 
@@ -72,26 +72,26 @@ Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
 
 - What: decide where the tiny API runs and how agents authenticate.
 - Why: agents must not touch the database directly.
-- How: compare Windmill endpoints, a Worker through Hyperdrive, and a small Node service. Choose the simplest option that gives each agent its own identity. Write ADR 0002.
-- Success: ADR 0002 merged.
+- How: compare Windmill endpoints, a Worker through Hyperdrive, and a small Node service. Choose the simplest option that gives each agent its own identity. Write ADR 0102.
+- Success: ADR 0102 merged.
 
 ### M0.7 Infrastructure as code baseline (Proposed, D-133)
 
 - What: choose the tool (Terraform or OpenTofu), the state backend and the secrets approach, and prove the baseline on a scratch project: declare its Cloudflare resources, apply, and show a clean plan.
 - Why: visibility of what is set up and where, and plans that gates can show.
-- How: check current Cloudflare provider support and free tiers for state storage. Create an `infra/` layout that matches Launchpad's conventions. Never put secret values in code, state output or plans. Write ADR 0010.
+- How: check current Cloudflare provider support and free tiers for state storage. Create an `infra/` layout that matches Launchpad's conventions. Never put secret values in code, state output or plans. Write ADR 0110.
 - Constraints: scratch project only. Credentials through the new-credentials gate. A paid plan is Didi's decision. Do not touch real projects.
-- Success: after apply, a second plan is a no-op. A deliberate change appears as a plan diff. A scan of the plan output and state finds no secret values. ADR 0010 is merged.
+- Success: after apply, a second plan is a no-op. A deliberate change appears as a plan diff. A scan of the plan output and state finds no secret values. ADR 0110 is merged.
 
 ### M0.8 Conventions that make Kubernetes easy (Proposed, D-134)
 
-- What: write ADR 0011 and add the conventions to `AGENTS.md`: container-ready services, a target-agnostic deploy adapter interface, the per-project isolation model, secrets by path behind an interface, and an IaC layout with platform and project modules.
+- What: write ADR 0111 and add the conventions to `AGENTS.md`: container-ready services, a target-agnostic deploy adapter interface, the per-project isolation model, secrets by path behind an interface, and an IaC layout with platform and project modules.
 - Why: the second release moves to Kubernetes, and these keep the switch from being a rewrite.
-- How: follow `docs/architecture.md` section 2.10. Add CI checks: each service builds as a container image, serves a health endpoint, and reads config only from the environment.
+- How: follow `docs/architecture/technical-architecture.md` section 2.10. Add CI checks: each service builds as a container image, serves a health endpoint, and reads config only from the environment.
 - Constraints: do not build a cluster. No Kubernetes-specific code yet.
-- Success: ADR 0011 is merged. A sample service builds as a container in CI and passes the health check. `AGENTS.md` carries the conventions.
+- Success: ADR 0111 is merged. A sample service builds as a container in CI and passes the health check. `AGENTS.md` carries the conventions.
 
-Review point at the end of M0: Didi reviews ADRs 0001, 0002, 0003, 0007, 0010, 0011 and the spike results.
+Review point at the end of M0: Didi reviews ADRs 0101, 0102, 0103, 0107, 0110, 0111 and the spike results.
 
 ## Milestone 1: state store and library
 
@@ -99,11 +99,11 @@ Goal: the source of truth exists, is safe, and moves items correctly.
 
 ### M1.1 Finalize the schema (review point)
 
-- What: turn `docs/schema.md` into ADR 0004 and migrations.
+- What: turn `docs/schema.md` into ADR 0104 and migrations.
 - Why: the shape was approved; columns and constraints were not.
 - How: resolve the open points in `docs/schema.md` (the three added tables, counter rules, the reversal mechanism for append-only decisions). Write migrations. Add database roles or triggers that make `transitions` and `evidence` append-only.
 - Constraints: do not apply the migration to the real database until reviewed.
-- Success: migrations apply cleanly on an empty database in CI. Tests prove UPDATE and DELETE on append-only tables fail. (Review point: Didi reviews ADR 0004 before the migration is applied.)
+- Success: migrations apply cleanly on an empty database in CI. Tests prove UPDATE and DELETE on append-only tables fail. (Review point: Didi reviews ADR 0104 before the migration is applied.)
 
 ### M1.2 Store interface and Postgres implementation
 
@@ -114,7 +114,7 @@ Goal: the source of truth exists, is safe, and moves items correctly.
 
 ### M1.3 State library
 
-- What: the library in `docs/architecture.md` section 2.1: create node, add edge (reject blocks cycles), record evidence and decisions, open or supersede a gate request, request a transition with the version check, counters, and read views.
+- What: the library in `docs/architecture/technical-architecture.md` section 2.1: create node, add edge (reject blocks cycles), record evidence and decisions, open or supersede a gate request, request a transition with the version check, counters, and read views.
 - Why: this is the core. Everything else is a shell.
 - How: pure TypeScript. `requestTransition` evaluates the guard from a contracts object and writes the transition and node update in one transaction with `where version = :expected`. Use a tiny test machine for the mechanics until real contracts arrive in M2.
 - Constraints: no Windmill or HTTP imports. No rule is hard-coded outside contracts and guard functions.
@@ -124,7 +124,7 @@ Goal: the source of truth exists, is safe, and moves items correctly.
 
 - What: an HTTP API over the library: create idea, add edge, report done with evidence, record decision, read a node, read the attention list.
 - Why: agents and adapters need a safe door.
-- How: per ADR 0002. Each caller has its own identity and can only do what its role allows. No endpoint changes a node's state directly except through `requestTransition`, and callers other than the runner cannot call it.
+- How: per ADR 0102. Each caller has its own identity and can only do what its role allows. No endpoint changes a node's state directly except through `requestTransition`, and callers other than the runner cannot call it.
 - Success: API tests per role: allowed calls work, forbidden calls are rejected, and a bot cannot move an item.
 
 ### M1.5 Seed the store from Linear (read-only)
@@ -143,7 +143,7 @@ Goal: the runner can say what it would do, and be right.
 
 - What: `contracts/` files for Machine 2 (code track, design track, escalation) from `docs/spec.md` section 9, and a test comparing them with the spec.
 - Why: contracts must not drift from the spec or live in flows.
-- How: ADR 0005. A loader that validates the files against a schema. The test parses the spec's transition tables and fails on any difference.
+- How: ADR 0105. A loader that validates the files against a schema. The test parses the spec's transition tables and fails on any difference.
 - Success: the test passes, and deliberately removing a transition from either side fails it.
 
 ### M2.2 Guards
@@ -164,7 +164,7 @@ Goal: the runner can say what it would do, and be right.
 
 ### M2.4 Reconcile pass in dry-run mode
 
-- What: the reconcile pass of `docs/architecture.md` section 2.5, writing `dry_run` transitions and acting on nothing.
+- What: the reconcile pass of `docs/architecture/technical-architecture.md` section 2.5, writing `dry_run` transitions and acting on nothing.
 - Why: it is how the cutover is rehearsed.
 - How: a function in the library plus a Windmill schedule every 5 minutes. It respects the kill switch and `dry_run`.
 - Success: against the imported state it releases the right blocked items, flags the right stalls, and plans the right dispatches. Nothing outside the store changes.
@@ -191,7 +191,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: adapters to start the Developer (Claude Code), QA (Grok, or the fallback from M0.2), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
-- How: per ADR 0006 and 0007. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
+- How: per ADR 0106 and 0107. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
 - Constraints: one agent per item, up to 3 Developer agents per project. Each agent is scoped to one project's repo and credentials. No production access.
 - Success: each adapter can start an agent on a trivial task in the rehearsal project and record a run with model, turns, minutes, cost and outcome. A simulated usage-exhausted response queues and resumes.
 
@@ -250,7 +250,7 @@ Goal: Didi can act from his phone and nothing waits invisibly.
 ### M4.3 Notifications and incident calls
 
 - What: push alerts for blocking gates and long stalls, and calls for a failed production health check, data loss or PII exposure flagged by a bot, and daily spend over the set amount.
-- How: choose providers (ADR 0009) after checking current pricing. A production health check is plain code. Who flags PII exposure is N-08.
+- How: choose providers (ADR 0109) after checking current pricing. A production health check is plain code. Who flags PII exposure is N-08.
 - Constraints: a paid plan is Didi's decision. Alerts never block progress.
 - Success: each trigger fires its alert in a test, and the call fires once per incident, not repeatedly. (Review point: Didi approves providers and spend.)
 
