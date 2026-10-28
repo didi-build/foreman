@@ -85,27 +85,27 @@ The principles in `docs/spec.md`, section 1, apply. In short: Didi is the operat
 
 ## 9. Functional requirements
 
-Each requirement is detailed in `docs/spec.md` and `docs/architecture.md`.
+Each requirement is detailed in `docs/spec.md` and `docs/architecture/technical-architecture.md`.
 
-| ID | Requirement |
-|---|---|
-| FR-1 | The state store holds every idea, work item, edge, transition, evidence record, decision, gate request, run and counter. It is the source of truth. |
-| FR-2 | Only the runner changes a node's state. A change is one transaction that writes the transition and updates the node, and fails on a version mismatch. |
-| FR-3 | Transitions follow the contracts in the spec (trigger, guard, evidence, timeout, fallback). Contracts are data, loaded at a version, and each transition records the version used. |
-| FR-4 | A reconcile loop runs every 5 minutes. It releases blocked items whose blockers are done, dispatches items that are ready but not running, flags stalls, and cleans stale gate requests. Webhooks make it faster but are never the only trigger. |
-| FR-5 | Evidence is recorded as immutable rows that name the commit they cover. A verdict applies to one commit, and a new commit makes it stale. |
-| FR-6 | QA checks the preview branch on a model from a different family than the builder. On pass the runner merges. After the merge, main deploys to staging and a bot checks staging. Only then is the item Done. A failed staging check reopens the same item. |
-| FR-7 | Merging is a runner action gated in code: CI green on the head commit, no conflicts, not past the round cap, the privileged-path list satisfied, and the production environment protected where deploys run on push to main. |
-| FR-8 | Approvals and answers are verbatim records with a time and a scope. A reversed approval marks dependent work stale, and the Council decides what to redo. |
-| FR-9 | Gate requests carry a topic key. Only one request per topic key is open. They appear on the attention list and on Windmill approval pages, with push alerts for blocking gates. |
-| FR-10 | An item that fails 3 times, loops, or runs over budget stops and goes to the Council. If the Council cannot resolve it, it goes to Didi. |
-| FR-11 | Each run records model, turns, minutes, cost and outcome. Token and money spend alerts at a threshold and work continues. A looping item stops. Usage exhaustion queues and resumes work instead of killing runs. |
-| FR-12 | The daily check is generated from the state store, grouped by project and ordered by what blocks the most work. |
-| FR-13 | Linear is a mirror written through Linear's API under the runner's own app identity, behind an adapter. Status mapping is in the spec. |
-| FR-14 | Every bot and agent has its own identity, and every action is attributable. |
-| FR-15 | A kill switch pauses the runner. A dry run computes what the runner would do without acting. |
-| FR-16 | A minimum of Machine 1: ideas can be created, decisions recorded verbatim, and plans split into work items by Triage. |
-| FR-17 | Infrastructure is declared as code. An infrastructure change shows its plan, and a plan with DNS changes, new secrets or wider permissions, or deletions goes through its gate before the runner applies it. |
+| ID    | Requirement                                                                                                                                                                                                                                               |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FR-1  | The state store holds every idea, work item, edge, transition, evidence record, decision, gate request, run and counter. It is the source of truth.                                                                                                       |
+| FR-2  | Only the runner changes a node's state. A change is one transaction that writes the transition and updates the node, and fails on a version mismatch.                                                                                                     |
+| FR-3  | Transitions follow the contracts in the spec (trigger, guard, evidence, timeout, fallback). Contracts are data, loaded at a version, and each transition records the version used.                                                                        |
+| FR-4  | A reconcile loop runs every 5 minutes. It releases blocked items whose blockers are done, dispatches items that are ready but not running, flags stalls, and cleans stale gate requests. Webhooks make it faster but are never the only trigger.          |
+| FR-5  | Evidence is recorded as immutable rows that name the commit they cover. A verdict applies to one commit, and a new commit makes it stale.                                                                                                                 |
+| FR-6  | QA checks the preview branch on a model from a different family than the builder. On pass the runner merges. After the merge, main deploys to staging and a bot checks staging. Only then is the item Done. A failed staging check reopens the same item. |
+| FR-7  | Merging is a runner action gated in code: CI green on the head commit, no conflicts, not past the round cap, the privileged-path list satisfied, and the production environment protected where deploys run on push to main.                              |
+| FR-8  | Approvals and answers are verbatim records with a time and a scope. A reversed approval marks dependent work stale, and the Council decides what to redo.                                                                                                 |
+| FR-9  | Gate requests carry a topic key. Only one request per topic key is open. They appear on the attention list and on Windmill approval pages, with push alerts for blocking gates.                                                                           |
+| FR-10 | An item that fails 3 times, loops, or runs over budget stops and goes to the Council. If the Council cannot resolve it, it goes to Didi.                                                                                                                  |
+| FR-11 | Each run records model, turns, minutes, cost and outcome. Token and money spend alerts at a threshold and work continues. A looping item stops. Usage exhaustion queues and resumes work instead of killing runs.                                         |
+| FR-12 | The daily check is generated from the state store, grouped by project and ordered by what blocks the most work.                                                                                                                                           |
+| FR-13 | Linear is a mirror written through Linear's API under the runner's own app identity, behind an adapter. Status mapping is in the spec.                                                                                                                    |
+| FR-14 | Every bot and agent has its own identity, and every action is attributable.                                                                                                                                                                               |
+| FR-15 | A kill switch pauses the runner. A dry run computes what the runner would do without acting.                                                                                                                                                              |
+| FR-16 | A minimum of Machine 1: ideas can be created, decisions recorded verbatim, and plans split into work items by Triage.                                                                                                                                     |
+| FR-17 | Infrastructure is declared as code. An infrastructure change shows its plan, and a plan with DNS changes, new secrets or wider permissions, or deletions goes through its gate before the runner applies it.                                              |
 
 ## 10. Non-functional requirements
 
@@ -132,15 +132,15 @@ The release is successful when all of these hold. Each one has a check in `docs/
 
 ## 12. Risks and mitigations
 
-| Risk | Mitigation |
-|---|---|
-| All-at-once cutover is a big switch | Dry run, a go/no-go checklist, disable (not delete) the Grok routines, and a kill switch |
-| Grok or Cursor cannot be started and read by the runner | Verify early (milestone 0 spike). If Grok cannot be driven, QA moves to another non-Claude agent. The bot file makes the model a setting |
-| Linear's API cannot create statuses or let an app act under its own identity | Verify early. The one-time status setup can be done by hand, and the audit trail lives in the state store regardless |
-| The Council (Opus) or another model becomes unavailable | The model is a setting per bot. Plumbing does not depend on any model |
-| Counting failures too eagerly escalates healthy work | The counter increments only when a transition guard fails after a bot reports done, not on every red CI run |
-| Self-modifying system risk (the system builds itself) | Didi's gates stay fully on during bootstrap, production deploys stay with him, and the kill switch exists |
-| Spec and contracts drift apart | Contracts are data, and a consistency test compares them with the spec |
+| Risk                                                                         | Mitigation                                                                                                                               |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| All-at-once cutover is a big switch                                          | Dry run, a go/no-go checklist, disable (not delete) the Grok routines, and a kill switch                                                 |
+| Grok or Cursor cannot be started and read by the runner                      | Verify early (milestone 0 spike). If Grok cannot be driven, QA moves to another non-Claude agent. The bot file makes the model a setting |
+| Linear's API cannot create statuses or let an app act under its own identity | Verify early. The one-time status setup can be done by hand, and the audit trail lives in the state store regardless                     |
+| The Council (Opus) or another model becomes unavailable                      | The model is a setting per bot. Plumbing does not depend on any model                                                                    |
+| Counting failures too eagerly escalates healthy work                         | The counter increments only when a transition guard fails after a bot reports done, not on every red CI run                              |
+| Self-modifying system risk (the system builds itself)                        | Didi's gates stay fully on during bootstrap, production deploys stay with him, and the kill switch exists                                |
+| Spec and contracts drift apart                                               | Contracts are data, and a consistency test compares them with the spec                                                                   |
 
 ## 13. Assumptions and dependencies
 

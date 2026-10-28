@@ -85,14 +85,14 @@ In `dry_run` mode the pass computes the same plan but writes transitions with mo
 
 Each integration sits behind an interface so it can be replaced.
 
-| Adapter | Does | Notes |
-|---|---|---|
-| GitHub | Reads PRs, CI results, preview and staging deployments, merge state. Merges PRs. Receives webhooks | Bots and the runner act through GitHub Apps with their own identities, so QA can post real reviews and round counts come from the store |
-| Linear | Creates and updates issues and statuses, mirrors the store | Uses Linear's own API under the runner's app identity, not the MCP. To verify: that the API can create statuses and let an app act under its own identity. A one-time setup creates new statuses (Interview, Council planning, Escalated to Council, Escalated to Didi) and renames others (see the spec mapping) |
-| Agent runtime | Starts an agent on a task and reads its result | One implementation per runtime: Claude Code (Developer), Claude with MCP tools (Designer, Council, Triage), Grok (QA, To verify). The bot file names the runtime and model |
-| Deploy | Staging deploys and preview branches, through infrastructure as code (plan, then apply). Cloudflare Workers first, Kubernetes in the second release. The only place Cloudflare-specific code lives | Production deploys and production applies are not available to the runner. A plan with DNS changes, new secrets or wider permissions, or deletions goes through its gate first |
-| Notification | Push alerts and incident calls | Providers are chosen at build time after checking current pricing |
-| Approval | Creates Windmill approval pages and reads answers | Answers are saved as verbatim decisions |
+| Adapter       | Does                                                                                                                                                                                               | Notes                                                                                                                                                                                                                                                                                                             |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub        | Reads PRs, CI results, preview and staging deployments, merge state. Merges PRs. Receives webhooks                                                                                                 | Bots and the runner act through GitHub Apps with their own identities, so QA can post real reviews and round counts come from the store                                                                                                                                                                           |
+| Linear        | Creates and updates issues and statuses, mirrors the store                                                                                                                                         | Uses Linear's own API under the runner's app identity, not the MCP. To verify: that the API can create statuses and let an app act under its own identity. A one-time setup creates new statuses (Interview, Council planning, Escalated to Council, Escalated to Didi) and renames others (see the spec mapping) |
+| Agent runtime | Starts an agent on a task and reads its result                                                                                                                                                     | One implementation per runtime: Claude Code (Developer), Claude with MCP tools (Designer, Council, Triage), Grok (QA, To verify). The bot file names the runtime and model                                                                                                                                        |
+| Deploy        | Staging deploys and preview branches, through infrastructure as code (plan, then apply). Cloudflare Workers first, Kubernetes in the second release. The only place Cloudflare-specific code lives | Production deploys and production applies are not available to the runner. A plan with DNS changes, new secrets or wider permissions, or deletions goes through its gate first                                                                                                                                    |
+| Notification  | Push alerts and incident calls                                                                                                                                                                     | Providers are chosen at build time after checking current pricing                                                                                                                                                                                                                                                 |
+| Approval      | Creates Windmill approval pages and reads answers                                                                                                                                                  | Answers are saved as verbatim decisions                                                                                                                                                                                                                                                                           |
 
 ### 2.8 Agent execution environment (decide during build)
 
@@ -102,7 +102,7 @@ Agents need somewhere to run. Options for the M3 ADR: a Windmill worker with the
 
 - Why: with deploys spread across Cloudflare it is hard to see what is set up and where. Declaring it in a repo makes that visible, and a plan is the exact diff a gate should show.
 - Scope: each project's Cloudflare resources and DNS, the factory's own staging resources, and, where providers exist, the managed Postgres and GitHub settings.
-- Tool: Terraform or OpenTofu (the open-source fork). Check current Cloudflare provider support for each. Decide in ADR 0010.
+- Tool: Terraform or OpenTofu (the open-source fork). Check current Cloudflare provider support for each. Decide in ADR 0110.
 - State: a remote, locked backend, not in the repo. Check free tiers. Never put secret values in code, state output or plans. Pass secrets from the vault at apply time.
 - Layout: an `infra/` module per project, ideally from Launchpad. The Launchpad change is outside this repo (N-15).
 - Flow: a PR that touches `infra/` makes the runner run a plan and save its summary as evidence. If the plan includes DNS changes, new secrets or wider permissions, or deletions, the runner opens the matching gate request and attaches the plan. The runner applies only after approval. Production applies stay with Didi.
@@ -110,7 +110,7 @@ Agents need somewhere to run. Options for the M3 ADR: a Windmill worker with the
 - Existing resources: import them per project after cutover so the cutover is not delayed.
 - Kubernetes: the planned second release (D-134). See section 2.10.
 
-### 2.10 Preparing for Kubernetes (Proposed, D-134, ADR 0011)
+### 2.10 Preparing for Kubernetes (Proposed, D-134, ADR 0111)
 
 The second release moves to Kubernetes for a pod per project, per-project isolation and monitoring, and eventually off Cloudflare. The first release does not build a cluster. It is built so the switch is easy:
 
@@ -151,14 +151,14 @@ See `docs/cutover.md`.
 
 ## 4. Security model
 
-| Actor | Can | Cannot |
-|---|---|---|
-| Runner | Read and write the state store. Read CI, merge PRs. Write Linear through its API. Deploy to staging | Deploy to production. Hold any credential beyond these without the new-credentials gate. Reach real personal data without a PII gate |
-| Developer agent | Read and write one project's repo branches, open PRs, read CI | Merge. Reach production or remote databases. Print secrets. Change the spec directory |
-| Designer agent | Edit `design/<area>/<feature>/` and gallery components for one project. Use the MagicPath canvas through MCP and exports | Edit anything else. Read MagicPath comments in v1 (needs a signed-in browser) |
-| QA agent | Read PRs, CI, preview and staging. Post verdicts under its own identity | Merge. Edit code |
-| Council and Triage | Read the status view of all projects, create plans, work items and decisions | Read other projects' code or secrets. Move states directly |
-| Didi | Everything gated to him | |
+| Actor              | Can                                                                                                                      | Cannot                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Runner             | Read and write the state store. Read CI, merge PRs. Write Linear through its API. Deploy to staging                      | Deploy to production. Hold any credential beyond these without the new-credentials gate. Reach real personal data without a PII gate |
+| Developer agent    | Read and write one project's repo branches, open PRs, read CI                                                            | Merge. Reach production or remote databases. Print secrets. Change the spec directory                                                |
+| Designer agent     | Edit `design/<area>/<feature>/` and gallery components for one project. Use the MagicPath canvas through MCP and exports | Edit anything else. Read MagicPath comments in v1 (needs a signed-in browser)                                                        |
+| QA agent           | Read PRs, CI, preview and staging. Post verdicts under its own identity                                                  | Merge. Edit code                                                                                                                     |
+| Council and Triage | Read the status view of all projects, create plans, work items and decisions                                             | Read other projects' code or secrets. Move states directly                                                                           |
+| Didi               | Everything gated to him                                                                                                  |                                                                                                                                      |
 
 Rules:
 
@@ -178,38 +178,38 @@ Rules:
 
 ## 6. Failure modes
 
-| Failure | Handling |
-|---|---|
-| Missed or duplicate webhook | Reconcile loop catches it. Flows are idempotent |
-| Two runner jobs move the same item | The version check makes one fail. It retries from a fresh read |
-| Model usage exhausted | Plumbing is code and keeps running. Dispatches queue and resume. Runs record `usage_exhausted`. No run is killed mid-transition |
-| Linear unavailable or out of sync | The runner continues. The mirror lags and reports a mismatch. It never overwrites silently |
-| Agent loops or burns budget | The run stops at its budget. The item goes to Escalated to Council |
-| QA verdict for an old commit | Ignored. A verdict applies only to the PR's current head commit |
-| Approval pages unreachable | Email digest and Linear view still show the attention list. Production deploys can still be approved on GitHub |
-| Runner misbehaves | Kill switch pauses all transitions and dispatch. Grok routines are disabled, not deleted, so they can be re-enabled |
-| Grok or another runtime cannot be started | QA moves to another non-Claude agent. The bot file makes the model a setting |
-| Reversed approval | Dependents marked stale, a Council question opens, nothing continues on the stale basis |
+| Failure                                   | Handling                                                                                                                        |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Missed or duplicate webhook               | Reconcile loop catches it. Flows are idempotent                                                                                 |
+| Two runner jobs move the same item        | The version check makes one fail. It retries from a fresh read                                                                  |
+| Model usage exhausted                     | Plumbing is code and keeps running. Dispatches queue and resume. Runs record `usage_exhausted`. No run is killed mid-transition |
+| Linear unavailable or out of sync         | The runner continues. The mirror lags and reports a mismatch. It never overwrites silently                                      |
+| Agent loops or burns budget               | The run stops at its budget. The item goes to Escalated to Council                                                              |
+| QA verdict for an old commit              | Ignored. A verdict applies only to the PR's current head commit                                                                 |
+| Approval pages unreachable                | Email digest and Linear view still show the attention list. Production deploys can still be approved on GitHub                  |
+| Runner misbehaves                         | Kill switch pauses all transitions and dispatch. Grok routines are disabled, not deleted, so they can be re-enabled             |
+| Grok or another runtime cannot be started | QA moves to another non-Claude agent. The bot file makes the model a setting                                                    |
+| Reversed approval                         | Dependents marked stale, a Council question opens, nothing continues on the stale basis                                         |
 
 ## 7. Deployment
 
 - Windmill Cloud for the runner. Managed Postgres for the state store. The API location is decided in M0. Infrastructure is declared as code (section 2.9).
-- The API and agent runners ship as containers. Where they run in the first release is decided in ADRs 0002 and 0006. As guidance, always-on services fit the droplet and bursty work fits on-demand compute. The move to Kubernetes in the second release is a redeploy, not a rewrite (section 2.10).
+- The API and agent runners ship as containers. Where they run in the first release is decided in ADRs 0102 and 0106. As guidance, always-on services fit the droplet and bursty work fits on-demand compute. The move to Kubernetes in the second release is a redeploy, not a rewrite (section 2.10).
 - The factory is its own first project. Its production deploys stay with Didi. Gates stay fully on during bootstrap.
 - Environments: a staging project used for rehearsals, and the real projects. A rehearsal never touches real projects.
 
 ## 8. Architecture decisions to write as ADRs
 
-| ADR | Decision | When |
-|---|---|---|
-| 0001 | Repo layout, language and tooling (TypeScript, test runner, lint, CI, pinned dependencies) | M0 |
-| 0002 | State API hosting and agent authentication | M0 |
-| 0003 | Managed Postgres provider and region | M0 |
-| 0004 | Final column-level schema, the reversal mechanism for decisions, counter rules | M1 (review point) |
-| 0005 | Contracts format and consistency test | M2 |
-| 0006 | Agent execution environment and budget enforcement | M3 |
-| 0007 | Dispatch adapters per runtime and the Grok verification result | M0 spike, M3 |
-| 0008 | Linear adapter, statuses setup and app identity | M5 |
-| 0009 | Notification providers | M4 |
-| 0010 | Infrastructure as code: tool, state backend, secrets handling, layout | M0 (M0.7) |
-| 0011 | Conventions that make the move to Kubernetes cheap | M0 (M0.8) |
+| ADR  | Decision                                                                                   | When              |
+| ---- | ------------------------------------------------------------------------------------------ | ----------------- |
+| 0101 | Repo layout, language and tooling (TypeScript, test runner, lint, CI, pinned dependencies) | M0                |
+| 0102 | State API hosting and agent authentication                                                 | M0                |
+| 0103 | Managed Postgres provider and region                                                       | M0                |
+| 0104 | Final column-level schema, the reversal mechanism for decisions, counter rules             | M1 (review point) |
+| 0105 | Contracts format and consistency test                                                      | M2                |
+| 0106 | Agent execution environment and budget enforcement                                         | M3                |
+| 0107 | Dispatch adapters per runtime and the Grok verification result                             | M0 spike, M3      |
+| 0108 | Linear adapter, statuses setup and app identity                                            | M5                |
+| 0109 | Notification providers                                                                     | M4                |
+| 0110 | Infrastructure as code: tool, state backend, secrets handling, layout                      | M0 (M0.7)         |
+| 0111 | Conventions that make the move to Kubernetes cheap                                         | M0 (M0.8)         |
