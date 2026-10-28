@@ -1,6 +1,6 @@
 # Agent instructions
 
-**Project:** {{PROJECT_NAME}} — {{PROJECT_PURPOSE}}
+**Project:** Foreman — Deterministic runner and state store for AI-driven software work. Ideas go in, and gated, verified work comes out. Windmill runs it, Postgres holds the truth, and agents do the work.
 
 This file is the single source of truth for how agents work in this repository. Other agent entry points only link here.
 

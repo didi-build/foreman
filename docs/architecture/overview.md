@@ -1,10 +1,10 @@
-# Architecture overview — {{PROJECT_NAME}}
+# Architecture overview — Foreman
 
 Replace this file with your system’s architecture. Keep it short; link to deeper docs as the project grows.
 
 ## Purpose
 
-{{PROJECT_PURPOSE}}
+Deterministic runner and state store for AI-driven software work. Ideas go in, and gated, verified work comes out. Windmill runs it, Postgres holds the truth, and agents do the work.
 
 ## Boundaries
 

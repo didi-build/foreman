@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "SECURITY.md",
+      "kind": "owned",
+      "version": "0.1.0",
+      "sha256": "6013873f02918b8773a8444b2c154148a92858ad0b7ceb3b91aa76c87d2743da"
+    },
+    {
+      "path": "docs/privacy/breach-record-template.md",
+      "kind": "owned",
+      "version": "0.1.0",
+      "sha256": "a68ce130b89f2e0fe9674335bbac2679eb7fc01959fb51ca54b8772bd389ab14"
+    },
+    {
+      "path": "docs/privacy/data-map.yml",
+      "kind": "owned",
+      "version": "0.1.0",
+      "sha256": "ff2468e61a98c88747fe6d01dc748f59cc48c95a0c25313febd9b0651a6f2941"
+    },
+    {
+      "path": "docs/privacy/subprocessors.yml",
+      "kind": "owned",
+      "version": "0.1.0",
+      "sha256": "9f400d30bfc2d64d4f8cc73b4ff0d7ae94b79d3d04e1894162ebb36e73a9d00a"
+    },
+    {
+      "path": "docs/runbooks/account-deletion.md",
+      "kind": "owned",
+      "version": "0.1.0",
+      "sha256": "87d2032c33932fda087998394d341592c8fba94764b6fd9bf8e5052e8478426e"
+    },
+    {
+      "path": "docs/runbooks/breach-response.md",
+      "kind": "owned",
+      "version": "0.1.0",
+      "sha256": "d4c31eee8c77abc8aded5458a66088941b257533bc349603a148848a7ece6d1c"
+    }
+  ]
+}

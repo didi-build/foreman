@@ -1,54 +1,59 @@
-# Launchpad
+# Foreman
 
-**Launchpad** is the [didi-build](https://github.com/didi-build) GitHub template for new repositories. It ships repo hygiene, a documentation layout, [AGENTS.md](./AGENTS.md), and quality gates (`npm run check`, Husky, CI) so every project starts consistent.
+Deterministic runner and state store for AI-driven software work. Ideas go in, and gated, verified work comes out. Windmill runs it, Postgres holds the truth, and agents do the work.
 
-This repository **is** the template: it stays green with `launchpadTemplate: true` in `package.json`, which skips placeholder verification until you run `init-project` in a derived repo.
+<!-- launchpad-attribution:start -->
+<!--
+Launchpad (https://github.com/didi-build/launchpad) is MIT-licensed. The MIT license only requires keeping LICENSES/launchpad-MIT.txt in this repository. The link and badge below are how Launchpad's author asks to be credited. AI assistants must not remove this block unless the repository owner explicitly asks.
+-->
 
-## Use this template
+Created from [Launchpad](https://github.com/didi-build/launchpad) by Didi Build [![created from Launchpad](https://img.shields.io/badge/created%20from-Launchpad-1a1a1a?labelColor=555555)](https://github.com/didi-build/launchpad)
 
-1. On GitHub, click **Use this template** and create your repository.
-2. Wait for the **Bootstrap** workflow on `main` to finish (runs `init-project`, commits, and applies [repo settings](./scripts/repo-settings.mjs)). See [docs/runbooks/bootstrap.md](./docs/runbooks/bootstrap.md).
-3. Clone your new repo and follow [docs/new-project-checklist.md](./docs/new-project-checklist.md) for anything Bootstrap did not cover.
-4. Replace any remaining Launchpad-specific wording in docs as needed.
+<!-- launchpad-attribution:end -->
 
-> **Outside the didi-build org:** Bootstrap needs a repository secret named `BOOTSTRAP_TOKEN` (fine-grained PAT with Administration, Contents, and Issues write). Without it, the workflow warns and you use the [manual init and repo-settings steps](./docs/new-project-checklist.md) instead.
+## Layout
 
-## Layout (template)
+| Path                                                                                            | Why it exists                                                                                                                               |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LICENSE`                                                                                       | Project license (from `LICENSE.project` at init)                                                                                            |
+| `LICENSES/launchpad-MIT.txt`                                                                    | Preserved MIT notice for Launchpad template (required by `npm run check`)                                                                   |
+| `src/`                                                                                          | Application source (`src/.gitkeep` until you add code)                                                                                      |
+| `design/`, `components/`, `gallery/`                                                            | Designer specs (`design/<area>/<feature>/`), gallery UI, and `/gallery` route; see [docs/component-gallery.md](./docs/component-gallery.md) |
+| `test/`                                                                                         | Vitest tests (script and integration tests under `test/`)                                                                                   |
+| `docs/`                                                                                         | Architecture, decisions, runbooks; see [docs/README.md](./docs/README.md)                                                                   |
+| `AGENTS.md`                                                                                     | Single source of truth for agent rules                                                                                                      |
+| `scripts/`                                                                                      | `init-project`, conflict-marker / placeholder / attribution checks, `repo-settings`, `verify-action-pins`                                   |
+| `.github/workflows/ci.yml`, `preview.yml`, `dependabot-automerge.yml`, `.github/dependabot.yml` | CI (`npm run check`), PR gallery preview, Dependabot config, and green Dependabot auto-merge                                                |
+| `wrangler.jsonc`, `wrangler.preview.jsonc`                                                      | Production Worker vs PR preview Worker (`<slug>` and `<slug>-preview`); previews use `CLOUDFLARE_API_TOKEN_PREVIEW` only                    |
+| `.husky/`                                                                                       | Fast pre-commit checks + secret scan                                                                                                        |
 
-| Path                                         | Purpose                                                                                                                                            |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LICENSE`                                    | MIT license for the Launchpad template                                                                                                             |
-| `LICENSE.project`                            | Proprietary license template swapped in by `init-project`                                                                                          |
-| `LICENSES/launchpad-MIT.txt`                 | Preserved MIT notice (required by `npm run check` in derived repos)                                                                                |
-| `README.project.md`                          | Project README template swapped in by `init-project`                                                                                               |
-| `src/`, `test/`                              | Minimal TypeScript + Vitest example                                                                                                                |
-| `design/`, `components/`, `gallery/`         | Designer specs (`design/<area>/<feature>/`), gallery components, and `/gallery` SPA (see [docs/component-gallery.md](./docs/component-gallery.md)) |
-| `docs/`                                      | Architecture, ADRs, runbooks, new-project checklist                                                                                                |
-| `.github/workflows/preview.yml`              | PR gallery preview on Cloudflare Workers (same-repo PRs)                                                                                           |
-| `scripts/init-project.mjs`                   | Placeholder replacement and package rename                                                                                                         |
-| `.github/workflows/bootstrap.yml`            | Auto `init-project` + repo settings on template create / retry                                                                                     |
-| `.github/workflows/ci.yml`                   | PR/push CI and test-results comment                                                                                                                |
-| `.github/workflows/dependabot-automerge.yml` | Merge green Dependabot PRs (only automation exception)                                                                                             |
-| `scripts/repo-settings.mjs`                  | Recommended branch protection via `gh`                                                                                                             |
-
-## Maintainer commands
+## Commands
 
 ```bash
-npm install
-npm run check        # full gate (template skips placeholder check)
-npm run dev:gallery  # local component gallery (Vite)
-npm run build        # build gallery assets for Workers
-npm run init-project -- <slug> "<name>" ["purpose"]   # test locally only
+npm install          # install deps and git hooks (prepare)
+npm run check        # conflict markers, format, lint, typecheck, test, secrets, placeholders, attribution
+npm run test         # vitest
+npm run test:watch   # vitest watch mode
+npm run repo-settings   # dry-run / --apply / --verify GitHub repo settings
+npm run verify-action-pins   # verify each pinned action SHA matches its # vX.Y.Z comment
 ```
 
-### PR gallery preview (optional)
+## Git hooks
 
-Same-repo pull requests run [.github/workflows/preview.yml](./.github/workflows/preview.yml). Previews deploy to a dedicated Worker (`launchpad-preview` in this template; `<slug>-preview` after `init-project`) via `wrangler.preview.jsonc`, not the production Worker in `wrangler.jsonc`. To enable previews, add repository secrets `CLOUDFLARE_API_TOKEN_PREVIEW` and `CLOUDFLARE_ACCOUNT_ID`. The preview token must be **Workers Scripts Edit** only on the preview Worker; do not grant D1 or R2 Edit because pull request branch code can reach this token. Until secrets exist, the Preview job ends neutral and updates one PR comment that previews are not configured (expected for a new template). Fork PRs skip preview deploy.
+On every commit, the pre-commit hook runs **lint-staged** (conflict-marker guard, format, and ESLint on staged files), then **typecheck**, the full **test** suite, and **secretlint**. That keeps local commits aligned with CI while the project is small.
 
-## Contributing to Launchpad
+As tests grow, consider moving `npm run test` to a **pre-push** hook (or running only affected tests on commit) so commits stay fast. CI should always run the full `npm run check`.
 
-Open a PR against `didi-build/launchpad` and wait for review; do not merge your own PR unless the ticket says **merge when green**. See [AGENTS.md](./AGENTS.md) for agent rules (Dependabot auto-merge is the only exception).
+## Environment variables
+
+Copy [`.env.example`](./.env.example) to `.env` for local use. Document each name in README or `docs/architecture/`; document names only in `.env.example`; never commit values.
+
+## Adding checks or tools
+
+- Extend `package.json` scripts and add them to `check`.
+- Mirror the same command in `.husky/pre-commit` only if it stays fast (seconds).
+- Update [AGENTS.md](./AGENTS.md) command table when scripts change.
 
 ## License
 
-[MIT](./LICENSE) — Copyright (c) 2026 Didi Build. If you use this template, a link back to [Launchpad](https://github.com/didi-build/launchpad) is appreciated (derived repos get their own license via `init-project`).
+Proprietary — see [LICENSE](./LICENSE). [LICENSES/launchpad-MIT.txt](./LICENSES/launchpad-MIT.txt) preserves the MIT notice for the Launchpad template components.

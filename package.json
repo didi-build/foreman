@@ -1,10 +1,9 @@
 {
-  "name": "launchpad",
+  "name": "foreman",
   "version": "0.0.0",
   "private": true,
-  "description": "GitHub template: repo hygiene, docs, agent instructions, and quality gates for new projects.",
-  "license": "MIT",
-  "launchpadTemplate": true,
+  "description": "Deterministic runner and state store for AI-driven software work. Ideas go in, and gated, verified work comes out. Windmill runs it, Postgres holds the truth, and agents do the work.",
+  "license": "UNLICENSED",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
