@@ -1,6 +1,6 @@
 // M0.2 spike (V-01, QA): can the runner get a structured QA verdict from a model of a different
 // family than the builder, without a person? Uses any OpenAI-compatible chat endpoint, so the same
-// script covers Grok (xAI) and open-weight models on Ollama, vLLM, LM Studio or OpenRouter (D-139).
+// script covers Grok (xAI) and open-weight models on Ollama, vLLM or LM Studio (D-139). OpenRouter is not chosen (D-142).
 //
 // Needs: QA_BASE_URL (for xAI: https://api.x.ai/v1, for Ollama: http://localhost:11434/v1),
 // QA_MODEL (the model name the provider lists today; not guessed here), QA_API_KEY (any non-empty

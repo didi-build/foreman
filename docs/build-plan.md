@@ -85,7 +85,7 @@ Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
 
 ### M0.8 Conventions that make Kubernetes easy (Proposed, D-134)
 
-- What: write ADR 0111 and add the conventions to `AGENTS.md`: container-ready services, a target-agnostic deploy adapter interface, the per-project isolation model, secrets by path behind an interface, and an IaC layout with platform and project modules.
+- What: write ADR 0111 and add the conventions to `AGENTS.md`: container-ready services, a target-agnostic deploy adapter interface, the per-project isolation model, secrets by path behind an interface, the model endpoint and API key as settings in each bot file (the key as a secret path; D-142), and an IaC layout with platform and project modules.
 - Why: the second release moves to Kubernetes, and these keep the switch from being a rewrite.
 - How: follow `docs/architecture/technical-architecture.md` section 2.10. Add CI checks: each service builds as a container image, serves a health endpoint, and reads config only from the environment.
 - Constraints: do not build a cluster. No Kubernetes-specific code yet.
@@ -305,6 +305,7 @@ This is its own project, run through the factory starting with the Interview. It
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
 - A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.
+- A self-hosted model gateway (LiteLLM or Bifrost, chosen then; O-10) as a pod, with the agent runtime adapters pointed at it by changing the model endpoint setting in each bot file. OpenRouter is not chosen (D-142).
 - Move the state API and the agent runners onto the cluster. Then move projects off Cloudflare one at a time.
 - First, import the existing Cloudflare resources of current projects into infrastructure as code, and add the proven `infra/` module to Launchpad (outside this repo; Launchpad is public, so no account ids or secrets), with a Kubernetes variant.
 - Revisit the managed Postgres (D-118) and whether to self-host Windmill because of token and cost burn.

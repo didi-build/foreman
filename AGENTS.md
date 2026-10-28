@@ -128,6 +128,7 @@ From [ADR 0111](./docs/decisions/0111-kubernetes-ready-conventions.md). They hol
 - Deploys go through the target-agnostic deploy adapter (deploy, preview, health, logs, teardown). Code outside it never builds a platform URL.
 - Each project has an explicit boundary: its own credentials, secrets under `projects/<slug>/...`, its own network rules and resource limits.
 - Secrets are read by path through one interface (Windmill resources now, Vault later), never from files in the repo.
+- Agent runtime adapters read the model endpoint and API key from the bot file as settings (the key as a secret path, never its value). There is no model gateway in the first release: adapters call model providers directly. A self-hosted gateway arrives with Kubernetes in the second release (D-142).
 - Infrastructure modules separate platform from project, and the project module takes a deploy target (ADR 0110).
 - No Kubernetes manifests, charts or client code until the second release.
 
