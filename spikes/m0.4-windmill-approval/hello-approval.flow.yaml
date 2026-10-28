@@ -1,0 +1,51 @@
+# M0.4 spike (V-03): a hello-world flow that suspends on an approval step, sends Didi a link,
+# and resumes with his typed reply. Import into a THROWAWAY Windmill workspace folder.
+# Built from Windmill's OpenFlow spec and windmill-client getResumeUrls(); not yet run.
+summary: PF spike M0.4 hello approval
+value:
+  modules:
+    - id: ask
+      suspend:
+        required_events: 1
+        timeout: 86400 # one day
+        continue_on_disapprove_timeout: true
+        skin: minimal
+        resume_form:
+          schema:
+            type: object
+            properties:
+              reply:
+                type: string
+                description: Your answer, in your own words
+            required: [reply]
+      value:
+        type: rawscript
+        language: bun
+        input_transforms: {}
+        content: |
+          import * as wmill from "windmill-client";
+          export async function main() {
+            const urls = await wmill.getResumeUrls();
+            // Open approvalPage on the phone. Do not use the raw resume URL: link scanners can trigger it.
+            console.log("OPEN ON PHONE:", urls.approvalPage);
+            return { askedAt: new Date().toISOString(), approvalPage: urls.approvalPage };
+          }
+    - id: record
+      value:
+        type: rawscript
+        language: bun
+        input_transforms:
+          asked: { type: javascript, expr: results.ask }
+          answer: { type: javascript, expr: resume }
+          approvers: { type: javascript, expr: approvers }
+        content: |
+          export async function main(asked: { askedAt: string }, answer: any, approvers: string[]) {
+            // The verbatim reply and both timestamps are the spike evidence.
+            return {
+              askedAt: asked.askedAt,
+              answeredAt: new Date().toISOString(),
+              replyVerbatim: answer?.reply ?? null,
+              outcome: answer?.error?.name ?? "approved",
+              approvers,
+            };
+          }
