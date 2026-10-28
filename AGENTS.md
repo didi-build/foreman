@@ -38,8 +38,8 @@ This file is the single source of truth for how agents work in this repository. 
 
 ## Scope and tickets
 
-- The linked Linear ticket is the source of truth for scope.
-- Read-only or decision-only tasks: no code, no branches, no PR — post the answer where the ticket asks.
+- The linked Linear ticket is the source of truth for scope. (In this repo the handoff rule applies instead: see D-136 in section 9 below.)
+- Read-only or decision-only tasks: no code, no branches, no PR — post the answer where the ticket asks. (In this repo ADRs and decisions must be committed: see D-137 in section 9 below.)
 
 ## Pull requests
 
@@ -145,11 +145,11 @@ The handoff package was placed into this repo's Launchpad layout in task M0.0. [
 - Plain, concrete language. Short sentences. No em dashes.
 - State what is decided, what is proposed, and what is open. Do not blur them.
 
-### 9. Open conflicts with the Launchpad rules above
+### 9. How conflicts with the Launchpad rules above are settled
 
-These handoff rules and Launchpad rules disagree. Both are kept word for word until Didi decides. When one of them applies to your task, stop and ask. Each conflict is listed under Open in `docs/decision-log.md`.
+The Launchpad rules above are kept word for word. Where they conflict with the handoff rules, these decisions apply in this repo. Each one is recorded in `docs/decision-log.md`.
 
-- N-16. Scope source. Launchpad: "The linked Linear ticket is the source of truth for scope." Handoff: the state store is the source of truth, Linear is a mirror and is never read as truth after cutover, and tasks come from `docs/build-plan.md`.
-- N-17. Decision-only tasks. Launchpad: "Read-only or decision-only tasks: no code, no branches, no PR." Handoff: every decision is recorded in an ADR or `docs/decision-log.md`, which needs a branch and a PR (for example M0.6 ends with "ADR 0102 merged").
-- N-18. Writing style. Handoff: "No em dashes." Existing Launchpad text in this repo uses them. Until Didi decides, new text follows the handoff style and existing Launchpad text is left as it is.
-- P-09 (already Proposed). Merging. Launchpad: agents open a PR and wait for human review unless the ticket says merge when green. Handoff: the runner merges after QA passes. P-09 proposes that the runner rule applies only to repos the runner manages.
+- D-136. Scope source. Follow the handoff, not the Launchpad rule "The linked Linear ticket is the source of truth for scope". Scope comes from the task in `docs/build-plan.md`. After cutover it comes from the state store, and Linear is a mirror that is never read as truth. Didi: "the handoff is what were building towards. launchpad is still using the old rules. follow the handoff".
+- D-137. Decision-only tasks. Every ADR and decision must exist in this repo and stay in sync with the other documents. A PR for an ADR-only task is not required for now. In the new system, these tasks get a PR for the Council to review. Didi: "in the new system, they will get a pr for the council to review. right now, its less important, as long as the adrs are there and everything is in sync".
+- D-138. Writing style. Any new text follows the handoff style, with no em dashes. Existing Launchpad text is left as it is. Didi: "Any new text generated".
+- P-09 (still Proposed). Merging. Launchpad: agents open a PR and wait for human review unless the ticket says merge when green. Handoff: the runner merges after QA passes. P-09 proposes that the runner rule applies only to repos the runner manages. Until Didi decides, agents in this repo open a PR and wait for review.

@@ -87,6 +87,8 @@ M0.0 says to stop and ask where rules conflict. These are kept side by side, wor
 - N-18: the no-em-dash style rule (handoff) against existing Launchpad text that uses them.
 - P-09, already Proposed in the handoff, covers who merges PRs.
 
+Didi settled N-16, N-17 and N-18 on 2026-10-28. They are now D-136, D-137 and D-138, and `AGENTS.md` section 9 says how each one applies.
+
 One more difference is mine to decide later, not a conflict to stop on. The handoff says tests live next to the seam they test, and Launchpad keeps tests under `test/`. Test layout is O-06, decided in ADR 0101 (M0.1).
 
 ## Constraints
