@@ -1,0 +1,41 @@
+name: Containers
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - ".dockerignore"
+      - "scripts/check-service-container.sh"
+      - ".github/workflows/containers.yml"
+
+concurrency:
+  group: containers-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  conventions:
+    name: container-conventions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build each service and check ADR 0111 conventions
+        run: |
+          set -euo pipefail
+          found=""
+          for dockerfile in src/*/Dockerfile; do
+            [ -f "$dockerfile" ] || continue
+            found="yes"
+            echo "::group::$(dirname "$dockerfile")"
+            scripts/check-service-container.sh "$(dirname "$dockerfile")"
+            echo "::endgroup::"
+          done
+          if [ -z "$found" ]; then
+            echo "::error::No src/*/Dockerfile found. The reference service src/sample-service must exist."
+            exit 1
+          fi

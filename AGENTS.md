@@ -118,6 +118,19 @@ The handoff package was placed into this repo's Launchpad layout in task M0.0. [
 - Tests live next to the seam they test (see `docs/test-plan.md`). CI must be green on the PR's head commit before review.
 - Document decisions in `docs/decision-log.md`, and add or update an ADR for anything architectural.
 
+### 4a. Container and Kubernetes-ready conventions
+
+From [ADR 0111](./docs/decisions/0111-kubernetes-ready-conventions.md). They hold for every service from the first release, so the move to Kubernetes is a redeploy, not a rewrite.
+
+- Each service lives in `src/<service>/` with its own `Dockerfile` (base image pinned by digest, non-root user). Start a new one by copying `src/sample-service/`.
+- Configuration comes only from environment variables, through `src/service-kit/config.ts`. The port is `PORT`. A bad setting stops the service at start and names the setting, never its value.
+- Every service serves `GET /health`, logs one JSON object per line on stdout (`src/service-kit/logger.ts`), and exits 0 on SIGTERM after finishing in-flight requests.
+- Deploys go through the target-agnostic deploy adapter (deploy, preview, health, logs, teardown). Code outside it never builds a platform URL.
+- Each project has an explicit boundary: its own credentials, secrets under `projects/<slug>/...`, its own network rules and resource limits.
+- Secrets are read by path through one interface (Windmill resources now, Vault later), never from files in the repo.
+- Infrastructure modules separate platform from project, and the project module takes a deploy target (ADR 0110).
+- No Kubernetes manifests, charts or client code until the second release.
+
 ### 5. Security and gates
 
 - Never print, log, commit, paste into chat or write into Linear any secret value, database id or personal data. Secrets live in the vault or Windmill resources only.

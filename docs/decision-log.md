@@ -1,4 +1,4 @@
-# Decisions log
+| # Decisions log. 2026-10-28: written up as ADR 0111 (proposed) with a reference service (`src/sample-service/`), a service kit and a CI check that builds each service image and checks health, JSON logs, clean shutdown and config errors |
 
 Status key: Decided (Didi confirmed), Proposed (written down, needs Didi's confirmation), Open (needs a decision, with who decides).
 
