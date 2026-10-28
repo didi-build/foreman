@@ -1,7 +1,7 @@
 # Reference container for ADR 0111. Build from the repo root:
 #   docker build -f src/sample-service/Dockerfile -t sample-service .
 # node:22.22.0-slim, pinned by digest.
-FROM node:22.22.0-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
+FROM node:22.23.3-slim@sha256:3ed98443660ff48413b5af19ecefce3b9d50845a901a43420d47cc63a9fddbe9
 
 ENV NODE_ENV=production
 WORKDIR /app
