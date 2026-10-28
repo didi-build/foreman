@@ -24,7 +24,7 @@ The handoff names three hosting options: Windmill scripts exposed as endpoints, 
 
 A small Node HTTP service in `src/api/`, shipped as a container image (Dockerfile, config only from the environment, `/health`, JSON logs, clean shutdown; ADR 0111 sets the shared conventions). It uses Node's built-in HTTP server, or one small framework chosen in M1.4. It connects to Postgres with a role that has only the grants the API needs, never the owner role.
 
-Where the container runs is a deploy concern, not part of this decision. Assumption to confirm with Didi before M1.4: the always-on droplet mentioned in `docs/architecture/technical-architecture.md` section 7 exists and can host it. If it does not, hosting goes to Didi as a spend question.
+Where it runs: DigitalOcean, Toronto region (D-141). There is no existing droplet, so this is new spend. Didi chose DigitalOcean on 2026-10-28. The DigitalOcean product (App Platform or a droplet) and the monthly amount are approved by Didi at M1.4, when the service first needs to run. Nothing is created before then. The container stays target-agnostic (D-134), so the host can change without a rewrite.
 
 ### Agent authentication
 

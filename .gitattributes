@@ -1,0 +1,4 @@
+# Keep OpenTofu files on LF so Windows (Git Bash) and CI see the same bytes (ADR 0110).
+*.tf text eol=lf
+*.tfvars text eol=lf
+.terraform.lock.hcl text eol=lf
