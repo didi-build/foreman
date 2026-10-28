@@ -52,16 +52,17 @@ Free tier: R2's free storage covers this many times over.
 ```
 infra/
   README.md                    how to run, Windows notes, the secrets list per stack
+  modules/
+    platform/
+      cloudflare/              the ONLY place Cloudflare is declared (D-146)
+    project/                   target-agnostic: takes deploy_target, calls the matching platform module
   stacks/
     scratch/                   M0.7 proof only; never a real project
     factory/<env>/             the factory's own resources (later)
     projects/<slug>/<env>/     one per project and environment (later)
-  modules/                     platform and project modules, shaped by ADR 0111 (M0.8)
 ```
 
-Only `infra/stacks/scratch/` is created in M0.7. The module split between platform and project, with a deploy target, is an ADR 0111 convention and is built when the first real stack needs it.
-
-Plan classification (DNS changes, deletions, new secrets, wider permissions opening their gates) belongs to the deploy adapter in M3.7, not here. The JSON fields it will use are recorded in the research notes: `resource_changes[].type` and `change.actions`.
+Stacks say what a project needs (key-value stores, records, and later services and bindings) through `modules/project`, never naming a provider. `modules/platform/cloudflare/` turns that into Cloudflare resources: it is the infrastructure half of the deploy adapter. A new deploy target (Kubernetes in the second release) adds one platform module and one branch in the project module; existing stacks do not change (D-146). No module contains a `provider` block, so the project module can switch platform modules on and off; the Cloudflare provider takes its token from `CLOUDFLARE_API_TOKEN`.
 
 ### Windows (Didi's machine)
 
@@ -72,7 +73,7 @@ Install with `winget install --exact --id=OpenTofu.Tofu`. In Git Bash, run with 
 - Scratch project only in M0. No real project, zone or account is touched.
 - Creating the scratch Cloudflare token, the R2 bucket and its keys, and the encryption passphrase is the new-credentials gate: Didi does it.
 - Production applies are never run by the runner or an agent.
-- Cloudflare-specific application code lives only in `src/adapters/deploy/` (essential 9), enforced by lint for every code folder (ADR 0101). `infra/` declares Cloudflare resources as configuration. Whether that, and Launchpad's gallery Worker config, is acceptable under essential 9 is open for Didi (N-20).
+- Cloudflare-specific application code lives only in `src/adapters/deploy/` (essential 9), enforced by lint for every code folder (ADR 0101). In infrastructure code, Cloudflare is declared only in `infra/modules/platform/cloudflare/` (D-146), enforced by `npm run infra-boundaries`.
 
 ## How success is judged
 

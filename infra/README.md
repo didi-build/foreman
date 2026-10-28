@@ -2,10 +2,11 @@
 
 OpenTofu 1.13, state in Cloudflare R2, state and plans encrypted. Why and how: [ADR 0110](../docs/decisions/0110-infrastructure-as-code.md).
 
-| Path              | What                                                                          |
-| ----------------- | ----------------------------------------------------------------------------- |
-| `stacks/scratch/` | The M0.7 proof. Throwaway: never a real project, zone or account.             |
-| `modules/`        | Platform and project modules (ADR 0111). Created when a real stack needs one. |
+| Path                           | What                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------- |
+| `stacks/scratch/`              | The M0.7 proof. Throwaway: never a real project, zone or account.                     |
+| `modules/project/`             | Target-agnostic: stacks call it with a `deploy_target`.                               |
+| `modules/platform/cloudflare/` | The only place Cloudflare is declared (D-146, checked by `npm run infra-boundaries`). |
 
 CI (`.github/workflows/infra.yml`) checks formatting and validates every stack on each PR that touches `infra/`. It uses no credentials and no backend. Each stack commits its `.terraform.lock.hcl` (hashes for Linux, Windows and macOS), and CI fails if providers drift from it. A new stack without one gets it generated and printed by CI, to commit.
 
@@ -28,7 +29,8 @@ In Git Bash, add `-input=false` to every command, and set `MSYS_NO_PATHCONV=1` i
 ```bash
 cd infra/stacks/scratch
 export CLOUDFLARE_API_TOKEN=...  AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...
-export TF_VAR_state_encryption_passphrase=...  TF_VAR_account_id=...  TF_VAR_zone_id=...
+export TF_VAR_state_encryption_passphrase=...
+export TF_VAR_target_settings='{account_id="...",zone_id="..."}'   # the scratch account only
 tofu init -input=false -backend-config=bucket=<state bucket> \
   -backend-config='endpoints={s3="https://<account id>.r2.cloudflarestorage.com"}'
 
@@ -36,7 +38,7 @@ tofu init -input=false -backend-config=bucket=<state bucket> \
 tofu apply -input=false
 tofu plan -input=false -detailed-exitcode; echo "exit $?"
 
-# 2. A deliberate change must show as a diff (exit 2, one update on cloudflare_dns_record).
+# 2. A deliberate change must show as a diff (exit 2, one update on the cloudflare_dns_record in the platform module).
 tofu plan -input=false -detailed-exitcode -var 'txt_content=pf-scratch-m0-7 v2'; echo "exit $?"
 
 # 3. Locking: start two plans at once. One must wait or fail on the state lock.

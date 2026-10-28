@@ -2,12 +2,7 @@
 terraform {
   required_version = "~> 1.13.0"
 
-  required_providers {
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 5.28"
-    }
-  }
+  # Providers are declared by the platform modules, not here (D-146).
 
   # State in R2 through the S3 backend. The bucket, endpoint and keys are passed at init time:
   #   tofu init -backend-config=bucket=... -backend-config='endpoints={s3="https://<account>.r2.cloudflarestorage.com"}'

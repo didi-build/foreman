@@ -11,14 +11,15 @@ variable "state_encryption_passphrase" {
   }
 }
 
-variable "account_id" {
-  description = "The scratch Cloudflare account id."
+variable "deploy_target" {
+  description = "Deploy target for the scratch stack."
   type        = string
+  default     = "cloudflare"
 }
 
-variable "zone_id" {
-  description = "The scratch zone id. Never a zone that serves a real project."
-  type        = string
+variable "target_settings" {
+  description = "Settings for the deploy target. For cloudflare: account_id and zone_id of the scratch account. Never a real project's."
+  type        = map(string)
 }
 
 variable "txt_content" {
