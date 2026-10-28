@@ -1,0 +1,5 @@
+# Optional: replace with your team handles (@org/team-name).
+# CODEOWNERS requests reviews from listed owners on PRs that touch matching paths.
+# Designer-only specs (see docs/component-gallery.md):
+# /design/ @your-github-handle
+# * @your-github-handle

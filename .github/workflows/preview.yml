@@ -1,0 +1,212 @@
+name: Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions: {}
+
+concurrency:
+  group: preview-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GALLERY_PROBE_MARKER: launchpad-gallery-bundle-probe
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Detect preview credentials
+        id: creds
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_PREVIEW }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CF_TOKEN}" ] && [ -n "${CF_ACCOUNT}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.creds.outputs.ready == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        if: steps.creds.outputs.ready == 'true'
+        run: npm ci
+      - name: Build gallery assets
+        if: steps.creds.outputs.ready == 'true'
+        run: npm run build
+      - name: Create or update Preview
+        id: preview
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          output="$(npx wrangler preview -c wrangler.preview.jsonc --name "pr-${PR_NUMBER}" --json)"
+          preview_url="$(printf '%s' "$output" | jq -er '.preview.urls[0]')"
+          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_PREVIEW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Probe gallery route
+        id: probe
+        if: steps.creds.outputs.ready == 'true' && steps.preview.outcome == 'success'
+        run: |
+          set -euo pipefail
+          curl_common=(--fail --show-error --silent --location --retry 3 --retry-delay 5 --retry-all-errors)
+          gallery_html="$(curl "${curl_common[@]}" "${PREVIEW_URL}/gallery")"
+          if printf '%s' "$gallery_html" | grep -q "${GALLERY_PROBE_MARKER}"; then
+            echo "Gallery probe marker must not appear in SPA HTML (only in built assets)."
+            exit 1
+          fi
+          js_path="$(printf '%s' "$gallery_html" | grep -oE '/assets/index-[^"]+\.js' | head -1)"
+          if [ -z "$js_path" ]; then
+            echo "Could not find gallery JS asset in /gallery HTML."
+            exit 1
+          fi
+          js_body="$(curl "${curl_common[@]}" "${PREVIEW_URL%/}${js_path}")"
+          printf '%s' "$js_body" | grep -q "${GALLERY_PROBE_MARKER}"
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+      - name: Gallery preview check (deployed)
+        if: ${{ !cancelled() && steps.creds.outputs.ready == 'true' && steps.preview.outcome == 'success' && steps.probe.outcome == 'success' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const galleryUrl = `${process.env.PREVIEW_URL.replace(/\/$/, '')}/gallery`;
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'gallery-preview',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'success',
+              output: {
+                title: 'Gallery preview',
+                summary: `[Open component gallery](${galleryUrl})`,
+              },
+            });
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+      - name: Gallery preview check (unconfigured)
+        if: ${{ !cancelled() && steps.creds.outputs.ready != 'true' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'gallery-preview',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'neutral',
+              output: {
+                title: 'Gallery preview not configured',
+                summary:
+                  'Add repository secrets `CLOUDFLARE_API_TOKEN_PREVIEW` and `CLOUDFLARE_ACCOUNT_ID` to enable gallery previews on pull requests. Use a Workers Scripts Edit token only.',
+              },
+            });
+      - name: Gallery preview check (failed)
+        if: ${{ !cancelled() && steps.creds.outputs.ready == 'true' && (steps.preview.outcome != 'success' || steps.probe.outcome == 'failure') }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'gallery-preview',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'failure',
+              output: {
+                title: 'Gallery preview failed',
+                summary:
+                  'Deploy or the /gallery probe did not pass. See the Preview workflow log for this pull request.',
+              },
+            });
+      - name: Set preview summary mode
+        id: mode
+        if: ${{ !cancelled() }}
+        run: node scripts/gallery-preview-mode.mjs >> "$GITHUB_OUTPUT"
+        env:
+          CREDS_READY: ${{ steps.creds.outputs.ready }}
+          PREVIEW_OUTCOME: ${{ steps.preview.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+      - name: Build gallery preview summary
+        id: summary
+        if: ${{ !cancelled() }}
+        run: node scripts/gallery-preview-summary.mjs >> "$GITHUB_OUTPUT"
+        env:
+          PREVIEW_MODE: ${{ steps.mode.outputs.mode }}
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Find gallery preview comment
+        id: find-comment
+        if: ${{ !cancelled() && github.actor != 'dependabot[bot]' }}
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: "<!-- launchpad-gallery-preview -->"
+      - name: Update gallery preview comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        if: ${{ !cancelled() && github.actor != 'dependabot[bot]' }}
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: ${{ steps.summary.outputs.body }}
+      - name: Fail if preview deploy or probe failed
+        if: ${{ !cancelled() && steps.creds.outputs.ready == 'true' && (steps.preview.outcome != 'success' || steps.probe.outcome == 'failure') }}
+        run: exit 1
+
+  cleanup:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Detect preview credentials
+        id: creds
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_PREVIEW }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CF_TOKEN}" ] && [ -n "${CF_ACCOUNT}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.creds.outputs.ready == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        if: steps.creds.outputs.ready == 'true'
+        run: npm ci
+      - name: Delete Preview
+        if: steps.creds.outputs.ready == 'true'
+        run: node scripts/wrangler-preview-delete.mjs
+        env:
+          PREVIEW_NAME: pr-${{ env.PR_NUMBER }}
+          WRANGLER_CONFIG: wrangler.preview.jsonc
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_PREVIEW }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

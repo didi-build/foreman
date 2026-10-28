@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  template-smoke:
+    name: template-smoke
+    if: github.repository == 'didi-build/launchpad'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: init-project smoke test in a clean copy
+        run: |
+          set -euo pipefail
+          repo_root="$PWD"
+          smoke_init_copy() {
+            local personal_data_flag="$1"
+            local expect_nodrift="$2"
+            local tmp
+            tmp=$(mktemp -d)
+            cp -a "$repo_root" "$tmp/lp"
+            cd "$tmp/lp"
+            rm -rf node_modules .git
+            if [ "$expect_nodrift" = "yes" ]; then
+              npm ci
+            fi
+            npm run init-project -- smoke-test "Smoke Test" "CI template smoke" "$personal_data_flag"
+            node scripts/verify-smoke-init-copy.mjs --slug smoke-test --purpose "CI template smoke" --expect-nodrift "$expect_nodrift"
+            npm ci
+            npm run check
+          }
+          smoke_init_copy --no-personal-data no
+          smoke_init_copy --personal-data yes
+
+  verify-action-pins:
+    name: verify-action-pins
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Detect workflow file changes
+        id: workflows
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify "origin/${BASE_REF}" >/dev/null 2>&1; then
+            printf '::error::%s\n' "origin/${BASE_REF} missing after checkout; verify-action-pins needs actions/checkout fetch-depth: 0. Refusing to skip the pin check."
+            exit 1
+          fi
+          changed="$(git diff --name-only "origin/${BASE_REF}...HEAD" -- .github/workflows/)"
+          if [ -n "$changed" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify action pins
+        if: steps.workflows.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run verify-action-pins
+
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        id: install
+        run: npm ci
+        continue-on-error: true
+      - name: npm run check
+        id: check
+        if: steps.install.outcome == 'success'
+        run: npm run check
+        continue-on-error: true
+      - name: Publish test report (Checks tab)
+        uses: dorny/test-reporter@df6247429542221bc30d46a036ee47af1102c451 # v2.7.0
+        if: always() && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && steps.install.outcome == 'success'
+        with:
+          name: Vitest
+          path: test-results/junit.xml
+          reporter: java-junit
+          fail-on-error: false
+      - name: Build PR test summary
+        id: summary
+        if: always() && github.event_name == 'pull_request'
+        run: node scripts/ci-test-summary.mjs >> "$GITHUB_OUTPUT"
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: PR test summary (Dependabot)
+        if: always() && github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OUTPUT_MODE: body
+        run: node scripts/ci-test-summary.mjs >> "$GITHUB_STEP_SUMMARY"
+      - name: Find PR test results comment
+        id: find-comment
+        if: always() && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: "<!-- launchpad-vitest-results -->"
+      - name: Update PR test results comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
+        if: always() && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: ${{ steps.summary.outputs.body }}
+      - name: Fail job if install or check failed
+        if: steps.install.outcome != 'success' || steps.check.outcome != 'success'
+        run: exit 1

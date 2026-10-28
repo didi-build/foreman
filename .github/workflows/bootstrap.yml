@@ -1,0 +1,53 @@
+name: Bootstrap
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: bootstrap
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    if: github.repository != 'didi-build/launchpad'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Compute bootstrap plan
+        id: plan
+        env:
+          HAS_BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN != '' }}
+          LAUNCHPAD_REPO_DESCRIPTION: ${{ github.event.repository.description }}
+          LAUNCHPAD_COLLECTS_PERSONAL_DATA: ${{ vars.LAUNCHPAD_COLLECTS_PERSONAL_DATA || 'true' }}
+        run: node scripts/bootstrap.mjs plan
+
+      - name: Checkout with bootstrap token
+        if: steps.plan.outputs.execute == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.BOOTSTRAP_TOKEN }}
+          persist-credentials: false
+
+      - name: Run bootstrap
+        if: steps.plan.outputs.execute == 'true'
+        env:
+          HAS_BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN != '' }}
+          LAUNCHPAD_REPO_DESCRIPTION: ${{ github.event.repository.description }}
+          LAUNCHPAD_COLLECTS_PERSONAL_DATA: ${{ vars.LAUNCHPAD_COLLECTS_PERSONAL_DATA || 'true' }}
+          BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN }}
+        run: node scripts/bootstrap.mjs run

@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "launchpad",
+  "compatibility_date": "2026-10-26",
+  "assets": {
+    "directory": "./dist/gallery",
+    "not_found_handling": "single-page-application",
+  },
+  "observability": {
+    "enabled": true,
+  },
+}

@@ -1,0 +1,76 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  qualify:
+    name: qualify
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/') &&
+      vars.DEPENDABOT_AUTOMERGE != 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - name: Ensure auto-merge label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: node scripts/ensure-dependabot-label.mjs
+      - name: Mark PR for auto-merge (minor/patch only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          label="launchpad-dependabot-automerge"
+          gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --remove-label "$label" 2>/dev/null || true
+          case "$UPDATE_TYPE" in
+            version-update:semver-minor|version-update:semver-patch)
+              echo "Qualifying PR #${PR_NUMBER} for auto-merge (${UPDATE_TYPE})."
+              gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --add-label "$label"
+              ;;
+            *)
+              echo "PR #${PR_NUMBER} update-type '${UPDATE_TYPE}' is not auto-merge eligible (majors and other types are excluded)."
+              ;;
+          esac
+
+  automerge:
+    name: automerge
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.DEPENDABOT_AUTOMERGE != 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Enable auto-merge for green Dependabot PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBERS: ${{ join(github.event.workflow_run.pull_requests.*.number, ' ') }}
+          REPOSITORY: ${{ github.repository }}
+        run: node scripts/dependabot-automerge.mjs

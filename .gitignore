@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+build/
+.next/
+out/
+.turbo/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test & coverage
+coverage/
+test-results/
+
+# Environment (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+*.swp
+*.swo
+.vscode/*
+!.vscode/extensions.json
+
+# Tooling caches
+.eslintcache
+.cache/
