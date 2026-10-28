@@ -1,8 +1,8 @@
 # 0100. Place the Project Factory v2 handoff in the Launchpad layout
 
-- **Status:** proposed (review point M0.0: Didi skims this before M0.1 starts)
+- **Status:** accepted (Didi, 2026-10-28, at review point M0.0: "yes, 01xx numbering approved")
 - **Date:** 2026-10-28
-- **Related:** [docs/build-plan.md, task M0.0](../build-plan.md#m00-place-the-handoff-files-in-the-repos-layout), decision D-131 and proposal P-11 in [docs/decision-log.md](../decision-log.md)
+- **Related:** [docs/build-plan.md, task M0.0](../build-plan.md#m00-place-the-handoff-files-in-the-repos-layout), decision D-131 and decision D-135 (was proposal P-11) in [docs/decision-log.md](../decision-log.md)
 
 ## Context
 
