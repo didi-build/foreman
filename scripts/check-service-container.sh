@@ -13,7 +13,18 @@ fail() {
   exit 1
 }
 
+# 0. Base image pinned by digest (every FROM line).
+if grep -E '^FROM ' "${dir}/Dockerfile" | grep -Evq '@sha256:[0-9a-f]{64}'; then
+  fail "every FROM line must pin its image by digest (@sha256:...)"
+fi
+
 docker build -f "${dir}/Dockerfile" -t "${image}" .
+
+# 0b. Runs as a non-root user.
+image_user="$(docker inspect -f '{{.Config.User}}' "${image}")"
+case "${image_user}" in
+  "" | root | 0 | 0:*) fail "the image runs as root (USER is '${image_user:-unset}')" ;;
+esac
 
 # 1. Config only from the environment, health endpoint answers.
 cid="$(docker run -d -e PORT="${port}" -p "${port}:${port}" "${image}")"

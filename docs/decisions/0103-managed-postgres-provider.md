@@ -32,6 +32,19 @@ A loop that connects every 5 minutes keeps a scale-to-zero database awake all mo
 1. **Now, for Milestones 1 to 5 (no real data): Supabase Free in `ca-central-1`.** It costs nothing, has a Canadian region and full roles and triggers. Because Free has no backups, add a nightly `pg_dump` job until the upgrade.
 2. **Before cutover (M6), when the store holds real state: move to a plan with point-in-time recovery.** Either Supabase Pro (about $25 a month, same database) or DigitalOcean Toronto ($15 a month, recovery included). Spend is Didi's decision at that point.
 
+### Supabase hardening (from the outside review, 2026-10-28)
+
+Supabase serves a REST API (PostgREST) over the database, and by default it exposes the `public` schema to anyone holding the project's public (anon) key. The append-only roles do not help if that door is open. So:
+
+- The state store tables live in their own schema (`factory`), which is not in Supabase's list of exposed schemas.
+- The Data API is turned off for the project, and row level security is enabled on every table as a second barrier.
+- The application connects as a dedicated role with only the grants the API and runner need (ADR 0102), never as `postgres` or the service role.
+- A migration test in M1.1 connects with the anon key through the REST endpoint and checks it can read nothing. (These settings are checked again at signup, because the defaults could not be read from this session.)
+
+### Backups until the paid plan
+
+The runner owns them: a Windmill job runs `pg_dump` once a night (one execution a day, small against N-19), encrypts the dump before it leaves the job, and writes it to a private R2 bucket used only for backups, keeping 14 days. A restore is rehearsed once in M1. This lasts until the plan with point-in-time recovery (step 2) replaces it.
+
 PlanetScale at about $5 a month is the cheapest paid option, but whether it allows the roles and triggers we need is not confirmed. It is worth a check if cost matters more than simplicity.
 
 ## Constraints
@@ -41,6 +54,8 @@ PlanetScale at about $5 a month is the cheapest paid option, but whether it allo
 - If data residency in Canada matters, check where each provider keeps backups and logs, not only the primary region.
 
 ## How success is judged
+
+M1.1 adds: the anon key reads nothing through the REST API, and a nightly dump restores into an empty database.
 
 M0.5's success check: a database exists, credentials are in the vault, and a connection test from Windmill succeeds. Also: a role that cannot UPDATE or DELETE can be created, and a trigger can be created.
 

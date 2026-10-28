@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   findSecretValues,
+  secretForms,
   secretsFromEnv,
 } from "../scripts/lib/find-secret-values.mjs";
 
@@ -19,7 +20,53 @@ describe("secret value scan (unit: IaC guard, ADR 0110)", () => {
       ],
       { CANARY: canary },
     );
-    expect(hits).toEqual([{ text: "plan.txt", secret: "CANARY" }]);
+    expect(hits).toEqual([{ text: "plan.txt", secret: "CANARY", form: "plain" }]);
+  });
+
+  // A secret with a quote and a backslash, so JSON escaping actually changes it.
+  const tricky = 'pa"ss\\word-0123456789';
+
+  it.each([
+    [
+      "JSON-escaped (as in state.json)",
+      JSON.stringify({ value: tricky }),
+      "json-escaped",
+    ],
+    [
+      "URL-encoded",
+      `https://example.com/?token=${encodeURIComponent(tricky)}`,
+      "url-encoded",
+    ],
+    ["base64", Buffer.from(tricky).toString("base64"), "base64"],
+    [
+      "base64 inside a longer blob (Basic auth)",
+      `Basic ${Buffer.from(`user:${tricky}`).toString("base64")}`,
+      "base64",
+    ],
+    [
+      "base64 at the second alignment",
+      Buffer.from(`ab${tricky}xyz`).toString("base64"),
+      "base64",
+    ],
+    [
+      "base64 at the first alignment",
+      Buffer.from(`a${tricky}`).toString("base64"),
+      "base64",
+    ],
+    // base64url equals base64 unless the text has + or /, so either name is a correct report.
+    [
+      "base64url",
+      Buffer.from(`?${tricky}`).toString("base64url"),
+      expect.stringMatching(/^base64/),
+    ],
+  ])("finds a secret that appears %s", (_label, text, form) => {
+    expect(findSecretValues([{ name: "out.txt", text }], { SECRET: tricky })).toEqual([
+      { text: "out.txt", secret: "SECRET", form },
+    ]);
+  });
+
+  it("never offers a form shorter than the minimum length", () => {
+    expect(secretForms("abcdefgh").every((form) => form.text.length >= 8)).toBe(true);
   });
 
   it("finds nothing in clean texts", () => {

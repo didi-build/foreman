@@ -34,6 +34,10 @@ Code stays compatible with Terraform apart from the `encryption` block, so switc
 
 Free tier: R2's free storage covers this many times over.
 
+**R2 stays until Kubernetes exists (D-144).** The outside review pointed out that keeping state in R2 ties the record of all infrastructure to the vendor we plan to leave. Didi decided to keep R2 for the first release and move state once the Kubernetes platform is set up (`tofu init -migrate-state`, one command). Encryption means Cloudflare cannot read the state meanwhile.
+
+**Providers are locked.** Each stack commits its `.terraform.lock.hcl`, with hashes for Linux, Windows and macOS. CI runs `tofu init -lockfile=readonly`, so a provider version or hash that differs from the lock file fails the build. If a stack has no lock file, CI generates one, prints it and fails until it is committed.
+
 ### Secrets: never in code; encrypted where a provider insists on storing them
 
 1. Secret values are never written in `.tf` files or `.tfvars` in the repo.
@@ -41,7 +45,7 @@ Free tier: R2's free storage covers this many times over.
 3. Some resources store a sensitive value in state whatever we do: an API token's value, a Hyperdrive origin password, a Supabase database password. Those either stay out of IaC (created by hand or by the deploy adapter, then referenced by id) or are accepted only because state and plan are encrypted. Each case is listed in the stack's README.
 4. Variables that must carry a secret are declared `ephemeral = true`.
 5. CI posts only the human-readable `tofu show -no-color` output, which redacts sensitive values. The JSON form of a plan prints sensitive values in plain text, so it is never uploaded or logged. Scripts read only resource types and actions from it.
-6. A scan of plan output and state for known secret values (canaries in tests, real values in the deploy job) fails the run if any value appears. `scripts/lib/find-secret-values.mjs` does the matching and never prints what it found.
+6. A scan of plan output and state for known secret values (canaries in tests, real values in the deploy job) fails the run if any value appears. `scripts/lib/find-secret-values.mjs` matches each secret as is, JSON-escaped (as in `state.json`), URL-encoded, and base64 or base64url encoded at every alignment, and never prints what it found. The passphrase variable has a validation block requiring at least 16 characters. The scan becomes a CI step in the deploy adapter's plan job (M3.7); until then it is run by hand as in `infra/README.md`.
 
 ### Layout
 
@@ -68,7 +72,7 @@ Install with `winget install --exact --id=OpenTofu.Tofu`. In Git Bash, run with 
 - Scratch project only in M0. No real project, zone or account is touched.
 - Creating the scratch Cloudflare token, the R2 bucket and its keys, and the encryption passphrase is the new-credentials gate: Didi does it.
 - Production applies are never run by the runner or an agent.
-- Cloudflare-specific code lives in `infra/` and the deploy adapter only. The library and the API stay portable.
+- Cloudflare-specific application code lives only in `src/adapters/deploy/` (essential 9), enforced by lint for every code folder (ADR 0101). `infra/` declares Cloudflare resources as configuration. Whether that, and Launchpad's gallery Worker config, is acceptable under essential 9 is open for Didi (N-20).
 
 ## How success is judged
 

@@ -44,10 +44,11 @@ Folders are created when their first task needs them. This task creates none of 
 
 ### Import boundaries, enforced by ESLint
 
-- Files in `src/core/` may not import Windmill, HTTP or network modules (`windmill-client`, `node:http`, `node:https`, `node:net`, `undici`, `axios`, `node-fetch`), a database driver (`pg`, `postgres`), any Cloudflare package, or anything under `src/adapters/`, `src/api/` or `flows/`. They may not use the global `fetch`. The core reaches the outside world only through interfaces that it defines and that adapters implement.
-- Files under `src/` other than `src/adapters/deploy/` may not import Cloudflare packages (`cloudflare`, `@cloudflare/*`, `wrangler`).
+- **The core is an allow-list.** A file in `src/core/`, of any extension (`.ts`, `.mts`, `.cts`, `.tsx`, `.js`, `.mjs`, `.cjs`, `.jsx`), may import only other files inside `src/core/` and three pure Node modules: `node:assert`, `node:crypto`, `node:util`. Everything else is rejected, including any package, any other `node:` module, and type-only imports from outside the core. A custom rule in `eslint/core-boundary.mjs` resolves each import path to enforce this. It also rejects dynamic `import()`, `require` and `createRequire`. The globals `fetch`, `WebSocket`, `XMLHttpRequest`, `EventSource`, `process`, `globalThis`, `global`, `require`, `module`, `Bun` and `Deno` are banned in the core. The core reaches the outside world only through interfaces it defines and adapters implement.
+- **Inline comments cannot switch the boundary off.** `linterOptions.noInlineConfig` is set for `src/core/`, so `// eslint-disable...` and `/* eslint ... */` comments there have no effect.
+- **Cloudflare stays in the deploy adapter (essential 9).** Every code file in the repo, of any extension and in any folder, may not import `cloudflare`, `cloudflare/*`, `cloudflare:*`, `@cloudflare/*` or `wrangler`, except under `src/adapters/deploy/`. Whether `infra/` and Launchpad's gallery Worker config count under essential 9 is an open question for Didi (N-20).
 
-These are lint errors, so `npm run check` fails on them in CI. A test proves that each rule rejects a forbidden import and accepts a clean file.
+These are lint errors, so `npm run check` fails on them in CI. Tests in `test/import-boundaries.test.ts` try every bypass found in the outside review of 2026-10-28 (other file extensions, other network modules and packages, `globalThis.fetch`, `process.env`, `createRequire`, and each form of disable comment) and show each is rejected. With either protection removed, its tests fail.
 
 ### Tests
 
@@ -61,7 +62,7 @@ Vitest runs both `src/**/*.test.ts` and `test/**/*.test.ts`. Every test file sta
 
 ### Exact pins
 
-`.npmrc` sets `save-exact=true`, so `npm install <pkg>` writes an exact version. A test fails if any entry in `dependencies`, `devDependencies` or `overrides` is not an exact `x.y.z` version.
+`.npmrc` sets `save-exact=true`, so `npm install <pkg>` writes an exact version. A test fails if any entry in `dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies` or `overrides` is not an exact version. Exact pre-release and build versions such as `1.2.3-rc.1` count as exact.
 
 ### PR template
 

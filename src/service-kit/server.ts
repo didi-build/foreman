@@ -28,6 +28,11 @@ export interface RunningService {
   stop(): Promise<void>;
 }
 
+/** The path of a request URL without its query string or fragment. */
+export function pathOnly(url: string | undefined): string {
+  return new URL(url ?? "/", "http://localhost").pathname;
+}
+
 export function sendJson(
   response: ServerResponse,
   status: number,
@@ -55,9 +60,11 @@ export async function startService(options: ServiceOptions): Promise<RunningServ
       if (handle && (await handle(request, response))) return;
       sendJson(response, 404, { error: "not found" });
     } catch (error) {
+      // Path only (a query string can carry tokens) and the error's type, not its message,
+      // which can echo secrets or personal data (ADR 0102).
       logger.error("request failed", {
-        path: request.url,
-        error: error instanceof Error ? error.message : String(error),
+        path: pathOnly(request.url),
+        errorType: error instanceof Error ? error.name : typeof error,
       });
       if (!response.headersSent) sendJson(response, 500, { error: "internal error" });
     }

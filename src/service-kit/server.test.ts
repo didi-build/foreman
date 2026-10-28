@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createLogger } from "./logger.ts";
-import { sendJson, startService, type RunningService } from "./server.ts";
+import { pathOnly, sendJson, startService, type RunningService } from "./server.ts";
 
 const quietLogger = createLogger("test", () => {});
 let running: RunningService | undefined;
@@ -39,20 +39,24 @@ describe("startService (unit: service kit, ADR 0111)", () => {
     expect(await (await fetch(url("/hello"))).json()).toEqual({ hello: true });
   });
 
-  it("answers 500 without details when the handler throws, and logs the error", async () => {
+  it("answers 500 without details when the handler throws, and logs no secrets", async () => {
     const lines: string[] = [];
     running = await startService({
       name: "svc",
       port: 0,
       logger: createLogger("svc", (line) => lines.push(line)),
       handle: () => {
-        throw new Error("handler broke");
+        throw new Error("upstream said: token=secret-value-123456");
       },
     });
-    const response = await fetch(url("/x"));
+    const response = await fetch(url("/x?token=query-secret-123456"));
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "internal error" });
-    expect(lines.join("\n")).toContain("handler broke");
+    const logged = lines.join("\n");
+    expect(logged).toContain('"path":"/x"');
+    expect(logged).toContain('"errorType":"Error"');
+    expect(logged).not.toContain("secret-value-123456");
+    expect(logged).not.toContain("query-secret-123456");
   });
 
   it("stops accepting connections after stop()", async () => {
@@ -60,5 +64,15 @@ describe("startService (unit: service kit, ADR 0111)", () => {
     const stopped = running;
     await stopped.stop();
     await expect(fetch(`http://127.0.0.1:${stopped.port}/health`)).rejects.toThrow();
+  });
+});
+
+describe("pathOnly (unit: service kit, ADR 0102)", () => {
+  it.each([
+    ["/a/b?token=x", "/a/b"],
+    ["/a#frag", "/a"],
+    [undefined, "/"],
+  ])("turns %j into %j", (input, expected) => {
+    expect(pathOnly(input)).toBe(expected);
   });
 });

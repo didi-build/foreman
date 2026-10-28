@@ -33,10 +33,17 @@ Each dispatch gets its own short-lived credential. No agent holds a long-lived A
 1. When the runner dispatches an agent, it creates a token naming the caller: role (Developer, QA, Designer, Council, Triage), the bot or agent id, one project, the run id, and an expiry (the run's minute budget plus a margin).
 2. The token is a long random value. The runner stores only its hash, linked to the run, and passes the token to the agent through its environment. It is never logged.
 3. The API looks up the hash and checks the expiry and that the run is still active in `runs`. Ending a run revokes its token. Every write records the caller's role and id.
-4. Each role has an allow-list of endpoints, scoped to its project. No role may request a transition: "report done" records evidence and a report, and the runner decides the move. A Council or Triage token can create work items and decisions, but cannot touch another project's code or secrets (section 4 of the architecture).
-5. The runner itself does not use the API. It calls `src/core/` directly, inside Windmill.
+4. Each role has an allow-list of endpoints, scoped to its project. No role may request a transition: "report done" records the agent's report, and the runner decides the move.
+5. **Agents never write evidence that a guard trusts (essential 6).** An agent token may write only these evidence kinds: `agent_report` and `docs_note`, plus `qa_verdict` for the QA role. Every other kind (`ci_run`, `test_report`, `preview_check`, `staging_check`, `merge_commit`, `visual_comparison`, `spec_paths`, `dispatch_record`) is written only by the runner, from sources it reads itself (GitHub, CI, deploy checks). An API test proves a Developer token posting a `ci_run` is rejected. A Council or Triage token can create work items and decisions, but cannot touch another project's code or secrets (section 4 of the architecture).
+6. The runner itself does not use the API. It calls `src/core/` directly, inside Windmill.
 
 A signed token (for example a JWT) was considered. The opaque token is simpler: ending a run revokes it with no revocation list, and there is no signing key to protect.
+
+### Transport and logging
+
+- TLS ends at the hosting platform's load balancer (DigitalOcean, D-141). Plain HTTP is never exposed. The exact product is chosen at M1.4.
+- Tokens travel only in the `Authorization` header, never in a URL. Logs record the request path without its query string, and an error's type without its message, because either can carry a token or personal data (`src/service-kit/server.ts`).
+- An agent's token lives in its environment while it reads untrusted text (PR diffs, issue bodies), so a prompt injection could try to send it somewhere. The token's reach is the limit: one role, one project, one run, short expiry, and no transition rights. Limiting where agents can connect at all is part of the agent execution environment (ADR 0106, M3).
 
 ## Constraints
 

@@ -18,6 +18,8 @@ A desk result comes from current documentation and public open-source examples. 
 - Credentials come only from environment variables. The scripts never print their values and redact them from output. Creating a credential or an account, or starting a paid plan, is a gate: Didi does it.
 - Each script prints one JSON record. Paste it into the spike's record under "Run results", with the date.
 - A script that is missing a setting stops with exit code 2 and names the setting. It does nothing else.
+- Scripts refuse to run (exit code 3) against anything not marked as scratch: the Claude Code spike needs a `.foreman-scratch` file in the scratch repo's root, and the Linear spike needs `LINEAR_EXPECTED_WORKSPACE` to match the token's workspace and refuses team `DIDI`.
+- Agents get only an allow-listed set of environment variables, never the whole shell.
 
 ## How to run (Windows Git Bash, macOS or Linux)
 

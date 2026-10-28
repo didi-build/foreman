@@ -66,13 +66,13 @@ As in ADR 0110: `infra/modules/` holds platform modules (one per provider) and a
 
 A workflow (`.github/workflows/containers.yml`) runs on every PR that touches `src/` or a Dockerfile. For each `src/*/Dockerfile` it:
 
-1. Builds the image.
+1. Checks every `FROM` line pins its image by digest, builds the image, and checks the image's user is not root.
 2. Starts it with config only from `-e` flags and waits for `GET /health` to return 200.
 3. Checks the first log line is JSON.
 4. Stops it with `docker stop` (SIGTERM) and checks it exited 0.
 5. Starts it with an invalid setting and checks it refuses to start, without printing the value.
 
-The service kit has unit tests for the same rules.
+The service kit has unit tests for the same rules. `test/service-dockerfiles.test.ts` also checks, without Docker, that every service's Dockerfile pins by digest and switches to a non-root user, and that every service has a Dependabot docker entry, so a new service cannot silently miss base image updates.
 
 ## Constraints
 

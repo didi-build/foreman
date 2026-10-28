@@ -28,15 +28,30 @@ jobs:
           tofu_wrapper: false
       - name: Format check
         run: tofu fmt -check -recursive -diff infra
-      - name: Validate each stack without a backend or credentials
+      - name: Validate each stack against its committed provider lock file
         env:
           # Validation reads the encryption block but writes no state, so this placeholder protects nothing.
           TF_VAR_state_encryption_passphrase: validate-only-placeholder-not-a-secret
         run: |
           set -euo pipefail
+          missing=""
           for stack in infra/stacks/*/; do
             echo "::group::$stack"
-            tofu -chdir="$stack" init -backend=false -input=false
-            tofu -chdir="$stack" validate
+            if [ ! -f "$stack.terraform.lock.hcl" ]; then
+              # No lock file: generate one with hashes for every platform we run on, print it, and fail,
+              # so it is committed instead of floating (ADR 0110).
+              tofu -chdir="$stack" providers lock -platform=linux_amd64 -platform=windows_amd64 -platform=darwin_arm64
+              echo "----- BEGIN $stack.terraform.lock.hcl -----"
+              cat "$stack.terraform.lock.hcl"
+              echo "----- END $stack.terraform.lock.hcl -----"
+              missing="$missing $stack"
+            else
+              tofu -chdir="$stack" init -backend=false -input=false -lockfile=readonly
+              tofu -chdir="$stack" validate
+            fi
             echo "::endgroup::"
           done
+          if [ -n "$missing" ]; then
+            echo "::error::Commit the provider lock file printed above for:$missing"
+            exit 1
+          fi

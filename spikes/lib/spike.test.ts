@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { MISSING_SETTING_EXIT, redact, truncate } from "./spike.ts";
+import {
+  allowListedEnv,
+  MISSING_SETTING_EXIT,
+  quoteWindowsArgument,
+  redact,
+  truncate,
+} from "./spike.ts";
 
 describe("spike helpers (unit: spike tooling)", () => {
   it("redacts every occurrence of a secret", () => {
@@ -40,5 +46,39 @@ describe("spike scripts without credentials (integration: process boundary)", ()
 
   it("never prints a credential value", () => {
     expect(run.stdout + run.stderr).not.toContain(secret);
+  });
+});
+
+describe("quoteWindowsArgument (unit: spike tooling)", () => {
+  it("keeps text with spaces and quotes as one argument", () => {
+    expect(quoteWindowsArgument('Create a file "X.md" now')).toBe(
+      '"Create a file \\"X.md\\" now"',
+    );
+  });
+
+  it("doubles backslashes that come before a quote or the end", () => {
+    expect(quoteWindowsArgument("C:\\dir\\")).toBe('"C:\\dir\\\\"');
+  });
+
+  it.each(["50%", "a & b", "a | b", "a > b", "^", "a!b", "line\nbreak"])(
+    "refuses %j, which cmd.exe would interpret",
+    (argument) => {
+      expect(() => quoteWindowsArgument(argument)).toThrow();
+    },
+  );
+});
+
+describe("allowListedEnv (unit: spike tooling)", () => {
+  it("passes only the listed variables that are set", () => {
+    expect(
+      allowListedEnv(["PATH", "KEY", "MISSING"], {
+        PATH: "/bin",
+        KEY: "k",
+        OTHER_SECRET: "s",
+      }),
+    ).toEqual({
+      PATH: "/bin",
+      KEY: "k",
+    });
   });
 });

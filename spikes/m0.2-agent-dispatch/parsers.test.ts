@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseClaudeResult } from "./claude-code.ts";
 import { cursorStatus } from "./cursor.ts";
@@ -83,5 +87,26 @@ describe("Cursor status reading (unit: spike M0.2)", () => {
   it("reads the status field and falls back to UNKNOWN", () => {
     expect(cursorStatus({ status: "FINISHED" })).toBe("FINISHED");
     expect(cursorStatus("oops")).toBe("UNKNOWN");
+  });
+});
+
+describe("Claude Code spike safety (integration: process boundary)", () => {
+  it("refuses a folder that is not marked as a scratch repo, before starting any agent", () => {
+    const notScratch = mkdtempSync(join(tmpdir(), "not-scratch-"));
+    const run = spawnSync(
+      process.execPath,
+      ["spikes/m0.2-agent-dispatch/claude-code.ts"],
+      {
+        env: {
+          PATH: process.env.PATH,
+          ANTHROPIC_API_KEY: "test-key-not-real-0000",
+          SCRATCH_REPO_DIR: notScratch,
+        },
+        encoding: "utf8",
+      },
+    );
+    expect(run.status).toBe(3);
+    expect(run.stderr).toContain(".foreman-scratch");
+    expect(run.stdout + run.stderr).not.toContain("test-key-not-real-0000");
   });
 });
