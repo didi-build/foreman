@@ -110,6 +110,7 @@ The handoff package was placed into this repo's Launchpad layout in task M0.0. [
 ### 4. Code and repo conventions
 
 - Language: TypeScript, unless an ADR says otherwise.
+- Code layout, import boundaries and where tests live: [ADR 0101](./docs/decisions/0101-repo-layout-and-tooling.md). ESLint enforces the boundaries: `src/core/` has no Windmill, HTTP, network, database driver or Cloudflare imports, and Cloudflare packages appear only in `src/adapters/deploy/`.
 - Pin dependencies to exact versions. Pin GitHub Actions to commit SHAs.
 - Squash-only merges. No force pushes. Merge main into a branch instead of rebasing a shared branch.
 - Every PR body states the head commit it covers and the verification run. Every PR has a Privacy section.
