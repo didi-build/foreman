@@ -6,54 +6,131 @@ const eslint = new ESLint();
 /** Rule ids ESLint reports for `code` as if it lived at `filePath`. */
 async function violations(filePath: string, code: string): Promise<string[]> {
   const [result] = await eslint.lintText(code, { filePath });
-  return (result?.messages ?? []).map((message) => message.ruleId ?? "parse-error");
+  return (result?.messages ?? [])
+    .filter((message) => message.severity === 2)
+    .map((message) => message.ruleId ?? "parse-error");
 }
 
-describe("src/core/ import boundary (unit: lint config guard, ADR 0101)", () => {
-  const corePath = "src/core/example.ts";
+const coreBlocked = (rules: string[]): boolean =>
+  rules.some((rule) =>
+    ["foreman/core-imports", "no-restricted-globals"].includes(rule),
+  );
 
-  it("accepts a core file that uses only node built-ins and relative core imports", async () => {
-    const clean =
-      'import { randomUUID } from "node:crypto";\nimport { x } from "./other.js";\nexport const id = (): string => randomUUID() + String(x);\n';
-    expect(await violations(corePath, clean)).toEqual([]);
+describe("src/core/ boundary is an allow-list (unit: lint config guard, ADR 0101)", () => {
+  it("accepts relative imports inside the core and the allowed pure Node modules", async () => {
+    const clean = [
+      'import { randomUUID } from "node:crypto";',
+      'import { inspect } from "node:util";',
+      'import { x } from "./other.ts";',
+      'import { y } from "../core/guards/y.ts";',
+      'export * from "./more.ts";',
+      "export const id = (): string => randomUUID() + inspect(x) + String(y);",
+    ].join("\n");
+    expect(await violations("src/core/sub/example.ts", clean)).toEqual([]);
   });
 
   it.each([
-    ["Windmill", 'import * as wmill from "windmill-client";\nexport { wmill };\n'],
-    [
-      "node:http",
-      'import { createServer } from "node:http";\nexport { createServer };\n',
-    ],
-    ["bare https", 'import https from "https";\nexport { https };\n'],
-    ["undici", 'import { request } from "undici";\nexport { request };\n'],
-    ["pg driver", 'import pg from "pg";\nexport { pg };\n'],
-    [
-      "an adapter",
-      'import { x } from "../adapters/github/client.js";\nexport { x };\n',
-    ],
-    ["the API", 'import { x } from "../api/server.js";\nexport { x };\n'],
-    ["a flow", 'import { x } from "../../flows/merge.js";\nexport { x };\n'],
+    ["Windmill", 'import * as w from "windmill-client";'],
+    ["node:http", 'import h from "node:http";'],
+    ["bare https", 'import h from "https";'],
+    ["node:tls", 'import t from "node:tls";'],
+    ["node:dns", 'import d from "node:dns";'],
+    ["node:child_process", 'import c from "node:child_process";'],
+    ["node:fs", 'import f from "node:fs";'],
+    ["undici", 'import { request } from "undici";'],
+    ["got", 'import got from "got";'],
+    ["ws", 'import ws from "ws";'],
+    ["@octokit/rest", 'import { Octokit } from "@octokit/rest";'],
+    ["@supabase/supabase-js", 'import { createClient } from "@supabase/supabase-js";'],
+    ["pg", 'import pg from "pg";'],
+    ["cloudflare:workers", 'import { env } from "cloudflare:workers";'],
+    ["an adapter", 'import { x } from "../adapters/github/client.ts";'],
+    ["the API", 'import { x } from "../api/server.ts";'],
+    ["the service kit", 'import { x } from "../service-kit/config.ts";'],
+    ["a flow", 'import { x } from "../../flows/merge.ts";'],
     [
       "a type-only adapter import",
-      'import type { X } from "../adapters/linear/types.js";\nexport type Y = X;\n',
+      'import type { X } from "../adapters/linear/types.ts";',
     ],
+    ["a re-export from outside", 'export { x } from "../adapters/github/client.ts";'],
+    ["an export-all from a package", 'export * from "got";'],
   ])("rejects importing %s", async (_label, code) => {
-    expect(await violations(corePath, code)).toContain("no-restricted-imports");
+    expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
   });
 
-  it("rejects the global fetch", async () => {
-    const code =
-      'export const get = (): Promise<Response> => fetch("https://example.com");\n';
-    expect(await violations(corePath, code)).toContain("no-restricted-globals");
+  it.each([
+    ["fetch", 'export const f = () => fetch("https://example.com");'],
+    [
+      "globalThis.fetch",
+      'export const f = () => globalThis.fetch("https://example.com");',
+    ],
+    ["WebSocket", 'export const s = () => new WebSocket("wss://example.com");'],
+    ["process.env", "export const t = () => process.env.TOKEN;"],
+    ["require", 'export const h = () => require("node:http");'],
+  ])("rejects the global %s", async (_label, code) => {
+    expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
   });
 
-  it("rejects dynamic imports, which would slip past the import rules", async () => {
-    const code = 'export const load = (): Promise<unknown> => import("node:http");\n';
-    expect(await violations(corePath, code)).toContain("no-restricted-syntax");
+  it("rejects createRequire and dynamic imports, which would slip past import checks", async () => {
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.ts",
+          'import { createRequire } from "node:module";\nexport const r = createRequire("x");',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.ts",
+          'export const l = () => import("node:http");',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    "example.mjs",
+    "example.js",
+    "example.cjs",
+    "example.mts",
+    "example.cts",
+    "example.tsx",
+  ])("applies to %s files too", async (fileName) => {
+    expect(
+      coreBlocked(
+        await violations(
+          `src/core/${fileName}`,
+          'import h from "node:http";\nexport { h };',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "eslint-disable-next-line",
+      '// eslint-disable-next-line\nimport h from "node:http";\nexport { h };',
+    ],
+    [
+      "eslint-disable-next-line for the rule",
+      '// eslint-disable-next-line foreman/core-imports\nimport h from "node:http";\nexport { h };',
+    ],
+    [
+      "eslint-disable block",
+      '/* eslint-disable */\nimport h from "node:http";\nexport { h };',
+    ],
+    [
+      "inline rule config",
+      '/* eslint foreman/core-imports: "off" */\nimport h from "node:http";\nexport { h };',
+    ],
+  ])("cannot be switched off with an inline %s comment", async (_label, code) => {
+    expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
   });
 });
 
-describe("Cloudflare boundary (unit: lint config guard, ADR 0101)", () => {
+describe("Cloudflare boundary covers every code folder (unit: lint config guard, ADR 0101, essential 9)", () => {
   const cloudflareImport =
     'import { Cloudflare } from "cloudflare";\nexport { Cloudflare };\n';
 
@@ -61,20 +138,40 @@ describe("Cloudflare boundary (unit: lint config guard, ADR 0101)", () => {
     "src/core/example.ts",
     "src/api/server.ts",
     "src/adapters/github/client.ts",
+    "flows/merge.ts",
+    "contracts/load.ts",
+    "scripts/tool.mjs",
+    "src/api/server.mjs",
   ])("rejects a Cloudflare import in %s", async (filePath) => {
-    expect(await violations(filePath, cloudflareImport)).toContain(
-      "no-restricted-imports",
-    );
+    const rules = await violations(filePath, cloudflareImport);
+    expect(
+      rules.some(
+        (rule) => rule === "no-restricted-imports" || rule === "foreman/core-imports",
+      ),
+    ).toBe(true);
   });
 
-  it("allows a Cloudflare import in the deploy adapter", async () => {
+  it("rejects cloudflare: runtime modules outside the deploy adapter", async () => {
+    expect(
+      await violations(
+        "src/api/server.ts",
+        'import { env } from "cloudflare:workers";\nexport { env };\n',
+      ),
+    ).toContain("no-restricted-imports");
+  });
+
+  it("allows Cloudflare in the deploy adapter", async () => {
     expect(
       await violations("src/adapters/deploy/cloudflare.ts", cloudflareImport),
     ).toEqual([]);
   });
 
   it("allows an adapter to import network modules", async () => {
-    const code = 'import { request } from "undici";\nexport { request };\n';
-    expect(await violations("src/adapters/github/client.ts", code)).toEqual([]);
+    expect(
+      await violations(
+        "src/adapters/github/client.ts",
+        'import { request } from "undici";\nexport { request };\n',
+      ),
+    ).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@ OpenTofu 1.13, state in Cloudflare R2, state and plans encrypted. Why and how: [
 | `stacks/scratch/` | The M0.7 proof. Throwaway: never a real project, zone or account.             |
 | `modules/`        | Platform and project modules (ADR 0111). Created when a real stack needs one. |
 
-CI (`.github/workflows/infra.yml`) checks formatting and validates every stack on each PR that touches `infra/`. It uses no credentials and no backend.
+CI (`.github/workflows/infra.yml`) checks formatting and validates every stack on each PR that touches `infra/`. It uses no credentials and no backend. Each stack commits its `.terraform.lock.hcl` (hashes for Linux, Windows and macOS), and CI fails if providers drift from it. A new stack without one gets it generated and printed by CI, to commit.
 
 ## Secrets per stack
 
@@ -31,7 +31,6 @@ export CLOUDFLARE_API_TOKEN=...  AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=..
 export TF_VAR_state_encryption_passphrase=...  TF_VAR_account_id=...  TF_VAR_zone_id=...
 tofu init -input=false -backend-config=bucket=<state bucket> \
   -backend-config='endpoints={s3="https://<account id>.r2.cloudflarestorage.com"}'
-tofu providers lock -platform=windows_amd64 -platform=linux_amd64   # commit .terraform.lock.hcl
 
 # 1. Apply, then a second plan must be a no-op (exit 0).
 tofu apply -input=false

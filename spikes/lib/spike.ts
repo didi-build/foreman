@@ -69,6 +69,46 @@ export interface ProcessResult {
   timedOut: boolean;
 }
 
+/** Characters cmd.exe treats specially even inside quotes. Arguments containing them are refused. */
+const CMD_METACHARACTERS = /[%^&|<>!\r\n]/;
+
+/**
+ * Quote one argument for cmd.exe running a Node or .cmd program on Windows, so text with spaces
+ * and quotes arrives as one argument. Refuses arguments that cmd.exe could still interpret.
+ */
+export function quoteWindowsArgument(argument: string): string {
+  if (CMD_METACHARACTERS.test(argument)) {
+    throw new Error(
+      "argument contains a character cmd.exe interprets; refusing to run it through a shell",
+    );
+  }
+  const escaped = argument.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1");
+  return `"${escaped}"`;
+}
+
+/** Only these variables reach a child process, so an agent never sees unrelated secrets in the shell. */
+export function allowListedEnv(
+  names: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    names.filter((name) => env[name] !== undefined).map((name) => [name, env[name]]),
+  );
+}
+
+/** Variables any process needs to start on Windows, macOS or Linux. Nothing secret. */
+export const BASE_PROCESS_ENV = [
+  "PATH",
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "SystemRoot",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+] as const;
+
 /** Run a command with a wall-clock limit. The runner enforces time from outside the agent. */
 export function runProcess(
   command: string,
@@ -76,11 +116,12 @@ export function runProcess(
   options: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv },
 ): Promise<ProcessResult> {
   return new Promise((resolve) => {
-    // Windows (Git Bash) needs a shell to find .cmd shims such as claude.cmd.
-    const child = spawn(command, args, {
+    // On Windows a shell is needed to find .cmd shims, so each argument is quoted for cmd.exe.
+    const onWindows = process.platform === "win32";
+    const child = spawn(command, onWindows ? args.map(quoteWindowsArgument) : args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
-      shell: process.platform === "win32",
+      shell: onWindows,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

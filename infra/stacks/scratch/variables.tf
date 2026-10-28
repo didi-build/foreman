@@ -4,6 +4,11 @@ variable "state_encryption_passphrase" {
   type        = string
   sensitive   = true
   ephemeral   = true
+
+  validation {
+    condition     = length(var.state_encryption_passphrase) >= 16
+    error_message = "The state encryption passphrase must be at least 16 characters."
+  }
 }
 
 variable "account_id" {

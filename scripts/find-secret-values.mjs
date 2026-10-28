@@ -24,7 +24,7 @@ const hits = findSecretValues(
   secrets,
 );
 for (const hit of hits)
-  console.error(`Secret value of ${hit.secret} found in ${hit.text}.`);
+  console.error(`Secret value of ${hit.secret} found in ${hit.text} (${hit.form}).`);
 console.log(
   `Scanned ${files.length} file(s) for ${names.length} secret value(s): ${hits.length} found.`,
 );

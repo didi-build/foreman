@@ -25,6 +25,24 @@ describe("exact dependency pins (unit: repo tooling guard, ADR 0101)", () => {
     ]);
   });
 
+  it("also checks optional and peer dependencies", () => {
+    const pkg = {
+      optionalDependencies: { e: "^1.0.0" },
+      peerDependencies: { f: ">=2" },
+    };
+    expect(findNonExactPins(pkg)).toEqual([
+      { section: "optionalDependencies", name: "e", version: "^1.0.0" },
+      { section: "peerDependencies", name: "f", version: ">=2" },
+    ]);
+  });
+
+  it.each(["1.2.3-rc.1", "1.2.3-beta", "1.2.3+build.5"])(
+    "accepts the exact version %s",
+    (version) => {
+      expect(findNonExactPins({ dependencies: { a: version } })).toEqual([]);
+    },
+  );
+
   it("makes npm save exact versions", () => {
     expect(readFileSync(".npmrc", "utf8")).toMatch(/^save-exact=true$/m);
   });

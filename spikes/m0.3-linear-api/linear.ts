@@ -2,7 +2,8 @@
 // comments under its own identity? Schema: github.com/linear/linear packages/sdk/src/schema.graphql
 //
 // Needs: LINEAR_TOKEN (an OAuth token from an app installed with actor=app, scope read,write) and
-// LINEAR_TEST_TEAM_KEY (the key of a TEST team). Never the real Didi Build team.
+// LINEAR_TEST_TEAM_KEY (the key of a TEST team) and LINEAR_EXPECTED_WORKSPACE (the url key of the
+// workspace the token must belong to). Never the real Didi Build team or workspace.
 // Run: node spikes/m0.3-linear-api/linear.ts
 import {
   isEntryPoint,
@@ -42,7 +43,11 @@ export function writtenByApp(
 }
 
 async function main(): Promise<void> {
-  const env = requireEnv(["LINEAR_TOKEN", "LINEAR_TEST_TEAM_KEY"]);
+  const env = requireEnv([
+    "LINEAR_TOKEN",
+    "LINEAR_TEST_TEAM_KEY",
+    "LINEAR_EXPECTED_WORKSPACE",
+  ]);
   if (isRealTeam(env.LINEAR_TEST_TEAM_KEY)) {
     console.error(
       `Refusing to run against team ${env.LINEAR_TEST_TEAM_KEY}. Use a test team.`,
@@ -71,6 +76,17 @@ async function main(): Promise<void> {
       (value, key) => (value as Record<string, unknown> | undefined)?.[key],
       body.data,
     ) as T | undefined;
+
+  // The token must belong to the workspace named for the spike, so a token for the real workspace
+  // cannot be used by mistake.
+  const viewer = await gql(`query { organization { urlKey } }`);
+  const workspace = dataOf<string>(viewer, ["organization", "urlKey"]);
+  if (workspace !== env.LINEAR_EXPECTED_WORKSPACE) {
+    console.error(
+      "Refusing to run: the token's workspace is not LINEAR_EXPECTED_WORKSPACE.",
+    );
+    process.exit(3);
+  }
 
   const teams = await gql(`query { teams { nodes { id key } } }`);
   const team = dataOf<{ id: string; key: string }[]>(teams, ["teams", "nodes"])?.find(

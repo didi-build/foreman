@@ -2,10 +2,14 @@
 // and read its final result? Docs: https://code.claude.com/docs/en/headless
 //
 // Needs: the `claude` CLI on PATH, ANTHROPIC_API_KEY, and SCRATCH_REPO_DIR (a clone of a
-// throwaway repo, never a real project). Run: node spikes/m0.2-agent-dispatch/claude-code.ts
+// throwaway repo, never a real project). The scratch repo must contain a .foreman-scratch file, so the
+// spike cannot run against a real project by mistake. Run: node spikes/m0.2-agent-dispatch/claude-code.ts
+// Unverified until the run: the --bare flag, taken from the headless docs.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  allowListedEnv,
+  BASE_PROCESS_ENV,
   isEntryPoint,
   minutes,
   printRecord,
@@ -15,6 +19,8 @@ import {
   type RunRecord,
 } from "../lib/spike.ts";
 
+/** A file that marks a clone as a throwaway scratch repo. */
+export const SCRATCH_MARKER = ".foreman-scratch";
 const EXPECTED_FILE = "SPIKE_CLAUDE_CODE.md";
 const EXPECTED_TEXT = "hello from the claude code spike";
 const TASK = `Create a file named ${EXPECTED_FILE} in the repository root containing exactly the line "${EXPECTED_TEXT}". Do not commit, push or change anything else.`;
@@ -53,6 +59,12 @@ export function parseClaudeResult(
 
 async function main(): Promise<void> {
   const env = requireEnv(["ANTHROPIC_API_KEY", "SCRATCH_REPO_DIR"]);
+  if (!existsSync(join(env.SCRATCH_REPO_DIR, SCRATCH_MARKER))) {
+    console.error(
+      `Refusing to run: ${SCRATCH_MARKER} not found in SCRATCH_REPO_DIR. Add it to the scratch repo only.`,
+    );
+    process.exit(3);
+  }
   const startedAt = new Date().toISOString();
   const run = await runProcess(
     "claude",
@@ -71,7 +83,12 @@ async function main(): Promise<void> {
       "--allowedTools",
       "Read,Write,Edit",
     ],
-    { cwd: env.SCRATCH_REPO_DIR, timeoutMs: minutes(10) },
+    {
+      cwd: env.SCRATCH_REPO_DIR,
+      timeoutMs: minutes(10),
+      // The agent sees only what it needs: not the rest of your shell's variables.
+      env: allowListedEnv([...BASE_PROCESS_ENV, "ANTHROPIC_API_KEY"]),
+    },
   );
   const parsed = parseClaudeResult(run.stdout);
   // Evidence from outside the agent: check the file ourselves instead of trusting the report.
