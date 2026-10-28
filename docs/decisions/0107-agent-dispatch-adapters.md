@@ -37,12 +37,12 @@ interface AgentRunResult {
 
 ### Implementations, in order of confidence
 
-| Runtime                         | Used for                                  | How                                                                                         |
-| ------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Claude Code                     | Developer                                 | `claude -p --output-format json` with turn and budget caps, or the Agent SDK in process     |
-| OpenAI-compatible chat endpoint | QA verdicts (Grok today)                  | One call with a JSON-schema response. The same code reaches xAI, OpenRouter, Ollama or vLLM |
-| goose or opencode (later)       | Open-source agents that edit code (D-139) | Headless run with JSON output against an OpenAI-compatible model server                     |
-| Cursor cloud agents             | None (D-119)                              | Not built unless Didi gives Cursor a role                                                   |
+| Runtime                         | Used for                                  | How                                                                                     |
+| ------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------- |
+| Claude Code                     | Developer                                 | `claude -p --output-format json` with turn and budget caps, or the Agent SDK in process |
+| OpenAI-compatible chat endpoint | QA verdicts (Grok today)                  | One call with a JSON-schema response. The same code reaches xAI, Ollama or vLLM         |
+| goose or opencode (later)       | Open-source agents that edit code (D-139) | Headless run with JSON output against an OpenAI-compatible model server                 |
+| Cursor cloud agents             | None (D-119)                              | Not built unless Didi gives Cursor a role                                               |
 
 QA does not need an agent that edits code. It needs a structured verdict on the PR's head commit, backed by evidence the runner collects itself (CI, preview checks). One API call gives that and works for any vendor.
 
@@ -50,7 +50,7 @@ QA does not need an agent that edits code. It needs a structured verdict on the 
 
 - The runner enforces a wall-clock limit itself, on top of any limit the runtime offers. Some runtimes do not document when they stop.
 - The caller validates `structured` output. A QA verdict that does not name the head commit is rejected (P-04).
-- Credentials come from the secrets interface by path, never from code. Values are never logged.
+- The model endpoint and API key come from the bot file as settings, the key as a secret path resolved through the secrets interface (D-142). Values are never logged. The first release calls providers directly. A self-hosted gateway (LiteLLM or Bifrost) can be inserted in the second release by changing the endpoint setting, with no code change. OpenRouter is not chosen.
 - A "usage exhausted" response becomes status `usage_exhausted`, so the dispatch is queued and resumed, not counted as a failure (FR-11).
 
 ## Constraints

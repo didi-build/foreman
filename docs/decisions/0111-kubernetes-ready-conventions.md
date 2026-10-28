@@ -54,6 +54,10 @@ An agent dispatched for a project gets only that project's credentials and secre
 
 Code asks for a secret by path (for example `projects/we-met/linear/token`), through one small interface with one implementation per store: Windmill resources now, Vault later. Code never reads a secret from a file in the repo, and the interface never logs a value. The interface is built when the first service needs a secret (M1.4).
 
+### 4a. Model endpoints are settings
+
+Agent runtime adapters read the model endpoint and API key from the bot file (the key as a secret path, section 4). The first release calls model providers directly. In the second release a self-hosted model gateway (LiteLLM or Bifrost, chosen then; O-10) runs as a pod, and bots point at it by changing the endpoint setting, with no code change (D-142).
+
 ### 5. IaC separates platform from projects
 
 As in ADR 0110: `infra/modules/` holds platform modules (one per provider) and a project module that takes a `deploy_target` variable (`cloudflare` now, `kubernetes` later), so a project moves by changing the target, not by rewriting its stack. Built when the first real stack needs it.
