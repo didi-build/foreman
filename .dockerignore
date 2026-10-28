@@ -1,0 +1,11 @@
+# Keep images small and free of secrets: only files a Dockerfile copies explicitly matter.
+.git
+node_modules
+.env
+.env.*
+**/*.test.ts
+coverage
+test-results
+dist
+infra
+docs

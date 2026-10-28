@@ -15,7 +15,8 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["node", "vite/client"],
     "allowJs": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
   "include": [
     "src/**/*.ts",

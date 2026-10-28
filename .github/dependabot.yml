@@ -41,3 +41,15 @@ updates:
         applies-to: version-updates
         patterns: ["*"]
         update-types: ["patch"]
+
+  # Base images of services (ADR 0111). One entry per service folder with a Dockerfile.
+  - package-ecosystem: docker
+    directory: /src/sample-service
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
