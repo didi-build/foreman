@@ -1,0 +1,125 @@
+# Decisions log
+
+Status key: Decided (Didi confirmed), Proposed (written down, needs Didi's confirmation), Open (needs a decision, with who decides).
+
+Dates are the day Didi decided. "By Oct 27" means decided in the planning sessions before Oct 28.
+
+## 1. Decided
+
+### Decided by Oct 27, 2026
+
+| ID | Decision |
+|---|---|
+| D-001 | Windmill is the runner. Linear is a mirror, and our own state store is the source of truth |
+| D-002 | Two machines: Machine 1 (idea) and Machine 2 (work item). Machine 3 (daily scan) comes later and feeds Machine 1 |
+| D-003 | A deterministic runner owns every transition. Agents never move themselves. Every state has one owner role |
+| D-004 | Bots are shared across all projects. Agents a bot dispatches are scoped to one project. The Council is shared. Expect 6 to 10 projects |
+| D-005 | Escalation goes to the Council first, then to Didi only if the Council cannot resolve it |
+| D-006 | Gates: approve-once (new secrets or permissions, dropping data, DNS changes each approved separately, PII access), only-Didi (spending money, personal messages and emails, production deploys, playbook rule changes), and visual approval for design. Free to run: job applications and forms, code, docs, staging deploys, internal tickets |
+| D-007 | Production deploys in v1: Didi reviews staging each morning and approves the deploy on GitHub from his phone |
+| D-008 | Scope: any new feature, new or changed user flow, or changed product direction goes to Didi. The Council decides priority, tech and architecture, naming and branding, and user-facing copy unless it changes approved direction |
+| D-009 | Done means: tests pass and CI green, matches the approved design (UI), docs updated or no docs impact stated, works on staging checked by a bot. Playbook proposals never block Done |
+| D-010 | Nothing sits idle. If nothing blocks an item, the runner dispatches it immediately. Continue by default |
+| D-011 | Spend alerts at a threshold and work keeps going. A looping item stops and goes to the Council. No daily cap |
+| D-012 | The attention list is a table in the state store in v1. Channels only render it. A frontend comes later and the system builds it |
+| D-013 | The state store is a relational database with node and edge tables. A graph database is not required |
+| D-014 | Every new idea starts with an Interview of Didi (one question at a time, answers verbatim with the time) before any planning or building |
+| D-015 | Build order: dogfood. The first project through the system is the system itself |
+
+### Decided on Oct 28, 2026
+
+| ID | Decision |
+|---|---|
+| D-101 | Cutover from the Grok routines is all at once, not one transition at a time. Before it, a dry run imports Linear state and checks what the runner would do. The Grok routines are disabled, not deleted. A kill switch pauses the runner |
+| D-102 | The runner merges PRs once the merge guard passes. Privileged paths wait for Didi |
+| D-103 | Two checkpoints: QA checks the preview branch before merge, then main deploys to staging and a bot checks staging before Done. The staging step is a substate called Verifying on staging |
+| D-104 | A failed staging check reopens the same item (In development, or Building components for design) and the failure counter increases |
+| D-105 | The design track gets the same preview, merge, staging flow as code |
+| D-106 | Retire the Linear statuses "Ready for review" (it meant waiting for QA) and "Ready for design dev" (it meant design approved, waiting for the Designer) |
+| D-107 | Writing spec and Building components share the Linear status "in design dev". The store records the substate. Verifying on staging shows as In QA Review |
+| D-108 | An item escalates to the Council after 3 failures |
+| D-109 | The component gallery uses one standard path for every repo, set in Launchpad |
+| D-110 | The privileged-path list has a default in Launchpad, and repos can add paths |
+| D-111 | The reconcile loop runs every 5 minutes, every day of the week |
+| D-112 | A stalled item (ready but not running after a cycle) goes on the attention list and the daily check, and becomes a push alert after an hour |
+| D-113 | Triage splits a mixed item into linked items, one per track |
+| D-114 | Any visible change goes through the design track. The Council approves small visual tweaks. Didi approves new screens, changed flows and changes to look and feel |
+| D-115 | The temporary credential for personal data lasts 1 hour, set and enforced by the runner |
+| D-116 | When an approval is reversed, dependent work is marked stale and the Council decides what to redo |
+| D-117 | Phone call triggers: a failed production health check, data loss or PII exposure flagged by a bot, and daily spend over a set amount. The amount starts at $25 per day and is a setting |
+| D-118 | State store on managed Postgres. Revisit once there is a Kubernetes cluster with a vault and replicas |
+| D-119 | Model assignments: Council on Claude Opus, Triage on Claude Sonnet, Designer on Claude (tier not chosen), Developer on Claude Code, QA on Grok (a different family from the Developer), Runner has no model. Each is a setting in the bot file. Cursor agents are not assigned |
+| D-120 | First per-run budgets are generous and are tuned after the first week from the runs table |
+| D-121 | Up to 3 Developer agents can run at once per project, each on its own item |
+| D-122 | Interview depth scales to the size of the idea. The Council sizes it and tells Didi the depth, and he can override. In v1 the interview runs as a chat with the Council, and each answer is saved as it goes |
+| D-123 | An idea appears in Linear at Submitted |
+| D-124 | Machine 1 Linear mapping: Submitted (from Ready for triage), Interview (new), Council planning (new), Needs Didi (shares Waiting for Didi), Plan accepted (shares Triage), Triage (from Ready for CTO breakdown), Handed off (Done), Parked (icebox), Rejected (Canceled; Duplicate stays) |
+| D-125 | Handed off means the idea is Done as far as Machine 1 goes. Its work items are Machine 2's to finish |
+| D-126 | Linear stays a mirror at cutover, written through its API (not the MCP) under the runner's own app identity, behind an adapter. It is dropped once our own frontend covers the daily check, the attention list and gate approvals from the phone |
+| D-127 | The runner holds credentials for the state store, GitHub (read CI, merge PRs), the Linear API and staging deploys. Anything more goes through the new-credentials gate. Production deploy credentials never go to the runner |
+| D-128 | MagicPath comments are out of v1 (they need a signed-in browser). The Designer works from the canvas through MCP and exports, and Didi gives feedback in the approval request |
+| D-129 | Windmill approval pages are the primary channel for gate approvals in v1 (to verify on mobile). Push app for alerts, call service for incidents. Providers are chosen at build time |
+| D-130 | The handoff package is markdown files in the Project Factory v2 repo. The spec lives there once it exists |
+| D-132 | Cloudflare appears only in the deploy adapter. The library and the state API stay portable |
+| D-133 | Infrastructure is declared as code (Terraform or OpenTofu) in the first release, so what is set up and where is visible and gates can show a plan |
+| D-134 | Kubernetes is the planned target of the second release: a pod per project, per-project isolation, monitoring, and eventually moving off Cloudflare. The first release is built so the switch is easy |
+| D-131 | The repo is created from the Launchpad template, the handoff is committed unmodified to `handoff/`, and Claude Code places the files into the repo's existing layout itself (task M0.0). Launchpad's conventions win where they conflict |
+
+## 2. Proposed (needs Didi's confirmation)
+
+| ID | Proposal | Where |
+|---|---|---|
+| P-01 | The Machine 2 contracts in `docs/spec.md` (all rows) | spec section 9 |
+| P-02 | The state store shape, plus three additions: `settings`, `node_decisions`, `spec_versions` | `docs/schema.md` |
+| P-03 | Counter rules: `failure` increments on a failed guard after a bot reports done, a failed QA or staging check, and repeated dispatch failure, not on every red CI run. `qa_round` counts failed QA verdicts. Both reset on a Council resolution and on Done | `docs/schema.md` |
+| P-04 | Evidence rules: leaving QA requires outside evidence, QA uses a different model and fresh context | spec section 9 |
+| P-05 | Scope of the first release includes a minimum of Machine 1: ideas can be created, decisions recorded verbatim, and Triage splits plans into work items. Interview and Council planning stay a chat with the Council, recorded through the API, until the intake agent exists | `docs/prd.md`, `docs/build-plan.md` |
+| P-06 | Implementation agent: Claude Code. Model: Fable for the architecture-heavy first slice (state library, runner, guards), Opus for routine tasks after. Didi chooses and checks current pricing and limits | `docs/implementation-brief.md` |
+| P-07 | Contracts live as YAML or JSON in `contracts/` with a consistency test against the spec | `docs/architecture.md` |
+| P-09 | The v2 rule that the runner merges after QA passes applies to repos the runner manages. Launchpad's default (agents open PRs and wait for Didi's review unless a ticket says merge when green, with Dependabot auto-merge as the standing exception) stays for repos not yet under the runner | AGENTS.md, spec section 5 |
+| P-10 | Conventions in the first release that make the move to Kubernetes cheap (ADR 0011): container-ready services, a target-agnostic deploy adapter, an isolation model per project, secrets by path behind an interface, an IaC layout with platform and project modules. Monitoring stack arrives with Kubernetes | `docs/architecture.md` section 2.10 |
+| P-08 | New Linear statuses: Interview, Council planning, Escalated to Council, Escalated to Didi, and the renames in the mapping | spec section 9 |
+
+## 3. Open
+
+### Decide during build (the implementing agent decides, records the decision and reason here)
+
+| ID | Question | Notes |
+|---|---|---|
+| O-01 | Managed Postgres provider and region | Check free-tier limits, idle pausing, a Canadian region (PIPEDA) |
+| O-02 | State API hosting and agent authentication | ADR 0002 |
+| O-03 | Agent execution environment and budget enforcement | ADR 0006 |
+| O-04 | Push app and call service providers | Check current pricing |
+| O-05 | The mechanism for reversing decisions in append-only tables | ADR 0004 |
+| O-06 | Repo layout, tooling, test runner | ADR 0001 |
+| O-07 | How to run the dry run and what the comparison report looks like | `docs/cutover.md` |
+| O-08 | IaC tool (Terraform or OpenTofu), state backend, secrets handling and layout | ADR 0010. Check current provider support and free tiers |
+
+### Needs verification (a spike with a recorded result)
+
+| ID | Question | Why it matters |
+|---|---|---|
+| V-01 | Can the runner start Grok and read its verdict without a person? | QA is on Grok. If not, QA moves to another non-Claude agent |
+| V-02 | Can Linear's API create statuses and let an app act under its own identity? | The status setup and bot identity depend on it |
+| V-03 | Do Windmill approval pages work well on a phone? | They are the primary gate channel |
+| V-04 | Can Cursor agents be started and read by the runner, and what role would they take? | Cursor has no role yet |
+
+### Needs Didi (or the Council, where stated)
+
+| ID | Question | Who |
+|---|---|---|
+| N-01 | What counts as a small visual tweak (Council approves) versus a new screen, changed flow or changed look (Didi approves)? | Didi |
+| N-02 | The rest of the Triage rubric: how to tell infrastructure, docs and code apart | Council, with Didi's review |
+| N-03 | Which question types the interview uses | Council, with Didi's review |
+| N-04 | Which credentials the runner can issue as temporary credentials | Didi |
+| N-05 | Which states need a reasoning model, and the cost budget for each | Council, with Didi's review |
+| N-06 | Severity rules: what is a blocking gate and what is an urgent incident (beyond the three call triggers) | Didi |
+| N-07 | Which actions a human may take in Linear (which status changes are allowed) | Didi |
+| N-08 | Which bot flags data loss or PII exposure | Council proposes, Didi approves |
+| N-09 | The spend alert threshold (the call threshold starts at $25 per day) | Didi |
+| N-10 | The full toolbox inventory (tool, built in v1 or not, side-effect type, gate) | Council proposes, Didi approves |
+| N-11 | Rules that only live in the Grok routines and are not yet captured, including the icebox sweep threshold, weekly icebox review cadence, and whether shortened answers need review | Didi |
+| N-12 | The role of the CEO bot, the Recruiter flows, and DIDI-705. Outside this build for now | Didi |
+| N-13 | Whether the spec should generate Windmill flows automatically (deferred) | Didi |
+| N-14 | How deep the context graph goes, and when a temporal knowledge graph is justified (deferred) | Council |
+| N-15 | Component gallery path and the default privileged-path list contents, to be written into Launchpad. The Launchpad template change itself is outside this repo | Didi |

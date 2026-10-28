@@ -1,0 +1,329 @@
+# Project Factory v2: State Machine Spec (draft v0)
+
+> Exported from the working Google Doc on 2026-10-28. Once this file is committed to the Project Factory v2 repo, this file is the source of truth. Decisions made on 2026-10-28 are marked with their date in the text. The decision log is `docs/decisions.md`. The schema shape in the section named State store schema is expanded to columns in `docs/schema.md`.
+
+
+Draft, Oct 26, 2026. Owner: Didi (operator). This is meant to become a plain file in a repo that any bot can read. Linear is the board that shows state. This spec holds the rules.
+
+## 1. Principles
+
+- Didi is the operator. He supplies ideas and product vision, answers questions, and approves a short list of gates. Everything else is implementation detail the agents handle.
+- A deterministic runner (Windmill) decides every transition. Agents only do the work inside a state. They never move themselves to another state.
+- Every state has exactly one owner role.
+- Humans appear only at gates. Gates are named and listed in section 5.
+- Architecture and system design are decided by the agents. When a decision is big, or the same problem keeps recurring, it goes to the Council first, and to Didi only if the Council cannot resolve it.
+- The rules live in this file, not inside any one tool or bot.
+- Nothing sits idle. Every open item is running, blocked with a named reason, or done. If nothing blocks an item, the runner dispatches it immediately.
+- Continue by default. Agents do not ask whether to continue unless the decision is a product decision or a new feature. Maintenance and finishing an already-scoped feature proceed on their own.
+
+## 2. Roles
+
+| Role | What it does |
+|---|---|
+| Operator (Didi) | Submits ideas, answers questions, approves gates, can look at a daily summary |
+| Council | One combined role (analyst, PM, designer, CTO). Interviews Didi about the product, then turns the idea into a plan |
+| Triage | PM-type role. Splits a plan into work items and picks the track for each |
+| Designer | Explores visuals, writes the spec after approval, builds components |
+| Developer | Wires components into the app, builds code and infrastructure |
+| QA | Checks work against the spec or plan. Sends failures back to the owner |
+| Runner | Deterministic code (Windmill). Owns all transitions and enforces guards |
+| Scanner | Later. A daily scan for bugs, gaps and misalignment |
+
+A bot is a coordinator that represents one role, like a team lead. It can dispatch several agents under it to do the work. The runner still decides every transition, so a bot never moves an item itself.
+
+Bots are shared across all projects (decided Oct 27, 2026). Each bot is defined once, and the Council is shared because topics can span projects. The agents a bot dispatches are scoped to one project: they only see that project's context and credentials. Bots can read a compact status view of every project, but not other projects' code or secrets. We expect 6 to 10 projects running at once.
+
+### Bot definition (draft)
+
+Each bot is defined by one plain file in the repo, so it can run on any runtime. A bot is persistent: it owns states and its context policy. The agents under it are temporary workers scoped to one task. The file can compile to a Claude Code subagent, a Windmill AI agent step, or another runtime.
+
+| Field | What it sets |
+|---|---|
+| Role | The role it represents and the states it owns |
+| Instructions | The bot's system prompt, plus a shorter template for its agents |
+| Model | The bot's model and its agents' model. A reasoning model where judgment matters, a fast model elsewhere |
+| Tools and permissions | Allowed tools, explicitly denied tools, and permission mode |
+| Context | Which artifacts it receives in each state (section 9) |
+| Budget | Max turns, minutes, dollars, agents, and recursion depth |
+| Dispatch | How many agents it may run, whether in parallel, and which model each uses |
+| Evidence | The proof it must attach before work leaves its states |
+| Escalation | When it hands off to the Council, then to Didi |
+| Memory | What it keeps between runs |
+| Version | The prompt, model and schema version behind each result |
+
+Proposed defaults, to refine: agents may not spawn further agents unless the budget sets a depth limit. Reasoning models are slower and more expensive, so use them only in the Council, architecture decisions and adversarial QA, and use a fast model for routine development, docs and status work. The QA bot always runs a different model from the bot that built the work.
+
+### Bot assignments (draft)
+
+Which agent runs each role at the start. Each bot file names its model as a setting, so any of these can change without changing the machines. All of it is Proposed until Didi confirms it.
+
+| Role | Runs on | Notes |
+|---|---|---|
+| Council | Claude Opus | Interview, planning, architecture and copy decisions. |
+| Triage | Claude Sonnet | Splits plans into work items and picks the track. A candidate for a Jev pilot later. |
+| Designer | Claude (model tier not chosen yet) | Exploration, spec and gallery components. MagicPath comments are out of v1: the Designer works from the canvas through MCP and exports, and Didi leaves feedback in the approval request. |
+| Developer | Claude Code | Up to 3 agents at once per project, one owner per item. |
+| QA | Grok | A different family from the Developer, so its verdict is independent. To verify: the runner can start it and read its verdict. |
+| Runner | No model (Windmill code) | Owns every transition. Holds credentials for the state store, GitHub (read CI, merge PRs), the Linear API and staging deploys. Anything more goes through the new-credentials gate, and production deploy credentials never go to the runner. |
+| Cursor agents | Not assigned yet | A possible extra agent. Role and runner access to be decided. |
+
+First per-run budgets are generous and are tuned after the first week from what the runs table records. A project can have up to 3 Developer agents at once, each on its own item. Whether the runner can start Grok and Cursor agents and read their results without a person is still to verify.
+
+## 3. Machine 1: the idea machine
+
+An idea is either a new project or a change to an existing one.
+
+| State | Owner | Moves on when |
+|---|---|---|
+| Submitted | Runner | The idea is logged, goes to Interview |
+| Interview | Council | Before any work starts, the Council interviews Didi on the product design and decisions, one question at a time, in the chat where he submitted the idea. The Council sizes the idea first and tells Didi the depth it chose (a few questions for a small change, the full interview for a new project or a changed direction), and Didi can override it. His answers are recorded verbatim with the time and become the locked product direction. Done when the Council has no open product questions and Didi confirms its read-back summary. Goes to Council planning |
+| Council planning | Council | A plan exists. Questions for Didi go to Needs Didi. No open questions go to Plan accepted |
+| Needs Didi | Operator | Didi answers. Back to Council planning |
+| Plan accepted | Runner | Goes to Triage |
+| Triage | Triage | Work items are created, each with a track (UI/UX, infrastructure, docs, code). Any change to what a user sees or how they use it goes to the design track, and a mixed item is split into linked items, one per track. Goes to Handed off |
+| Handed off | Runner | Work items are running in Machine 2. Handed off means the idea is Done as far as this machine goes: the work items are Machine 2's to finish |
+| Parked or Rejected | Operator | Didi parks or drops the idea at any point |
+
+Guard: nothing is planned, created or built until the interview is done. After that, the Council may accept its own plan only if it has no open product questions and passes no gate in section 5 without approval.
+
+## 4. Machine 2: the work item machine
+
+Every work item follows one track. A track is a short path with a QA step before Done.
+
+**Design track (UI/UX work)**
+
+1. Ready for design exploration (Designer)
+2. In design exploration (Designer): visual options, for example on the MagicPath canvas
+3. Waiting for Didi: visual approval (Operator). Didi approves look and ease of use. This is the only approval in the design track
+4. Writing spec (Designer): the spec directory is edited by the Designer only. No approval after this
+5. Building components (Designer): the component gallery is built from the spec
+6. QA review (QA): components must match the spec on the preview branch. Pass goes to Verifying on staging, and the runner merges the PR. Fail goes back to Building components
+7. Verifying on staging (QA): main has deployed to staging and a bot checks the components. Pass goes to Done. Fail goes back to Building components
+8. Done: unblocks the linked developer work item
+
+**Code, infrastructure and docs tracks**
+
+1. Blocked, if it waits on a design item or another item (Runner releases it)
+2. Ready for dev (Developer)
+3. In development (Developer). Developers may change gallery components only for props or small wiring fixes, never the design or the spec
+4. QA review (QA): checks the preview branch. Pass goes to Verifying on staging, and the runner merges the PR. Fail goes back to In development
+5. Verifying on staging (QA): main has deployed to staging and a bot checks it. Pass goes to Done. Fail goes back to In development
+6. Done
+
+**Escalation, from any state:** an item goes to the Council first (Escalated to Council) when the decision is big or the same failure repeats. If the Council cannot resolve it, it goes to Didi (Escalated to Didi). An item escalates after 3 failures (decided Oct 28, 2026).
+
+**Done means** all of these are true: tests pass and CI is green; the work matches the design Didi approved (for UI work); docs are updated, or the item states that there is no docs impact; and it works on staging, checked by a bot. Playbook proposals never block done. They go to Didi's attention list as their own items.
+
+## 5. Gates
+
+Three kinds of gate. Everything not listed here runs without Didi.
+
+**Approve once, then agents act.** Each approval covers one request only.
+
+- New secrets, credentials, or wider permissions. After approval, agents may create them.
+- Dropping data. After approval, agents may do it.
+- DNS changes. Each change needs its own approval. After approval, agents may make it.
+- Access to real personal data (PII). By default agents get no credentials that reach it. They work from schemas, fixtures and synthetic data. After approval, an agent may generate a temporary credential itself. The expiry is set and enforced by the runner, not chosen by the agent, so it is deterministically temporary. The lifetime is 1 hour (decided Oct 28, 2026).
+
+**Only Didi.** Agents are blocked until Didi acts.
+
+- Spending money or starting a paid plan.
+- Sending personal messages and emails. Agents may write drafts. Didi sends.
+- Production deploys (v1 rule): Didi reviews staging each morning and approves the deploy on GitHub. He needs to be able to do this from his phone.
+
+**Visual approval.** Design look and ease of use, before the spec is written (section 4). The Council approves small visual tweaks. Didi approves new screens, changed flows, and changes to the look and feel.
+
+**Free to run:** job applications and forms, code, docs, staging deploys, internal tickets.
+
+**Scope and product decisions.** Didi decides scope (what is in or out of a feature). Any new feature, and any new or changed user flow or workflow compared with the approved plan, comes to him. The runner checks this by comparing the work against the approved plan and the product direction recorded in the interview. The Council decides priority across projects, tech and architecture, and naming and branding. The Council also decides user-facing copy, unless the copy changes the approved product direction, in which case it comes to him.
+
+**Playbook changes (approve once).** When Didi corrects a bot, the system proposes a playbook rule. It becomes a rule only after Didi approves it. Bots never edit their own rules.
+
+**Spend.** Token and money spend alerts Didi at a threshold, and work keeps going. Starting a paid plan stays in the Only Didi group. A work item that keeps looping and burning tokens is stopped and sent to the Council.
+
+**While Didi is away.** There is no special away mode. The Council already decides everything that is not restricted, and restricted decisions are Didi's gates. Everything keeps running and his gates queue up. The Council reorders work so unblocked items keep moving. Nothing auto-approves, and unanswered gates show up again in the next daily check.
+
+**How gates reach Didi.** There are three tiers. First, a needs attention list holds every gate request. A request that is no longer needed is cleaned up, or absorbed by a newer request on the same topic. Second, a phone alert for blocking gates, where work is waiting. Third, a phone call for urgent incidents (decided Oct 28, 2026): a failed production health check, data loss or PII exposure flagged by a bot, or daily spend over a set amount. The spend amount starts at $25 a day and is a setting, not part of this spec. Alerts go through a push app, with the approval link in it, and incident calls go through a call service. The providers are picked at build time. Each gate request carries a topic key in the state store so a newer request can replace an older one. The eventual home of the list is a frontend, which is not in v1.
+
+## 6. Daily check
+
+A short daily summary for Didi: what moved, what is waiting, and what is on staging. In v1 the deploy approval is part of it. Apart from the deploy approval, the daily check does not block anything.
+
+The summary is grouped by project and ordered by what is blocking the most work. It shows:
+
+- What moved and what is blocked
+- Staging links to try
+- Questions waiting for Didi's answer, including proposed playbook rules
+- Token and money spend
+
+**v1 attention list.** Until the frontend exists, the attention list is one table in the state store, and each channel only renders it. Windmill's approval pages are the primary channel for gate approvals in v1 (decided Oct 28, 2026, to verify on mobile). A saved Linear view or label, a chat channel and an email digest are secondary views, and we keep what works best for Didi. No channel may block progress.
+
+## 7. Machine 3 (later): the daily scan
+
+The Scanner runs once a day over the code and looks for bugs, gaps and misalignment. Its findings are submitted as ideas into Machine 1, so everything enters through the same front door.
+
+## 8. Ideas we are adopting from graph engineering
+
+Graph engineering is a mid-2026 name for designing the graph that coordinates several agent loops. It is not an official Anthropic term, and most of the structure is older workflow and state machine thinking. These are the ideas we are taking.
+
+1. **Three coupled graphs.** Execution (what can run next), context (what a node knows, from where, and as of when), and control (what must be true before continuing). Our two machines are the execution graph and section 5 is the control graph. The context graph is new for us (section 9).
+2. **Model judgment is separate from system authority.** A bot may propose a transition. The runner, a rule, or Didi authorizes it.
+3. **Contracts on every state and transition.** A diagram is not enough. Each state and transition declares what it takes in, what it produces, what proof is needed, what it may use, what it costs, and how it fails.
+4. **Evidence from outside the agents.** Agents on the same model that review each other can agree on wrong answers. Some proof must come from tests that ran, CI results, or Didi.
+5. **Topology matters.** Research from Google and MIT found independent agents amplified errors 17.2 times, against 4.4 times with an orchestrator, and that multi-agent setups made sequential tasks 39 to 70 percent worse. Anthropic reports multi-agent setups use 3 to 10 times more tokens. So we use coordinator bots over agents, parallelize only separable work, and give each mutable artifact one owner.
+6. **Start small, add nodes when forced.** Run one loop with a real verifier first. Add reviewers and branches only when failures demand them.
+
+## 9. How this applies to our machines
+
+We build the state engine first and run our own projects through it (dogfooding). Items marked Proposed need Didi's confirmation.
+
+- **State store (decided Oct 27, 2026).** The source of truth for every idea, work item, state and transition is a store we own, with typed nodes and edges. Linear does not model nodes, edges or guards well, so it becomes a mirror that humans read and can act through. This follows how others do it: Hermes Kanban keeps tasks as database rows and dependencies as links, and a dispatcher advances the work. A graph database is not required. A relational database with node and edge tables is the starting point, on managed Postgres (decided Oct 28, 2026). We revisit this once there is a Kubernetes cluster with a vault and replicas.
+- **Context graph.** Each state declares which artifacts its bot receives (the plan, the spec, past decisions with owners and dates, earlier failures). Facts that change over time carry a date they were true as of.
+- **Evidence rules (Proposed).** Leaving QA requires outside evidence: CI green, tests that ran, and for design components a visual comparison against the spec. The QA bot uses a different model and fresh context from the bot that built the work. Didi's visual approval of the design stays as it is.
+- **Topology.** Bots are coordinators. Agents under a bot report only to that bot, never peer to peer. One owner per mutable artifact, for example only the Designer edits the spec directory. Work runs in parallel only when it is separable.
+- **Escalation counter (Proposed).** The store counts repeated blocks and failures per item. Past a threshold the item escalates to the Council, then to Didi. Hermes does something similar: repeated blocks escalate to triage and consecutive failures auto-block. The threshold is 3 failures on one item (decided Oct 28, 2026).
+- **Runner and OpenFlow.** Windmill is the runner. OpenFlow is the open format Windmill uses to define flows, and Windmill is its reference implementation. A flow is an acyclic graph with branches, loops, retries, approval steps and AI agent steps. Our machine has cycles (a QA failure sends work back), so durable state lives in the state store and each flow handles one transition. Approval steps suspend a flow until resumed through a URL, and they appear in Slack and Teams, which is the likely route for approving from a phone (to verify).
+
+**Contract fields.** Every state and transition fills these in.
+
+| Field | Applies to | Question it answers |
+|---|---|---|
+| Purpose | State | What single responsibility does this state own? |
+| Input | State | What must be true when work enters? |
+| Output | State | What may it produce? |
+| Evidence to exit | State | What proof is required to leave? |
+| Tools and permissions | State | What may the bot use, and what is denied? |
+| Budget | State | How many turns, minutes and dollars may it spend? |
+| Side effects | State | Is it reversible, repeatable, or approval-required? |
+| Failure | State | What is retryable, terminal, or needs a human? |
+| Trigger | Transition | What event activates it? |
+| Guard | Transition | What must be true to take it? |
+| Timeout | Transition | How long before it escalates? |
+| Fallback | Transition | Where does a failure go? |
+
+### Machine 2 contracts (draft)
+
+Every transition below is taken by the runner, never by a bot. A bot reports that its work is done, and the runner checks the guard against evidence it can verify itself (CI results, the state store, a recorded approval) before the item moves. Where a timeout depends on a bot's budget, the row says so, because budgets are not set yet (section 10). The failure counter escalates an item at 3 failures (decided Oct 28, 2026). All rows are Proposed until Didi confirms them.
+
+**Reconcile loop.** Every 5 minutes (decided Oct 28, 2026) the runner reads the state store, finds items whose guard now holds (a blocker finished, a CI run passed) and items that are ready but not running, and takes those transitions. Events make this faster, and the loop is the backstop, so a missed event cannot leave an item idle.
+
+**Code, infrastructure and docs tracks**
+
+| Transition | Trigger and guard | Evidence to exit | Timeout and fallback |
+|---|---|---|---|
+| Blocked to Ready for dev | Trigger: a blocking item reaches Done, or the reconcile loop finds no open blockers. Guard: every blocker is Done, and for a design blocker its spec is merged on main. | Blocker records in the state store. Merge commit of the spec. | Timeout: next reconcile cycle. Fallback: stays Blocked with the blocker named. A blocker that has stalled is flagged by the stall check. |
+| Ready for dev to In development | Trigger: the item enters Ready for dev, or the reconcile loop finds it ready and not running. Guard: no open blockers and no pending gate request on the item. For UI work the Developer builds only from the spec merged on main, never from the design branch. | Dispatch record: agent, branch and time. | Timeout: next reconcile cycle. An item still not running after that is a bug: it goes on the attention list and the daily check, and becomes a phone alert after an hour. Fallback: stays Ready for dev and the loop retries. Repeated dispatch failures count toward escalation. |
+| In development to In QA review | Trigger: the Developer reports the work is done and names the PR. Guard: the PR is linked, CI is green on its current head commit, and docs are updated or the item states no docs impact. | CI result for the head commit. PR link. Docs note. | Timeout: the Developer's budget (not set). An overrun or a loop stops the item and sends it to the Council. Fallback: stays In development and the failure counter goes up by one. |
+| In QA review to Verifying on staging (pass) | Trigger: QA reports a pass on the preview branch. Guard: on the PR's current head commit, CI is green, tests ran, the preview branch works as checked by a bot, and docs are updated or no impact is stated. QA ran on a different model than the builder. If the PR touches a privileged path (migrations, PII, deploy workflows, .github, secrets), Didi has approved it. If the repo deploys on push to main, its production environment is set to require Didi's approval before the PR merges. The runner then merges the PR. | CI run. Test report. Preview check record. QA verdict naming the commit it covers. Didi's approval record for privileged paths. Merge commit. | Timeout: the QA bot's budget (not set). Re-dispatch once, then the Council. Fallback: stays In QA review with the missing condition named, for example a gate request for Didi. |
+| Verifying on staging to Done | Trigger: main has deployed the merge commit to staging. Guard: a bot confirms the change works on staging. | Staging check record for the merge commit. | Timeout: the QA bot's budget (not set). Re-dispatch once, then the Council. Fallback: if the check fails, the item goes back to In development and the failure counter goes up by one. The third failure goes to Escalated to Council. |
+| In QA review to In development (fail) | Trigger: QA reports a fail. Guard: the verdict lists its findings and the commit it covers, and this is not the third failed round. | Findings and round count in the state store. | Timeout: none. Fallback: the third failed round goes to Escalated to Council. |
+
+**Design track**
+
+| Transition | Trigger and guard | Evidence to exit | Timeout and fallback |
+|---|---|---|---|
+| Ready for design exploration to In design exploration | Trigger: the item enters the state, or the reconcile loop finds it ready and not running. Guard: the product direction from the interview and the approved plan are attached to the item. | Dispatch record. | Timeout: next reconcile cycle. Fallback: stays ready and the loop retries. |
+| In design exploration to Waiting for Didi | Trigger: the Designer submits visual options. Guard: the options are attached as links or screenshots, and the runner has created one visual-approval request with a topic key. For a small tweak, the request goes to the Council instead of Didi. | Links to the options. The request id. | Timeout: the Designer's budget (not set). An overrun goes to the Council. Fallback: stays In design exploration and the failure counter goes up by one. |
+| Waiting for Didi to Writing spec | Trigger: Didi approves. Guard: an approval record exists for this option, saved verbatim with the time and scope. Nothing auto-approves. | The approval record. | Timeout: none. The request shows again in each daily check. Fallback: if Didi asks for changes or rejects, the item returns to In design exploration with his words attached. |
+| Writing spec to Building components | Trigger: the Designer reports the spec is written. Guard: the spec sits at `design/<area>/<feature>/` with spec.md and a mockups folder, only the Designer edited it, and it adds no new feature or user flow beyond the approved plan. | Spec paths and commit. | Timeout: the Designer's budget (not set). Fallback: a scope change goes to Escalated to Didi. Any other failure stays in Writing spec and the failure counter goes up by one. |
+| Building components to In QA review | Trigger: the Designer reports the components are built. Guard: the gallery builds, CI is green on the head commit, and every component the spec lists exists. | CI result. Component screenshots for the comparison. | Timeout: the Designer's budget (not set). Fallback: stays Building components and the failure counter goes up by one. |
+| In QA review to Verifying on staging (pass) | Trigger: QA reports a pass on the preview branch. Guard: on the current head commit, CI is green, a visual comparison of the components against the spec passed, docs are updated or no impact is stated, and QA ran on a different model than the Designer. The runner then merges the PR. | Comparison result. CI run. Preview check record. Merge commit. | Timeout: the QA bot's budget (not set). Re-dispatch once, then the Council. Fallback: stays In QA review with the missing condition named. |
+| Verifying on staging to Done | Trigger: main has deployed the merge commit to staging. Guard: a bot confirms the components work on staging, and the spec and components are merged on main. | Staging check record for the merge commit. | Timeout: the QA bot's budget (not set). Re-dispatch once, then the Council. Fallback: if the check fails, the item goes back to Building components and the failure counter goes up by one. On Done, the runner adds a Spec section to the linked developer item (merge commit, paths on main, final decisions) and releases it from Blocked. |
+| In QA review to Building components (fail) | Trigger: QA reports a fail. Guard: the verdict lists its findings and the commit it covers, and this is not the third failed round. | Findings and round count in the state store. | Timeout: none. Fallback: the third failed round goes to Escalated to Council. |
+
+**Escalation**
+
+| Transition | Trigger and guard | Evidence to exit | Timeout and fallback |
+|---|---|---|---|
+| Any state to Escalated to Council | Trigger: a bot reports a big decision or a problem it cannot resolve, the failure counter reaches 3, an item loops or runs over budget, or QA fails a third round. Guard: the runner checks the counter, budget and round triggers itself. A bot's own request is saved with its written reason. | The counter, the budget log, or the bot's written reason. | Timeout: the Council's budget (not set). Fallback: if the Council cannot resolve it, the item goes to Escalated to Didi. |
+| Escalated to Council to the state it came from | Trigger: the Council records a decision. Guard: the decision is saved with its owner and date, and it does not change the approved product direction or pass a gate without approval. | The decision record. | Timeout: not set. Fallback: a decision that changes product direction or scope goes to Escalated to Didi. |
+| Escalated to Council to Escalated to Didi | Trigger: the Council says it cannot resolve the item, or the decision changes product direction, scope or a gate. Guard: the question is saved as a gate request with a topic key. | The gate request and the Council's note. | Timeout: none. The request shows again in each daily check. Fallback: the item stays blocked with Didi named as the reason, and other items keep running. |
+| Escalated to Didi to the state it came from | Trigger: Didi answers. Guard: the answer is saved verbatim with the time and scope. If it reverses an earlier approval, work that depended on that approval is marked stale, and the Council decides what to redo. | The answer record. | Timeout: none. Fallback: not applicable. |
+
+### Linear status mapping (draft)
+
+These are the 16 statuses in the Didi Build team today, mapped to the Machine 1 and Machine 2 states. At cutover the runner becomes the only writer of these statuses, and Linear mirrors the state store. The runner writes through Linear's own API under its own app identity, not through the MCP, which cannot create or rename statuses, and it does so behind an adapter so Linear can be swapped out later. To verify: that Linear's API can create statuses and let an app act under its own identity. The new statuses and the renames are one-time setup before cutover. Linear is dropped once our own frontend covers the daily check, the attention list and gate approvals from the phone (decided Oct 28, 2026). Which status changes a human may make in Linear is still open (section 10).
+
+| Spec state | Linear status today | Proposed |
+|---|---|---|
+| Blocked | Blocked | Keep. |
+| Ready for dev | Ready for dev | Keep. |
+| In development | In development | Keep. |
+| In QA review | In QA Review | Keep. |
+| Verifying on staging | In QA Review | Same status as In QA review. The state store records the substep. |
+| Done | Done | Keep. |
+| Ready for design exploration | Ready to explore design | Rename to Ready for design exploration. |
+| In design exploration | In design exploration | Keep. |
+| Waiting for Didi | ready for maintainer | Rename to Waiting for Didi. Today the status is used two ways, to park a design item and for a separate blocking item. In v2 it means one thing: the item waits for Didi. |
+| Writing spec | in design dev | Keep in design dev. The state store records whether the item is in Writing spec or Building components. |
+| Building components | in design dev | Same status as Writing spec. |
+| Escalated to Council | None | New status. |
+| Escalated to Didi | None | New status. |
+| None | Ready for design dev | Retire. It means design approved and waiting for the Designer. Approval now moves the item straight to Writing spec, and the runner dispatches at once. |
+| None | Ready for review | Retire. It means a PR is waiting for QA to pick it up, and the runner dispatches QA at once. |
+| Triage | Ready for CTO breakdown | Rename to Triage. Today it mixes planning and splitting. Planning gets its own status, Council planning. |
+| Submitted | Ready for triage | Rename to Submitted. |
+| Parked | icebox | Keep. |
+| Rejected | Duplicate, Canceled | Rejected maps to Canceled. Duplicate stays for true duplicates. |
+| Interview | None | New status. |
+| Council planning | None | New status. |
+| Needs Didi | ready for maintainer | Shares Waiting for Didi with design approval. The state store records which one it is. |
+| Plan accepted | None | Shares the Triage status, since Triage is dispatched at once. |
+| Handed off | Done | Done. The idea machine is finished here, and progress lives on the work items. |
+
+### State store schema (draft)
+
+The starting shape of the state store on managed Postgres: the tables and what each holds. Column types and migrations come after Didi confirms this shape. All of it is Proposed.
+
+| Table | What it holds |
+|---|---|
+| projects | One row per project: repo, Linear project, gallery path, extra privileged paths. |
+| nodes | Ideas and work items, with type, track, current state, owner role, stale flag, Linear issue id and a version number. |
+| edges | Links between nodes: blocks, split into (idea to work items) and design for (design item to developer item). |
+| transitions | Append-only log of every state change: from, to, trigger, who did it (runner, bot name or Didi), guard result and spec version. |
+| evidence | Immutable proof: CI run, test report, preview check, staging check, QA verdict, merge commit, spec paths. Each row records the commit it covers. |
+| decisions | Didi's approvals and answers, and the Council's decisions, saved verbatim with time and scope. A reversal marks the row reversed, and the nodes that depended on it go stale. |
+| gate_requests | The attention list: topic key, kind, owner (Didi or Council), blocking or not, and status. Only one open request per topic key. |
+| runs | Every bot or agent dispatch: model, turns, minutes, cost and outcome. Feeds budgets, the spend alert and the stall check. |
+| counters | Failures and QA rounds per node and state, for the 3-failure rule. |
+
+**Rules the schema enforces.**
+
+- A state change is one database transaction: the runner writes the transition row and updates the node together, and fails if the node's version changed. This stops two runner jobs from moving the same item.
+- Transitions and evidence are only added, never edited.
+- The runner reads the contracts from this spec at a version, and each transition records the version it used.
+- After cutover, Linear is written from this store and never read as truth.
+
+**Judgment calls.** One nodes table holds ideas and work items, told apart by a type column. Counters are stored, not derived from the transition log, which is simpler to query but one more thing to keep correct.
+
+**Build order (dogfooding).** The first project through the system is the system itself. Each piece should make the next one easier to build. Proposed order: the state store with a tiny API first, seeded with the system's own work items, then the Windmill transitions for every Machine 2 contract, then one cutover from the Grok routines to the runner (decided Oct 28, 2026: all at once, not one transition at a time), then the viewer and the intake agent. Before the cutover, a dry run imports the current Linear state into the store and checks what the runner would do next, without acting. After the cutover, Linear is a mirror and the runner writes every status. The Grok routines are disabled, not deleted, and a kill switch pauses the runner. Grok routines may do the early building but are not the runner. Didi's gates stay fully on during bootstrap, and a manual way to stop or override everything stays available.
+
+**Frontend.** Once the system is running, it builds the frontend for the attention list and the viewer.
+
+**Toolbox.** The first tools bots need are for GitHub (repos, pull requests, CI) and for deploying (Cloudflare Workers and staging). Part of this exists in Project Factory v1: creating a repo from the template, creating a Linear project, and provisioning Cloudflare Workers. Project Factory's MCP server is the seed of the toolbox. Infrastructure is declared as code (Terraform or OpenTofu, chosen in an ADR), so what is set up and where is always visible in a repo, and a plan is the exact diff a gate shows Didi. Cloudflare appears only in the deploy adapter, and the library and the state API stay portable. Kubernetes is the planned target of the second release, and the first release is built so the switch is easy (decided Oct 28, 2026). Proposed: each tool declares a side-effect type (read, write, needs approval, or only Didi), and the runner refuses to call a needs-approval tool without an approval attached, so the gates are enforced by the toolbox itself.
+
+**Sources.** [Graph engineering architect guide](https://www.frankx.ai/blog/graph-engineering-ai-agents), [Hermes Kanban as a worker graph](https://www.frankx.ai/blog/graph-engineering-hermes-agent), [Graph engineering vs loop engineering](https://www.louisbouchard.ai/graph-engineering-explained/), [Towards a Science of Scaling Agent Systems](https://arxiv.org/html/2512.08296v1), [Anthropic on multi-agent systems](https://claude.com/blog/building-multi-agent-systems-when-and-how-to-use-them), [OpenFlow spec](https://www.windmill.dev/docs/openflow), [Graph Engineering survey](https://arxiv.org/abs/2608.21156).
+
+## 10. Open questions
+
+- Rules that only live in the Grok routines are not captured yet. They need to be pulled out and added here.
+- The rest of the Triage rubric: how to tell infrastructure, docs and code apart.
+- Which credentials the runner can issue as temporary credentials.
+- Whether Windmill's approval pages work well on a phone. GitHub Mobile already covers production deploy approvals.
+- Where this file lives: the Project Factory v2 repo, once it exists.
+- Fill in the rest of the bot definition for each role: tools and permissions, and the budget numbers. Models and Developer dispatch counts are in the bot assignments table (section 2).
+- How Linear stays in sync as a mirror of the state store, and which actions humans can take through it.
+- State store schema: nodes, edges, transitions, evidence and counters. Also which managed Postgres provider and region to use (check free-tier limits and whether a Canadian region is offered).
+- Whether the spec should generate Windmill flows in OpenFlow format automatically.
+- Whether the runner can start Grok (QA) and Cursor agents and read their results without a person, and what role Cursor agents take.
+- How deep the context graph needs to go, and when facts that change over time justify a temporal knowledge graph.
+- Which states need a reasoning model, and the cost budget for each.
+- Toolbox contents: which tools bots call, and which already exist.
+- A stall check for running items that stop making progress (an item that is ready but not running is a bug, see section 1).
+- Which push app and call service to use (check current pricing), and which bot flags data loss or PII exposure.
+- Severity rules: what counts as a blocking gate versus an urgent incident.
+- The full toolbox inventory (tool, built in v1 or not, side-effect type, gate), which is deferred for now.
+- Which question types the interview uses.
+- What counts as a small visual tweak, which the Council approves instead of Didi.
+- Which standard path the component gallery uses in every repo. It is set in Launchpad, and we-met, physio-poc and Quorum need to move to it.
+- The default privileged-path list in Launchpad. Repos can add paths to it. Only we-met has a list today, so Launchpad and Quorum have none.
