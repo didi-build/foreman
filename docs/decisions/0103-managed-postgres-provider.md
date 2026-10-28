@@ -1,6 +1,6 @@
 # 0103. Managed Postgres provider and region
 
-- **Status:** proposed. The provider, any spend and the credentials need Didi's approval before a database is created (M0.5 review point).
+- **Status:** accepted for step 1 (Didi, 2026-10-28: "I approve. I'm still out so I can't generate the keys yet but I approve of supabase"). Recorded as D-140. Didi creates the project and its credentials. Step 2 (the plan before cutover, and its spend) is still Didi's decision when it comes.
 - **Date:** 2026-10-28
 - **Related:** O-01, D-118, [build plan M0.5](../build-plan.md#m05-choose-the-managed-postgres-provider-o-01)
 
@@ -27,7 +27,7 @@ A loop that connects every 5 minutes keeps a scale-to-zero database awake all mo
 | Render, Railway, Xata, Prisma Postgres | **No**                    |                                                     |                                            | Ruled out: no Canadian region.                                                                                                                                                                     |
 | Nile                                   | No                        |                                                     |                                            | Ruled out: no triggers.                                                                                                                                                                            |
 
-## Proposal (Didi decides)
+## Decision
 
 1. **Now, for Milestones 1 to 5 (no real data): Supabase Free in `ca-central-1`.** It costs nothing, has a Canadian region and full roles and triggers. Because Free has no backups, add a nightly `pg_dump` job until the upgrade.
 2. **Before cutover (M6), when the store holds real state: move to a plan with point-in-time recovery.** Either Supabase Pro (about $25 a month, same database) or DigitalOcean Toronto ($15 a month, recovery included). Spend is Didi's decision at that point.
