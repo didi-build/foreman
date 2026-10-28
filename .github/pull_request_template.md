@@ -10,6 +10,8 @@ Linear: DIDI-
 
 ## How verified
 
+Head commit: <!-- the commit SHA these checks ran on -->
+
 - [ ] `npm run check`
 - [ ] _Other manual checks, if any_
 
