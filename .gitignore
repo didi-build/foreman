@@ -40,3 +40,13 @@ Thumbs.db
 # Tooling caches
 .eslintcache
 .cache/
+
+# OpenTofu (ADR 0110): state lives in R2, never in the repo
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.out
+plan.txt
+plan.json
+crash.log
