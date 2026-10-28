@@ -20,5 +20,6 @@ Project docs live here so humans and agents share the same map.
 | [cutover.md](./cutover.md)                                                         | Moving from the Grok routines to the runner                                       |
 | [grok-mapping.md](./grok-mapping.md)                                               | What every Grok routine, rule and gate becomes in v2                              |
 | [implementation-brief.md](./implementation-brief.md)                               | Prompt for starting an implementing agent on a milestone                          |
+| [spikes/](./spikes/)                                                               | Milestone 0 spike records: questions, desk results, run results                   |
 
 Start with architecture and decisions before feature code. See [AGENTS.md](../AGENTS.md). The reading order for the Project Factory v2 documents is in the [README](../README.md#read-in-this-order).

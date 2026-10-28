@@ -14,10 +14,12 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "types": ["node", "vite/client"],
-    "allowJs": true
+    "allowJs": true,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "src/**/*.ts",
+    "spikes/**/*.ts",
     "gallery/**/*.ts",
     "gallery/**/*.tsx",
     "components/**/*.ts",
