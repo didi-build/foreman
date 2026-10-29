@@ -78,6 +78,7 @@ Goal: a clean repo, the risky unknowns checked, and the provider chosen. The Lin
 
 ### M0.7 Infrastructure as code baseline (Proposed, D-133)
 
+- Moved: ADR 0110 is accepted; the scratch proof runs at the start of M3.7 on the rehearsal project instead (D-174). Milestone 0 does not wait on it.
 - What: choose the tool (Terraform or OpenTofu), the state backend and the secrets approach, and prove the baseline on a scratch project: declare its Cloudflare resources, apply, and show a clean plan.
 - Why: visibility of what is set up and where, and plans that gates can show.
 - How: check current Cloudflare provider support and free tiers for state storage. Create an `infra/` layout that matches Launchpad's conventions. Never put secret values in code, state output or plans. Write ADR 0110.
@@ -230,6 +231,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - Why: infrastructure changes become reviewable and gateable.
 - How: a PR that touches `infra/` makes the runner run a plan and save its summary as evidence. A plan that includes DNS changes, new secrets or wider permissions, or deletions opens the matching gate request with the plan attached. The runner applies only after approval. Staging applies with none of those are free to run. Drift is reported by a plan in the reconcile pass.
 - Constraints: production applies are never done by the runner. Cloudflare-specific code lives only in this adapter.
+- First: run the proof moved from M0.7 (D-174) on the rehearsal project and the first deploy target: after apply a second plan is a no-op, a deliberate change shows as a diff, two plans at once hit the state lock, and no secret appears in plan or state. Which target comes first is N-29.
 - Success: tests show a plan with a DNS change opens a gate and waits, an approved plan applies, a deletion opens the drop-data gate, and a drift report does not apply anything. The adapter contract test passes against the Cloudflare implementation and a fake second target.
 
 Verification for M3: in the rehearsal project, one item passes each track to Done, each fail path reopens the item and increments the counter, and the third failure escalates. (Review point: Didi watches or reviews a recorded rehearsal.)

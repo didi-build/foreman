@@ -1,6 +1,6 @@
 # 0110. Infrastructure as code: tool, state, secrets and layout
 
-- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. M0.7 stays open until the scratch-project proof runs. The scratch-project proof waits for a scratch Cloudflare account or zone and a token, which are gates for Didi.
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174).
 - **Date:** 2026-10-28
 - **Related:** O-08, D-133, D-134, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
 
