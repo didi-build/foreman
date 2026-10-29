@@ -78,6 +78,8 @@ insert into factory.decision_point_records (id, project_id, decision_point, deci
   values ('${ID.record}', '${ID.project}', 'triage_track', 'rule-v1', '${"b".repeat(64)}', '{"track": "code"}', 0.9, ${AT});
 insert into factory.decision_point_outcomes (id, record_id, outcome, recorded_by, recorded_at)
   values ('${ID.outcome}', '${ID.record}', '{"correct": true}', 'runner', ${AT});
+insert into factory.github_deliveries (delivery_id, event_type, repository, received_at, outcome, reason)
+  values ('delivery-1', 'pull_request', 'didi-build/rehearsal', ${AT}, 'ignored', 'fixture');
 `;
 
 const APPEND_ONLY = [
@@ -89,6 +91,7 @@ const APPEND_ONLY = [
   "decision_point_records",
   "decision_point_outcomes",
   "settings_log",
+  "github_deliveries",
 ];
 
 describe("database integration (test environment guard)", () => {
@@ -122,14 +125,17 @@ describe.skipIf(!adminUrl)(
       expect(tables.ok, tables.err).toBe(true);
       expect(tables.out).toBe("");
       const count = sql("select count(*) from pg_tables where schemaname = 'factory';");
-      expect(Number(count.out)).toBe(17);
+      expect(Number(count.out)).toBe(18);
     });
 
     /** A time column each append-only table has, for an UPDATE that touches every row. */
     const timeColumn = (table: string): string =>
-      ({ spec_versions: "loaded_at", transitions: "at", settings_log: "changed_at" })[
-        table
-      ] ?? "recorded_at";
+      ({
+        spec_versions: "loaded_at",
+        transitions: "at",
+        settings_log: "changed_at",
+        github_deliveries: "received_at",
+      })[table] ?? "recorded_at";
 
     it.each(APPEND_ONLY)(
       "never changes or removes a row in %s, even for the owner",

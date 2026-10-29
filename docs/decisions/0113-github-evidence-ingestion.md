@@ -65,6 +65,21 @@ For each node with a linked open PR, the reconcile pass fetches the PR's current
 - The webhook secret and the runner App's private key are read by path and never logged, echoed or stored.
 - Logs carry the delivery id, event type, repository, PR number and outcome. Never payload text, branch names from forks, or author names.
 
+### 9. Settled by the implementation (M2.3)
+
+Details the sections above left open, as built in `src/core/github-ingest.ts`, `src/adapters/github/`, `src/github-receiver/` and `db/migrations/0002_github_ingest.sql`:
+
+- **Dispatch record payload:** `{repo: "owner/name", branch}`. Linking reads the repository from it, so `factory_ingest` needs no read on `projects`.
+- **App identities:** the receiver reads the Developer and Designer App logins from `GITHUB_DEVELOPER_APP_LOGIN` and `GITHUB_DESIGNER_APP_LOGIN`. They are set when the Apps are registered at M3.
+- **Secret by path:** `secret(path)` in `src/service-kit/config.ts` reads the path from one environment variable, `SECRET_` plus the path in upper snake case (`SECRET_PLATFORM_GITHUB_RUNNER_WEBHOOK_SECRET`), which the host fills from the secret store. This is the first piece of the ADR 0111 section 4 interface.
+- **Every `ci_run` checks the live head,** the pending one too: an out-of-order `synchronize` for an older commit records nothing. A `pending` row is skipped when the commit already has a `ci_run`, so it never hides a finished result.
+- **Conclusion:** every check run on the sha except the one named `QA`. Nothing is recorded while any of them is unfinished or when there are none. `success`, `neutral` and `skipped` pass; any other conclusion fails.
+- **Keys and refs:** `github:ci_run:<repo>#<pr>:<sha>:<conclusion>` and `github:merge_commit:<repo>#<pr>`. The evidence `ref` is the key. A check constraint allows a key only on `ci_run` and `merge_commit`, so no other writer can take a key first and block a real result.
+- **Outcomes:** `ignored` covers linked-nothing, stale and not-evidence events, with a short fixed reason. `rejected` is a signed payload ingestion cannot read (answered 400). A bad signature (401) and an event type outside the table (202) store nothing. The delivery row and its evidence commit in one transaction, so a replayed id writes nothing even when two copies race.
+- **Delivery ids:** "on conflict do nothing" needs to see existing ids, so `factory_ingest` may read `github_deliveries.delivery_id` and no other column.
+- **Polling:** `pollRepository(deps, repo)` records the current head's result for each open PR (pending while checks run), and the merge for each dispatched node whose last PR is no longer open.
+- **Real client:** `src/adapters/github/client.ts` checks signatures and refuses every read until M3.
+
 ## Constraints
 
 - No real GitHub App, webhook URL or secret is created in M2.3 (D-178). Everything runs against the fake.

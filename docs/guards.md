@@ -13,6 +13,8 @@ The 24 guards from ADR 0105's guard list, as built in M2.2. Code: `src/core/guar
 
 A guard that reads "on the current head commit" takes the head from the most recent `ci_run` evidence on the node (latest `recordedAt`, then id). GitHub ingestion (M2.3) records a `ci_run` for every new head commit as soon as its checks start, with conclusion `pending`, so the latest `ci_run` names the head. Evidence for any other commit is stale and ignored. No `ci_run` means no linked PR yet, and every head-commit guard fails.
 
+GitHub ingestion (`src/core/github-ingest.ts`, ADR 0113) keeps this true. It records a `ci_run` only when the commit is the PR's head as GitHub reports it at that moment, so a late event about an older commit records nothing. It skips a `pending` row when the commit already has a `ci_run`, so a late or repeated `pending` never hides a finished result. A check rerun that changes the result on the head records a new row, which becomes the newest.
+
 Head-scoped guards: `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `spec_components_exist`.
 
 A `docs_note` written by an agent through the state API carries no commit. It counts for the head when it names the head commit, or when it has no commit and was recorded at or after the head's `ci_run`.
@@ -28,11 +30,14 @@ A `docs_note` written by an agent through the state API carries no commit. It co
 | `ci_run`                                              | `{conclusion: "success" \| "failure" \| "pending", pr: positive integer, changedPaths?: string[]}`                                    |
 | `preview_check`, `staging_check`, `visual_comparison` | `{pass: boolean}`                                                                                                                     |
 | `merge_commit`                                        | `{pr: positive integer}`                                                                                                              |
+| `dispatch_record`                                     | `{repo: "owner/name", branch: string}`: where the node's PR must come from (written by the runner at dispatch, M3.2; ADR 0113)        |
 | `docs_note`                                           | `{impact: "updated" \| "none", note?: string}`                                                                                        |
 | `qa_verdict`                                          | `{verdict: "pass" \| "fail", findings: [{path, startLine, endLine, note}], evidenceIds: string[]}` (as `src/api/routes.ts` stores it) |
 | `spec_paths`                                          | `{paths: non-empty string[], components: string[], commits: non-empty [{sha, author}], newFeatures: string[], newFlows: string[]}`    |
 | `test_report`                                         | `{suite: string, pass: boolean, galleryComponents?: string[]}`                                                                        |
 | `agent_report`                                        | `{summary?: string, escalate?: boolean, reason?: string}`                                                                             |
+
+`ci_run` and `merge_commit` rows written by GitHub ingestion have `recordedBy` `github`, no run, and a `ref` equal to their ingest key (`github:ci_run:<repo>#<pr>:<sha>:<conclusion>`, `github:merge_commit:<repo>#<pr>`). Ingestion always fills `changedPaths`.
 
 ## Topic keys and decision conventions
 

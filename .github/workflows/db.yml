@@ -7,6 +7,8 @@ on:
       - "test/db/**"
       - "src/core/**"
       - "src/adapters/store-postgres/**"
+      - "src/adapters/github/**"
+      - "test/github-fixture.ts"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/db.yml"

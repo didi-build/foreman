@@ -263,6 +263,28 @@ export interface DecisionPointOutcome {
   recordedAt: Date;
 }
 
+export type GithubDeliveryOutcome = "recorded" | "ignored" | "rejected";
+
+/** One GitHub webhook delivery the receiver handled (ADR 0113 section 3). Never the payload. */
+export interface GithubDelivery {
+  /** `X-GitHub-Delivery`. */
+  deliveryId: string;
+  eventType: string;
+  /** `owner/name`, or null when a signed payload named none. */
+  repository: string | null;
+  receivedAt: Date;
+  outcome: GithubDeliveryOutcome;
+  /** A short fixed reason from the ingestion code, never text from the payload. */
+  reason: string | null;
+}
+
+/** A node's latest `dispatch_record`: the repository and branch its PR must come from. */
+export interface Dispatch {
+  nodeId: string;
+  repo: string;
+  branch: string;
+}
+
 /** A write the store refused because of a uniqueness rule, for example a second open gate request. */
 export class StoreConflictError extends Error {
   readonly constraint: string;
@@ -312,11 +334,26 @@ export interface StoreOps {
   listTransitions(nodeId: string): Promise<Transition[]>;
 
   insertEvidence(evidence: Evidence): Promise<void>;
+  /**
+   * Inserts evidence under an ingest key unless evidence with that key exists (ADR 0113).
+   * Returns true when it inserted, false when the fact was already recorded.
+   */
+  insertEvidenceOnce(evidence: Evidence, ingestKey: string): Promise<boolean>;
   listEvidence(filter: {
     nodeId: string;
     commitSha?: string;
     kind?: EvidenceKind;
   }): Promise<Evidence[]>;
+
+  /**
+   * Each node's latest `dispatch_record` that names `repo` (and `branch`, when given). A node
+   * whose latest dispatch names another repository or branch is not returned.
+   */
+  listDispatches(filter: { repo: string; branch?: string }): Promise<Dispatch[]>;
+
+  /** Records a webhook delivery. Returns false, writing nothing, if its id was already recorded. */
+  recordGithubDelivery(delivery: GithubDelivery): Promise<boolean>;
+  getGithubDelivery(deliveryId: string): Promise<GithubDelivery | null>;
 
   insertDecision(decision: Decision): Promise<void>;
   insertDecisionEvent(event: DecisionEvent): Promise<void>;

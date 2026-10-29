@@ -49,6 +49,21 @@ export function port(env: string, fallback?: string): Setting<number> {
   };
 }
 
+/**
+ * The environment variable that carries the secret at `path` (ADR 0111 section 4), for example
+ * `platform/github/runner-webhook-secret` becomes `SECRET_PLATFORM_GITHUB_RUNNER_WEBHOOK_SECRET`.
+ * The host fills it from the secret store (Windmill resources now, Vault later); code only ever
+ * names the path.
+ */
+export function secretEnvName(path: string): string {
+  return `SECRET_${path.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+}
+
+/** A required secret, asked for by path. Like every setting, problems name it, never its value. */
+export function secret(path: string): Setting<string> {
+  return text(secretEnvName(path));
+}
+
 /** Read every setting, collecting all problems before failing, so one start shows every fix needed. */
 export function readConfig<S extends Record<string, Setting<unknown>>>(
   settings: S,

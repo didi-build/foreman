@@ -100,6 +100,7 @@ Enforcement: no UPDATE or DELETE for any application role (revoke, or a trigger 
 | recorded_by   | text        | Actor id                                                                                                                                                                 |
 | recorded_at   | timestamptz |                                                                                                                                                                          |
 | supersedes_id | uuid null   | A new record replaces an old one without editing it                                                                                                                      |
+| ingest_key    | text null   | Unique. Set only by GitHub ingestion, only on `ci_run` and `merge_commit` (migration 0002, ADR 0113), so webhooks and polling record a fact once                         |
 
 Rule: a guard reads only evidence whose `commit_sha` equals the PR's current head commit. A new commit makes earlier verdicts stale automatically.
 
@@ -205,6 +206,21 @@ Rules (Proposed interpretation, to confirm in the M1 ADR):
 | `spend_alert_usd`                 | to set             | Alert threshold. Work continues                                                                     |
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
+
+## github_deliveries (append-only, migration 0002)
+
+One row per GitHub webhook delivery the receiver authenticated (ADR 0113 section 3). Never the payload.
+
+| Column      | Type        | Notes                                                     |
+| ----------- | ----------- | --------------------------------------------------------- |
+| delivery_id | text pk     | `X-GitHub-Delivery`. A replayed id records nothing new    |
+| event_type  | text        | `X-GitHub-Event`                                          |
+| repository  | text null   | `owner/name`, null when a signed payload named none       |
+| received_at | timestamptz |                                                           |
+| outcome     | text        | `recorded`, `ignored`, `rejected`                         |
+| reason      | text null   | A short fixed reason from the ingestion code, at most 200 |
+
+Roles: the receiver's `factory_ingest` inserts rows and can read only `delivery_id` (needed to skip a known id). The runner reads them for the daily check.
 
 ## spec_versions
 
