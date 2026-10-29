@@ -153,25 +153,26 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 
 ## runs
 
-| Column               | Type         | Notes                                                                           |
-| -------------------- | ------------ | ------------------------------------------------------------------------------- |
-| id                   | uuid pk      |                                                                                 |
-| project_id           | uuid fk      |                                                                                 |
-| node_id              | uuid null    |                                                                                 |
-| bot                  | text         | Role bot name                                                                   |
-| agent_id             | text null    |                                                                                 |
-| runtime              | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                          |
-| model                | text         |                                                                                 |
-| bot_version          | text         | Prompt, model and schema version behind the result                              |
-| started_at, ended_at | timestamptz  |                                                                                 |
-| outcome              | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted` |
-| turns                | integer null |                                                                                 |
-| minutes              | numeric null |                                                                                 |
-| cost_usd             | numeric null |                                                                                 |
-| tokens               | jsonb null   |                                                                                 |
-| budget               | jsonb        | The limits applied to this run                                                  |
-| parent_run_id        | uuid null    | A bot run that dispatched agents                                                |
-| transcript_ref       | text null    | Where the transcript is kept. Never inline secrets                              |
+| Column               | Type         | Notes                                                                                            |
+| -------------------- | ------------ | ------------------------------------------------------------------------------------------------ |
+| id                   | uuid pk      |                                                                                                  |
+| project_id           | uuid fk      |                                                                                                  |
+| node_id              | uuid null    |                                                                                                  |
+| bot                  | text         | Role bot name                                                                                    |
+| agent_id             | text null    |                                                                                                  |
+| runtime              | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                           |
+| model                | text         |                                                                                                  |
+| head_sha             | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112) |
+| bot_version          | text         | Prompt, model and schema version behind the result                                               |
+| started_at, ended_at | timestamptz  |                                                                                                  |
+| outcome              | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                  |
+| turns                | integer null |                                                                                                  |
+| minutes              | numeric null |                                                                                                  |
+| cost_usd             | numeric null |                                                                                                  |
+| tokens               | jsonb null   |                                                                                                  |
+| budget               | jsonb        | The limits applied to this run                                                                   |
+| parent_run_id        | uuid null    | A bot run that dispatched agents                                                                 |
+| transcript_ref       | text null    | Where the transcript is kept. Never inline secrets                                               |
 
 ## counters
 
