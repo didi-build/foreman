@@ -43,7 +43,7 @@ Form (D-160): after the runner validates a verdict, the runner posts one check r
 - The agent may read more through a read-only file tool (read, search, list). No shell, no edit tools, and no running repository code.
 - Each file read is logged with its path and content hash.
 - Before anything goes to a model provider, the runner refuses deny-listed paths (environment, key and state files, known secret patterns) and runs the secret-value scan (`scripts/find-secret-values.mjs`). A hit fails the run closed.
-- The container has no network access except the model endpoint and the state API.
+- The container has no network access except the model endpoint and the state API. **Depends on ADR 0106** (not written yet), which must state this egress rule and where the container runs before M3.2 starts.
 
 ### Verdict path (D-159, ADR 0102)
 
@@ -80,7 +80,7 @@ Before the first QA run, Anthropic's API terms are checked against D-154: no tra
 
 ### Where it runs (D-159)
 
-There is no App service. The App is only a registered identity. QA runs as a Claude container job through the runtime adapter (ADR 0106), and as a pod in the second release.
+There is no App service. The App is only a registered identity. QA runs as a Claude container job through the runtime adapter, and as a pod in the second release. Where that container runs, and how its network is limited, **depends on ADR 0106**.
 
 ## Tests to add (M3.2)
 

@@ -193,7 +193,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - What: adapters to start the Developer (Claude Code), QA (Claude for now, D-158; ADR 0112), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
 - How: per ADR 0106, 0107 and 0112. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
-- Constraints: one agent per item, up to 3 Developer agents per project. Each agent is scoped to one project's repo and credentials. No production access.
+- Constraints: one agent per item, up to 3 Developer agents per project. Each agent is scoped to one project's repo and credentials. No production access. ADR 0106 must be merged before this task starts, and must state where agent containers run and the egress rule ADR 0112 relies on (QA reaches only the model endpoint and the state API).
 - Success: each adapter can start an agent on a trivial task in the rehearsal project and record a run with model, turns, minutes, cost and outcome. A simulated usage-exhausted response queues and resumes.
 
 ### M3.3 Merge by the runner

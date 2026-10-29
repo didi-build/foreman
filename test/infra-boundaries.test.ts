@@ -60,6 +60,35 @@ describe("infrastructure boundary (unit: IaC guard, D-146)", () => {
     expect(at("infra/stacks/x/main.tf", text)).toEqual([]);
   });
 
+  it.each([
+    ["a resource", '{"resource": {"cloudflare_dns_record": {"x": {}}}}'],
+    ["a data source", '{"data": {"cloudflare_zone": {"z": {}}}}'],
+    ["a provider block", '{"provider": {"cloudflare": {}}}'],
+    [
+      "a provider block in list form",
+      '{"provider": [{"aws": {}}, {"cloudflare": {}}]}',
+    ],
+    [
+      "the provider source",
+      '{"terraform": {"required_providers": {"cloudflare": {"source": "cloudflare/cloudflare"}}}}',
+    ],
+    ["a file that is not valid JSON", '{"resource": '],
+  ])("rejects %s in a .tf.json stack file", (_label, text) => {
+    expect(at("infra/stacks/x/main.tf.json", text)).toHaveLength(1);
+  });
+
+  it("allows naming the target in a .tf.json file, and Cloudflare in its platform module", () => {
+    const text =
+      '{"module": {"cloudflare": {"source": "../platform/cloudflare"}}, "variable": {"deploy_target": {"default": "cloudflare"}}}';
+    expect(at("infra/stacks/x/main.tf.json", text)).toEqual([]);
+    expect(
+      at(
+        "infra/modules/platform/cloudflare/main.tf.json",
+        '{"resource": {"cloudflare_dns_record": {"x": {}}}}',
+      ),
+    ).toEqual([]);
+  });
+
   it("ignores generated lock files", () => {
     expect(
       at(

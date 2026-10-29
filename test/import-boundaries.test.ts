@@ -13,7 +13,14 @@ async function violations(filePath: string, code: string): Promise<string[]> {
 
 const coreBlocked = (rules: string[]): boolean =>
   rules.some((rule) =>
-    ["foreman/core-imports", "no-restricted-globals"].includes(rule),
+    [
+      "foreman/core-imports",
+      "no-restricted-globals",
+      "no-eval",
+      "no-implied-eval",
+      "no-new-func",
+      "no-restricted-syntax",
+    ].includes(rule),
   );
 
 describe("src/core/ boundary is an allow-list (unit: lint config guard, ADR 0101)", () => {
@@ -127,6 +134,68 @@ describe("src/core/ boundary is an allow-list (unit: lint config guard, ADR 0101
     ],
   ])("cannot be switched off with an inline %s comment", async (_label, code) => {
     expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
+  });
+
+  it.each([
+    ["eval", 'export const f = () => eval("fetch");'],
+    ["new Function", 'export const f = () => new Function("return fetch")();'],
+    [
+      "an indirect Function call",
+      'export const f = () => (0, Function)("return fetch")();',
+    ],
+    [
+      "a .constructor call",
+      'export const f = () => (() => 0).constructor("return fetch")();',
+    ],
+    [
+      "a new .constructor",
+      'export const f = () => new (() => 0).constructor("return fetch")();',
+    ],
+    [
+      "a string passed to setTimeout",
+      'export const f = () => setTimeout("fetch()", 0);',
+    ],
+  ])("rejects code built from strings: %s", async (_label, code) => {
+    expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
+  });
+
+  it("lets a core unit test import vitest, which sits next to the code", async () => {
+    const test = [
+      'import { describe, expect, it } from "vitest";',
+      'import { x } from "./example.ts";',
+      'describe("example (unit)", () => it("works", () => expect(x).toBe(1)));',
+    ].join("\n");
+    expect(await violations("src/core/example.test.ts", test)).toEqual([]);
+  });
+
+  it("does not let core code that is not a test import vitest", async () => {
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.ts",
+          'import { vi } from "vitest";\nexport const v = vi;',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps every other core rule for core unit tests", async () => {
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.test.ts",
+          'import h from "node:http";\nexport { h };',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.test.ts",
+          'export const f = () => fetch("x");',
+        ),
+      ),
+    ).toBe(true);
   });
 });
 

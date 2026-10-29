@@ -43,7 +43,7 @@ Supabase serves a REST API (PostgREST) over the database, and by default it expo
 
 ### Backups until the paid plan
 
-The runner owns them: a Windmill job runs `pg_dump` once a night (one execution a day, small against N-19), encrypts the dump before it leaves the job, and writes it to a private R2 bucket used only for backups, keeping 14 days. A restore is rehearsed once in M1. This lasts until the plan with point-in-time recovery (step 2) replaces it.
+The runner owns them: a Windmill job runs `pg_dump` once a night (one execution a day, small against N-19), encrypts the dump before it leaves the job, and writes it to a private R2 bucket used only for backups, keeping 14 days. A restore is rehearsed once in M1. Where a second copy goes (so one Cloudflare account lockout cannot lose both the backups and the infrastructure state) and where the dump's encryption key lives are open, and must be settled before cutover (N-27). This lasts until the plan with point-in-time recovery (step 2) replaces it.
 
 PlanetScale at about $5 a month is the cheapest paid option, but whether it allows the roles and triggers we need is not confirmed. It is worth a check if cost matters more than simplicity.
 

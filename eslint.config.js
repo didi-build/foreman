@@ -2,11 +2,12 @@ import eslint from "@eslint/js";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
-import foremanBoundaries from "./eslint/core-boundary.mjs";
+import foremanBoundaries, { CORE_ALLOWED_MODULES } from "./eslint/core-boundary.mjs";
 
 // Boundaries from docs/decisions/0101-repo-layout-and-tooling.md (essentials 5 and 9).
 const CODE_FILES = "**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
 const CORE_FILES = "src/core/**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
+const CORE_TEST_FILES = "src/core/**/*.test.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
 
 const cloudflareImports = {
   group: [
@@ -34,6 +35,7 @@ const coreForbiddenGlobals = [
   "module",
   "Bun",
   "Deno",
+  "Function",
 ].map((name) => ({
   name,
   message:
@@ -78,6 +80,28 @@ export default tseslint.config(
     rules: {
       "foreman/core-imports": "error",
       "no-restricted-globals": ["error", ...coreForbiddenGlobals],
+      // Code built from strings would slip past every check above.
+      "no-eval": "error",
+      "no-implied-eval": "error",
+      "no-new-func": "error",
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            ":matches(CallExpression, NewExpression)[callee.property.name='constructor']",
+          message: "src/core/ may not build functions through .constructor (ADR 0101).",
+        },
+      ],
+    },
+  },
+  {
+    // Unit tests sit next to the code (ADR 0101), so a core test file may also import the test runner.
+    files: [CORE_TEST_FILES],
+    rules: {
+      "foreman/core-imports": [
+        "error",
+        { allowedModules: [...CORE_ALLOWED_MODULES, "vitest"] },
+      ],
     },
   },
 );
