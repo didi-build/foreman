@@ -343,11 +343,11 @@ Self-improvement stage A (D-151). A scheduled, read-only scan whose findings bec
 
 Stages B to D of D-151, which are RSI Levels 1 to 3 (P-17). Planned for release 4 or later (D-152). Production deploys stay Didi's (D-007, D-149).
 
-| Stage | Level   | What                                                                                                                                                                                       | Depends on                                     |
-| ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
-| B     | Level 1 | Proposed changes to the playbook, bot files, prompts and contract thresholds as ordinary ideas, tested by replaying recorded history and shadow runs. Didi approves                        | The dependencies below, except Kubernetes      |
-| C     | Level 2 | Changes to the factory's own code in an isolated sandbox, deployed to staging, run against the current version, rolled back automatically on regression. Production promotion stays a gate | Level 1, Kubernetes (Milestone 7)              |
-| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                      | Level 2, an explicit decision per class (N-24) |
+| Stage | Level   | What                                                                                                                                                                                                 | Depends on                                     |
+| ----- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| B     | Level 1 | Proposed changes to the playbook, bot files, prompts and contract thresholds (including QA thresholds, D-153) as ordinary ideas, tested by replaying recorded history and shadow runs. Didi approves | The dependencies below, except Kubernetes      |
+| C     | Level 2 | Changes to the factory's own code in an isolated sandbox, deployed to staging, run against the current version, rolled back automatically on regression. Production promotion stays a gate           | Level 1, Kubernetes (Milestone 7)              |
+| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                                | Level 2, an explicit decision per class (N-24) |
 
 Dependencies:
 
