@@ -4,6 +4,7 @@
 import type {
   Contracts,
   GuardCheck,
+  GuardContext,
   GuardRegistry,
   StateContract,
 } from "./contracts.ts";
@@ -107,6 +108,25 @@ export function createLibrary({
     return (await store.getSetting(key))?.value === true;
   }
 
+  /** Dry run unless the setting says otherwise: a missing setting must not act for real. */
+  async function dryRunIsOn(): Promise<boolean> {
+    return (await store.getSetting("dry_run"))?.value !== false;
+  }
+
+  // Guards get read calls only, as an object of their own, so a guard cannot write even by casting.
+  const guardStore: GuardContext["store"] = {
+    getNode: (id) => store.getNode(id),
+    listEdges: (filter) => store.listEdges(filter),
+    listEvidence: (filter) => store.listEvidence(filter),
+    listTransitions: (nodeId) => store.listTransitions(nodeId),
+    getDecision: (id) => store.getDecision(id),
+    getCounter: (nodeId, kind) => store.getCounter(nodeId, kind),
+    getSetting: (key) => store.getSetting(key),
+    getRun: (id) => store.getRun(id),
+    findOpenGateRequest: (projectId, topicKey) =>
+      store.findOpenGateRequest(projectId, topicKey),
+  };
+
   async function evaluateGuards(node: Node, names: string[]): Promise<GuardCheck[]> {
     const report: GuardCheck[] = [];
     for (const name of names) {
@@ -120,7 +140,7 @@ export function createLibrary({
         });
         continue;
       }
-      report.push({ ...(await guard({ node, store })), name });
+      report.push({ ...(await guard({ node, store: guardStore })), name });
     }
     return report;
   }
@@ -199,7 +219,7 @@ export function createLibrary({
       return { outcome: "rejected", reason: "guard_failed", guardReport };
     }
 
-    const dryRun = await settingIsOn("dry_run");
+    const dryRun = await dryRunIsOn();
     const at = clock.now();
     const transition: Transition = {
       id: ids.next(),

@@ -64,7 +64,8 @@ function sequentialIds(): IdSource {
   return { next: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}` };
 }
 
-async function setup(settings: Record<string, boolean> = {}) {
+/** `null` leaves a setting out entirely. */
+async function setup(settings: Record<string, boolean | null> = {}) {
   const store = createMemoryStore();
   const clock = fixedClock();
   await store.insertProject({
@@ -84,6 +85,7 @@ async function setup(settings: Record<string, boolean> = {}) {
     dry_run: false,
     ...settings,
   })) {
+    if (value === null) continue;
     await store.setSetting({ key, value, updatedBy: "test", updatedAt: clock.now() });
   }
   await store.setSetting({
@@ -408,6 +410,58 @@ describe("state library (unit, build plan M1.3, schema invariants)", () => {
     expect(result.outcome).toBe("planned");
     expect((await store.listTransitions(node.id))[0]?.mode).toBe("dry_run");
     expect(await store.getNode(node.id)).toMatchObject({ state: "triage", version: 0 });
+  });
+
+  it("treats a missing dry_run setting as dry run, so nothing acts for real by default", async () => {
+    const { store, library, item } = await setup({ dry_run: null });
+    const node = await item();
+    expect((await library.requestTransition(move(node.id, "ready"))).outcome).toBe(
+      "planned",
+    );
+    expect(await store.getNode(node.id)).toMatchObject({ state: "triage", version: 0 });
+  });
+
+  it("gives guards read calls only, so a guard cannot write even by casting", async () => {
+    const seen: string[] = [];
+    const store = createMemoryStore();
+    const library = createLibrary({
+      store,
+      contracts: {
+        ...CONTRACTS,
+        transitions: [{ from: "triage", to: "ready", guards: ["peek"] }],
+      },
+      guards: {
+        peek: async (ctx) => {
+          seen.push(...Object.keys(ctx.store));
+          return { name: "peek", pass: true, evidenceIds: [] };
+        },
+      },
+      clock: fixedClock(),
+      ids: sequentialIds(),
+    });
+    await store.insertProject({
+      id: PROJECT,
+      slug: "rehearsal",
+      name: "Rehearsal",
+      repo: "didi-build/rehearsal",
+      linearProjectId: null,
+      galleryPathOverride: null,
+      privilegedPathsExtra: [],
+      prodRequiresApproval: false,
+      stagingUrl: null,
+      createdAt: fixedClock().now(),
+    });
+    const node = await library.createNode({
+      projectId: PROJECT,
+      type: "work_item",
+      track: "code",
+      state: "triage",
+      ownerRole: "triage",
+      title: "An item",
+    });
+    await library.requestTransition(move(node.id, "ready"));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((name) => !/^(get|list|find)/.test(name))).toEqual([]);
   });
 
   it("does nothing when the node is already in the requested state", async () => {
