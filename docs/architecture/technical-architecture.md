@@ -16,7 +16,7 @@ flowchart LR
   Didi[Didi on phone] -->|answers| Approval[Windmill approval pages]
   Push[Push app and call service] --> Didi
   subgraph Runner[Windmill: the runner]
-    Reconcile[Reconcile loop, every 5 min]
+    Reconcile[Reconcile loop, every 2 h until K8s]
     Flows[Transition flows]
     Approval
     Daily[Daily check]
@@ -60,7 +60,7 @@ A thin HTTP API over the library for agents, the viewer and adapters: create ide
 
 ### 2.5 Reconcile loop
 
-Runs every 5 minutes, every day of the week (setting `reconcile_interval_minutes`). It is the backstop for missed events. Each pass does, in order:
+Runs every 2 hours until Kubernetes exists, then every 5 minutes once Windmill is self-hosted (setting `reconcile_interval_minutes`, D-111, D-164). It is the backstop for missed events. The runner counts Windmill executions per month and alerts Didi at 80% of the free limit (P-21). Each pass does, in order:
 
 1. If `kill_switch` is true, stop.
 2. Release: for each Blocked node whose blockers are all Done (and whose design spec is merged where required), request the transition to Ready.

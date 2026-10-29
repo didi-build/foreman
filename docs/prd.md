@@ -59,7 +59,7 @@ The principles in `docs/spec.md`, section 1, apply. In short: Didi is the operat
 
 - The state store and its library and API (nodes, edges, transitions, evidence, decisions, gate requests, runs, counters, settings).
 - Machine 2 (work items) end to end: the code, infrastructure and docs tracks and the design track, with all contracts in `docs/spec.md`.
-- The reconcile loop (every 5 minutes) with stall detection.
+- The reconcile loop (every 5 minutes; every 2 hours until Kubernetes exists, D-164) with stall detection.
 - Evidence ingestion from GitHub and CI, preview and staging checks, and merging by the runner.
 - Gates and the attention list: gate requests with topic keys, Windmill approval pages, push alerts, incident calls, and the daily check.
 - The Linear mirror through Linear's API with the runner's own app identity, including the status changes in `docs/spec.md`.
@@ -92,7 +92,7 @@ Each requirement is detailed in `docs/spec.md` and `docs/architecture/technical-
 | FR-1  | The state store holds every idea, work item, edge, transition, evidence record, decision, gate request, run and counter. It is the source of truth.                                                                                                                                               |
 | FR-2  | Only the runner changes a node's state. A change is one transaction that writes the transition and updates the node, and fails on a version mismatch.                                                                                                                                             |
 | FR-3  | Transitions follow the contracts in the spec (trigger, guard, evidence, timeout, fallback). Contracts are data, loaded at a version, and each transition records the version used.                                                                                                                |
-| FR-4  | A reconcile loop runs every 5 minutes. It releases blocked items whose blockers are done, dispatches items that are ready but not running, flags stalls, and cleans stale gate requests. Webhooks make it faster but are never the only trigger.                                                  |
+| FR-4  | A reconcile loop runs every 5 minutes (every 2 hours until Kubernetes exists, D-164). It releases blocked items whose blockers are done, dispatches items that are ready but not running, flags stalls, and cleans stale gate requests. Webhooks make it faster but are never the only trigger.   |
 | FR-5  | Evidence is recorded as immutable rows that name the commit they cover. A verdict applies to one commit, and a new commit makes it stale.                                                                                                                                                         |
 | FR-6  | QA checks the preview branch on a model from a different family than the builder (waived while QA runs on Claude, D-158). On pass the runner merges. After the merge, main deploys to staging and a bot checks staging. Only then is the item Done. A failed staging check reopens the same item. |
 | FR-7  | Merging is a runner action gated in code: CI green on the head commit, no conflicts, not past the round cap, the privileged-path list satisfied, and the production environment protected where deploys run on push to main.                                                                      |
