@@ -181,6 +181,48 @@ describe("the real contracts drive the library (contract walkthrough, ADR 0105)"
     expect(wrong).toMatchObject({ outcome: "rejected", reason: "illegal_move" });
   });
 
+  it.each(["infra", "docs"] as const)(
+    "escalates a %s item and returns it to In development",
+    async (track) => {
+      const { library, store } = await setup();
+      const node = await newItem(library, track, "ready_for_dev");
+      await walk(library, node.id, [
+        "in_development",
+        "escalated_to_council",
+        "escalated_to_didi",
+        "in_development",
+      ]);
+      expect((await store.getNode(node.id))?.state).toBe("in_development");
+    },
+  );
+
+  it.each(["return", "any", "toString", "__proto__"])(
+    "rejects a request to move to %s, which is not a state",
+    async (toState) => {
+      const { library, store } = await setup();
+      const node = await newItem(library, "code", "ready_for_dev");
+      await walk(library, node.id, ["in_development", "escalated_to_council"]);
+      const result = await library.requestTransition({
+        nodeId: node.id,
+        toState,
+        trigger: RECONCILE,
+        actor: RUNNER,
+      });
+      expect(result).toMatchObject({ outcome: "rejected", reason: "illegal_move" });
+      expect((await store.getNode(node.id))?.state).toBe("escalated_to_council");
+    },
+  );
+
+  it("refuses to create a work item in another track's entry state", async () => {
+    const { library } = await setup();
+    await expect(
+      newItem(library, "code", "ready_for_design_exploration"),
+    ).rejects.toThrow(/no move for the code track/);
+    await expect(newItem(library, "design", "ready_for_dev")).rejects.toThrow(
+      /no move for the design track/,
+    );
+  });
+
   it("rejects a move whose tracks do not include the node's track", async () => {
     const { library } = await setup();
     const code = await newItem(library, "code", "blocked", "waits");
@@ -196,13 +238,64 @@ describe("the real contracts drive the library (contract walkthrough, ADR 0105)"
 });
 
 describe("the contracts-file loader (contract walkthrough, ADR 0105)", () => {
-  it("rejects a state declared in two files", () => {
-    const dir = mkdtempSync(join(tmpdir(), "foreman-contracts-"));
-    const state = "states:\n  done:\n    label: Done\n    owner: Runner\n";
-    writeFileSync(join(dir, "a.yaml"), `part: code\n${state}`);
-    writeFileSync(join(dir, "b.yaml"), `part: design\n${state}`);
-    expect(() => loadContractFiles("c".repeat(40), dir)).toThrow(
-      /declared in both a\.yaml and b\.yaml/,
+  const STATE = "    label: Done\n    owner: Runner\n";
+
+  function dir(files: Record<string, string>): string {
+    const path = mkdtempSync(join(tmpdir(), "foreman-contracts-"));
+    for (const [name, text] of Object.entries(files))
+      writeFileSync(join(path, name), text);
+    return path;
+  }
+
+  const problemsIn = (files: Record<string, string>) =>
+    validateContracts(loadContractFiles("c".repeat(40), dir(files)).raw, GUARD_NAMES)
+      .problems;
+
+  it("reports a state declared in two files", () => {
+    const state = `states:\n  done:\n${STATE}`;
+    expect(
+      problemsIn({ "code.yaml": `part: code\n${state}`, "design.yaml": state }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("declared in both code.yaml and design.yaml"),
+      ]),
+    );
+  });
+
+  it("marks escalation by file name only: a code file cannot claim it", () => {
+    const text = [
+      "part: code",
+      "states:",
+      "  done:",
+      STATE.trimEnd(),
+      "transitions:",
+      "  - from: any",
+      "    to: done",
+      "    guards: []",
+      "    escalation: true",
+    ].join("\n");
+    const all = problemsIn({ "code.yaml": text }).join("\n");
+    expect(all).toContain("unknown field escalation");
+    expect(all).toContain("only for escalation.yaml");
+  });
+
+  it("keeps a __proto__ state id so the validator reports it", () => {
+    const text = `states:\n  __proto__:\n${STATE}`;
+    expect(problemsIn({ "code.yaml": text })).toEqual(
+      expect.arrayContaining([expect.stringContaining("state id __proto__")]),
+    );
+  });
+
+  it("turns a file that is not a mapping into a problem, not a crash", () => {
+    expect(problemsIn({ "code.yaml": "- just\n- a list\n" })).toEqual(
+      expect.arrayContaining([expect.stringContaining("code.yaml: must be a mapping")]),
+    );
+  });
+
+  it("throws on a YAML syntax error, naming the file", () => {
+    const path = dir({ "code.yaml": "states: [unclosed\n" });
+    expect(() => loadContractFiles("c".repeat(40), path)).toThrow(
+      /code\.yaml is not valid YAML/,
     );
   });
 });

@@ -5,7 +5,7 @@
 # escalation, read from its transition history. The loader marks every transition in this file
 # as an escalation transition; the validator rejects any and return elsewhere.
 #
-# Shared states: each state is declared in exactly one file, and the loader rejects a state id
+# Shared states: each state is declared in exactly one file, and the validator rejects a state id
 # declared twice. This file owns the two escalated states.
 # Rules live here and in guard functions, never in the library (essential 3).
 

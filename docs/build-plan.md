@@ -154,7 +154,7 @@ Goal: the runner can say what it would do, and be right.
 
 - What: one function per guard named in the contracts.
 - Why: gates are enforced in code.
-- How: at least `blockers_done`, `design_spec_merged`, `no_pending_gate`, `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `prod_env_protected`, `approval_recorded`, `not_third_failed_round`, `staging_check_on_merge_commit`, `spec_edited_by_designer_only`, `scope_matches_plan`.
+- How: the 24 guards in ADR 0105's guard list (D-176, settles O-09): `blockers_done`, `design_spec_merged`, `no_pending_gate`, `agent_ready_not_on_hold`, `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `prod_env_protected`, `qa_failed_with_findings`, `not_third_failed_round`, `staging_check_on_merge_commit`, `staging_check_failed`, `plan_attached`, `options_attached`, `approval_recorded`, `changes_requested_recorded`, `spec_edited_by_designer_only`, `scope_matches_plan`, `spec_components_exist`, `escalation_trigger_met`, `council_decision_recorded`, `didi_question_open`, `didi_answer_recorded`.
 - Constraints: a guard reads only evidence for the PR's current head commit. A guard never calls a model. `scope_matches_plan` is a gate request when the check is a judgment call, not a model verdict.
 - Success: each guard has tests for pass, fail, stale evidence and missing evidence. Mutation testing of the guards finds no surviving mutants in the core logic (see `docs/test-plan.md`).
 

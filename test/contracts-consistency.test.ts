@@ -20,6 +20,33 @@ const PAIRS: { file: string; heading: string }[] = [
   { file: "escalation.yaml", heading: "Escalation" },
 ];
 
+/**
+ * Moves the spec describes only in a row's prose fallback, not as a table row. Each is pinned
+ * here with the row it comes from and the spec's own words, and the files' fallback_move set
+ * must equal this list exactly, so a fallback move can be neither invented nor lost.
+ */
+const FALLBACK_MOVES: { file: string; move: string; row: string; words: string }[] = [
+  {
+    file: "code.yaml",
+    move: "verifying_on_staging->in_development",
+    row: "Verifying on staging to Done",
+    words: "if the check fails, the item goes back to In development",
+  },
+  {
+    file: "design.yaml",
+    move: "waiting_for_didi->in_design_exploration",
+    row: "Waiting for Didi to Writing spec",
+    words:
+      "if Didi asks for changes or rejects, the item returns to In design exploration",
+  },
+  {
+    file: "design.yaml",
+    move: "verifying_on_staging->building_components",
+    row: "Verifying on staging to Done",
+    words: "if the check fails, the item goes back to Building components",
+  },
+];
+
 /** Label to state id, from the validated contracts plus the two escalation phrases. */
 function labelMap(): Map<string, string> {
   const loaded = loadContractFiles("0".repeat(40));
@@ -34,8 +61,8 @@ function labelMap(): Map<string, string> {
   return map;
 }
 
-/** The first-column cells of the markdown table that follows a bold heading in section 9. */
-function tableCells(heading: string): string[] {
+/** The rows of the markdown table that follows a bold heading in section 9, as cell lists. */
+function tableRows(heading: string): string[][] {
   const spec = readFileSync("docs/spec.md", "utf8");
   const start = spec.indexOf("\n## 9.");
   const end = spec.indexOf("\n## 10.", start);
@@ -44,7 +71,7 @@ function tableCells(heading: string): string[] {
   const headingAt = section.indexOf(`**${heading}**`);
   if (headingAt < 0) throw new Error(`heading ${heading} not found in section 9`);
   const lines = section.slice(headingAt).split("\n");
-  const cells: string[] = [];
+  const rows: string[][] = [];
   let inTable = false;
   for (const line of lines.slice(1)) {
     if (!line.startsWith("|")) {
@@ -52,13 +79,20 @@ function tableCells(heading: string): string[] {
       continue;
     }
     inTable = true;
-    const first = (line.split("|")[1] ?? "").trim();
+    const cells = line
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.trim());
+    const first = cells[0] ?? "";
     if (first === "Transition" || /^-+$/.test(first)) continue;
-    cells.push(first);
+    rows.push(cells);
   }
-  if (cells.length === 0) throw new Error(`no rows under ${heading}`);
-  return cells;
+  if (rows.length === 0) throw new Error(`no rows under ${heading}`);
+  return rows;
 }
+
+const tableCells = (heading: string): string[] =>
+  tableRows(heading).map((cells) => cells[0] ?? "");
 
 /** "Blocked to Ready for dev" into from and to ids. Labels may themselves contain " to ". */
 function parseCell(cell: string, labels: Map<string, string>): string {
@@ -73,17 +107,26 @@ function parseCell(cell: string, labels: Map<string, string>): string {
   throw new Error(`Cannot map spec row "${cell}" to contract states`);
 }
 
-/** The non-fallback moves of one contract file. Fallback moves live in the spec's prose. */
-function fileMoves(file: string): Set<string> {
+interface FileMove {
+  from: string;
+  to: string;
+  fallback_move?: boolean;
+}
+
+function fileTransitions(file: string): FileMove[] {
   const parsed = parse(readFileSync(join(MACHINE_2_DIR, file), "utf8")) as {
-    transitions: { from: string; to: string; fallback_move?: boolean }[];
+    transitions: FileMove[];
   };
-  return new Set(
-    parsed.transitions
+  return parsed.transitions;
+}
+
+/** The moves of one contract file that the spec states as table rows. */
+const fileMoves = (file: string): Set<string> =>
+  new Set(
+    fileTransitions(file)
       .filter((t) => t.fallback_move !== true)
       .map((t) => `${t.from}->${t.to}`),
   );
-}
 
 describe("contracts match the spec's transition tables (contract consistency, ADR 0105)", () => {
   it.each(PAIRS)("$file matches the $heading table", ({ file, heading }) => {
@@ -97,4 +140,25 @@ describe("contracts match the spec's transition tables (contract consistency, AD
     expect(specOnly, `in the spec but not in ${file}`).toEqual([]);
     expect(contractOnly, `in ${file} but not in the spec table`).toEqual([]);
   });
+});
+
+describe("fallback moves are pinned to the spec's prose (contract consistency, ADR 0105)", () => {
+  it("the files mark exactly the pinned fallback moves", () => {
+    const marked = PAIRS.flatMap(({ file }) =>
+      fileTransitions(file)
+        .filter((t) => t.fallback_move === true)
+        .map((t) => `${file}:${t.from}->${t.to}`),
+    ).sort();
+    expect(marked).toEqual(FALLBACK_MOVES.map((f) => `${f.file}:${f.move}`).sort());
+  });
+
+  it.each(FALLBACK_MOVES)(
+    "$file $move comes from the $row row's fallback",
+    ({ file, row, words }) => {
+      const heading = PAIRS.find((pair) => pair.file === file)?.heading ?? "";
+      const cells = tableRows(heading).find((r) => r[0] === row);
+      expect(cells, `row ${row} under ${heading}`).toBeDefined();
+      expect(cells?.at(-1)).toContain(words);
+    },
+  );
 });

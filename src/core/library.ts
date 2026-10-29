@@ -103,7 +103,9 @@ export function createLibrary({
   clock,
   ids,
 }: LibraryOptions) {
-  const stateOf = (name: string): StateContract | undefined => contracts.states[name];
+  /** Own keys only, so `toString` or `__proto__` is never a state. */
+  const stateOf = (name: string): StateContract | undefined =>
+    Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
 
   async function settingIsOn(key: string): Promise<boolean> {
     return (await store.getSetting(key))?.value === true;
@@ -177,9 +179,15 @@ export function createLibrary({
     node: Node,
     toState: string,
   ): Promise<TransitionContract | undefined> {
+    // `any` and `return` are keywords, never states: a request for them is illegal.
+    if (!stateOf(toState)) return undefined;
     const candidates = contracts.transitions.filter((move) => trackMatches(move, node));
     const exact = candidates.find(
-      (move) => move.from === node.state && move.to === toState,
+      (move) =>
+        move.from !== "any" &&
+        move.to !== "return" &&
+        move.from === node.state &&
+        move.to === toState,
     );
     if (exact) return exact;
     const fromAny = candidates.find(
@@ -334,6 +342,18 @@ export function createLibrary({
         throw new LibraryError(`${input.state} is not a state a node can start in`);
       if (state.requiresBlockedReason && !input.blockedReason) {
         throw new LibraryError(`${input.state} needs a blocked reason`);
+      }
+      // A work item starts only where its own track has a way forward, not in another track's
+      // entry state with no legal move out (escalation's `from: any` does not count).
+      const track = input.track;
+      if (
+        track !== null &&
+        !contracts.transitions.some(
+          (move) =>
+            move.from === input.state && (!move.tracks || move.tracks.includes(track)),
+        )
+      ) {
+        throw new LibraryError(`${input.state} has no move for the ${track} track`);
       }
       const at = clock.now();
       const node: Node = {

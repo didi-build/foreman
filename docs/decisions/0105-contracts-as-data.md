@@ -82,6 +82,8 @@ One name per check, used everywhere. Each is a pure function over the store's re
 
 `test/contracts-consistency.test.ts` parses the three transition tables in `docs/spec.md` section 9 ("Code, infrastructure and docs tracks", "Design track", "Escalation"). From each row's first column ("Blocked to Ready for dev", "In QA review to In development (fail)") it takes the from and to labels, maps them to state ids through the contract labels, and compares the set of moves with the contract file for that table. It fails on a move in one and not the other, and on a label the contracts do not know. It does not parse guards or evidence out of prose; those are reviewed by people.
 
+Some legal moves exist only in a row's prose fallback ("if the check fails, the item goes back to In development"), not as table rows. The files mark these `fallback_move: true`. The test pins them with an explicit list, each entry naming its spec row and quoting the fallback words, checks that those words are in that row, and requires the files' fallback moves to equal the list exactly. So a fallback move can be neither invented nor lost without the test failing.
+
 ## Constraints
 
 - No rule outside contracts and guard functions (essential 3). The placeholder entry state in `src/api/entry.ts` moves into the contracts.

@@ -1,70 +1,56 @@
-// Reads the contract files (ADR 0105). Parsing stays out of the core: this adapter turns the
-// YAML in contracts/<machine>/ into one plain object and hands it to the core's
-// validateContracts, which holds every semantic rule. Beyond YAML parsing, the only thing
-// rejected here is a state id declared in two files, because a mechanical merge would silently
-// drop one of the declarations.
+// Reads the contract files (ADR 0105). Parsing stays out of the core: this adapter parses the
+// YAML in contracts/<machine>/ and hands every file, untouched, to the core's validateContracts,
+// which holds every rule, including the shape of each file and the one-file-per-state rule.
+// The only thing decided here is which file is the escalation file, and that comes from the
+// file name (escalation.yaml), never from what the file says about itself.
+// A YAML syntax error throws, naming the file: there is no object to validate.
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
+import type { RawContractFile } from "../../core/contracts.ts";
+
 export const MACHINE_2_DIR = "contracts/machine-2";
 
-interface RawFile {
-  part?: unknown;
-  states?: Record<string, unknown>;
-  transitions?: unknown[];
-}
+/** The one file whose transitions may use `from: any` and `to: return`. */
+export const ESCALATION_FILE = "escalation.yaml";
 
 export interface LoadedContractFiles {
-  /** The merged plain object for the core's validateContracts. */
-  raw: unknown;
+  /** The plain object for the core's validateContracts. */
+  raw: { version: string; contentHash: string; files: RawContractFile[] };
   /** SHA-256 of the file bytes, in file-name order. */
   contentHash: string;
   files: string[];
 }
 
 /**
- * Loads every .yaml file in `dir`, in file-name order, into one raw contracts object.
- * `version` is the spec version (the git commit of docs/spec.md and contracts/); callers pass
- * it in rather than this adapter shelling out to git.
+ * Loads every .yaml file in `dir`, in file-name order. `version` is the spec version (the git
+ * commit of docs/spec.md and contracts/); callers pass it in rather than this adapter shelling
+ * out to git.
  */
 export function loadContractFiles(
   version: string,
   dir: string = MACHINE_2_DIR,
 ): LoadedContractFiles {
-  const files = readdirSync(dir)
+  const names = readdirSync(dir)
     .filter((name) => name.endsWith(".yaml"))
     .sort();
   const hash = createHash("sha256");
-  const states: Record<string, unknown> = {};
-  const declaredIn = new Map<string, string>();
-  const transitions: unknown[] = [];
+  const files: RawContractFile[] = [];
 
-  for (const name of files) {
+  for (const name of names) {
     const bytes = readFileSync(join(dir, name));
     hash.update(bytes);
-    const parsed = (parse(bytes.toString("utf8")) ?? {}) as RawFile;
-    const escalation = parsed.part === "escalation";
-    for (const [id, state] of Object.entries(parsed.states ?? {})) {
-      const already = declaredIn.get(id);
-      if (already) {
-        throw new Error(
-          `State ${id} is declared in both ${already} and ${name}; each state lives in exactly one file`,
-        );
-      }
-      declaredIn.set(id, name);
-      states[id] = state;
+    let data: unknown;
+    try {
+      data = parse(bytes.toString("utf8"));
+    } catch (error) {
+      throw new Error(`${name} is not valid YAML: ${(error as Error).message}`);
     }
-    for (const transition of parsed.transitions ?? []) {
-      transitions.push(
-        escalation && typeof transition === "object" && transition !== null
-          ? { ...transition, escalation: true }
-          : transition,
-      );
-    }
+    files.push({ name, escalation: name === ESCALATION_FILE, data });
   }
 
   const contentHash = hash.digest("hex");
-  return { raw: { version, contentHash, states, transitions }, contentHash, files };
+  return { raw: { version, contentHash, files }, contentHash, files: names };
 }

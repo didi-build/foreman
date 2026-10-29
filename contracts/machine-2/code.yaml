@@ -1,12 +1,13 @@
 # Machine 2, code, infrastructure and docs tracks (ADR 0105, from docs/spec.md section 9).
 # All three tracks share this one path, so every transition here carries tracks [code, infra, docs].
 #
-# Shared states: each state is declared in exactly one file, and the loader rejects a state id
+# Shared states: each state is declared in exactly one file, and the validator rejects a state id
 # declared twice. This file owns the shared QA tail (in_qa_review, verifying_on_staging, done),
 # which design.yaml references by id. escalation.yaml owns the escalated states.
 #
 # A transition marked fallback_move implements a fallback the spec describes in prose (the
-# "Timeout and fallback" column), so the consistency test does not expect a spec table row for it.
+# "Timeout and fallback" column). The consistency test pins each one to that row's words, and
+# expects no table row for it.
 # Rules live here and in guard functions, never in the library (essential 3).
 
 part: code
