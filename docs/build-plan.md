@@ -151,7 +151,7 @@ Goal: the runner can say what it would do, and be right.
 
 - What: one function per guard named in the contracts.
 - Why: gates are enforced in code.
-- How: at least `blockers_done`, `design_spec_merged`, `no_pending_gate`, `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_on_head_different_family`, `privileged_paths_approved`, `prod_env_protected`, `approval_recorded`, `not_third_failed_round`, `staging_check_on_merge_commit`, `spec_edited_by_designer_only`, `scope_matches_plan`.
+- How: at least `blockers_done`, `design_spec_merged`, `no_pending_gate`, `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `prod_env_protected`, `approval_recorded`, `not_third_failed_round`, `staging_check_on_merge_commit`, `spec_edited_by_designer_only`, `scope_matches_plan`.
 - Constraints: a guard reads only evidence for the PR's current head commit. A guard never calls a model. `scope_matches_plan` is a gate request when the check is a judgment call, not a model verdict.
 - Success: each guard has tests for pass, fail, stale evidence and missing evidence. Mutation testing of the guards finds no surviving mutants in the core logic (see `docs/test-plan.md`).
 
@@ -190,9 +190,9 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 ### M3.2 Dispatch adapters and runs
 
-- What: adapters to start the Developer (Claude Code), QA (Grok, or the fallback from M0.2), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
+- What: adapters to start the Developer (Claude Code), QA (Claude for now, D-158; ADR 0112), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
-- How: per ADR 0106 and 0107. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
+- How: per ADR 0106, 0107 and 0112. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
 - Constraints: one agent per item, up to 3 Developer agents per project. Each agent is scoped to one project's repo and credentials. No production access.
 - Success: each adapter can start an agent on a trivial task in the rehearsal project and record a run with model, turns, minutes, cost and outcome. A simulated usage-exhausted response queues and resumes.
 
