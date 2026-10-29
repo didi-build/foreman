@@ -5,7 +5,7 @@ on:
     paths:
       - "db/**"
       - "test/db/**"
-      - "src/core/store.ts"
+      - "src/core/**"
       - "src/adapters/store-postgres/**"
       - "package.json"
       - "package-lock.json"
