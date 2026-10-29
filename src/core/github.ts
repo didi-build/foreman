@@ -19,7 +19,11 @@ export interface PullRequest {
 }
 
 export interface CheckRun {
+  /** GitHub's check run id. A rerun creates a new check run with a higher id. */
+  id: number;
   name: string;
+  /** The slug of the GitHub App that created the run, for example `github-actions`. */
+  appSlug: string | null;
   status: "queued" | "in_progress" | "completed";
   /** GitHub's conclusion once completed, for example `success`, `failure`, `skipped`. */
   conclusion: string | null;
@@ -29,7 +33,10 @@ export interface GitHubReader {
   getPullRequest(repo: string, number: number): Promise<PullRequest | null>;
   /** Files the PR changes, relative to the repo root. */
   listChangedPaths(repo: string, number: number): Promise<string[]>;
-  /** Every check run on a commit, from every check suite. */
+  /**
+   * The latest check run of each name on a commit, from every check suite (GitHub's default
+   * `filter=latest`), so a rerun replaces the run it reruns.
+   */
   listCheckRuns(repo: string, sha: string): Promise<CheckRun[]>;
   listOpenPullRequests(repo: string): Promise<PullRequest[]>;
 }

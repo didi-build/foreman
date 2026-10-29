@@ -15,7 +15,11 @@ import type {
   StoreOps,
 } from "./store.ts";
 
-/** The runner's own display-only check run, which never counts toward CI (D-158, D-160). */
+/**
+ * The name of the runner's own display-only check run, which never counts toward CI (D-158,
+ * D-160). It is excluded only when the runner's App created it: a project's own check with the
+ * same name still counts.
+ */
 export const QA_CHECK_RUN = "QA";
 
 /** Event types ingestion reads. Any other type is acknowledged and not stored (ADR 0113 section 2). */
@@ -40,6 +44,8 @@ export interface IngestDeps {
   ids: IdSource;
   /** Logins of the Developer and Designer Apps (D-156). Only their PRs link to a node. */
   appLogins: readonly string[];
+  /** The runner App's slug (D-156). Only its `QA` check run is left out of the CI result. */
+  runnerAppSlug: string;
 }
 
 export interface Delivery {
@@ -83,28 +89,54 @@ const ignore = (pr: number | null, reason: string): Finding => ({
   reason,
 });
 
-export const ciRunKey = (
+/**
+ * A pending result has one key per commit. A final result also names its CI attempt, so a rerun
+ * that ends like an earlier one (failure, success, failure) is still recorded and is the newest.
+ */
+export function ciRunKey(
   repo: string,
   pr: number,
   sha: string,
-  conclusion: string,
-): string => `github:ci_run:${repo}#${pr}:${sha}:${conclusion}`;
+  conclusion: "pending" | "success" | "failure",
+  attempt?: number,
+): string {
+  const base = `github:ci_run:${repo}#${pr}:${sha}:${conclusion}`;
+  return attempt === undefined ? base : `${base}:check-run-${attempt}`;
+}
 
 /** One merge per PR (ADR 0113 section 5), so the key does not name the commit. */
 export const mergeCommitKey = (repo: string, pr: number): string =>
   `github:merge_commit:${repo}#${pr}`;
 
+export interface CiResult {
+  conclusion: "success" | "failure";
+  /**
+   * The CI attempt: the highest check run id among the counted runs. A rerun creates new check
+   * runs with new ids, so it changes on every attempt, and the webhook and the polling backstop
+   * both read it from the same check run listing, so they agree on it.
+   */
+  attempt: number;
+}
+
 /**
- * The CI conclusion on a commit: every check run except the runner's QA check run. Null while
- * any of them is unfinished, or when there are none.
+ * The CI result on a commit: every check run except the runner App's own `QA` check run. Null
+ * while any of them is unfinished, or when there are none.
  */
-export function conclude(runs: readonly CheckRun[]): "success" | "failure" | null {
-  const counted = runs.filter((run) => run.name !== QA_CHECK_RUN);
+export function conclude(
+  runs: readonly CheckRun[],
+  runnerAppSlug: string,
+): CiResult | null {
+  const counted = runs.filter(
+    (run) => !(run.name === QA_CHECK_RUN && run.appSlug === runnerAppSlug),
+  );
   if (counted.length === 0 || counted.some((run) => run.status !== "completed"))
     return null;
-  return counted.every((run) => PASSING.has(run.conclusion ?? ""))
-    ? "success"
-    : "failure";
+  return {
+    conclusion: counted.every((run) => PASSING.has(run.conclusion ?? ""))
+      ? "success"
+      : "failure",
+    attempt: Math.max(...counted.map((run) => run.id)),
+  };
 }
 
 type Link = { nodeId: string } | { reason: string };
@@ -172,14 +204,17 @@ async function ciRunFinding(
   if (pr.state !== "open") return ignore(pr.number, "pull request is not open");
   if (sha !== pr.headSha) return ignore(pr.number, "not the current head");
 
-  let conclusion: "pending" | "success" | "failure" = "pending";
+  let result: CiResult | null = null;
   if (mode !== "pending") {
-    const concluded = conclude(await deps.github.listCheckRuns(pr.repo, sha));
-    if (concluded === null && mode === "final")
+    result = conclude(
+      await deps.github.listCheckRuns(pr.repo, sha),
+      deps.runnerAppSlug,
+    );
+    if (result === null && mode === "final")
       return ignore(pr.number, "checks still running");
-    conclusion = concluded ?? "pending";
   }
-  if (conclusion === "pending") {
+  const conclusion = result?.conclusion ?? "pending";
+  if (result === null) {
     const existing = await deps.store.listEvidence({
       nodeId: linked.nodeId,
       commitSha: sha,
@@ -198,7 +233,7 @@ async function ciRunFinding(
         "ci_run",
         sha,
         { conclusion, pr: pr.number, changedPaths },
-        ciRunKey(pr.repo, pr.number, sha, conclusion),
+        ciRunKey(pr.repo, pr.number, sha, conclusion, result?.attempt),
       ),
     ],
   };

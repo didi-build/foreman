@@ -31,14 +31,14 @@ const logs: Record<string, unknown>[] = [];
 beforeAll(async () => {
   f = await createIngestFixture();
   const logger = createLogger("github-receiver", (line) => logs.push(JSON.parse(line)));
-  const { store, clock, ids, appLogins } = f.deps;
+  const { store, clock, ids, appLogins, runnerAppSlug } = f.deps;
   service = await startService({
     name: "github-receiver",
     port: 0,
     logger,
     handle: createReceiverHandler({
       github: f.github,
-      ingest: { store, clock, ids, appLogins },
+      ingest: { store, clock, ids, appLogins, runnerAppSlug },
       logger,
     }),
   });

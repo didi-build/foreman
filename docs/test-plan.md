@@ -102,9 +102,10 @@ Against the fake GitHub only (D-178): `test/github-ingest.test.ts` (core functio
 2. Polling after the webhooks adds nothing; with the receiver down, polling records the same facts with the same keys.
 3. A missing or wrong signature, or a body over 1 MB, stores nothing and reads nothing from GitHub.
 4. A check completion on an older commit records nothing, and the head stays on the newest commit.
-5. The `QA` check run never counts toward the conclusion.
-6. A fork PR, a PR from an undispatched branch, and a PR by another author link to no node.
-7. `factory_ingest` writes only deliveries and `ci_run` or `merge_commit` under a key, and cannot update, delete, move a node or write decisions.
+5. The runner App's `QA` check run never counts toward the conclusion; a check named `QA` from any other App does.
+6. Failure, success, failure on one commit records three results and the newest fails `ci_green_on_head`; one attempt seen by a webhook and a poll is recorded once.
+7. A fork PR, a PR from an undispatched branch, and a PR by another author link to no node.
+8. `factory_ingest` writes only deliveries and `ci_run` or `merge_commit` under a key, and cannot update, delete, move a node or write decisions.
 
 ### Infrastructure as code
 

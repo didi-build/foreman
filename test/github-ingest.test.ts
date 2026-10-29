@@ -14,6 +14,7 @@ import {
   QA_CHECK_RUN,
 } from "../src/core/github-ingest.ts";
 import { GUARDS } from "../src/core/guards/index.ts";
+import type { CheckRun } from "../src/core/github.ts";
 import type { Evidence } from "../src/core/store.ts";
 import {
   BRANCH,
@@ -25,6 +26,8 @@ import {
   SHA_A,
   SHA_B,
   createIngestFixture,
+  RUNNER_APP,
+  check,
   passing,
   type IngestFixture,
 } from "./github-fixture.ts";
@@ -44,48 +47,57 @@ const head = async (f: IngestFixture): Promise<Evidence | undefined> =>
   (await f.evidence("ci_run")).at(-1);
 
 describe("CI conclusion over check runs (unit: ADR 0113 section 5, D-160)", () => {
+  const ok = (runs: CheckRun[]) => conclude(runs, RUNNER_APP)?.conclusion ?? null;
+
   it("is null while any check runs, and when there are none", () => {
-    expect(conclude([])).toBeNull();
-    expect(
-      conclude([
-        ...passing("lint"),
-        { name: "test", status: "queued", conclusion: null },
-      ]),
-    ).toBeNull();
+    expect(ok([])).toBeNull();
+    expect(ok([...passing("lint"), check("test", "queued")])).toBeNull();
   });
 
   it("passes on success, neutral and skipped, and fails on anything else", () => {
     expect(
-      conclude([
+      ok([
         ...passing("lint"),
-        { name: "docs", status: "completed", conclusion: "skipped" },
-        { name: "info", status: "completed", conclusion: "neutral" },
+        check("docs", "completed", "skipped"),
+        check("info", "completed", "neutral"),
       ]),
     ).toBe("success");
     for (const bad of ["failure", "cancelled", "timed_out", "action_required"]) {
-      expect(
-        conclude([
-          ...passing("lint"),
-          { name: "test", status: "completed", conclusion: bad },
-        ]),
-      ).toBe("failure");
+      expect(ok([...passing("lint"), check("test", "completed", bad)])).toBe("failure");
     }
   });
 
-  it("ignores the runner's own QA check run, finished or not", () => {
-    const failedQa = {
-      name: QA_CHECK_RUN,
-      status: "completed",
-      conclusion: "failure",
-    } as const;
-    const runningQa = {
-      name: QA_CHECK_RUN,
-      status: "in_progress",
-      conclusion: null,
-    } as const;
-    expect(conclude([...passing("build"), failedQa])).toBe("success");
-    expect(conclude([...passing("build"), runningQa])).toBe("success");
-    expect(conclude([failedQa])).toBeNull();
+  it("ignores the runner App's own QA check run, finished or not", () => {
+    const failedQa = check(QA_CHECK_RUN, "completed", "failure", RUNNER_APP);
+    const runningQa = check(QA_CHECK_RUN, "in_progress", null, RUNNER_APP);
+    expect(ok([...passing("build"), failedQa])).toBe("success");
+    expect(ok([...passing("build"), runningQa])).toBe("success");
+    expect(ok([failedQa])).toBeNull();
+  });
+
+  it("counts a check named QA that another App created", () => {
+    expect(ok([...passing("build"), check(QA_CHECK_RUN, "completed", "failure")])).toBe(
+      "failure",
+    );
+    expect(ok([...passing("build"), check(QA_CHECK_RUN, "in_progress")])).toBeNull();
+    expect(
+      ok([
+        ...passing("build"),
+        check(QA_CHECK_RUN, "completed", "failure", "other-app"),
+      ]),
+    ).toBe("failure");
+  });
+
+  it("names the attempt by the highest counted check run id, which a rerun raises", () => {
+    const first = [...passing("build", "test")];
+    const qa = check(QA_CHECK_RUN, "completed", "success", RUNNER_APP);
+    expect(conclude([...first, qa], RUNNER_APP)?.attempt).toBe(
+      Math.max(...first.map((run) => run.id)),
+    );
+    const rerun = [first[0]!, check("test", "completed", "success")];
+    expect(conclude(rerun, RUNNER_APP)!.attempt).toBeGreaterThan(
+      conclude(first, RUNNER_APP)!.attempt,
+    );
   });
 });
 
@@ -135,28 +147,29 @@ describe("webhook deliveries to evidence (unit: GitHub ingestion, ADR 0113)", ()
   it("records the final result when checks finish on the head, excluding the QA check run", async () => {
     const f = await createIngestFixture();
     await opened(f);
+    const counted = passing("build", "test");
     f.github.setCheckRuns(REPO, SHA_A, [
-      ...passing("build", "test"),
-      { name: QA_CHECK_RUN, status: "completed", conclusion: "failure" },
+      ...counted,
+      check(QA_CHECK_RUN, "completed", "failure", RUNNER_APP),
     ]);
     expect((await checksDone(f, SHA_A)).outcome).toBe("recorded");
     expect(await head(f)).toMatchObject({
       commitSha: SHA_A,
       payload: { conclusion: "success", pr: PR, changedPaths: CHANGED },
-      ref: ciRunKey(REPO, PR, SHA_A, "success"),
+      ref: ciRunKey(REPO, PR, SHA_A, "success", counted[1]!.id),
     });
-    const check = await GUARDS.ci_green_on_head!({
+    const guard = await GUARDS.ci_green_on_head!({
       node: (await f.store.getNode(f.nodeId))!,
       store: f.store,
     });
-    expect(check.pass).toBe(true);
+    expect(guard.pass).toBe(true);
   });
 
   it("records a failure when any counted check run fails, from a workflow_run event too", async () => {
     const f = await createIngestFixture();
     f.github.setCheckRuns(REPO, SHA_A, [
       ...passing("build"),
-      { name: "test", status: "completed", conclusion: "failure" },
+      check("test", "completed", "failure"),
     ]);
     const result = await deliver(
       f,
@@ -215,11 +228,54 @@ describe("webhook deliveries to evidence (unit: GitHub ingestion, ADR 0113)", ()
     expect((await head(f))?.payload).toMatchObject({ conclusion: "success" });
   });
 
+  it("records failure, success, failure on one commit as three results, newest failing", async () => {
+    const f = await createIngestFixture();
+    const green = async () =>
+      (
+        await GUARDS.ci_green_on_head!({
+          node: (await f.store.getNode(f.nodeId))!,
+          store: f.store,
+        })
+      ).pass;
+    for (const conclusion of ["failure", "success", "failure"]) {
+      // Each rerun creates a new check run, with a new id (the CI attempt).
+      f.github.setCheckRuns(REPO, SHA_A, [check("test", "completed", conclusion)]);
+      expect((await checksDone(f, SHA_A)).outcome).toBe("recorded");
+      expect(await green()).toBe(conclusion === "success");
+    }
+    const rows = await f.evidence("ci_run");
+    expect(rows.map((e) => e.payload)).toMatchObject([
+      { conclusion: "failure" },
+      { conclusion: "success" },
+      { conclusion: "failure" },
+    ]);
+    expect(new Set(rows.map((e) => e.ref)).size).toBe(3);
+    expect((await head(f))?.payload).toMatchObject({ conclusion: "failure" });
+  });
+
+  it("records one CI attempt once, whether a webhook or a poll sees it first", async () => {
+    const f = await createIngestFixture();
+    const attempt = [check("test", "completed", "failure")];
+    f.github.setCheckRuns(REPO, SHA_A, attempt);
+    const payload = checkCompletedEvent("check_suite", REPO, SHA_A, [PR]);
+    expect((await deliver(f, "check_suite", payload, "attempt-1")).outcome).toBe(
+      "recorded",
+    );
+    expect((await deliver(f, "check_suite", payload, "attempt-1")).outcome).toBe(
+      "duplicate",
+    );
+    expect((await deliver(f, "check_suite", payload)).outcome).toBe("ignored");
+    expect((await pollRepository(f.deps, REPO)).map((r) => r.outcome)).toEqual([
+      "ignored",
+    ]);
+    expect((await f.evidence("ci_run")).map((e) => e.ref)).toEqual([
+      ciRunKey(REPO, PR, SHA_A, "failure", attempt[0]!.id),
+    ]);
+  });
+
   it("records a check rerun that changes the result on the head", async () => {
     const f = await createIngestFixture();
-    f.github.setCheckRuns(REPO, SHA_A, [
-      { name: "test", status: "completed", conclusion: "failure" },
-    ]);
+    f.github.setCheckRuns(REPO, SHA_A, [check("test", "completed", "failure")]);
     await checksDone(f, SHA_A);
     f.github.setCheckRuns(REPO, SHA_A, passing("test"));
     await checksDone(f, SHA_A);
@@ -366,7 +422,8 @@ describe("polling backstop (unit: ADR 0113 section 6, M2.4)", () => {
       "ignored",
     ]);
 
-    f.github.setCheckRuns(REPO, SHA_A, passing("build"));
+    const finished = passing("build");
+    f.github.setCheckRuns(REPO, SHA_A, finished);
     await pollRepository(f.deps, REPO);
     expect((await head(f))?.payload).toMatchObject({ conclusion: "success" });
 
@@ -375,7 +432,7 @@ describe("polling backstop (unit: ADR 0113 section 6, M2.4)", () => {
     await pollRepository(f.deps, REPO);
     expect((await f.evidence()).map((e) => e.ref)).toEqual([
       ciRunKey(REPO, PR, SHA_A, "pending"),
-      ciRunKey(REPO, PR, SHA_A, "success"),
+      ciRunKey(REPO, PR, SHA_A, "success", finished[0]!.id),
       mergeCommitKey(REPO, PR),
     ]);
   });
@@ -406,27 +463,26 @@ describe("polling backstop (unit: ADR 0113 section 6, M2.4)", () => {
   it("records the same evidence with the receiver down as with webhooks (kill the receiver)", async () => {
     // One PR's life: opened, checks fail, a fix is pushed, checks pass, merged. Each step is
     // followed either by its webhook or, with the receiver down, by a reconcile pass.
+    // Both runs see the same check runs, ids included, as GitHub would report them.
+    const failedA = [check("test", "completed", "failure")];
+    const runningB = [check("test", "in_progress")];
+    const passedB = passing("test");
     type Step = (f: IngestFixture) => Promise<unknown>;
     const life: { change: (f: IngestFixture) => void; webhook: Step }[] = [
       { change: () => undefined, webhook: (f) => opened(f) },
       {
-        change: (f) =>
-          f.github.setCheckRuns(REPO, SHA_A, [
-            { name: "test", status: "completed", conclusion: "failure" },
-          ]),
+        change: (f) => f.github.setCheckRuns(REPO, SHA_A, failedA),
         webhook: (f) => checksDone(f, SHA_A),
       },
       {
         change: (f) => {
           f.github.pushHead(REPO, PR, SHA_B);
-          f.github.setCheckRuns(REPO, SHA_B, [
-            { name: "test", status: "in_progress", conclusion: null },
-          ]);
+          f.github.setCheckRuns(REPO, SHA_B, runningB);
         },
         webhook: (f) => opened(f, "synchronize"),
       },
       {
-        change: (f) => f.github.setCheckRuns(REPO, SHA_B, passing("test")),
+        change: (f) => f.github.setCheckRuns(REPO, SHA_B, passedB),
         webhook: (f) => checksDone(f, SHA_B),
       },
       {
@@ -454,9 +510,9 @@ describe("polling backstop (unit: ADR 0113 section 6, M2.4)", () => {
     expect(await facts(withPolling)).toEqual(await facts(withWebhooks));
     expect((await facts(withWebhooks)).map((e) => e.ref)).toEqual([
       ciRunKey(REPO, PR, SHA_A, "pending"),
-      ciRunKey(REPO, PR, SHA_A, "failure"),
+      ciRunKey(REPO, PR, SHA_A, "failure", failedA[0]!.id),
       ciRunKey(REPO, PR, SHA_B, "pending"),
-      ciRunKey(REPO, PR, SHA_B, "success"),
+      ciRunKey(REPO, PR, SHA_B, "success", passedB[0]!.id),
       mergeCommitKey(REPO, PR),
     ]);
   });

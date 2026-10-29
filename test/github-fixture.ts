@@ -18,8 +18,20 @@ export const MERGE_SHA = "c".repeat(40);
 export const PR = 7;
 export const CHANGED = ["src/app.ts", "docs/readme.md"];
 
+export const RUNNER_APP = "foreman-runner";
+export const ACTIONS_APP = "github-actions";
+
+let checkRunIds = 1000;
+/** A check run with a fresh id, as GitHub creates on every run and rerun. */
+export const check = (
+  name: string,
+  status: CheckRun["status"],
+  conclusion: string | null = null,
+  appSlug: string | null = ACTIONS_APP,
+): CheckRun => ({ id: ++checkRunIds, name, status, conclusion, appSlug });
+
 export const passing = (...names: string[]): CheckRun[] =>
-  names.map((name) => ({ name, status: "completed", conclusion: "success" }));
+  names.map((name) => check(name, "completed", "success"));
 
 export interface IngestFixture {
   store: Store;
@@ -55,6 +67,7 @@ export async function createIngestFixture(
     clock,
     ids: { next: nextId },
     appLogins: [DEVELOPER_APP, DESIGNER_APP],
+    runnerAppSlug: RUNNER_APP,
   };
 
   const projectId = nextId();
@@ -127,9 +140,7 @@ export async function createIngestFixture(
     author: DEVELOPER_APP,
   });
   github.setChangedPaths(REPO, PR, CHANGED);
-  github.setCheckRuns(REPO, SHA_A, [
-    { name: "build", status: "in_progress", conclusion: null },
-  ]);
+  github.setCheckRuns(REPO, SHA_A, [check("build", "in_progress")]);
 
   let deliveries = 0;
   return {

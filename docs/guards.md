@@ -37,7 +37,7 @@ A `docs_note` written by an agent through the state API carries no commit. It co
 | `test_report`                                         | `{suite: string, pass: boolean, galleryComponents?: string[]}`                                                                        |
 | `agent_report`                                        | `{summary?: string, escalate?: boolean, reason?: string}`                                                                             |
 
-`ci_run` and `merge_commit` rows written by GitHub ingestion have `recordedBy` `github`, no run, and a `ref` equal to their ingest key (`github:ci_run:<repo>#<pr>:<sha>:<conclusion>`, `github:merge_commit:<repo>#<pr>`). Ingestion always fills `changedPaths`.
+`ci_run` and `merge_commit` rows written by GitHub ingestion have `recordedBy` `github`, no run, and a `ref` equal to their ingest key (`github:ci_run:<repo>#<pr>:<sha>:pending`; a final result adds its CI attempt, `github:ci_run:<repo>#<pr>:<sha>:<conclusion>:check-run-<id>` with the highest counted check run id, so every rerun is a new row; `github:merge_commit:<repo>#<pr>`). Ingestion always fills `changedPaths`.
 
 ## Topic keys and decision conventions
 

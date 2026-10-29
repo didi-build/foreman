@@ -119,7 +119,8 @@ describe.skipIf(!adminUrl)(
     });
 
     it("lets exactly one of two racing copies of a delivery record anything", async () => {
-      f.github.setCheckRuns(REPO, SHA_A, passing("build"));
+      const finished = passing("build");
+      f.github.setCheckRuns(REPO, SHA_A, finished);
       const delivery = {
         id: "db-delivery-race",
         event: "check_suite",
@@ -132,7 +133,7 @@ describe.skipIf(!adminUrl)(
       expect(outcomes.map((o) => o.outcome).sort()).toEqual(["duplicate", "recorded"]);
       expect((await f.evidence("ci_run")).map((e) => e.ref)).toEqual([
         ciRunKey(REPO, PR, SHA_A, "pending"),
-        ciRunKey(REPO, PR, SHA_A, "success"),
+        ciRunKey(REPO, PR, SHA_A, "success", finished[0]!.id),
       ]);
     });
 
@@ -253,7 +254,7 @@ describe.skipIf(!adminUrl)(
         apiPool,
         `insert into factory.evidence (id, node_id, kind, ref, payload, recorded_by, recorded_at, ingest_key)
          values ('${deps.ids.next()}', '${f.nodeId}', 'docs_note', 'x', '{}', 'developer', now(),
-                 '${ciRunKey(REPO, PR, "d".repeat(40), "success")}')`,
+                 '${ciRunKey(REPO, PR, "d".repeat(40), "success", 1)}')`,
         /evidence_ingest_key_kinds/,
       );
       await refused(

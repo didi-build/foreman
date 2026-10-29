@@ -1,6 +1,7 @@
 // The GitHub webhook receiver (build plan M2.3, ADR 0113). Configuration only from the
 // environment (ADR 0111): PORT, DATABASE_URL (a login user in the factory_ingest role), the
-// webhook secret by path, and the logins of the Developer and Designer Apps (D-156).
+// webhook secret by path, the logins of the Developer and Designer Apps and the runner App's slug
+// (D-156).
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -23,6 +24,7 @@ try {
     webhookSecret: secret(WEBHOOK_SECRET_PATH),
     developerApp: text("GITHUB_DEVELOPER_APP_LOGIN"),
     designerApp: text("GITHUB_DESIGNER_APP_LOGIN"),
+    runnerAppSlug: text("GITHUB_RUNNER_APP_SLUG"),
   });
 } catch (error) {
   logger.error("invalid configuration", {
@@ -50,6 +52,7 @@ const service = await startService({
       clock: { now: () => new Date() },
       ids: { next: () => randomUUID() },
       appLogins: [config.developerApp, config.designerApp],
+      runnerAppSlug: config.runnerAppSlug,
     },
     logger,
   }),
