@@ -75,7 +75,11 @@ export interface GuardContext {
     | "getCounter"
     | "getSetting"
     | "getRun"
+    | "listRuns"
     | "findOpenGateRequest"
+    | "listOpenGateRequests"
+    | "listDecisionsForNode"
+    | "getProject"
   >;
 }
 
@@ -218,7 +222,7 @@ function validateTransition(
   index: number,
   value: unknown,
   escalation: boolean,
-  guardNames: string[],
+  guardNames: readonly string[],
   problems: string[],
 ): TransitionContract | null {
   if (!isRecord(value)) {
@@ -303,7 +307,7 @@ function validateTransition(
  */
 export function validateContracts(
   raw: unknown,
-  guardNames: string[],
+  guardNames: readonly string[],
 ): ValidationResult {
   const problems: string[] = [];
   if (!isRecord(raw)) return { problems: ["contracts must be an object"] };

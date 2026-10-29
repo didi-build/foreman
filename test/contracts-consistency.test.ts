@@ -12,7 +12,7 @@ import {
   loadContractFiles,
 } from "../src/adapters/contracts-file/load.ts";
 import { validateContracts } from "../src/core/contracts.ts";
-import { GUARD_NAMES } from "./lib/guard-names.ts";
+import { GUARD_NAMES } from "../src/core/guards/index.ts";
 
 const PAIRS: { file: string; heading: string }[] = [
   { file: "code.yaml", heading: "Code, infrastructure and docs tracks" },

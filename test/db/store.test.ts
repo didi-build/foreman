@@ -487,5 +487,70 @@ describe.skipIf(!adminUrl)(
       expect(await store.listEdges({ toNode: b.id, type: "blocks" })).toHaveLength(1);
       expect(await store.listEdges({ fromNode: b.id })).toEqual([]);
     });
+
+    it("lists a node's decisions, recorded on it or linked to it, oldest first, with status (M2.2)", async () => {
+      const n = node();
+      const other = node();
+      await store.insertNode(n);
+      await store.insertNode(other);
+      const decision = {
+        projectId,
+        kind: "answer" as const,
+        scope: {},
+        byActor: "didi",
+        textVerbatim: "yes",
+      };
+      const linked = { ...decision, id: id(), nodeId: other.id, recordedAt: T0 };
+      const direct = { ...decision, id: id(), nodeId: n.id, recordedAt: T1 };
+      const unrelated = { ...decision, id: id(), nodeId: other.id, recordedAt: T0 };
+      for (const d of [direct, linked, unrelated]) await store.insertDecision(d);
+      await store.linkNodeToDecision(n.id, linked.id);
+      await store.insertDecisionEvent({
+        id: id(),
+        decisionId: direct.id,
+        kind: "reversed",
+        byDecisionId: null,
+        reason: "changed our mind",
+        recordedBy: "runner",
+        recordedAt: T1,
+      });
+      const listed = await store.listDecisionsForNode(n.id);
+      expect(listed.map((d) => [d.id, d.status])).toEqual([
+        [linked.id, "active"],
+        [direct.id, "reversed"],
+      ]);
+    });
+
+    it("lists a node's runs oldest first (M2.2)", async () => {
+      const n = node();
+      await store.insertNode(n);
+      const run = {
+        projectId,
+        bot: "developer",
+        agentId: null,
+        runtime: "claude_code",
+        model: "model-a",
+        headSha: SHA,
+        botVersion: "v1",
+        endedAt: null,
+        outcome: null,
+        turns: null,
+        minutes: null,
+        costUsd: null,
+        tokens: null,
+        budget: {},
+        parentRunId: null,
+        transcriptRef: null,
+      };
+      const later = { ...run, id: id(), nodeId: n.id, startedAt: T1 };
+      const earlier = { ...run, id: id(), nodeId: n.id, startedAt: T0 };
+      await store.insertRun(later);
+      await store.insertRun(earlier);
+      await store.insertRun({ ...run, id: id(), nodeId: null, startedAt: T0 });
+      expect((await store.listRuns({ nodeId: n.id })).map((r) => r.id)).toEqual([
+        earlier.id,
+        later.id,
+      ]);
+    });
   },
 );

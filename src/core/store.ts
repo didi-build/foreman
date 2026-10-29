@@ -323,6 +323,8 @@ export interface StoreOps {
   getDecision(id: string): Promise<CurrentDecision | null>;
   linkNodeToDecision(nodeId: string, decisionId: string): Promise<void>;
   listNodesForDecision(decisionId: string): Promise<string[]>;
+  /** Decisions about a node: recorded on it, or linked to it through `node_decisions`. Oldest first. */
+  listDecisionsForNode(nodeId: string): Promise<CurrentDecision[]>;
 
   insertGateRequest(request: GateRequest): Promise<void>;
   getGateRequest(id: string): Promise<GateRequest | null>;
@@ -335,6 +337,8 @@ export interface StoreOps {
   insertRunToken(token: RunToken): Promise<void>;
   getRunToken(tokenHash: string): Promise<RunToken | null>;
   getRun(id: string): Promise<Run | null>;
+  /** A node's runs, oldest first. */
+  listRuns(filter: { nodeId: string }): Promise<Run[]>;
   /** Records how a run ended. Returns false if it had already ended. */
   endRun(id: string, end: RunEnd): Promise<boolean>;
 

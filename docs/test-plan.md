@@ -32,7 +32,7 @@ Principles, from `AGENTS.md`: testing is intentional. Each test names the seam i
 
 For each guard: pass, fail, missing evidence, evidence for an older commit, and evidence for the right commit but the wrong kind.
 
-The guards are the 24 in ADR 0105's guard list (D-176):
+The guards are the 24 in ADR 0105's guard list (D-176). The evidence each one reads, the head-commit rule and the payload shapes are in [guards.md](./guards.md).
 
 - `blockers_done`, `design_spec_merged`, `no_pending_gate`, `agent_ready_not_on_hold`.
 - `ci_green_on_head`, `docs_updated_or_none`.

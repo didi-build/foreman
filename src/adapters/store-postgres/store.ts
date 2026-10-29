@@ -288,6 +288,16 @@ function ops(db: Queryable): StoreOps {
       ]);
       return r && toCurrentDecision(r);
     },
+    async listDecisionsForNode(nodeId) {
+      const result = await rows(
+        `select * from factory.decisions_current
+         where node_id = $1
+            or id in (select decision_id from factory.node_decisions where node_id = $1)
+         order by recorded_at, id`,
+        [nodeId],
+      );
+      return result.map(toCurrentDecision);
+    },
     async linkNodeToDecision(nodeId, decisionId) {
       await exec(
         `insert into factory.node_decisions (node_id, decision_id) values ($1, $2)
@@ -393,6 +403,13 @@ function ops(db: Queryable): StoreOps {
     async getRun(id) {
       const r = await one("select * from factory.runs where id = $1", [id]);
       return r && toRun(r);
+    },
+    async listRuns(filter) {
+      const result = await rows(
+        "select * from factory.runs where node_id = $1 order by started_at, id",
+        [filter.nodeId],
+      );
+      return result.map(toRun);
     },
     async insertRunToken(t) {
       await exec(
