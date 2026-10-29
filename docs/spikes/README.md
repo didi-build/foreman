@@ -4,11 +4,11 @@ Spikes answer one question each with a recorded yes or no and evidence (`docs/bu
 
 ## Status
 
-| Spike | Question                                                          | Result now                                                                 | Record                                                   |
-| ----- | ----------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------- |
-| M0.2  | Can the runner start each agent and read its result? (V-01, V-04) | Desk result only. Not run yet: needs credentials                           | [m0.2-agent-dispatch.md](./m0.2-agent-dispatch.md)       |
-| M0.3  | Can Linear's API create statuses and act as an app? (V-02)        | Desk result only. Moved to the start of Milestone 5 (D-147)                | [m0.3-linear-api.md](./m0.3-linear-api.md)               |
-| M0.4  | Do Windmill approval pages work on a phone? (V-03)                | Desk result only. Not run yet: needs a Windmill workspace and Didi's phone | [m0.4-windmill-approval.md](./m0.4-windmill-approval.md) |
+| Spike | Question                                                          | Result now                                                           | Record                                                   |
+| ----- | ----------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------- |
+| M0.2  | Can the runner start each agent and read its result? (V-01, V-04) | **Claude Code run 2026-10-29: yes** (D-172). Grok and Cursor not run | [m0.2-agent-dispatch.md](./m0.2-agent-dispatch.md)       |
+| M0.3  | Can Linear's API create statuses and act as an app? (V-02)        | Desk result only. Moved to the start of Milestone 5 (D-147)          | [m0.3-linear-api.md](./m0.3-linear-api.md)               |
+| M0.4  | Do Windmill approval pages work on a phone? (V-03)                | **Run 2026-10-29: yes**, with three rules for link safety (D-170)    | [m0.4-windmill-approval.md](./m0.4-windmill-approval.md) |
 
 A desk result comes from current documentation and public open-source examples. It is not a verdict. The build plan needs each spike to be run, and the run's output pasted into its record.
 

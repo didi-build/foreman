@@ -27,6 +27,7 @@
     "attribution": "node scripts/check-attribution.mjs",
     "nodrift": "node scripts/run-nodrift-check.mjs",
     "infra-boundaries": "node scripts/check-infra-boundaries.mjs",
+    "db:migrate": "node src/adapters/store-postgres/migrate.ts",
     "init-project": "node scripts/init-project.mjs",
     "repo-settings": "node scripts/repo-settings.mjs",
     "verify-action-pins": "node scripts/verify-action-pins.mjs",
@@ -51,6 +52,7 @@
     "@eslint/js": "9.39.5",
     "@secretlint/secretlint-rule-preset-recommend": "10.2.2",
     "@types/node": "22.20.5",
+    "@types/pg": "8.23.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "5.2.0",
@@ -69,5 +71,8 @@
     "vitest": "4.1.12",
     "wrangler": "4.152.0",
     "yaml": "2.9.1"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
   }
 }

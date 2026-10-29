@@ -7,16 +7,15 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const adminUrl = process.env.TEST_DATABASE_URL;
-const required = process.env.FOREMAN_REQUIRE_DB === "1";
-const dbName = `foreman_schema_test_${process.pid}`;
+import {
+  adminUrl,
+  createTestDatabase,
+  dbRequired,
+  dropTestDatabase,
+} from "./database.ts";
 
-/** The test database's URL: the admin URL with its database name replaced. */
-function testUrl(): string {
-  const url = new URL(adminUrl ?? "");
-  url.pathname = `/${dbName}`;
-  return url.toString();
-}
+const dbName = `foreman_schema_test_${process.pid}`;
+let testUrl = "";
 
 interface Result {
   ok: boolean;
@@ -34,7 +33,7 @@ function psql(url: string, sql: string, role?: string): Result {
   return { ok: run.status === 0, out: run.stdout.trim(), err: run.stderr };
 }
 
-const sql = (text: string, role?: string): Result => psql(testUrl(), text, role);
+const sql = (text: string, role?: string): Result => psql(testUrl, text, role);
 
 function expectRejected(result: Result, pattern: RegExp): void {
   expect(result.ok, `expected a rejection, got: ${result.out}`).toBe(false);
@@ -94,7 +93,7 @@ const APPEND_ONLY = [
 
 describe("database integration (test environment guard)", () => {
   it("has a database when the CI database job requires one", () => {
-    expect(!required || Boolean(adminUrl)).toBe(true);
+    expect(!dbRequired || Boolean(adminUrl)).toBe(true);
   });
 });
 
@@ -102,22 +101,7 @@ describe.skipIf(!adminUrl)(
   "state store schema (database integration, ADR 0104)",
   () => {
     beforeAll(() => {
-      const admin = adminUrl ?? "";
-      // Supabase's API roles, so the revokes in the migration are exercised. Cluster-wide; test only.
-      psql(
-        admin,
-        "do $$ begin if not exists (select from pg_roles where rolname = 'anon') then create role anon nologin; end if; end $$;",
-      );
-      // Database commands cannot run inside the transaction psql -1 opens, so they use -c.
-      for (const command of [
-        `drop database if exists ${dbName}`,
-        `create database ${dbName}`,
-      ]) {
-        const done = spawnSync("psql", [admin, "-X", "-q", "-c", command], {
-          encoding: "utf8",
-        });
-        expect(done.status, done.stderr).toBe(0);
-      }
+      testUrl = createTestDatabase(dbName);
       const dir = "db/migrations";
       for (const file of readdirSync(dir)
         .filter((f) => f.endsWith(".sql"))
@@ -129,16 +113,7 @@ describe.skipIf(!adminUrl)(
       expect(fixtures.ok, fixtures.err).toBe(true);
     });
 
-    afterAll(() => {
-      if (adminUrl)
-        spawnSync("psql", [
-          adminUrl,
-          "-X",
-          "-q",
-          "-c",
-          `drop database if exists ${dbName}`,
-        ]);
-    });
+    afterAll(() => dropTestDatabase(dbName));
 
     it("creates every table in the factory schema, with row level security on", () => {
       const tables = sql(

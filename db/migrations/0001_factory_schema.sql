@@ -7,15 +7,22 @@
 create schema factory;
 
 -- Group roles. Login users that belong to them are created when the database is set up, with
--- credentials from the vault (new-credentials gate), never in a migration.
+-- credentials from the vault (new-credentials gate), never in a migration. Roles belong to the
+-- whole server, so a concurrent creation (another database migrating at the same moment) is fine.
 do $$
 begin
   if not exists (select from pg_roles where rolname = 'factory_runner') then
     create role factory_runner nologin;
   end if;
+exception when duplicate_object or unique_violation then null;
+end
+$$;
+do $$
+begin
   if not exists (select from pg_roles where rolname = 'factory_api') then
     create role factory_api nologin;
   end if;
+exception when duplicate_object or unique_violation then null;
 end
 $$;
 

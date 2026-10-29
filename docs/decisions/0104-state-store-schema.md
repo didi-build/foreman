@@ -64,7 +64,7 @@ The store holds no end-user personal data; agents work from synthetic data (D-15
 ### How migrations run
 
 - Now: CI only. `.github/workflows/db.yml` applies every file in `db/migrations/` to an empty PostgreSQL 16 on the runner and runs `test/db/`.
-- M1.2 adds the Postgres driver and a migration tool that records what was applied.
+- M1.2 added the Postgres driver (`pg`) and `npm run db:migrate` (`src/adapters/store-postgres/migrate.ts`). It applies new files in name order, each in its own transaction together with its record in `factory_meta.schema_migrations` (name and SHA-256), under an advisory lock so two runs cannot overlap. It refuses to run if an applied file was edited or removed: a change is always a new migration.
 - Applying to Supabase happens only after this review and once Didi has created the project and its credentials. At that point: the Data API is confirmed off, the login users are created, and a test confirms the anon key reads nothing through the REST endpoint (ADR 0103).
 
 ## Constraints
