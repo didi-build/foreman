@@ -223,6 +223,31 @@ function ops(state: State): StoreOps {
     async linkNodeToDecision(nodeId, decisionId) {
       state.nodeDecisions.add(`${nodeId}|${decisionId}`);
     },
+    async listDecisionsForNode(nodeId) {
+      const linked = new Set(
+        [...state.nodeDecisions]
+          .map((key) => key.split("|") as [string, string])
+          .filter(([n]) => n === nodeId)
+          .map(([, d]) => d),
+      );
+      const ids = [...state.decisions.values()]
+        .filter((d) => d.nodeId === nodeId || linked.has(d.id))
+        .sort(byTimeThenId<Decision>((d) => d.recordedAt))
+        .map((d) => d.id);
+      return ids.map((id) => {
+        const decision = state.decisions.get(id) as Decision;
+        const event = [...state.decisionEvents.values()].find(
+          (e) => e.decisionId === id,
+        );
+        const current: CurrentDecision = {
+          ...copy(decision),
+          status: event?.kind ?? "active",
+          replacedById: event?.byDecisionId ?? null,
+          statusChangedAt: event ? copy(event.recordedAt) : null,
+        };
+        return current;
+      });
+    },
     async listNodesForDecision(decisionId) {
       return [...state.nodeDecisions]
         .map((key) => key.split("|") as [string, string])
@@ -282,6 +307,12 @@ function ops(state: State): StoreOps {
     },
     async getRun(id) {
       return copy(state.runs.get(id) ?? null);
+    },
+    async listRuns(filter) {
+      return [...state.runs.values()]
+        .filter((r) => r.nodeId === filter.nodeId)
+        .sort(byTimeThenId<Run>((r) => r.startedAt))
+        .map(copy);
     },
     async insertRunToken(t) {
       for (const existing of state.runTokens.values()) {

@@ -12,7 +12,7 @@ import { validateContracts, type GuardRegistry } from "../src/core/contracts.ts"
 import { createLibrary, type Clock, type IdSource } from "../src/core/library.ts";
 import { createMemoryStore } from "../src/core/memory-store.ts";
 import type { Track } from "../src/core/store.ts";
-import { GUARD_NAMES } from "./lib/guard-names.ts";
+import { GUARD_NAMES } from "../src/core/guards/index.ts";
 
 const PROJECT = "00000000-0000-4000-8000-000000000001";
 const RUNNER = { kind: "runner" as const, id: "runner" };

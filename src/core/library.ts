@@ -126,6 +126,10 @@ export function createLibrary({
     getCounter: (nodeId, kind) => store.getCounter(nodeId, kind),
     getSetting: (key) => store.getSetting(key),
     getRun: (id) => store.getRun(id),
+    listRuns: (filter) => store.listRuns(filter),
+    listOpenGateRequests: (projectId) => store.listOpenGateRequests(projectId),
+    listDecisionsForNode: (nodeId) => store.listDecisionsForNode(nodeId),
+    getProject: (id) => store.getProject(id),
     findOpenGateRequest: (projectId, topicKey) =>
       store.findOpenGateRequest(projectId, topicKey),
   };
