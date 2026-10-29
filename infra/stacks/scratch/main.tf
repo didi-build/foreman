@@ -1,23 +1,18 @@
-# The API token comes from CLOUDFLARE_API_TOKEN in the environment, scoped to the scratch account.
-provider "cloudflare" {}
+# The scratch stack names what it needs, not a provider (D-146). Throwaway: never a real project.
+module "project" {
+  source = "../../modules/project"
 
-resource "cloudflare_workers_kv_namespace" "scratch" {
-  account_id = var.account_id
-  title      = "pf-scratch-m0-7"
+  name            = "pf-scratch-m0-7"
+  deploy_target   = var.deploy_target
+  target_settings = var.target_settings
+  kv_stores       = ["store"]
+  txt_records     = { "pf-scratch-m0-7" = var.txt_content }
 }
 
-resource "cloudflare_dns_record" "scratch" {
-  zone_id = var.zone_id
-  name    = "pf-scratch-m0-7"
-  type    = "TXT"
-  content = "\"${var.txt_content}\""
-  ttl     = 1 # automatic
+output "kv_store_ids" {
+  value = module.project.kv_store_ids
 }
 
-output "kv_namespace_id" {
-  value = cloudflare_workers_kv_namespace.scratch.id
-}
-
-output "dns_record_id" {
-  value = cloudflare_dns_record.scratch.id
+output "txt_record_ids" {
+  value = module.project.txt_record_ids
 }

@@ -60,7 +60,7 @@ Agent runtime adapters read the model endpoint and API key from the bot file (th
 
 ### 5. IaC separates platform from projects
 
-As in ADR 0110: `infra/modules/` holds platform modules (one per provider) and a project module that takes a `deploy_target` variable (`cloudflare` now, `kubernetes` later), so a project moves by changing the target, not by rewriting its stack. Built when the first real stack needs it.
+As in ADR 0110: `infra/modules/platform/<target>/` holds one module per deploy target, and `infra/modules/project/` takes a `deploy_target` variable (`cloudflare` now, `kubernetes` later), so a project moves by changing the target, not by rewriting its stack. Cloudflare is declared only in its platform module (D-146). The scratch stack already uses this layout.
 
 ### 6. CI checks that enforce this now
 

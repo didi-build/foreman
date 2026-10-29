@@ -9,7 +9,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "check": "npm run conflict-markers && npm run workflow-yaml && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run secrets && npm run secret-usage && npm run preview-workflow && npm run placeholders && npm run attribution && npm run nodrift",
+    "check": "npm run conflict-markers && npm run workflow-yaml && npm run infra-boundaries && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run secrets && npm run secret-usage && npm run preview-workflow && npm run placeholders && npm run attribution && npm run nodrift",
     "build": "vite build",
     "dev:gallery": "vite",
     "format": "prettier --write .",
@@ -26,6 +26,7 @@
     "placeholders": "node scripts/check-placeholders.mjs",
     "attribution": "node scripts/check-attribution.mjs",
     "nodrift": "node scripts/run-nodrift-check.mjs",
+    "infra-boundaries": "node scripts/check-infra-boundaries.mjs",
     "init-project": "node scripts/init-project.mjs",
     "repo-settings": "node scripts/repo-settings.mjs",
     "verify-action-pins": "node scripts/verify-action-pins.mjs",
