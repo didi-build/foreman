@@ -145,12 +145,12 @@ The loop: the Scanner finds something, files it as an idea, the idea enters Mach
 
 Self-improvement comes in stages (D-151). Stage A is the Scanner (section 2.12). Stages B to D are recursive self-improvement (RSI) Levels 1 to 3, planned for release 4 or later (D-152). Production deploys stay Didi's (D-007, D-149).
 
-| Stage | Level   | What                                                                                                                                                                                           | Needs                                             |
-| ----- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| A     |         | Machine 3 produces ideas, including ideas about the factory itself, which run through the normal flow as dogfooding. Didi deploys                                                              | Section 2.12                                      |
-| B     | Level 1 | The system proposes changes to its own playbook, bot files, prompts and contract thresholds as ordinary ideas, tests them by replaying recorded history and by shadow runs. Didi approves      | No Kubernetes. Decision-point records (P-11)      |
-| C     | Level 2 | Changes to the factory's own code run in an isolated sandbox, deploy to staging, run against the current version, and roll back automatically on regression. Production promotion stays a gate | Kubernetes (section 2.10)                         |
-| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                          | Stage C, an explicit decision per class of change |
+| Stage | Level   | What                                                                                                                                                                                                                       | Needs                                             |
+| ----- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| A     |         | Machine 3 produces ideas, including ideas about the factory itself, which run through the normal flow as dogfooding. Didi deploys                                                                                          | Section 2.12                                      |
+| B     | Level 1 | The system proposes changes to its own playbook, bot files, prompts and contract thresholds (including QA thresholds, D-153) as ordinary ideas, tests them by replaying recorded history and by shadow runs. Didi approves | No Kubernetes. Decision-point records (P-11)      |
+| C     | Level 2 | Changes to the factory's own code run in an isolated sandbox, deploy to staging, run against the current version, and roll back automatically on regression. Production promotion stays a gate                             | Kubernetes (section 2.10)                         |
+| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                                                      | Stage C, an explicit decision per class of change |
 
 Protected set (P-18). The system may never change these without Didi:
 
@@ -170,7 +170,7 @@ RSI rules (P-19):
 - The proposer, the evaluator and the deployer are different roles, and the evaluator is a different model family. A model never grades its own change.
 - One improvement is in flight at a time, and every change is small and reversible.
 - Success is judged on several outcomes (cycle time, failures, QA rounds, spend) with a held-out slice.
-- QA strictness and thresholds are in the protected set and are not tunable by the system.
+- QA strictness and thresholds are in the protected set: the system may propose changes to them, and only Didi approves them (D-153).
 
 The first release already records what RSI needs: transitions, evidence, runs with bot and model version, counters, decisions, the spec version on every transition, and the decision-point records (P-11). Still missing: an outcome view per work item (cycle time, failures, QA rounds, spend), a replay harness, and an experiment tag on runs.
 
