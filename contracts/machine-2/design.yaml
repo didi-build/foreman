@@ -109,7 +109,7 @@ transitions:
     guards: [spec_edited_by_designer_only, scope_matches_plan]
     evidence: [spec_paths]
     timeout: The Designer's budget (not set).
-    fallback: A scope change goes to Escalated to Didi. Any other failure stays in Writing spec and the failure counter goes up by one.
+    fallback: A scope change goes to Escalated to Council, which sends it on to Escalated to Didi only if it changes product direction or needs his approval (D-177). Any other failure stays in Writing spec and the failure counter goes up by one.
 
   - from: building_components
     to: in_qa_review
