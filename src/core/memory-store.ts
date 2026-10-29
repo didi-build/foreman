@@ -16,6 +16,7 @@ import {
   type Node,
   type Project,
   type Run,
+  type RunToken,
   type Setting,
   type SpecVersion,
   type Store,
@@ -35,6 +36,7 @@ interface State {
   nodeDecisions: Set<string>;
   gateRequests: Map<string, GateRequest>;
   runs: Map<string, Run>;
+  runTokens: Map<string, RunToken>;
   counters: Map<string, number>;
   settings: Map<string, Setting>;
   decisionPointRecords: Map<string, DecisionPointRecord>;
@@ -53,6 +55,7 @@ const emptyState = (): State => ({
   nodeDecisions: new Set(),
   gateRequests: new Map(),
   runs: new Map(),
+  runTokens: new Map(),
   counters: new Map(),
   settings: new Map(),
   decisionPointRecords: new Map(),
@@ -255,6 +258,12 @@ function ops(state: State): StoreOps {
       );
       return copy(found ?? null);
     },
+    async listOpenGateRequests(projectId) {
+      return [...state.gateRequests.values()]
+        .filter((g) => g.status === "open" && g.projectId === projectId)
+        .sort(byTimeThenId<GateRequest>((g) => g.createdAt))
+        .map(copy);
+    },
     async closeGateRequest(id, close) {
       const request = state.gateRequests.get(id);
       if (!request || request.status !== "open") return false;
@@ -273,6 +282,16 @@ function ops(state: State): StoreOps {
     },
     async getRun(id) {
       return copy(state.runs.get(id) ?? null);
+    },
+    async insertRunToken(t) {
+      for (const existing of state.runTokens.values()) {
+        if (existing.runId === t.runId)
+          throw new StoreConflictError("run_tokens_run_id_key", "One token per run");
+      }
+      insertUnique(state.runTokens, t.tokenHash, t, "run_tokens_pkey");
+    },
+    async getRunToken(tokenHash) {
+      return copy(state.runTokens.get(tokenHash) ?? null);
     },
     async endRun(id, end) {
       const run = state.runs.get(id);
@@ -331,6 +350,7 @@ function cloneState(state: State): State {
     nodeDecisions: new Set(state.nodeDecisions),
     gateRequests: new Map(state.gateRequests),
     runs: new Map(state.runs),
+    runTokens: new Map(state.runTokens),
     counters: new Map(state.counters),
     settings: new Map(state.settings),
     decisionPointRecords: new Map(state.decisionPointRecords),

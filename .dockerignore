@@ -9,3 +9,4 @@ test-results
 dist
 infra
 docs
+**/container-check.env

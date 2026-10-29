@@ -22,7 +22,7 @@ The handoff names three hosting options: Windmill scripts exposed as endpoints, 
 
 ### Hosting
 
-A small Node HTTP service in `src/api/`, shipped as a container image (Dockerfile, config only from the environment, `/health`, JSON logs, clean shutdown; ADR 0111 sets the shared conventions). It uses Node's built-in HTTP server, or one small framework chosen in M1.4. It connects to Postgres with a role that has only the grants the API needs, never the owner role.
+A small Node HTTP service in `src/api/`, shipped as a container image (Dockerfile, config only from the environment, `/health`, JSON logs, clean shutdown; ADR 0111 sets the shared conventions). It uses Node's built-in HTTP server through `src/service-kit/server.ts`, with no framework (settled in M1.4). It connects to Postgres with a role that has only the grants the API needs, never the owner role.
 
 Where it runs: DigitalOcean, Toronto region (D-141). There is no existing droplet, so this is new spend. Didi chose DigitalOcean on 2026-10-28. The DigitalOcean product (App Platform or a droplet) and the monthly amount are approved by Didi at M1.4, when the service first needs to run. Nothing is created before then. The container stays target-agnostic (D-134), so the host can change without a rewrite.
 
@@ -61,6 +61,22 @@ M0.6's success check is that this ADR is merged. M1.4 then proves it with API te
 
 - A plain Node service is the option that stays portable and becomes a Kubernetes pod with no rewrite (D-134). It adds nothing to the Windmill execution count (N-19).
 - Per-run tokens give each agent its own identity, bound to one project and one run, and expire on their own. That matches the security model better than shared or long-lived keys.
+
+### Settled in M1.4
+
+| Route               | Roles                                    | Does                                                                                                                                                                                 |
+| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /ideas`       | Council, Triage                          | Creates an idea in its entry state (Submitted, owned by the runner, from `src/api/entry.ts` until contracts arrive in M2.1)                                                          |
+| `POST /edges`       | Council, Triage                          | Links two nodes in the caller's project; a `blocks` cycle is refused                                                                                                                 |
+| `POST /reports`     | Developer, Designer, QA, Council, Triage | Records `agent_report` or `docs_note` (QA: `agent_report` only). Never stores a commit from the agent. A run tied to a node may only report on that node                             |
+| `POST /qa-verdicts` | QA                                       | Records the verdict against `runs.head_sha`. A different `commitSha` is rejected. A pass must cite runner evidence for this node and commit. One verdict per run (ADR 0112)          |
+| `POST /decisions`   | Council, Triage                          | Records `council_decision`, `interview_answer` or `product_direction` text exactly as given, by the caller's role. Approvals and gate answers come only through the approval channel |
+| `GET /nodes/:id`    | All roles                                | Reads a node in the caller's project                                                                                                                                                 |
+| `GET /attention`    | Council, Triage                          | Open blocking gate requests and blocked or escalated nodes in the caller's project (M4 refines it)                                                                                   |
+
+- A token is checked against its hash, its expiry, its revocation and its run, which must not have ended. Every failure answers the same 401. A role outside a route's list gets 403. A node in another project gets 404, so other projects stay invisible.
+- No route changes a node's state. Request bodies are JSON objects of at most 64 KiB.
+- Issuing tokens is the runner's job (M3.2). The tests insert a run and its token hash directly.
 
 ## Consequences
 

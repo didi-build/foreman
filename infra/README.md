@@ -22,6 +22,8 @@ No secret value is ever written in a `.tf` or `.tfvars` file in this repo.
 
 ## Running the M0.7 proof on the scratch stack
 
+Moved to the start of M3.7, on the rehearsal project (D-174). The steps below stay as the reference for that run.
+
 Needs (gates for Didi): a scratch Cloudflare account or zone, an API token scoped to it, an R2 bucket for state with versioning on, an R2 token scoped to that bucket, and a passphrase of at least 16 characters kept in the vault. Install OpenTofu 1.13 (`winget install --exact --id=OpenTofu.Tofu` on Windows).
 
 In Git Bash, add `-input=false` to every command, and set `MSYS_NO_PATHCONV=1` if an argument starts with `/`.

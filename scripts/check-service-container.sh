@@ -20,6 +20,12 @@ fi
 
 docker build -f "${dir}/Dockerfile" -t "${image}" .
 
+# Settings a service needs to start, beyond PORT, for this check only (never real values).
+env_args=()
+if [ -f "${dir}/container-check.env" ]; then
+  env_args=(--env-file "${dir}/container-check.env")
+fi
+
 # 0b. Runs as a non-root user.
 image_user="$(docker inspect -f '{{.Config.User}}' "${image}")"
 case "${image_user}" in
@@ -27,7 +33,7 @@ case "${image_user}" in
 esac
 
 # 1. Config only from the environment, health endpoint answers.
-cid="$(docker run -d -e PORT="${port}" -p "${port}:${port}" "${image}")"
+cid="$(docker run -d "${env_args[@]}" -e PORT="${port}" -p "${port}:${port}" "${image}")"
 trap 'docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
 healthy=""
 for _ in $(seq 1 30); do
@@ -54,7 +60,7 @@ exit_code="$(docker inspect -f '{{.State.ExitCode}}' "${cid}")"
 
 # 4. Invalid config: refuses to start, names the setting, never prints the value.
 bad_value="invalid-port-value-for-check"
-if output="$(docker run --rm -e PORT="${bad_value}" "${image}" 2>&1)"; then
+if output="$(docker run --rm "${env_args[@]}" -e PORT="${bad_value}" "${image}" 2>&1)"; then
   fail "started with an invalid PORT"
 fi
 grep -q "PORT" <<<"${output}" || fail "did not name the invalid setting"
