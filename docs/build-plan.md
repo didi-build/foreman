@@ -221,7 +221,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: create an idea through the API, record decisions verbatim, and a Triage transition from Plan accepted to work items.
 - Why: work must be able to enter the system at cutover, since the Grok triage and breakdown routines will be disabled.
-- How: Triage follows the rules from the Grok breakdown routine: one PR per child, acceptance criteria, blocked-by links in execution order, a project on every item, a developer counterpart for every design item, parts that need Didi become their own gate items, personal and non-engineering items are skipped, a hold flag replaces hard-coded exclusions. A mixed item is split into linked items, one per track. Any visible change goes to the design track. Interview and Council planning stay a chat with the Council, recorded through the API.
+- How: Triage follows the rules from the Grok breakdown routine: one PR per child, acceptance criteria, blocked-by links in execution order, a project on every item, a developer counterpart for every design item, parts that need Didi become their own gate items, personal and non-engineering items are skipped, a hold flag replaces hard-coded exclusions. A mixed item is split into linked items, one per track. Any visible change goes to the design track. Interview and Council planning stay a chat with the Council, recorded through the API. The track classification goes through a decision-point interface (P-11), with a rule or a Sonnet call behind it.
 - Success: a test plan accepted in the rehearsal project becomes the right items, edges and tracks. Review point: Didi confirms the minimum scope before this task starts.
 
 ### M3.7 Infrastructure as code in the deploy adapter
@@ -315,7 +315,50 @@ This is its own project, run through the factory starting with the Interview. It
 
 ## Milestone 8: after that (not scheduled)
 
-The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), the Scanner (Machine 3), a role for Cursor agents, and the Recruiter flows on the runner.
+The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), a role for Cursor agents, and the Recruiter flows on the runner.
+
+## Milestone 9: decision models (release 3 or 4, not scheduled, not detailed)
+
+Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of a rule or a Sonnet call, without changing flows, and only advise (P-12). Jev's System One is a pilot candidate; compare alternatives then (O-11). Use cases and the open items they would help:
+
+| Use case                                                                     | Helps with                                                                                                  |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Classification, spot decisions                                               | N-01 (small visual tweak), N-02 (Triage rubric), N-06 (severity), N-08 (PII flag), the Triage track in M3.6 |
+| Agent guardrails, LLM guardrails                                             | Screening untrusted PR text before QA                                                                       |
+| Model routing, LLM cascades                                                  | The self-hosted model gateway (O-10) and the spend alerts (M4.5)                                            |
+| LLM-as-a-judge                                                               | Evidence for the QA guard (P-04), never a verdict the runner trusts on its own (P-12)                       |
+| Context compaction (with a classifier on what to compact), memory management | The deferred context graph (N-14)                                                                           |
+| Search and rerank, reranker in RAG                                           | The deferred context graph (N-14)                                                                           |
+| Tool selection                                                               | Choosing tools inside a role's allowed toolbox                                                              |
+| Workflow branching                                                           | Recommendation only; the guard and the runner decide (P-12)                                                 |
+
+## Milestone 10: Machine 3, the Scanner (after cutover is stable, not detailed)
+
+Self-improvement stage A (D-151). A scheduled, read-only scan whose findings become ideas in Machine 1 (D-150). It never changes code, opens PRs or creates gate requests. Starts after cutover has run stably for a few weeks; it does not need Kubernetes and is independent of RSI (P-16).
+
+- Sources, idea fields, safeguards and intake by class: `docs/architecture/technical-architecture.md` section 2.12 (P-13 to P-15).
+- Before it starts, Didi reviews the schedule and scope per project, the idea cap, the confidence threshold, the scan budget and the model (O-12).
+
+## Milestone 11: recursive self-improvement (release 4 or later, not scheduled, not detailed)
+
+Stages B to D of D-151, which are RSI Levels 1 to 3 (P-17). Planned for release 4 or later (D-152). Production deploys stay Didi's (D-007, D-149).
+
+| Stage | Level   | What                                                                                                                                                                                       | Depends on                                     |
+| ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| B     | Level 1 | Proposed changes to the playbook, bot files, prompts and contract thresholds as ordinary ideas, tested by replaying recorded history and shadow runs. Didi approves                        | The dependencies below, except Kubernetes      |
+| C     | Level 2 | Changes to the factory's own code in an isolated sandbox, deployed to staging, run against the current version, rolled back automatically on regression. Production promotion stays a gate | Level 1, Kubernetes (Milestone 7)              |
+| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                      | Level 2, an explicit decision per class (N-24) |
+
+Dependencies:
+
+- Cutover stable, with at least a few weeks of data (M6).
+- Decision-point records (P-11).
+- Kubernetes for Level 2 (Milestone 7).
+- Decision models (Milestone 9).
+- The Scanner as a source of ideas (Milestone 10).
+- Still to build first: an outcome view per work item, a replay harness, and an experiment tag on runs (`docs/architecture/technical-architecture.md` section 2.13).
+
+Protected set (P-18), never changed by the system without Didi, enforced through the privileged-path list and the merge guard: the gate list and its enforcement code, the guards that authorize transitions and the privileged-path list, the runner's credentials and how they are issued, the metrics and the evaluation harness, spend caps and the kill switch, the rule that production deploys are Didi's, and this list itself. Every self-change follows the RSI rules (P-19).
 
 ## Order and dependencies
 

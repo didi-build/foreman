@@ -123,6 +123,57 @@ The second release moves to Kubernetes for a pod per project, per-project isolat
 - Monitoring hooks: structured logs, health endpoints, and the `runs` and `transitions` tables already provide the data. The monitoring stack (metrics, logs, dashboards, alerts wired into the existing alert and call tiers) arrives with Kubernetes.
 - The second release is its own project, run through the factory with the Interview first. It is outlined in Milestone 7 of the build plan and not detailed here.
 
+### 2.11 Decision points (Proposed, P-11, P-12)
+
+- Every place the system classifies or picks something (for example the Triage track, severity, the size of a visual tweak, the interview depth, escalation severity, model routing) is a named interface in `src/core/` that returns a typed result with a confidence value.
+- A rule or a Claude Sonnet call fills it now. The interface lives in the core and the implementations live in an adapter, so the core stays free of model calls (essentials 4 and 5).
+- Each decision is recorded with the decider id, a hash of the input, the output, the confidence and, later, the outcome. The record never holds personal data or secrets. This builds a labelled history and lets a decision model replace the rule or the Sonnet call without changing flows.
+- A model only advises. It never authorizes a transition (essential 1). A low confidence result falls back to the Council. LLM-as-a-judge output is evidence for a guard, never a verdict on its own, and workflow branching by a model is a recommendation the guard and the runner decide on (P-12).
+- A later release (3 or 4, D-148) adds decision models for: model routing and cascades (fits the self-hosted gateway and spend alerts), classification, guardrails, LLM-as-a-judge, context compaction and memory management (with the deferred context graph, N-14), search and rerank, and tool selection inside a role's allowed toolbox.
+
+### 2.12 Machine 3: the Scanner (Proposed, D-150, P-13 to P-16)
+
+The loop: the Scanner finds something, files it as an idea, the idea enters Machine 1, Triage splits it into work items, Machine 2 builds them, and Didi deploys to production. The Scanner is a scheduled, read-only run. It never changes code, never opens PRs and never creates gate requests directly.
+
+- Sources (P-15): failing or flaky tests, vulnerable or stale dependencies, mutation survivors, error patterns, spec-versus-code and docs-versus-behaviour drift, IaC drift from a plan, contracts-versus-spec consistency, Linear mirror mismatches, repeated failure patterns from the counters, guards that fail often, spend spikes from the `runs` table, and test gaps. Large code scans may read the codebase recursively, with a recursion depth limit in the bot budget.
+- Idea fields (P-14): source tag `scanner`, class (bug, drift or improvement), evidence references (file and line, test output, plan output, run ids), a confidence value and a dedupe key.
+- Safeguards (P-14): duplicates of an open idea or work item are merged, a cap on new ideas per scan, a confidence threshold, and a scan budget (turns, minutes, dollars). The Scanner reads untrusted code and comments, so its output is advice only: every proposal still passes the Council or a gate (essential 1).
+- Intake by class (P-13): bugs and drift are sized by the Council, with no Interview unless product behaviour is unclear. Improvements that add a feature, change a user flow or change product direction go to Didi and get an Interview (D-008, D-014).
+- Timing (P-16): after cutover has run stably for a few weeks. It does not need Kubernetes and is independent of RSI. Schedule, scope, caps, threshold, budget and model are O-12.
+
+### 2.13 Self-improvement (Proposed, D-149, D-151, D-152, P-17 to P-19)
+
+Self-improvement comes in stages (D-151). Stage A is the Scanner (section 2.12). Stages B to D are recursive self-improvement (RSI) Levels 1 to 3, planned for release 4 or later (D-152). Production deploys stay Didi's (D-007, D-149).
+
+| Stage | Level   | What                                                                                                                                                                                           | Needs                                             |
+| ----- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| A     |         | Machine 3 produces ideas, including ideas about the factory itself, which run through the normal flow as dogfooding. Didi deploys                                                              | Section 2.12                                      |
+| B     | Level 1 | The system proposes changes to its own playbook, bot files, prompts and contract thresholds as ordinary ideas, tests them by replaying recorded history and by shadow runs. Didi approves      | No Kubernetes. Decision-point records (P-11)      |
+| C     | Level 2 | Changes to the factory's own code run in an isolated sandbox, deploy to staging, run against the current version, and roll back automatically on regression. Production promotion stays a gate | Kubernetes (section 2.10)                         |
+| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                          | Stage C, an explicit decision per class of change |
+
+Protected set (P-18). The system may never change these without Didi:
+
+- the gate list and its enforcement code
+- the guards that authorize transitions, and the privileged-path list
+- the runner's credentials and how they are issued
+- the metrics and the evaluation harness
+- spend caps and the kill switch
+- the rule that production deploys are Didi's
+- this list itself
+
+It is enforced through the privileged-path list and the merge guard.
+
+RSI rules (P-19):
+
+- Every self-change is an ordinary Machine 2 work item with the same QA, evidence and merge guard.
+- The proposer, the evaluator and the deployer are different roles, and the evaluator is a different model family. A model never grades its own change.
+- One improvement is in flight at a time, and every change is small and reversible.
+- Success is judged on several outcomes (cycle time, failures, QA rounds, spend) with a held-out slice.
+- QA strictness and thresholds are in the protected set and are not tunable by the system.
+
+The first release already records what RSI needs: transitions, evidence, runs with bot and model version, counters, decisions, the spec version on every transition, and the decision-point records (P-11). Still missing: an outcome view per work item (cycle time, failures, QA rounds, spend), a replay harness, and an experiment tag on runs.
+
 ## 3. Key flows
 
 ### 3.1 Code track item
