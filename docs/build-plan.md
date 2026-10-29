@@ -131,6 +131,8 @@ Goal: the source of truth exists, is safe, and moves items correctly.
 
 ### M1.5 Seed the store from Linear (read-only)
 
+- Moved: runs just before cutover, or is dropped with Linear (D-175).
+
 - What: an idempotent import of the system's own work items and relations from Linear into the store.
 - Why: dogfooding, and it is the first input to the dry run.
 - How: read-only Linear access. Map current statuses to states using the table in `docs/spec.md`. Record each import as a transition with trigger `import`.
