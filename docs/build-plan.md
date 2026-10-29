@@ -167,7 +167,7 @@ Goal: the runner can say what it would do, and be right.
 
 - What: the reconcile pass of `docs/architecture/technical-architecture.md` section 2.5, writing `dry_run` transitions and acting on nothing.
 - Why: it is how the cutover is rehearsed.
-- How: a function in the library plus a Windmill schedule every 5 minutes. It respects the kill switch and `dry_run`.
+- How: a function in the library plus a Windmill schedule every 2 hours until Kubernetes exists (D-164; setting `reconcile_interval_minutes`), with the execution count alert (P-21). It respects the kill switch and `dry_run`.
 - Success: against the imported state it releases the right blocked items, flags the right stalls, and plans the right dispatches. Nothing outside the store changes.
 
 ### M2.5 Dry-run report
@@ -304,7 +304,7 @@ Goal: a pod per project, per-project isolation, monitoring, and a way off Cloudf
 
 This is its own project, run through the factory starting with the Interview. It is outlined here so the first release leaves room for it:
 
-- A cluster (k3s on a VPS or a managed cluster, decided then), GitOps, Vault for secrets, and replicas.
+- A cluster on DigitalOcean (D-165; managed or self-run, decided then), GitOps, Vault for secrets, and replicas. Self-host Windmill on it (D-163), and move infrastructure state off Cloudflare R2 (D-144, D-165).
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
 - A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.

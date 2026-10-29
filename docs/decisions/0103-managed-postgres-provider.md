@@ -1,6 +1,6 @@
 # 0103. Managed Postgres provider and region
 
-- **Status:** accepted for step 1 (Didi, 2026-10-28: "I approve. I'm still out so I can't generate the keys yet but I approve of supabase"). Recorded as D-140. Didi creates the project and its credentials. Step 2 (the plan before cutover, and its spend) is still Didi's decision when it comes.
+- **Status:** accepted for step 1 (Didi, 2026-10-28: "I approve. I'm still out so I can't generate the keys yet but I approve of supabase"). Recorded as D-140. Didi creates the project and its credentials. Step 2 (the plan before cutover, and its spend) is still Didi's decision when it comes. Reviewed at the end of M0 (D-168).
 - **Date:** 2026-10-28
 - **Related:** O-01, D-118, [build plan M0.5](../build-plan.md#m05-choose-the-managed-postgres-provider-o-01)
 
@@ -43,7 +43,7 @@ Supabase serves a REST API (PostgREST) over the database, and by default it expo
 
 ### Backups until the paid plan
 
-The runner owns them: a Windmill job runs `pg_dump` once a night (one execution a day, small against N-19), encrypts the dump before it leaves the job, and writes it to a private R2 bucket used only for backups, keeping 14 days. A restore is rehearsed once in M1. Where a second copy goes (so one Cloudflare account lockout cannot lose both the backups and the infrastructure state) and where the dump's encryption key lives are open, and must be settled before cutover (N-27). This lasts until the plan with point-in-time recovery (step 2) replaces it.
+The runner owns them: a Windmill job runs `pg_dump` once a night (one execution a day, small against N-19), encrypts the dump before it leaves the job, and writes it to a private R2 bucket used only for backups, keeping 14 days. A restore is rehearsed once in M1. The dump's encryption key lives in Windmill's secret store at `platform/backups/dump-key` and as a copy in Didi's password manager; the restore rehearsal uses that copy (D-166). A second backup location in Canada (AWS S3 or DigitalOcean Spaces) is chosen at cutover (O-13), and R2 is retired after the move to Kubernetes (D-165). This lasts until the plan with point-in-time recovery (step 2) replaces it.
 
 PlanetScale at about $5 a month is the cheapest paid option, but whether it allows the roles and triggers we need is not confirmed. It is worth a check if cost matters more than simplicity.
 

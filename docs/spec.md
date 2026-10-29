@@ -204,7 +204,7 @@ We build the state engine first and run our own projects through it (dogfooding)
 
 Every transition below is taken by the runner, never by a bot. A bot reports that its work is done, and the runner checks the guard against evidence it can verify itself (CI results, the state store, a recorded approval) before the item moves. Where a timeout depends on a bot's budget, the row says so, because budgets are not set yet (section 10). The failure counter escalates an item at 3 failures (decided Oct 28, 2026). All rows are Proposed until Didi confirms them.
 
-**Reconcile loop.** Every 5 minutes (decided Oct 28, 2026) the runner reads the state store, finds items whose guard now holds (a blocker finished, a CI run passed) and items that are ready but not running, and takes those transitions. Events make this faster, and the loop is the backstop, so a missed event cannot leave an item idle.
+**Reconcile loop.** Every 5 minutes (decided Oct 28, 2026; every 2 hours until Kubernetes exists, D-164) the runner reads the state store, finds items whose guard now holds (a blocker finished, a CI run passed) and items that are ready but not running, and takes those transitions. Events make this faster, and the loop is the backstop, so a missed event cannot leave an item idle.
 
 **Code, infrastructure and docs tracks**
 

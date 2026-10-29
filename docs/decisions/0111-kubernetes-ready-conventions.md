@@ -1,6 +1,6 @@
 # 0111. Conventions that make the move to Kubernetes cheap
 
-- **Status:** proposed (P-10). Reviewed with the other Milestone 0 ADRs at the end of M0.
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29), confirming P-10.
 - **Date:** 2026-10-28
 - **Related:** D-134, P-10, [build plan M0.8](../build-plan.md#m08-conventions-that-make-kubernetes-easy-proposed-d-134), `docs/architecture/technical-architecture.md` section 2.10, ADRs [0101](./0101-repo-layout-and-tooling.md), [0102](./0102-state-api-hosting-and-agent-auth.md), [0110](./0110-infrastructure-as-code.md)
 

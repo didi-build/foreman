@@ -1,6 +1,6 @@
 # 0102. State API hosting and agent authentication
 
-- **Status:** proposed. O-02 is "decide during build"; reviewed with the other Milestone 0 ADRs at the end of M0.
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-02. The DigitalOcean product and monthly amount are still approved at M1.4.
 - **Date:** 2026-10-28
 - **Related:** O-02, [build plan M0.6](../build-plan.md#m06-state-api-hosting-and-agent-authentication-o-02), `docs/architecture/technical-architecture.md` sections 2.3, 2.10 and 4, D-134, D-140, N-19, [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 
