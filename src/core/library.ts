@@ -7,6 +7,7 @@ import type {
   GuardContext,
   GuardRegistry,
   StateContract,
+  TransitionContract,
 } from "./contracts.ts";
 import type {
   CounterKind,
@@ -145,6 +146,57 @@ export function createLibrary({
     return report;
   }
 
+  /**
+   * A move with tracks applies only to nodes on one of them. A move without tracks applies to
+   * every node, which also covers ideas: their track is null, so only untracked moves match.
+   */
+  const trackMatches = (move: TransitionContract, node: Node): boolean =>
+    !move.tracks || (node.track !== null && move.tracks.includes(node.track));
+
+  /**
+   * The state the node was in when it entered the escalation: the `from` of the last applied
+   * transition that led from a non-escalated state into an escalated one (ADR 0105 `return`).
+   */
+  async function resolveReturnState(nodeId: string): Promise<string | null> {
+    const history = await store.listTransitions(nodeId);
+    for (let i = history.length - 1; i >= 0; i--) {
+      const past = history[i] as Transition;
+      if (past.mode !== "applied") continue;
+      if (stateOf(past.toState)?.escalated && !stateOf(past.fromState)?.escalated) {
+        return past.fromState;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The contract transition that legalizes this move, if any: an exact match first, then the
+   * escalation forms (`from: any` into an escalated state, `to: return` back out, ADR 0105).
+   */
+  async function findMove(
+    node: Node,
+    toState: string,
+  ): Promise<TransitionContract | undefined> {
+    const candidates = contracts.transitions.filter((move) => trackMatches(move, node));
+    const exact = candidates.find(
+      (move) => move.from === node.state && move.to === toState,
+    );
+    if (exact) return exact;
+    const fromAny = candidates.find(
+      (move) =>
+        move.escalation &&
+        move.from === "any" &&
+        move.to === toState &&
+        !stateOf(node.state)?.escalated,
+    );
+    if (fromAny) return fromAny;
+    const toReturn = candidates.find(
+      (move) => move.escalation && move.from === node.state && move.to === "return",
+    );
+    if (toReturn && (await resolveReturnState(node.id)) === toState) return toReturn;
+    return undefined;
+  }
+
   /** True when adding from -> to would close a loop of `blocks` edges. */
   async function createsBlocksCycle(from: string, to: string): Promise<boolean> {
     const seen = new Set<string>();
@@ -199,9 +251,7 @@ export function createLibrary({
     if (!node) throw new LibraryError(`No node ${request.nodeId}`);
     if (node.state === request.toState) return { outcome: "noop", guardReport: [] };
 
-    const move = contracts.transitions.find(
-      (t) => t.from === node.state && t.to === request.toState,
-    );
+    const move = await findMove(node, request.toState);
     if (!move) {
       return { outcome: "rejected", reason: "illegal_move", guardReport: [] };
     }

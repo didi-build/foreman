@@ -1,0 +1,74 @@
+# Machine 2, escalation (ADR 0105, from docs/spec.md section 9). Applies to every track.
+#
+# Only this file may use `from: any` and `to: return` (ADR 0105): `any` matches any state that is
+# not itself escalated, and `return` resolves to the state the item was in when it entered the
+# escalation, read from its transition history. The loader marks every transition in this file
+# as an escalation transition; the validator rejects any and return elsewhere.
+#
+# Shared states: each state is declared in exactly one file, and the loader rejects a state id
+# declared twice. This file owns the two escalated states.
+# Rules live here and in guard functions, never in the library (essential 3).
+
+part: escalation
+
+states:
+  escalated_to_council:
+    label: Escalated to Council
+    owner: Council
+    escalated: true
+    requires_blocked_reason: true
+    purpose: Resolve a big decision or a repeated failure the bots cannot.
+    input: The counter, the budget log, or the bot's written reason.
+    output: A Council decision, saved with its owner and date.
+    evidence_to_exit: The decision record.
+    tools: The state store through the API. The Council decides; it passes no gate without approval.
+    budget: not set
+    side_effects: A decision that changes product direction or scope goes to Didi instead.
+    failure: If the Council cannot resolve it, the item goes to Escalated to Didi.
+
+  escalated_to_didi:
+    label: Escalated to Didi
+    owner: Operator
+    escalated: true
+    requires_blocked_reason: true
+    purpose: Put the question to Didi, whose answer is recorded verbatim.
+    input: The question saved as a gate request with a topic key, and the Council's note.
+    output: Didi's answer, verbatim with the time and scope.
+    evidence_to_exit: The answer record.
+    tools: The approval page and the daily check.
+    budget: not set
+    side_effects: An answer that reverses an earlier approval marks dependent work stale, and the Council decides what to redo.
+    failure: No timeout. The request shows again in each daily check while other items keep running.
+
+transitions:
+  - from: any
+    to: escalated_to_council
+    trigger: A bot reports a big decision or a problem it cannot resolve, the failure counter reaches its limit, an item loops or runs over budget, or QA fails a third round.
+    guards: [escalation_trigger_met]
+    evidence: []
+    timeout: The Council's budget (not set).
+    fallback: If the Council cannot resolve it, the item goes to Escalated to Didi.
+
+  - from: escalated_to_council
+    to: return
+    trigger: The Council records a decision.
+    guards: [council_decision_recorded]
+    evidence: []
+    timeout: Not set.
+    fallback: A decision that changes product direction or scope goes to Escalated to Didi.
+
+  - from: escalated_to_council
+    to: escalated_to_didi
+    trigger: The Council says it cannot resolve the item, or the decision changes product direction, scope or a gate.
+    guards: [didi_question_open]
+    evidence: []
+    timeout: None. The request shows again in each daily check.
+    fallback: The item stays blocked with Didi named as the reason, and other items keep running.
+
+  - from: escalated_to_didi
+    to: return
+    trigger: Didi answers.
+    guards: [didi_answer_recorded]
+    evidence: []
+    timeout: None.
+    fallback: Not applicable.
