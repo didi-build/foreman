@@ -1,3 +1,19 @@
 schema_version: 1
 d1_tables: {}
-other_items: []
+other_items:
+  # The state store (ADR 0104). Not a D1 database, so nodrift's migration check does not read it.
+  - id: postgres.factory_state_store
+    whose: operator
+    data: >-
+      Ideas, work items, transitions, evidence, runs and settings for Project Factory projects, and
+      decisions that copy the operator's own answers word for word. No end-user personal data:
+      agents work from synthetic data (D-154).
+    purpose: The source of truth for every item's state, and the audit record of who decided what.
+    storage: Supabase Postgres, ca-central-1, schema factory (ADR 0103)
+    processors: [Supabase]
+    retention: >-
+      For the life of the system; transitions, evidence and decisions are append-only audit records
+      (confirmed by Didi, D-169).
+    who_can_see: operator, the runner, the state API
+    source: db/migrations/0001_factory_schema.sql
+    verified: false

@@ -1,3 +1,8 @@
 schema_version: 1
-subprocessors: []
+subprocessors:
+  - name: Supabase
+    purpose: Hosts the state store (managed Postgres, ADR 0103)
+    data: Project Factory state, including the operator's decisions word for word (docs/privacy/data-map.yml)
+    location: Canada (ca-central-1)
+    verified: false
 # This file is a starting skeleton, not legal advice. Review it with qualified counsel before relying on it.

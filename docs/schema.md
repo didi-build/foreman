@@ -1,6 +1,6 @@
 # State store schema: column-level proposal
 
-Status: Proposed. The nine-table shape is in `docs/spec.md` (State store schema). This document adds columns, constraints and two small tables the contracts need. It is not SQL and not a migration.
+Status: superseded for columns and constraints by [ADR 0104](./decisions/0104-state-store-schema.md) and `db/migrations/0001_factory_schema.sql`, which are now the source of truth (2026-10-29). Kept as the original proposal. The nine-table shape is in `docs/spec.md` (State store schema). This document adds columns, constraints and two small tables the contracts need. It is not SQL and not a migration.
 
 How it is used: the implementing agent turns this into an ADR and a migration in milestone 1 (task M1.1). A migration is applied only after Didi reviews the ADR (review point in `docs/build-plan.md`).
 

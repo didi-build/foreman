@@ -1,0 +1,44 @@
+name: Database
+
+on:
+  pull_request:
+    paths:
+      - "db/**"
+      - "test/db/**"
+      - ".github/workflows/db.yml"
+
+concurrency:
+  group: db-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  schema:
+    name: db-schema
+    # Ubuntu 24.04 runners ship PostgreSQL 16, matching Supabase's major version (ADR 0104).
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: Start the runner's PostgreSQL, with no password (local socket only)
+        run: |
+          set -euo pipefail
+          sudo systemctl start postgresql.service
+          pg_isready --host=/var/run/postgresql --timeout=30
+          sudo -u postgres createuser --superuser "$USER"
+          psql "postgresql:///postgres?host=/var/run/postgresql" -X -At -c "show server_version"
+      - name: Apply the migrations to an empty database and test them
+        env:
+          TEST_DATABASE_URL: postgresql:///postgres?host=/var/run/postgresql
+          FOREMAN_REQUIRE_DB: "1"
+        run: npx vitest run test/db
