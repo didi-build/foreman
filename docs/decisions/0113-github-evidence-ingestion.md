@@ -1,6 +1,6 @@
 # 0113. GitHub evidence ingestion
 
-- **Status:** proposed. Review point: Didi reviews this ADR before M2.3 code is written.
+- **Status:** accepted at the M2.3 review point (D-180, 2026-10-29).
 - **Date:** 2026-10-29
 - **Related:** build plan M2.3 and M2.4, D-156, D-160, D-164, D-178, essentials 1 and 6, `docs/guards.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0104](./0104-state-store-schema.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 
