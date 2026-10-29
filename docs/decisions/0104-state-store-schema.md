@@ -1,6 +1,6 @@
 # 0104. State store schema
 
-- **Status:** proposed. Review point (M1.1): Didi reviews this ADR before the migration is applied to any real database.
+- **Status:** accepted at the M1.1 review (D-169, 2026-10-29). Applying it to Supabase still waits for the project and its credentials, which Didi creates.
 - **Date:** 2026-10-29
 - **Related:** P-02, P-03, O-05, P-11, D-161, D-162, D-164, D-166, D-167, `docs/schema.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0103](./0103-managed-postgres-provider.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 
@@ -79,7 +79,7 @@ The store holds no end-user personal data; agents work from synthetic data (D-15
 2. Tests prove UPDATE, DELETE and TRUNCATE fail on every append-only table, for the owner and for the runner role, and that the API role cannot write evidence a guard trusts or move a node.
 3. Tests cover the evidence commit rule, one verdict per run, one open gate request per topic, no self edges, the decision status view and the settings log.
 4. Breaking the triggers or the evidence policy on purpose makes the tests fail (done when writing them: 10 failures).
-5. Didi reviews this ADR.
+5. Didi reviews this ADR. Done 2026-10-29 (D-169).
 
 ## Reasons
 

@@ -12,8 +12,8 @@ other_items:
     storage: Supabase Postgres, ca-central-1, schema factory (ADR 0103)
     processors: [Supabase]
     retention: >-
-      For the life of the system; transitions, evidence and decisions are append-only audit records.
-      To be confirmed by Didi in the ADR 0104 review.
+      For the life of the system; transitions, evidence and decisions are append-only audit records
+      (confirmed by Didi, D-169).
     who_can_see: operator, the runner, the state API
     source: db/migrations/0001_factory_schema.sql
     verified: false
