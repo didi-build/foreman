@@ -38,7 +38,7 @@ flowchart LR
 
 ### 2.1 State library (core, plain TypeScript)
 
-- Pure logic with no Windmill or HTTP dependency. Takes a store interface and a contracts object.
+- Pure logic with no Windmill or HTTP dependency. Takes a store interface, a contracts object, a clock and an id source. It never reads the time or makes random values itself, so the same input always gives the same result (D-162).
 - Exposes operations: create node, add edge, record evidence, record decision, open or supersede a gate request, request transition, run the reconcile pass, and read views (attention list, daily check data).
 - `requestTransition(nodeId, toState, trigger, actor)` loads the node, finds the contract for the move, evaluates the guard against recorded evidence, and on success writes the transition row and updates the node in one transaction with the version check. It returns the result and the guard report.
 - Everything else (flows, API, adapters) is a thin shell around it. This is where most tests live.

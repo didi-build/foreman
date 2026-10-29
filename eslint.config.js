@@ -36,6 +36,8 @@ const coreForbiddenGlobals = [
   "Bun",
   "Deno",
   "Function",
+  "performance",
+  "crypto",
 ].map((name) => ({
   name,
   message:
@@ -90,6 +92,24 @@ export default tseslint.config(
           selector:
             ":matches(CallExpression, NewExpression)[callee.property.name='constructor']",
           message: "src/core/ may not build functions through .constructor (ADR 0101).",
+        },
+        // The core is deterministic (D-162): time and ids come in through injected sources.
+        {
+          selector:
+            "MemberExpression[object.name='Date'][property.name='now'], NewExpression[callee.name='Date'][arguments.length=0], CallExpression[callee.name='Date']",
+          message:
+            "src/core/ may not read the clock. Take the time from the injected clock (D-162, ADR 0101).",
+        },
+        {
+          selector: "MemberExpression[object.name='Math'][property.name='random']",
+          message:
+            "src/core/ may not use Math.random. Take ids from the injected id source (D-162, ADR 0101).",
+        },
+        {
+          selector:
+            ":matches(ImportSpecifier[imported.name=/^(randomUUID|randomBytes|randomInt|randomFillSync|randomFill|getRandomValues|webcrypto)$/], MemberExpression[property.name=/^(randomUUID|randomBytes|randomInt|randomFillSync|randomFill|getRandomValues|webcrypto)$/])",
+          message:
+            "src/core/ may not generate random values. Take ids from the injected id source (D-162, ADR 0101).",
         },
       ],
     },

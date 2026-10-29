@@ -103,6 +103,7 @@ The handoff package was placed into this repo's Launchpad layout in task M0.0. [
 - Contracts (guards, evidence, timeouts, fallbacks) are data loaded at a version. Do not hard-code them in flows. Each transition records the spec version it used.
 - Plumbing is plain code and never depends on model usage. Models do judgment only.
 - Keep core logic in a plain TypeScript library with no Windmill or HTTP dependency, and put Windmill flows, the API and the adapters around it. Integrations (GitHub, Linear, agent runtimes, notifications) sit behind adapters so each can be swapped.
+- The core is deterministic: it never reads the clock or generates random values. Pass in a clock and an id source (D-162). Lint enforces it.
 - Linear specifically: write through Linear's own API under the runner's own app identity, behind an adapter. Do not use the Linear MCP for runner writes.
 - Cloudflare appears only in the deploy adapter. The library and the state API stay portable: no Cloudflare-specific APIs, bindings or runtime features outside that adapter.
 - Infrastructure is declared as code (Terraform or OpenTofu, chosen in ADR 0110). A change made by hand is a defect. Infrastructure changes show their plan on the PR. A plan that includes DNS changes, new secrets or wider permissions, or deleting data goes through the matching gate first. Plans and state never contain secret values. Production applies are Didi's.
