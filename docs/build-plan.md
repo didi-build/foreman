@@ -315,7 +315,7 @@ This is its own project, run through the factory starting with the Interview. It
 
 ## Milestone 8: after that (not scheduled)
 
-The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), the Scanner (Machine 3), a role for Cursor agents, and the Recruiter flows on the runner.
+The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), a role for Cursor agents, and the Recruiter flows on the runner.
 
 ## Milestone 9: decision models (release 3 or 4, not scheduled, not detailed)
 
@@ -331,6 +331,23 @@ Small models that return typed choices, scores or probabilities (D-148). They fi
 | Search and rerank, reranker in RAG                                           | The deferred context graph (N-14)                                                                           |
 | Tool selection                                                               | Choosing tools inside a role's allowed toolbox                                                              |
 | Workflow branching                                                           | Recommendation only; the guard and the runner decide (P-12)                                                 |
+
+## Milestone 10: Machine 3, the Scanner (after cutover is stable, not detailed)
+
+Self-improvement stage A (D-151). A scheduled, read-only scan whose findings become ideas in Machine 1 (D-150). It never changes code, opens PRs or creates gate requests. Starts after cutover has run stably for a few weeks; it does not need Kubernetes and is independent of RSI (P-16).
+
+- Sources, idea fields, safeguards and intake by class: `docs/architecture/technical-architecture.md` section 2.12 (P-13 to P-15).
+- Before it starts, Didi reviews the schedule and scope per project, the idea cap, the confidence threshold, the scan budget and the model (O-12).
+
+## Milestone 11: recursive self-improvement, stages B to D (not scheduled, not detailed)
+
+Stages from D-151. Production deploys stay Didi's through stage C (D-149).
+
+| Stage | What                                                                                                                                         | Depends on                                                                              |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| B     | RSI Level 1: proposed changes to the playbook, bot files, prompts and thresholds, tested by replaying history and shadow runs, Didi approves | Stable cutover and data (M6), decision-point records (P-11), the Scanner (Milestone 10) |
+| C     | RSI Level 2: sandbox experiments, staging deploys and automatic rollback                                                                     | Stage B, Kubernetes (Milestone 7)                                                       |
+| D     | The system updates its own production for narrow, low-risk classes, never the protected set                                                  | Stage C, and the protected set and RSI rules defined (N-25)                             |
 
 ## Order and dependencies
 

@@ -131,6 +131,29 @@ The second release moves to Kubernetes for a pod per project, per-project isolat
 - A model only advises. It never authorizes a transition (essential 1). A low confidence result falls back to the Council. LLM-as-a-judge output is evidence for a guard, never a verdict on its own, and workflow branching by a model is a recommendation the guard and the runner decide on (P-12).
 - A later release (3 or 4, D-148) adds decision models for: model routing and cascades (fits the self-hosted gateway and spend alerts), classification, guardrails, LLM-as-a-judge, context compaction and memory management (with the deferred context graph, N-14), search and rerank, and tool selection inside a role's allowed toolbox.
 
+### 2.12 Machine 3: the Scanner (Proposed, D-150, P-13 to P-16)
+
+The loop: the Scanner finds something, files it as an idea, the idea enters Machine 1, Triage splits it into work items, Machine 2 builds them, and Didi deploys to production. The Scanner is a scheduled, read-only run. It never changes code, never opens PRs and never creates gate requests directly.
+
+- Sources (P-15): failing or flaky tests, vulnerable or stale dependencies, mutation survivors, error patterns, spec-versus-code and docs-versus-behaviour drift, IaC drift from a plan, contracts-versus-spec consistency, Linear mirror mismatches, repeated failure patterns from the counters, guards that fail often, spend spikes from the `runs` table, and test gaps. Large code scans may read the codebase recursively, with a recursion depth limit in the bot budget.
+- Idea fields (P-14): source tag `scanner`, class (bug, drift or improvement), evidence references (file and line, test output, plan output, run ids), a confidence value and a dedupe key.
+- Safeguards (P-14): duplicates of an open idea or work item are merged, a cap on new ideas per scan, a confidence threshold, and a scan budget (turns, minutes, dollars). The Scanner reads untrusted code and comments, so its output is advice only: every proposal still passes the Council or a gate (essential 1).
+- Intake by class (P-13): bugs and drift are sized by the Council, with no Interview unless product behaviour is unclear. Improvements that add a feature, change a user flow or change product direction go to Didi and get an Interview (D-008, D-014).
+- Timing (P-16): after cutover has run stably for a few weeks. It does not need Kubernetes and is independent of RSI. Schedule, scope, caps, threshold, budget and model are O-12.
+
+### 2.13 Self-improvement (Proposed, D-149, D-151)
+
+Self-improvement comes in stages. Production deploys stay Didi's until the last one.
+
+| Stage | What                                                                                                                                                               | Needs                                  |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| A     | Machine 3 produces ideas, including ideas about the factory itself, which run through the normal flow as dogfooding. Didi deploys                                  | Section 2.12                           |
+| B     | RSI Level 1: the system proposes changes to its own playbook, bot files, prompts and thresholds, tested by replaying history and shadow runs, with Didi's approval | Stage A, decision-point records (P-11) |
+| C     | RSI Level 2: sandbox experiments, staging deploys and automatic rollback. Production stays Didi's                                                                  | Kubernetes (section 2.10)              |
+| D     | Much later: the system updates its own production for narrow, low-risk classes of change, never for the protected set                                              | Stage C, the protected set (N-25)      |
+
+The protected set and the RSI rules are not defined yet (N-25).
+
 ## 3. Key flows
 
 ### 3.1 Code track item
