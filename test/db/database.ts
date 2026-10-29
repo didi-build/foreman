@@ -20,7 +20,7 @@ function admin(sql: string): void {
 /** Creates an empty database and returns its URL. Also creates Supabase's anon role if missing. */
 export function createTestDatabase(name: string): string {
   admin(
-    "do $$ begin if not exists (select from pg_roles where rolname = 'anon') then create role anon nologin; end if; end $$;",
+    "do $$ begin if not exists (select from pg_roles where rolname = 'anon') then create role anon nologin; end if; exception when duplicate_object or unique_violation then null; end $$;",
   );
   admin(`drop database if exists ${name}`);
   admin(`create database ${name}`);

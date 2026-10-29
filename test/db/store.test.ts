@@ -112,10 +112,11 @@ describe.skipIf(!adminUrl)(
       const owner = new pg.Pool({ connectionString: url, max: 1 });
       await applyMigrations(owner, readMigrations());
       await owner.end();
-      pool = new pg.Pool({ connectionString: url, max: 4 });
       // Run as the runner's group role, so the store only has the grants the migration gives it.
-      pool.on("connect", (client) => {
-        void client.query("set role factory_runner");
+      pool = new pg.Pool({
+        connectionString: url,
+        max: 4,
+        options: "-c role=factory_runner",
       });
       store = createPostgresStore(pool);
       await store.insertProject({
