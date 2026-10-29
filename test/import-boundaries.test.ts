@@ -13,18 +13,26 @@ async function violations(filePath: string, code: string): Promise<string[]> {
 
 const coreBlocked = (rules: string[]): boolean =>
   rules.some((rule) =>
-    ["foreman/core-imports", "no-restricted-globals"].includes(rule),
+    [
+      "foreman/core-imports",
+      "no-restricted-globals",
+      "no-eval",
+      "no-implied-eval",
+      "no-new-func",
+      "no-restricted-syntax",
+    ].includes(rule),
   );
 
 describe("src/core/ boundary is an allow-list (unit: lint config guard, ADR 0101)", () => {
   it("accepts relative imports inside the core and the allowed pure Node modules", async () => {
     const clean = [
-      'import { randomUUID } from "node:crypto";',
+      'import { createHash } from "node:crypto";',
       'import { inspect } from "node:util";',
       'import { x } from "./other.ts";',
       'import { y } from "../core/guards/y.ts";',
       'export * from "./more.ts";',
-      "export const id = (): string => randomUUID() + inspect(x) + String(y);",
+      'export const id = (): string => createHash("sha256").update(inspect(x) + String(y)).digest("hex");',
+      "export const at = (iso: string): number => new Date(iso).getTime();",
     ].join("\n");
     expect(await violations("src/core/sub/example.ts", clean)).toEqual([]);
   });
@@ -127,6 +135,91 @@ describe("src/core/ boundary is an allow-list (unit: lint config guard, ADR 0101
     ],
   ])("cannot be switched off with an inline %s comment", async (_label, code) => {
     expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
+  });
+
+  it.each([
+    ["eval", 'export const f = () => eval("fetch");'],
+    ["new Function", 'export const f = () => new Function("return fetch")();'],
+    [
+      "an indirect Function call",
+      'export const f = () => (0, Function)("return fetch")();',
+    ],
+    [
+      "a .constructor call",
+      'export const f = () => (() => 0).constructor("return fetch")();',
+    ],
+    [
+      "a new .constructor",
+      'export const f = () => new (() => 0).constructor("return fetch")();',
+    ],
+    [
+      "a string passed to setTimeout",
+      'export const f = () => setTimeout("fetch()", 0);',
+    ],
+  ])("rejects code built from strings: %s", async (_label, code) => {
+    expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
+  });
+
+  it.each([
+    ["Date.now", "export const t = () => Date.now();"],
+    ["new Date()", "export const t = () => new Date();"],
+    ["Date()", "export const t = () => Date();"],
+    ["performance.now", "export const t = () => performance.now();"],
+    ["Math.random", "export const r = () => Math.random();"],
+    ["the crypto global", "export const r = () => crypto.randomUUID();"],
+    [
+      "randomUUID from node:crypto",
+      'import { randomUUID } from "node:crypto";\nexport const r = randomUUID;',
+    ],
+    [
+      "randomBytes through a namespace",
+      'import * as c from "node:crypto";\nexport const r = () => c.randomBytes(8);',
+    ],
+    [
+      "webcrypto",
+      'import { webcrypto } from "node:crypto";\nexport const r = webcrypto;',
+    ],
+  ])("keeps the core deterministic: rejects %s (D-162)", async (_label, code) => {
+    expect(coreBlocked(await violations("src/core/example.ts", code))).toBe(true);
+  });
+
+  it("lets a core unit test import vitest, which sits next to the code", async () => {
+    const test = [
+      'import { describe, expect, it } from "vitest";',
+      'import { x } from "./example.ts";',
+      'describe("example (unit)", () => it("works", () => expect(x).toBe(1)));',
+    ].join("\n");
+    expect(await violations("src/core/example.test.ts", test)).toEqual([]);
+  });
+
+  it("does not let core code that is not a test import vitest", async () => {
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.ts",
+          'import { vi } from "vitest";\nexport const v = vi;',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps every other core rule for core unit tests", async () => {
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.test.ts",
+          'import h from "node:http";\nexport { h };',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      coreBlocked(
+        await violations(
+          "src/core/example.test.ts",
+          'export const f = () => fetch("x");',
+        ),
+      ),
+    ).toBe(true);
   });
 });
 

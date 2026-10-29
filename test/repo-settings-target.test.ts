@@ -36,6 +36,28 @@ describe("repo-settings-target (unit)", () => {
     ).toBe(true);
   });
 
+  it("never requires the QA check run, which is display only (D-160)", () => {
+    const target = targetBranchProtection();
+    expect(target.required_status_checks.checks.map((c) => c.context)).not.toContain(
+      "QA",
+    );
+    expect(
+      protectionMatches(
+        {
+          required_status_checks: {
+            strict: false,
+            checks: [{ context: "check" }, { context: "QA" }],
+          },
+          enforce_admins: { enabled: false },
+          required_pull_request_reviews: { required_approving_review_count: 0 },
+          allow_force_pushes: { enabled: false },
+          allow_deletions: { enabled: false },
+        },
+        target,
+      ),
+    ).toBe(false);
+  });
+
   it("matches repository merge settings", () => {
     const expected = targetRepositorySettings();
     expect(

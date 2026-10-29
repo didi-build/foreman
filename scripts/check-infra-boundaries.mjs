@@ -12,7 +12,7 @@ function listTfFiles(dir) {
     const path = join(dir, entry.name);
     if (entry.isDirectory())
       return entry.name === ".terraform" ? [] : listTfFiles(path);
-    return entry.name.endsWith(".tf") ? [path] : [];
+    return /\.tf(\.json)?$/.test(entry.name) ? [path] : [];
   });
 }
 
@@ -27,6 +27,6 @@ for (const { path, what } of violations) {
   );
 }
 console.log(
-  `Checked ${files.length} .tf file(s): ${violations.length} infrastructure boundary violation(s).`,
+  `Checked ${files.length} .tf and .tf.json file(s): ${violations.length} infrastructure boundary violation(s).`,
 );
 process.exit(violations.length > 0 ? 1 : 0);
