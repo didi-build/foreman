@@ -1,6 +1,6 @@
 # 0105. Contracts as data, and the consistency test
 
-- **Status:** proposed. Review point: Didi reviews this ADR before the contract files and loader are written (M2.1).
+- **Status:** accepted at the M2.1 review point (D-176, 2026-10-29).
 - **Date:** 2026-10-29
 - **Related:** P-01, P-07, O-09, essential 3, `docs/spec.md` section 9, [ADR 0104](./0104-state-store-schema.md), `src/core/contracts.ts` (the minimal types from M1.3)
 
@@ -93,7 +93,7 @@ One name per check, used everywhere. Each is a pure function over the store's re
 1. The consistency test passes, and removing one transition from either the spec or a contract file fails it (build plan M2.1).
 2. The loader rejects, with every problem listed: an unknown state, an unregistered guard, a duplicate move, `any` or `return` outside escalation.
 3. The library runs the real contracts: a work item can walk the code track and the design track in the memory store with fake evidence, and escalate and return.
-4. Didi reviews this ADR.
+4. Didi reviews this ADR. Done 2026-10-29 (D-176).
 
 ## Reasons
 
