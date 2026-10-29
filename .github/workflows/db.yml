@@ -5,6 +5,10 @@ on:
     paths:
       - "db/**"
       - "test/db/**"
+      - "src/core/store.ts"
+      - "src/adapters/store-postgres/**"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/db.yml"
 
 concurrency:
@@ -37,8 +41,11 @@ jobs:
           pg_isready --host=/var/run/postgresql --timeout=30
           sudo -u postgres createuser --superuser "$USER"
           psql "postgresql:///postgres?host=/var/run/postgresql" -X -At -c "show server_version"
-      - name: Apply the migrations to an empty database and test them
+      - name: Apply the migrations to an empty database and test the schema and the store
         env:
-          TEST_DATABASE_URL: postgresql:///postgres?host=/var/run/postgresql
           FOREMAN_REQUIRE_DB: "1"
-        run: npx vitest run test/db
+        run: |
+          set -euo pipefail
+          # The pg driver needs the user name in the URL; psql would infer it.
+          export TEST_DATABASE_URL="postgresql://${USER}@localhost/postgres?host=/var/run/postgresql"
+          npx vitest run test/db
