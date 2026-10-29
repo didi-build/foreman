@@ -41,6 +41,7 @@ TypeScript on Node 22 (from `.nvmrc`), ES modules, with Launchpad's strict `tsco
 | `flows/`               | Windmill flows, thin shells that call the library and adapters                                                          | M3.1       |
 | `contracts/`           | Contracts as data                                                                                                       | M2.1       |
 | `infra/`               | Infrastructure as code                                                                                                  | M0.7       |
+| `db/migrations/`       | Postgres migrations for the state store, in order (ADR 0104). Not `migrations/`, which nodrift reads as Cloudflare D1   | M1.1       |
 
 Folders are created when their first task needs them. This task creates none of them, because M0.1 adds no product code.
 
@@ -56,11 +57,11 @@ These are lint errors, so `npm run check` fails on them in CI. Tests in `test/im
 
 ### Tests
 
-| Seam (from `docs/test-plan.md`)                                      | Where                                           |
-| -------------------------------------------------------------------- | ----------------------------------------------- |
-| Unit tests of library and adapter logic                              | Next to the code, as `src/**/*.test.ts`         |
-| Database integration, contract consistency, API, flow tests          | `test/<seam>/`, for example `test/integration/` |
-| Repo tooling and guards (Launchpad's existing tests and this task's) | `test/`, as today                               |
+| Seam (from `docs/test-plan.md`)                                      | Where                                   |
+| -------------------------------------------------------------------- | --------------------------------------- |
+| Unit tests of library and adapter logic                              | Next to the code, as `src/**/*.test.ts` |
+| Database integration, contract consistency, API, flow tests          | `test/<seam>/`, for example `test/db/`  |
+| Repo tooling and guards (Launchpad's existing tests and this task's) | `test/`, as today                       |
 
 Vitest runs both `src/**/*.test.ts` and `test/**/*.test.ts`. Every test file states the seam it covers in its top-level `describe`, as `AGENTS.md` asks.
 

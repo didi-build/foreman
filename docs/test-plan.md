@@ -25,7 +25,7 @@ Principles, from `AGENTS.md`: testing is intentional. Each test names the seam i
 1. Every invariant in `docs/schema.md` has a test that proves it (single transition transaction with version check, append-only tables, only legal moves, blocked reason required, one open request per topic key, no dispatch in an escalated state, project on every node).
 2. Concurrency: two parallel `requestTransition` calls on one node produce exactly one transition and one clean retry. Run it many times.
 3. Cycle rejection: adding a `blocks` edge that would create a cycle fails.
-4. Append-only: UPDATE and DELETE on `transitions` and `evidence` fail for the application role.
+4. Append-only: UPDATE, DELETE and TRUNCATE fail on every append-only table for the owner and the runner role, and the API role cannot write evidence a guard trusts or move a node (`test/db/schema.test.ts`, ADR 0104).
 5. Decision reversal marks every dependent node stale and opens a Council question, and does not edit the old decision row.
 
 ### Guards

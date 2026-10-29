@@ -45,7 +45,7 @@ flowchart LR
 
 ### 2.2 State store
 
-Managed Postgres. Schema in `docs/schema.md`. Append-only tables are protected by database roles or triggers. Provider and region are open (check free-tier limits, idle pausing, and a Canadian region). Revisit when there is a Kubernetes cluster with a vault and replicas.
+Managed Postgres: Supabase in `ca-central-1` (ADR 0103). Schema in ADR 0104 and `db/migrations/`, in the `factory` schema with row level security on. Append-only tables are protected by triggers that reject UPDATE, DELETE and TRUNCATE for every role, and no application role has DELETE. Revisit when there is a Kubernetes cluster with a vault and replicas.
 
 ### 2.3 State API (tiny, Proposed)
 
