@@ -123,6 +123,14 @@ The second release moves to Kubernetes for a pod per project, per-project isolat
 - Monitoring hooks: structured logs, health endpoints, and the `runs` and `transitions` tables already provide the data. The monitoring stack (metrics, logs, dashboards, alerts wired into the existing alert and call tiers) arrives with Kubernetes.
 - The second release is its own project, run through the factory with the Interview first. It is outlined in Milestone 7 of the build plan and not detailed here.
 
+### 2.11 Decision points (Proposed, P-11, P-12)
+
+- Every place the system classifies or picks something (for example the Triage track, severity, the size of a visual tweak, the interview depth, escalation severity, model routing) is a named interface in `src/core/` that returns a typed result with a confidence value.
+- A rule or a Claude Sonnet call fills it now. The interface lives in the core and the implementations live in an adapter, so the core stays free of model calls (essentials 4 and 5).
+- Each decision is recorded with the decider id, a hash of the input, the output, the confidence and, later, the outcome. The record never holds personal data or secrets. This builds a labelled history and lets a decision model replace the rule or the Sonnet call without changing flows.
+- A model only advises. It never authorizes a transition (essential 1). A low confidence result falls back to the Council. LLM-as-a-judge output is evidence for a guard, never a verdict on its own, and workflow branching by a model is a recommendation the guard and the runner decide on (P-12).
+- A later release (3 or 4, D-148) adds decision models for: model routing and cascades (fits the self-hosted gateway and spend alerts), classification, guardrails, LLM-as-a-judge, context compaction and memory management (with the deferred context graph, N-14), search and rerank, and tool selection inside a role's allowed toolbox.
+
 ## 3. Key flows
 
 ### 3.1 Code track item

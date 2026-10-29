@@ -221,7 +221,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: create an idea through the API, record decisions verbatim, and a Triage transition from Plan accepted to work items.
 - Why: work must be able to enter the system at cutover, since the Grok triage and breakdown routines will be disabled.
-- How: Triage follows the rules from the Grok breakdown routine: one PR per child, acceptance criteria, blocked-by links in execution order, a project on every item, a developer counterpart for every design item, parts that need Didi become their own gate items, personal and non-engineering items are skipped, a hold flag replaces hard-coded exclusions. A mixed item is split into linked items, one per track. Any visible change goes to the design track. Interview and Council planning stay a chat with the Council, recorded through the API.
+- How: Triage follows the rules from the Grok breakdown routine: one PR per child, acceptance criteria, blocked-by links in execution order, a project on every item, a developer counterpart for every design item, parts that need Didi become their own gate items, personal and non-engineering items are skipped, a hold flag replaces hard-coded exclusions. A mixed item is split into linked items, one per track. Any visible change goes to the design track. Interview and Council planning stay a chat with the Council, recorded through the API. The track classification goes through a decision-point interface (P-11), with a rule or a Sonnet call behind it.
 - Success: a test plan accepted in the rehearsal project becomes the right items, edges and tracks. Review point: Didi confirms the minimum scope before this task starts.
 
 ### M3.7 Infrastructure as code in the deploy adapter
@@ -316,6 +316,21 @@ This is its own project, run through the factory starting with the Interview. It
 ## Milestone 8: after that (not scheduled)
 
 The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), the Scanner (Machine 3), a role for Cursor agents, and the Recruiter flows on the runner.
+
+## Milestone 9: decision models (release 3 or 4, not scheduled, not detailed)
+
+Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of a rule or a Sonnet call, without changing flows, and only advise (P-12). Jev's System One is a pilot candidate; compare alternatives then (O-11). Use cases and the open items they would help:
+
+| Use case                                                                     | Helps with                                                                                                  |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Classification, spot decisions                                               | N-01 (small visual tweak), N-02 (Triage rubric), N-06 (severity), N-08 (PII flag), the Triage track in M3.6 |
+| Agent guardrails, LLM guardrails                                             | Screening untrusted PR text before QA                                                                       |
+| Model routing, LLM cascades                                                  | The self-hosted model gateway (O-10) and the spend alerts (M4.5)                                            |
+| LLM-as-a-judge                                                               | Evidence for the QA guard (P-04), never a verdict the runner trusts on its own (P-12)                       |
+| Context compaction (with a classifier on what to compact), memory management | The deferred context graph (N-14)                                                                           |
+| Search and rerank, reranker in RAG                                           | The deferred context graph (N-14)                                                                           |
+| Tool selection                                                               | Choosing tools inside a role's allowed toolbox                                                              |
+| Workflow branching                                                           | Recommendation only; the guard and the runner decide (P-12)                                                 |
 
 ## Order and dependencies
 
