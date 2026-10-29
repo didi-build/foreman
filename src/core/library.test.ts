@@ -520,3 +520,55 @@ describe("state library (unit, build plan M1.3, schema invariants)", () => {
     expect((await store.getNode(node.id))?.version).toBe(3);
   });
 });
+
+describe("escalation keywords never match as states (unit, ADR 0105)", () => {
+  /** Hand-built, unvalidated contracts: the library must stay safe without the validator. */
+  async function keywordLibrary(contracts: Contracts) {
+    const { store } = await setup();
+    const library = createLibrary({
+      store,
+      contracts,
+      guards: {},
+      clock: fixedClock(),
+      ids: sequentialIds(),
+    });
+    const node = await library.createNode({
+      projectId: PROJECT,
+      type: "work_item",
+      track: null,
+      state: "triage",
+      ownerRole: "triage",
+      title: "An item",
+    });
+    return { store, library, node };
+  }
+
+  it("rejects a request for a target that is not a state, even if a move names it", async () => {
+    const { store, library, node } = await keywordLibrary({
+      ...CONTRACTS,
+      states: { triage: { initial: true }, ready: {} },
+      transitions: [
+        { from: "triage", to: "ready", guards: [] },
+        { from: "triage", to: "any", guards: [] },
+      ],
+    });
+    expect(await library.requestTransition(move(node.id, "any"))).toMatchObject({
+      outcome: "rejected",
+      reason: "illegal_move",
+    });
+    expect(await stateOf(store, node.id)).toBe("triage");
+  });
+
+  it("never takes a `to: return` move literally, even when a state is named return", async () => {
+    const { store, library, node } = await keywordLibrary({
+      ...CONTRACTS,
+      states: { triage: { initial: true }, return: {} },
+      transitions: [{ from: "triage", to: "return", guards: [], escalation: true }],
+    });
+    expect(await library.requestTransition(move(node.id, "return"))).toMatchObject({
+      outcome: "rejected",
+      reason: "illegal_move",
+    });
+    expect(await stateOf(store, node.id)).toBe("triage");
+  });
+});

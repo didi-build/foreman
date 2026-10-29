@@ -1,0 +1,170 @@
+# Machine 2, design track (ADR 0105, from docs/spec.md section 9).
+#
+# Shared states: each state is declared in exactly one file, and the validator rejects a state id
+# declared twice. The shared QA tail (in_qa_review, verifying_on_staging, done) is declared in
+# code.yaml; this file references those ids in its transitions. escalation.yaml owns the
+# escalated states.
+#
+# A transition marked fallback_move implements a fallback the spec describes in prose (the
+# "Timeout and fallback" column). The consistency test pins each one to that row's words, and
+# expects no table row for it.
+# Rules live here and in guard functions, never in the library (essential 3).
+
+part: design
+
+states:
+  ready_for_design_exploration:
+    label: Ready for design exploration
+    owner: Designer
+    initial: true
+    purpose: Queue a design item for the Designer.
+    input: The product direction from the interview and the approved plan are attached.
+    output: A dispatch record once the Designer starts.
+    evidence_to_exit: Dispatch record.
+    tools: None until dispatch.
+    budget: not set
+    side_effects: Dispatching an agent spends budget.
+    failure: Stays ready and the reconcile pass retries.
+
+  in_design_exploration:
+    label: In design exploration
+    owner: Designer
+    purpose: Produce visual options for Didi to choose from, for example on the MagicPath canvas.
+    input: The locked product direction and the approved plan.
+    output: Visual options as links or screenshots.
+    evidence_to_exit: Links to the options and the visual-approval request id.
+    tools: The design canvas. Never the spec directory of another item.
+    budget: not set
+    side_effects: Draft designs only. Reversible.
+    failure: An overrun goes to the Council. Other failures stay here and increment the failure counter.
+
+  waiting_for_didi:
+    label: Waiting for Didi
+    owner: Operator
+    purpose: Hold the item while Didi approves the look and ease of use. The only approval in the design track.
+    input: Options attached and one visual-approval request open.
+    output: Didi's answer, saved verbatim with the time and scope.
+    evidence_to_exit: The approval record.
+    tools: The approval page. Nothing auto-approves.
+    budget: not set
+    side_effects: None while waiting.
+    failure: No timeout. The request shows again in each daily check.
+
+  writing_spec:
+    label: Writing spec
+    owner: Designer
+    purpose: Turn the approved option into the spec the components are built from.
+    input: Didi's approval record.
+    output: The spec at design/<area>/<feature>/ with spec.md and a mockups folder.
+    evidence_to_exit: Spec paths and commit, edited by the Designer only.
+    tools: The spec directory. Only the Designer edits it.
+    budget: not set
+    side_effects: Commits on a branch. Reversible until merge.
+    failure: A scope change goes to Escalated to Didi. Other failures stay here and increment the failure counter.
+
+  building_components:
+    label: Building components
+    owner: Designer
+    purpose: Build the component gallery from the spec.
+    input: The merged spec.
+    output: Components in the gallery, with CI green on the head commit.
+    evidence_to_exit: CI result and component screenshots for the comparison.
+    tools: The gallery and the project repo.
+    budget: not set
+    side_effects: Commits on a branch. Reversible until merge.
+    failure: Stays here and the failure counter goes up by one.
+
+transitions:
+  - from: ready_for_design_exploration
+    to: in_design_exploration
+    tracks: [design]
+    trigger: The item enters the state, or the reconcile pass finds it ready and not running.
+    guards: [plan_attached, no_pending_gate, agent_ready_not_on_hold]
+    evidence: [dispatch_record]
+    timeout: Next reconcile cycle.
+    fallback: Stays ready and the loop retries.
+
+  - from: in_design_exploration
+    to: waiting_for_didi
+    tracks: [design]
+    trigger: The Designer submits visual options. For a small tweak, the request goes to the Council instead of Didi.
+    guards: [options_attached]
+    evidence: [screenshot]
+    timeout: The Designer's budget (not set). An overrun goes to the Council.
+    fallback: Stays In design exploration and the failure counter goes up by one.
+
+  - from: waiting_for_didi
+    to: writing_spec
+    tracks: [design]
+    trigger: Didi approves. Nothing auto-approves.
+    guards: [approval_recorded]
+    evidence: []
+    timeout: None. The request shows again in each daily check.
+    fallback: If Didi asks for changes or rejects, the item returns to In design exploration with his words attached.
+
+  - from: writing_spec
+    to: building_components
+    tracks: [design]
+    trigger: The Designer reports the spec is written.
+    guards: [spec_edited_by_designer_only, scope_matches_plan]
+    evidence: [spec_paths]
+    timeout: The Designer's budget (not set).
+    fallback: A scope change goes to Escalated to Council, which sends it on to Escalated to Didi only if it changes product direction or needs his approval (D-177). Any other failure stays in Writing spec and the failure counter goes up by one.
+
+  - from: building_components
+    to: in_qa_review
+    tracks: [design]
+    trigger: The Designer reports the components are built.
+    guards: [ci_green_on_head, spec_components_exist]
+    evidence: [ci_run, screenshot]
+    timeout: The Designer's budget (not set).
+    fallback: Stays Building components and the failure counter goes up by one.
+
+  - from: in_qa_review
+    to: verifying_on_staging
+    tracks: [design]
+    trigger: QA reports a pass on the preview branch. The runner then merges the PR.
+    guards: [qa_verdict_independent_on_head, docs_updated_or_none]
+    evidence: [visual_comparison, ci_run, preview_check, qa_verdict, merge_commit]
+    timeout: The QA bot's budget (not set). Re-dispatch once, then the Council.
+    fallback: Stays In QA review with the missing condition named.
+
+  - from: verifying_on_staging
+    to: done
+    tracks: [design]
+    trigger: Main has deployed the merge commit to staging.
+    guards: [staging_check_on_merge_commit, design_spec_merged]
+    evidence: [staging_check, merge_commit]
+    timeout: The QA bot's budget (not set). Re-dispatch once, then the Council.
+    fallback: A failed check sends the item back to Building components and the failure counter goes up by one. On Done, the runner adds a Spec section to the linked developer item and releases it from Blocked.
+
+  - from: in_qa_review
+    to: building_components
+    tracks: [design]
+    trigger: QA reports a fail.
+    guards: [qa_failed_with_findings, not_third_failed_round]
+    evidence: [qa_verdict]
+    timeout: None.
+    fallback: The third failed round goes to Escalated to Council.
+
+  # The spec's fallback for a rejected or changes-requested approval (prose, not a table row).
+  - from: waiting_for_didi
+    to: in_design_exploration
+    tracks: [design]
+    fallback_move: true
+    trigger: Didi asks for changes or rejects the options.
+    guards: [changes_requested_recorded]
+    evidence: []
+    timeout: None.
+    fallback: The item carries Didi's words back into exploration.
+
+  # The spec's fallback for a failed staging check (prose, not a table row).
+  - from: verifying_on_staging
+    to: building_components
+    tracks: [design]
+    fallback_move: true
+    trigger: The staging check fails for the merge commit.
+    guards: [staging_check_failed]
+    evidence: [staging_check]
+    timeout: None.
+    fallback: The failure counter goes up by one. The third failure goes to Escalated to Council.

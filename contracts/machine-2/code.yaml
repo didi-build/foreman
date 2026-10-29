@@ -1,0 +1,161 @@
+# Machine 2, code, infrastructure and docs tracks (ADR 0105, from docs/spec.md section 9).
+# All three tracks share this one path, so every transition here carries tracks [code, infra, docs].
+#
+# Shared states: each state is declared in exactly one file, and the validator rejects a state id
+# declared twice. This file owns the shared QA tail (in_qa_review, verifying_on_staging, done),
+# which design.yaml references by id. escalation.yaml owns the escalated states.
+#
+# A transition marked fallback_move implements a fallback the spec describes in prose (the
+# "Timeout and fallback" column). The consistency test pins each one to that row's words, and
+# expects no table row for it.
+# Rules live here and in guard functions, never in the library (essential 3).
+
+part: code
+
+states:
+  blocked:
+    label: Blocked
+    owner: Runner
+    initial: true
+    requires_blocked_reason: true
+    purpose: Hold an item that waits on a design item or another item.
+    input: The item names what blocks it.
+    output: Nothing. The runner releases it when the blockers are done.
+    evidence_to_exit: Blocker records in the state store, and the merge commit of a design blocker's spec.
+    tools: None. No bot runs in this state.
+    budget: not set
+    side_effects: None. Waiting is reversible.
+    failure: A stalled blocker is flagged by the stall check.
+
+  ready_for_dev:
+    label: Ready for dev
+    owner: Developer
+    initial: true
+    purpose: Queue an unblocked item for dispatch.
+    input: No open blockers and no pending gate request.
+    output: A dispatch record once the Developer starts.
+    evidence_to_exit: Dispatch record with agent, branch and time.
+    tools: None until dispatch.
+    budget: not set
+    side_effects: Dispatching an agent spends budget.
+    failure: An item still not running after a reconcile cycle goes on the attention list, and becomes a phone alert after an hour.
+
+  in_development:
+    label: In development
+    owner: Developer
+    purpose: Build the change on a branch and open a PR.
+    input: A dispatched Developer agent scoped to this project. For UI work, only the spec merged on main.
+    output: A branch, a PR, and a done report naming the PR.
+    evidence_to_exit: CI result for the head commit, the PR link, and a docs note.
+    tools: The project repo and its CI. Developers may change gallery components only for props or small wiring fixes, never the design or the spec.
+    budget: not set
+    side_effects: Commits on a branch. Reversible until merge.
+    failure: A failed guard after a done report increments the failure counter. An overrun or a loop goes to the Council.
+
+  in_qa_review:
+    label: In QA review
+    owner: QA
+    purpose: Check the work on the preview branch against the evidence, with a model independent of the builder.
+    input: A PR with CI green on its head commit.
+    output: A QA verdict naming the commit it covers, with findings on a fail.
+    evidence_to_exit: CI run, test report, preview check, QA verdict, and for the code track any privileged-path approval. The runner merges on a pass.
+    tools: Read-only repository access at the head commit (ADR 0112).
+    budget: not set
+    side_effects: None. QA never edits the work.
+    failure: A failed round goes back to the building state and counts toward the third-round escalation.
+
+  verifying_on_staging:
+    label: Verifying on staging
+    owner: QA
+    purpose: Confirm the merged change works on staging.
+    input: Main has deployed the merge commit to staging.
+    output: A staging check record for the merge commit.
+    evidence_to_exit: Staging check record for the merge commit.
+    tools: The staging URL, checked by plain code the runner runs.
+    budget: not set
+    side_effects: None. Checking is repeatable.
+    failure: A failed check reopens the item and increments the failure counter. The third failure escalates.
+
+  done:
+    label: Done
+    owner: Runner
+    purpose: Finish the item and release what it blocked.
+    input: Every guard on the way here passed.
+    output: Released dependents. For a design item, a Spec section on the linked developer item.
+    evidence_to_exit: None. Done is terminal.
+    tools: None.
+    budget: not set
+    side_effects: Counters reset. Dependents are released.
+    failure: Not applicable.
+
+transitions:
+  - from: blocked
+    to: ready_for_dev
+    tracks: [code, infra, docs]
+    trigger: A blocking item reaches Done, or the reconcile pass finds no open blockers.
+    guards: [blockers_done, design_spec_merged]
+    evidence: [merge_commit]
+    timeout: Next reconcile cycle.
+    fallback: Stays Blocked with the blocker named. A stalled blocker is flagged by the stall check.
+
+  - from: ready_for_dev
+    to: in_development
+    tracks: [code, infra, docs]
+    trigger: The item enters Ready for dev, or the reconcile pass finds it ready and not running.
+    guards: [blockers_done, no_pending_gate, agent_ready_not_on_hold]
+    evidence: [dispatch_record]
+    timeout: Next reconcile cycle. An item still not running after that goes on the attention list and becomes a phone alert after an hour.
+    fallback: Stays Ready for dev and the loop retries. Repeated dispatch failures count toward escalation.
+
+  - from: in_development
+    to: in_qa_review
+    tracks: [code, infra, docs]
+    trigger: The Developer reports the work is done and names the PR.
+    guards: [ci_green_on_head, docs_updated_or_none]
+    evidence: [ci_run, docs_note]
+    timeout: The Developer's budget (not set). An overrun or a loop stops the item and sends it to the Council.
+    fallback: Stays In development and the failure counter goes up by one.
+
+  - from: in_qa_review
+    to: verifying_on_staging
+    tracks: [code, infra, docs]
+    trigger: QA reports a pass on the preview branch. The runner then merges the PR.
+    guards:
+      [
+        qa_verdict_independent_on_head,
+        docs_updated_or_none,
+        privileged_paths_approved,
+        prod_env_protected,
+      ]
+    evidence: [ci_run, test_report, preview_check, qa_verdict, merge_commit]
+    timeout: The QA bot's budget (not set). Re-dispatch once, then the Council.
+    fallback: Stays In QA review with the missing condition named, for example a gate request for Didi.
+
+  - from: verifying_on_staging
+    to: done
+    tracks: [code, infra, docs]
+    trigger: Main has deployed the merge commit to staging.
+    guards: [staging_check_on_merge_commit]
+    evidence: [staging_check]
+    timeout: The QA bot's budget (not set). Re-dispatch once, then the Council.
+    fallback: A failed check sends the item back to In development and the failure counter goes up by one. The third failure goes to Escalated to Council.
+
+  - from: in_qa_review
+    to: in_development
+    tracks: [code, infra, docs]
+    trigger: QA reports a fail.
+    guards: [qa_failed_with_findings, not_third_failed_round]
+    evidence: [qa_verdict]
+    timeout: None.
+    fallback: The third failed round goes to Escalated to Council.
+
+  # The spec's fallback for a failed staging check (prose, not a table row).
+  - from: verifying_on_staging
+    to: in_development
+    tracks: [code, infra, docs]
+    fallback_move: true
+    trigger: The staging check fails for the merge commit.
+    guards: [staging_check_failed]
+    evidence: [staging_check]
+    timeout: None.
+    fallback: The failure counter goes up by one. The third failure goes to Escalated to Council.

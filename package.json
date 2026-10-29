@@ -69,10 +69,10 @@
     "typescript-eslint": "8.72.1",
     "vite": "7.3.7",
     "vitest": "4.1.12",
-    "wrangler": "4.152.0",
-    "yaml": "2.9.1"
+    "wrangler": "4.152.0"
   },
   "dependencies": {
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "yaml": "2.9.1"
   }
 }

@@ -32,14 +32,18 @@ Principles, from `AGENTS.md`: testing is intentional. Each test names the seam i
 
 For each guard: pass, fail, missing evidence, evidence for an older commit, and evidence for the right commit but the wrong kind.
 
+The guards are the 24 in ADR 0105's guard list (D-176):
+
 - `blockers_done`, `design_spec_merged`, `no_pending_gate`, `agent_ready_not_on_hold`.
 - `ci_green_on_head`, `docs_updated_or_none`.
 - `qa_verdict_independent_on_head` (ADR 0112): fails without CI green and a preview check on the head commit, without a pass whose citations were verified, or for an old commit. While D-158 waives the different-family rule, a verdict from the same model id as the builder fails; once a second family is approved, the same family fails.
 - `privileged_paths_approved`: a PR touching a privileged path without an approval record fails. A new commit after approval requires a fresh approval.
 - `prod_env_protected`: a repo whose deploy runs on push to main with an unprotected production environment fails.
-- `not_third_failed_round`, `failure_counter_below_threshold`.
-- `staging_check_on_merge_commit`.
-- `spec_edited_by_designer_only`, `scope_matches_plan`.
+- `qa_failed_with_findings`, `not_third_failed_round`.
+- `staging_check_on_merge_commit`, `staging_check_failed`.
+- `plan_attached`, `options_attached`, `approval_recorded`, `changes_requested_recorded`.
+- `spec_edited_by_designer_only`, `scope_matches_plan`, `spec_components_exist`.
+- `escalation_trigger_met` (this also covers the failure counter's threshold), `council_decision_recorded`, `didi_question_open`, `didi_answer_recorded`.
 
 Mutation testing: run mutation testing on the guard module in CI (for example Stryker for TypeScript). Surviving mutants in guard logic fail the check, or each survivor is justified in the PR. This applies the Grok QA rule that an unexercised guard is a defect.
 
