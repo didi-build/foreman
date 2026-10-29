@@ -1,6 +1,6 @@
 # 0101. Repo layout, language and tooling
 
-- **Status:** proposed (reviewed with the other Milestone 0 ADRs at the end of M0)
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29).
 - **Date:** 2026-10-28
 - **Related:** [docs/build-plan.md, task M0.1](../build-plan.md#m01-repo-and-tooling), O-06 in [docs/decision-log.md](../decision-log.md), [ADR 0100](./0100-handoff-placement.md)
 

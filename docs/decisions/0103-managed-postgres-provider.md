@@ -1,6 +1,6 @@
 # 0103. Managed Postgres provider and region
 
-- **Status:** accepted for step 1 (Didi, 2026-10-28: "I approve. I'm still out so I can't generate the keys yet but I approve of supabase"). Recorded as D-140. Didi creates the project and its credentials. Step 2 (the plan before cutover, and its spend) is still Didi's decision when it comes.
+- **Status:** accepted for step 1 (Didi, 2026-10-28: "I approve. I'm still out so I can't generate the keys yet but I approve of supabase"). Recorded as D-140. Didi creates the project and its credentials. Step 2 (the plan before cutover, and its spend) is still Didi's decision when it comes. Reviewed at the end of M0 (D-168).
 - **Date:** 2026-10-28
 - **Related:** O-01, D-118, [build plan M0.5](../build-plan.md#m05-choose-the-managed-postgres-provider-o-01)
 

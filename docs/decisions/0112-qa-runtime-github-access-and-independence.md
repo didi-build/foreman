@@ -1,6 +1,6 @@
 # 0112. QA runtime, GitHub access and independence
 
-- **Status:** accepted for D-155 to D-159 (decided by Didi, 2026-10-28) and the posting form (D-160, confirming P-20, 2026-10-29). Reviewed with the other Milestone 0 ADRs at the end of M0; built in M3.2.
+- **Status:** accepted for D-155 to D-159 (decided by Didi, 2026-10-28) and the posting form (D-160, confirming P-20, 2026-10-29). Reviewed at the end of M0 (D-168); built in M3.2.
 - **Date:** 2026-10-28
 - **Related:** D-155 to D-161, P-20, N-26, P-04, P-12, D-119, D-154, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0107](./0107-agent-dispatch-adapters.md), ADR 0106 (not written yet), [ADR 0111](./0111-kubernetes-ready-conventions.md)
 
