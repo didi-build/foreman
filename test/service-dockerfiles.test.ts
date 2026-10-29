@@ -14,15 +14,17 @@ interface DependabotUpdate {
   "package-ecosystem": string;
   directory?: string;
   directories?: string[];
+  ignore?: { "dependency-name": string; "update-types"?: string[] }[];
 }
 const dependabot = parse(readFileSync(".github/dependabot.yml", "utf8")) as {
   updates: DependabotUpdate[];
 };
-const dockerDirectories = dependabot.updates
-  .filter((update) => update["package-ecosystem"] === "docker")
-  .flatMap(
-    (update) => update.directories ?? (update.directory ? [update.directory] : []),
-  );
+const dockerUpdates = dependabot.updates.filter(
+  (update) => update["package-ecosystem"] === "docker",
+);
+const dockerDirectories = dockerUpdates.flatMap(
+  (update) => update.directories ?? (update.directory ? [update.directory] : []),
+);
 
 describe("service Dockerfiles (unit: container conventions guard, ADR 0111)", () => {
   it("finds the reference service, so the checks below cannot pass on an empty list", () => {
@@ -48,5 +50,18 @@ describe("service Dockerfiles (unit: container conventions guard, ADR 0111)", ()
 
   it.each(services)("%s has a Dependabot docker entry", (service) => {
     expect(dockerDirectories).toContain(`/src/${service}`);
+  });
+
+  it("keeps every Dependabot docker entry off major base-image upgrades", () => {
+    for (const update of dockerUpdates) {
+      expect(
+        update.ignore?.some(
+          (rule) =>
+            rule["dependency-name"] === "*" &&
+            rule["update-types"]?.includes("version-update:semver-major"),
+        ),
+        `${update.directory ?? update.directories?.join(", ")} must ignore major updates`,
+      ).toBe(true);
+    }
   });
 });
