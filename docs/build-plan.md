@@ -339,15 +339,26 @@ Self-improvement stage A (D-151). A scheduled, read-only scan whose findings bec
 - Sources, idea fields, safeguards and intake by class: `docs/architecture/technical-architecture.md` section 2.12 (P-13 to P-15).
 - Before it starts, Didi reviews the schedule and scope per project, the idea cap, the confidence threshold, the scan budget and the model (O-12).
 
-## Milestone 11: recursive self-improvement, stages B to D (not scheduled, not detailed)
+## Milestone 11: recursive self-improvement (release 4 or later, not scheduled, not detailed)
 
-Stages from D-151. Production deploys stay Didi's through stage C (D-149).
+Stages B to D of D-151, which are RSI Levels 1 to 3 (P-17). Planned for release 4 or later (D-152). Production deploys stay Didi's (D-007, D-149).
 
-| Stage | What                                                                                                                                         | Depends on                                                                              |
-| ----- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| B     | RSI Level 1: proposed changes to the playbook, bot files, prompts and thresholds, tested by replaying history and shadow runs, Didi approves | Stable cutover and data (M6), decision-point records (P-11), the Scanner (Milestone 10) |
-| C     | RSI Level 2: sandbox experiments, staging deploys and automatic rollback                                                                     | Stage B, Kubernetes (Milestone 7)                                                       |
-| D     | The system updates its own production for narrow, low-risk classes, never the protected set                                                  | Stage C, and the protected set and RSI rules defined (N-25)                             |
+| Stage | Level   | What                                                                                                                                                                                       | Depends on                                     |
+| ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| B     | Level 1 | Proposed changes to the playbook, bot files, prompts and contract thresholds as ordinary ideas, tested by replaying recorded history and shadow runs. Didi approves                        | The dependencies below, except Kubernetes      |
+| C     | Level 2 | Changes to the factory's own code in an isolated sandbox, deployed to staging, run against the current version, rolled back automatically on regression. Production promotion stays a gate | Level 1, Kubernetes (Milestone 7)              |
+| D     | Level 3 | Didi's call later: auto-promotion for narrow, low-risk classes of change, never for the protected set                                                                                      | Level 2, an explicit decision per class (N-24) |
+
+Dependencies:
+
+- Cutover stable, with at least a few weeks of data (M6).
+- Decision-point records (P-11).
+- Kubernetes for Level 2 (Milestone 7).
+- Decision models (Milestone 9).
+- The Scanner as a source of ideas (Milestone 10).
+- Still to build first: an outcome view per work item, a replay harness, and an experiment tag on runs (`docs/architecture/technical-architecture.md` section 2.13).
+
+Protected set (P-18), never changed by the system without Didi, enforced through the privileged-path list and the merge guard: the gate list and its enforcement code, the guards that authorize transitions and the privileged-path list, the runner's credentials and how they are issued, the metrics and the evaluation harness, spend caps and the kill switch, the rule that production deploys are Didi's, and this list itself. Every self-change follows the RSI rules (P-19).
 
 ## Order and dependencies
 
