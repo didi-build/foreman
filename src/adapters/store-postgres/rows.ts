@@ -10,6 +10,7 @@ import type {
   Node,
   Project,
   Run,
+  RunToken,
   Setting,
   SpecVersion,
   Transition,
@@ -159,6 +160,15 @@ export const toRun = (r: Row): Run => ({
   budget: r.budget as Json,
   parentRunId: r.parent_run_id as string | null,
   transcriptRef: r.transcript_ref as string | null,
+});
+
+export const toRunToken = (r: Row): RunToken => ({
+  tokenHash: r.token_hash as string,
+  runId: r.run_id as string,
+  role: r.role as RunToken["role"],
+  projectId: r.project_id as string,
+  expiresAt: r.expires_at as Date,
+  revokedAt: r.revoked_at as Date | null,
 });
 
 export const toSetting = (r: Row): Setting => ({

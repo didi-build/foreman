@@ -18,6 +18,7 @@ import {
   toNode,
   toProject,
   toRun,
+  toRunToken,
   toSetting,
   toSpecVersion,
   toTransition,
@@ -337,6 +338,13 @@ function ops(db: Queryable): StoreOps {
       );
       return r && toGateRequest(r);
     },
+    async listOpenGateRequests(projectId) {
+      const result = await rows(
+        "select * from factory.gate_requests where project_id = $1 and status = 'open' order by created_at, id",
+        [projectId],
+      );
+      return result.map(toGateRequest);
+    },
     async closeGateRequest(id, close) {
       const changed = await exec(
         `update factory.gate_requests
@@ -385,6 +393,19 @@ function ops(db: Queryable): StoreOps {
     async getRun(id) {
       const r = await one("select * from factory.runs where id = $1", [id]);
       return r && toRun(r);
+    },
+    async insertRunToken(t) {
+      await exec(
+        `insert into factory.run_tokens (token_hash, run_id, role, project_id, expires_at, revoked_at)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [t.tokenHash, t.runId, t.role, t.projectId, t.expiresAt, t.revokedAt],
+      );
+    },
+    async getRunToken(tokenHash) {
+      const r = await one("select * from factory.run_tokens where token_hash = $1", [
+        tokenHash,
+      ]);
+      return r && toRunToken(r);
     },
     async endRun(id, end) {
       const changed = await exec(

@@ -243,6 +243,18 @@ export interface DecisionPointRecord {
   recordedAt: Date;
 }
 
+export type AgentRole = "developer" | "qa" | "designer" | "council" | "triage";
+
+/** A per-run agent credential (ADR 0102). Only the token's SHA-256 hash is ever stored. */
+export interface RunToken {
+  tokenHash: string;
+  runId: string;
+  role: AgentRole;
+  projectId: string;
+  expiresAt: Date;
+  revokedAt: Date | null;
+}
+
 export interface DecisionPointOutcome {
   id: string;
   recordId: string;
@@ -315,10 +327,13 @@ export interface StoreOps {
   insertGateRequest(request: GateRequest): Promise<void>;
   getGateRequest(id: string): Promise<GateRequest | null>;
   findOpenGateRequest(projectId: string, topicKey: string): Promise<GateRequest | null>;
+  listOpenGateRequests(projectId: string): Promise<GateRequest[]>;
   /** Moves an open request to a closed status. Returns false if it was no longer open. */
   closeGateRequest(id: string, close: GateClose): Promise<boolean>;
 
   insertRun(run: Run): Promise<void>;
+  insertRunToken(token: RunToken): Promise<void>;
+  getRunToken(tokenHash: string): Promise<RunToken | null>;
   getRun(id: string): Promise<Run | null>;
   /** Records how a run ended. Returns false if it had already ended. */
   endRun(id: string, end: RunEnd): Promise<boolean>;
