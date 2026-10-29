@@ -19,7 +19,7 @@ Status: draft, 2026-10-28. Proposed order; Didi confirms. Milestones run in orde
 
 ## Milestone 0: foundations and spikes
 
-Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
+Goal: a clean repo, the risky unknowns checked, and the provider chosen. The Linear spike (M0.3) is moved to the start of Milestone 5 (D-147).
 
 ### M0.0 Place the handoff files in the repo's layout
 
@@ -47,6 +47,7 @@ Goal: a clean repo, the three risky unknowns checked, and the provider chosen.
 
 ### M0.3 Spike: Linear API (V-02)
 
+- Moved: runs at the start of Milestone 5, before M5.1, not in Milestone 0 (D-147). Nothing before Milestone 5 depends on it. It is not needed to finish Milestone 0.
 - What: prove Linear's API can create statuses and let an app act under its own identity.
 - Why: the status setup and bot identity depend on it.
 - How: in a test team (not the real Didi Build team), create a status, rename one, create an issue and a comment as an app. Record the results.
@@ -267,6 +268,8 @@ Goal: Didi can act from his phone and nothing waits invisibly.
 ## Milestone 5: Linear mirror
 
 Goal: Linear shows the state and cannot silently drift.
+
+First run the M0.3 Linear spike, moved here from Milestone 0 (D-147). If the Linear mirror is dropped before then, the spike is dropped with it.
 
 ### M5.1 One-time Linear setup (review point)
 
