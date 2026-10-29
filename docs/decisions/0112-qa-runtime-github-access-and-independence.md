@@ -1,8 +1,8 @@
 # 0112. QA runtime, GitHub access and independence
 
-- **Status:** accepted for D-155 to D-159 (decided by Didi, 2026-10-28). The posting form (P-20) is proposed and needs Didi's confirmation. Reviewed with the other Milestone 0 ADRs at the end of M0; built in M3.2.
+- **Status:** accepted for D-155 to D-159 (decided by Didi, 2026-10-28) and the posting form (D-160, confirming P-20, 2026-10-29). Reviewed with the other Milestone 0 ADRs at the end of M0; built in M3.2.
 - **Date:** 2026-10-28
-- **Related:** D-155 to D-159, P-20, N-26, P-04, P-12, D-119, D-154, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0107](./0107-agent-dispatch-adapters.md), ADR 0106 (not written yet), [ADR 0111](./0111-kubernetes-ready-conventions.md)
+- **Related:** D-155 to D-160, P-20, N-26, P-04, P-12, D-119, D-154, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0107](./0107-agent-dispatch-adapters.md), ADR 0106 (not written yet), [ADR 0111](./0111-kubernetes-ready-conventions.md)
 
 ## Context
 
@@ -17,11 +17,11 @@ QA checks a pull request before the runner merges it. Didi wants QA to have its 
 - QA, the runner and the Developer each have their own GitHub App and their own private key.
 - The App manifest is kept in the repo, and a test checks its permission list and that webhooks are off.
 
-### Who posts (D-157, P-20)
+### Who posts (D-157, D-160)
 
 QA's result appears on the pull request. The agent never posts itself.
 
-Proposed form (P-20): after the runner validates a verdict, the runner posts one check run named `QA` on the head commit, with a short summary and line annotations for the findings. It uses a separate token minted from the QA App with Checks write only. The agent's token has read permissions only. The check run is a display only: the guard never reads it as evidence. When a new commit arrives, the old check run is stale, and the runner posts a neutral status for it.
+Form (D-160): after the runner validates a verdict, the runner posts one check run named `QA` on the head commit, with a short summary and line annotations for the findings. It uses a separate token minted from the QA App with Checks write only. The agent's token has read permissions only. The check run is a display only: the guard never reads it as evidence. When a new commit arrives, the old check run is stale, and the runner posts a neutral status for it. `QA` is never marked as a required status check in branch protection: the runner's guard is the only merge gate, and a required display row would block PRs that never go through QA (repos not yet under the runner, docs PRs, Dependabot).
 
 ### Trigger (D-159)
 
@@ -102,7 +102,7 @@ There is no App service. The App is only a registered identity. QA runs as a Cla
 
 ## How success is judged
 
-1. This ADR is merged, and Didi confirms or changes the posting form (P-20).
+1. This ADR is merged, and the posting form is confirmed (D-160).
 2. In M3.2, every test in "Tests to add" passes, including the prompt-injection test.
 3. Before the first QA run: the Apps are registered with exactly the permissions above (approve-once gate), and Anthropic's API terms are confirmed under D-154.
 
