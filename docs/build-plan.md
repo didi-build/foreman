@@ -162,7 +162,7 @@ Goal: the runner can say what it would do, and be right.
 
 - What: record CI results, PR state, head commit, preview and staging deployments, merge state, as evidence.
 - Why: proof must come from outside the agents.
-- How: a webhook receiver with idempotency by delivery id, plus a polling backstop in the reconcile pass.
+- How: a webhook receiver with idempotency by delivery id, plus a polling backstop in the reconcile pass. Design in ADR 0113.
 - Constraints: GitHub App identity for the runner. No secrets in logs. Built and tested against a fake GitHub first; the real Apps are registered at M3 (D-178). A `ci_run` is recorded only for the PR's current head commit.
 - Success: replaying the same webhook twice records one evidence row. Killing the receiver and running the reconcile pass records the same evidence.
 
