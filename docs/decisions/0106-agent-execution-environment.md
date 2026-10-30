@@ -1,6 +1,6 @@
 # 0106. Agent execution environment and budget enforcement
 
-- **Status:** proposed. Review point: Didi reviews it, and M3.2 does not start until it is accepted (build plan M3.2). Resolves O-03 once accepted.
+- **Status:** accepted at the review point (D-191, 2026-10-30). Its open questions were settled as D-183 to D-190. Resolves O-03.
 - **Date:** 2026-10-30
 - **Related:** O-03, [build plan M3.2](../build-plan.md#m32-dispatch-adapters-and-runs), `docs/architecture/technical-architecture.md` sections 2.8, 2.10, 4, 6 and 7, D-120, D-141, D-142, D-143, D-156, D-158, D-159, D-164, D-165, D-172, D-178, D-180, N-29, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0107](./0107-agent-dispatch-adapters.md), [ADR 0110](./0110-infrastructure-as-code.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md), [ADR 0113](./0113-github-evidence-ingestion.md), [M0.2 spike record](../spikes/m0.2-agent-dispatch.md)
 
@@ -188,11 +188,11 @@ The agent design does not change in the second release. It adds around it:
 - QA's pod reaches only the model endpoint and the state API.
 - No secret value in logs, the `runs` table, transcripts, PR bodies or Linear.
 - No cluster, node pool, paid plan or credential is created before Didi approves it. The cluster, its monthly amount and the runner's cluster token are gates at first hosting, as D-180 sets for the API host.
-- Kubernetes-specific code is allowed in the first release only in the Kubernetes agent runtime adapter (`src/adapters/agent-runtime/`) and the agent cluster's infrastructure code, and only for agent runs. Everything else stays Kubernetes-ready but not Kubernetes-specific (ADR 0111). ADR 0111, the build plan (M0.8, M3.2, M7) and `AGENTS.md` section 4a are amended to say so when this ADR is accepted.
+- Kubernetes-specific code is allowed in the first release only in the Kubernetes agent runtime adapter (`src/adapters/agent-runtime/`) and the agent cluster's infrastructure code, and only for agent runs. Everything else stays Kubernetes-ready but not Kubernetes-specific (ADR 0111). ADR 0111, the build plan (M0.8, M3.2, M7) and `AGENTS.md` section 4a are amended to say so.
 
 ## How success is judged
 
-M3.2 cannot start until this ADR is accepted. In M3.2 these checks pass on the real agent cluster:
+In M3.2 these checks pass on the real agent cluster:
 
 1. **NetworkPolicy is enforced:** a test pod with no allow policy cannot reach anything, so the default deny works on DOKS.
 2. **Egress, QA:** from a QA pod, a request to the model endpoint and to the state API works through the proxy; a request to `github.com`, to any other host, to a raw IP address and to `169.254.169.254` fails; a DNS lookup of an outside name fails; a direct connection that ignores `HTTPS_PROXY` fails.
