@@ -43,7 +43,7 @@ A signed token (for example a JWT) was considered. The opaque token is simpler: 
 
 ### Transport and logging
 
-- TLS ends at the cluster's inbound entry point (DigitalOcean, D-141). Plain HTTP is never exposed. Whether that is a DigitalOcean load balancer or an ingress is chosen at first hosting (D-193).
+- The state API has no public address (D-195). Agents reach it inside the cluster through a fixed route in their egress proxy, and the runner does not call it (point 7). Plain HTTP never leaves the cluster.
 - Tokens travel only in the `Authorization` header, never in a URL. Logs record the request path without its query string, and an error's type without its message, because either can carry a token or personal data (`src/service-kit/server.ts`).
 - An agent's token lives in its environment while it reads untrusted text (PR diffs, issue bodies), so a prompt injection could try to send it somewhere. The token's reach is the limit: one role, one project, one run, short expiry, and no transition rights. Limiting where agents can connect at all is part of the agent execution environment ([ADR 0106](./0106-agent-execution-environment.md), M3, accepted, D-191).
 

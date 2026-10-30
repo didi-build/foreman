@@ -246,7 +246,7 @@ Rules:
 ## 7. Deployment
 
 - Windmill Cloud for the runner. Managed Postgres for the state store. The API location is set in ADR 0102, amended by D-193. Infrastructure is declared as code (section 2.9).
-- The API and agent runners ship as containers. In the first release they run on one small DigitalOcean Kubernetes cluster with two node pools ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-193). The state API and the GitHub receiver run on the platform pool. Agent runs go to the agents pool, which is tainted so nothing else runs there. How inbound traffic reaches the API and the receiver (a load balancer or an ingress) is decided at first hosting. Supabase stays the database and Windmill Cloud stays the runner. The second release adds self-hosted Windmill, Vault, the model gateway, monitoring, GitOps and project deploys (section 2.10).
+- The API and agent runners ship as containers. In the first release they run on one small DigitalOcean Kubernetes cluster with two node pools ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-193). The state API and the GitHub receiver run on the platform pool. Agent runs go to the agents pool, which is tainted so nothing else runs there. Only the receiver takes traffic from the internet, through a Cloudflare Tunnel; the state API is internal (D-195). Supabase stays the database and Windmill Cloud stays the runner. The second release adds self-hosted Windmill, Vault, the model gateway, monitoring, GitOps and project deploys (section 2.10).
 - The factory is its own first project. Its production deploys stay with Didi. Gates stay fully on during bootstrap.
 - Environments: a staging project used for rehearsals, and the real projects. A rehearsal never touches real projects.
 

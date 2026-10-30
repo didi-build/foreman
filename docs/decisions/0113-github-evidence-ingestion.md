@@ -108,4 +108,4 @@ Details the sections above left open, as built in `src/core/github-ingest.ts`, `
 
 - A second small service to deploy beside the API, and migration 0002 (a table, a column and a role).
 - A missed webhook delays evidence by up to one reconcile interval (2 hours until Kubernetes, D-164).
-- At M3, the runner App's webhook must point at the receiver, which needs a public HTTPS URL on the cluster's inbound entry point (a DigitalOcean load balancer or an ingress, chosen at first hosting, D-193).
+- At M3, the runner App's webhook must point at the receiver, which is reached at a public HTTPS name on `didi.build` through a Cloudflare Tunnel (D-195). The tunnel token and the DNS record are gates at first hosting.
