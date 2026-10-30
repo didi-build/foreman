@@ -57,6 +57,18 @@ Unit tests on the memory store: `src/core/runs.test.ts`. On Postgres: `test/db/r
 4. Run ends: turns, minutes, cost, cached and uncached tokens and the outcome are recorded once; a second end changes nothing.
 5. Usage exhausted: the failure counter does not move, the dispatch waits for `usage_exhausted_wait_minutes` or a longer retry-after, and an out-of-credit end is recorded apart.
 
+### Egress proxy (ADR 0106 sections 2, 5 and 6, build plan M3.2)
+
+Tests sit next to the code in `src/egress-proxy/`. None of them uses real DNS or the network.
+
+1. Unit, blocked addresses (`addresses.test.ts`): loopback, private, link-local and the metadata address 169.254.169.254, CGNAT, `0.0.0.0/8`, multicast and reserved ranges are refused. IPv6 is allowed only in global unicast, so `::1`, unique-local (`fc00::/7`), link-local (`fe80::/10`, also with a zone id), IPv4-mapped, NAT64, 6to4 and Teredo addresses are refused. Anything that does not parse is refused.
+2. Unit, allow-list (`hosts.test.ts`): exact match on the canonical name only. Suffix tricks (`github.com.evil.com`), subdomains, other ports, IP literals and malformed names are refused. Case and one trailing dot name the same host and gain nothing.
+3. Unit, settings (`providers.test.ts`, `config.test.ts`): a bad provider entry, allow-list, run id or request ceiling stops the service and names the setting, never its value. A provider's credential is read by its secret path.
+4. Unit, headers (`headers.test.ts`): the agent's `x-api-key`, `authorization` and similar headers are removed, the provider's credential is set by its style, and every other end-to-end header passes unchanged.
+5. Integration, localhost fakes (`proxy.test.ts`): a tunnel to an allowed name opens at the address the proxy checked, and a second DNS answer cannot move it; a disallowed host, port 80, an IP literal and an allowed name that resolves to 169.254.169.254 or a private address are refused without a connection. Model requests reach a local https upstream with the body unchanged (hash compare, both ways), server-sent events stream as they arrive, the agent's credential never reaches the upstream, an untrusted upstream certificate is refused, and the request past the ceiling gets 429. Captured logs hold the run id and host names but no body or credential.
+6. Integration, process (`main.test.ts`): config only from the environment, `/health`, JSON logs and exit 0 on SIGTERM. The container check in CI covers the image (ADR 0111).
+7. On the real cluster, ADR 0106 "How success is judged" checks 2, 6 and 8 cover the proxy end to end.
+
 ### Runner behaviour
 
 1. Reconcile pass: releases blocked items whose blockers are Done, dispatches ready items with no active run, flags stalls, advances from evidence, closes stale gate requests, mirrors state, and rolls up spend.

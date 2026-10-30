@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLogger } from "./logger.ts";
 import { pathOnly, sendJson, startService, type RunningService } from "./server.ts";
@@ -57,6 +58,33 @@ describe("startService (unit: service kit, ADR 0111)", () => {
     expect(logged).toContain('"errorType":"Error"');
     expect(logged).not.toContain("secret-value-123456");
     expect(logged).not.toContain("query-secret-123456");
+  });
+
+  it("passes CONNECT requests to onConnect with the socket", async () => {
+    running = await startService({
+      name: "svc",
+      port: 0,
+      logger: quietLogger,
+      onConnect: (request, socket) => {
+        socket.end(`HTTP/1.1 200 OK\r\nx-target: ${request.url}\r\n\r\n`);
+      },
+    });
+    const port = running.port;
+    const target = await new Promise<string | undefined>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1",
+        port,
+        method: "CONNECT",
+        path: "example.com:443",
+      });
+      request.on("connect", (response, socket) => {
+        socket.destroy();
+        resolve(response.headers["x-target"] as string | undefined);
+      });
+      request.on("error", reject);
+      request.end();
+    });
+    expect(target).toBe("example.com:443");
   });
 
   it("stops accepting connections after stop()", async () => {
