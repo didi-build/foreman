@@ -137,15 +137,19 @@ Every agent Job also sets:
 - `backoffLimit: 0` and `restartPolicy: Never`: Kubernetes never retries a run by itself. Only the runner decides whether to dispatch again.
 - `ttlSecondsAfterFinished`: Kubernetes removes a finished Job and its pod after a delay (setting, 1 hour to start), long enough for the runner to read the result. The runner deletes them sooner once it has.
 
-Proposed starting values. They are settings in each bot file, generous on purpose (D-120), and tuned in M6.4 from the runs table:
+Rehearsal values (D-185). They are settings in each bot file. The dollar caps are tighter than a generous start (D-120) to halve the worst case during the rehearsal; they are raised if real runs keep reaching them, and tuned in M6.4 from the runs table:
 
 | Role      | Turns | Minutes | Dollars |
 | --------- | ----- | ------- | ------- |
-| Developer | 100   | 50      | 10      |
-| Designer  | 100   | 50      | 10      |
-| QA        | 50    | 20      | 3       |
-| Council   | 40    | 20      | 5       |
+| Developer | 100   | 50      | 5       |
+| Designer  | 100   | 50      | 5       |
+| QA        | 50    | 20      | 2       |
+| Council   | 40    | 20      | 3       |
 | Triage    | 40    | 20      | 3       |
+
+**Models.** Runs start on the lower-cost models (D-185): Claude Sonnet 5.5 by default, and Claude Haiku 5.5 for a role where a rehearsal comparison shows it holds quality (Triage is the first candidate). The model is a setting in each bot file. The QA model must differ from the Developer's (D-158).
+
+**Prompt caching is required** (D-185). Each run resends its conversation every turn, so caching is the largest saving. Every runtime must use it: Claude Code does by default, and any runtime that calls a model API directly marks the stable part of its prompt for caching. The egress proxy forwards model request bodies byte for byte and changes only the credential header, because any change to the body breaks the cache. Each run records its cached and uncached token counts in `runs.tokens`.
 
 **Stopping a run never splits a transition.** Agents never write transitions. The runner writes each one as a single database transaction (essential 3), and each agent call to the state API is one request in its own transaction. So an agent pod may be stopped at any moment, and the store holds only whole rows. What "never kill a run mid-transition" requires is this order:
 
@@ -203,6 +207,7 @@ M3.2 cannot start until this ADR is accepted. In M3.2 these checks pass on the r
 11. **Limits:** a fourth Developer dispatch in a project waits; a second dispatch for the same item waits; a duplicate QA event gives one run.
 12. **Images:** the ADR 0111 CI check covers the egress proxy; a test checks every agent image pins its base by digest and runs as non-root.
 13. **End to end:** each adapter starts an agent on a trivial task in the rehearsal project and records a run with model, turns, minutes, cost and outcome (build plan M3.2).
+14. **Prompt caching:** in a run of more than one turn through the proxy, the turns after the first report cached input tokens above zero, and `runs.tokens` records them.
 
 ## Reasons
 
@@ -245,7 +250,7 @@ The `tor1` region is reported to offer DOKS (a 2019 DigitalOcean release note an
 | 1. Cluster size: node size and count, high-availability control plane or not, and the monthly amount                                         | **Decided (D-183):** one fixed node pool of one 2 vCPU / 4 GB node, no HA control plane. The price is read on DigitalOcean's page when the cluster is created                     |
 | 2. Accept the rule that an agent never holds a model credential, with the proxy adding each provider's credential from settings (section 5)? | Yes. It keeps credentials away from an agent that has a shell, it works the same for any provider and for self-hosted models, and the gateway takes it over in the second release |
 | 3. The QA token is mounted only into the fetch Job, never the QA pod (a tightening of ADR 0112)                                              | **Decided (D-184):** yes. ADR 0112 is updated to match                                                                                                                            |
-| 4. The starting budgets in section 6                                                                                                         | Accept them as generous starting values (D-120). Per-run dollars are money, so they need your yes                                                                                 |
+| 4. The starting budgets in section 6                                                                                                         | **Decided (D-185):** the tighter rehearsal dollar caps, Sonnet 5.5 by default with Haiku 5.5 where it holds quality, and prompt caching required                                  |
 | 5. Which package registries a project's Developer may reach                                                                                  | Only those its lockfile uses, listed per project. For `foreman` and the rehearsal project, the npm registry only                                                                  |
 | 6. Who holds the cluster admin kubeconfig?                                                                                                   | You only, in your password manager. Never the runner, an agent or Windmill. Infrastructure applies to the cluster are yours, like other production applies                        |
 | 7. Should the Kubernetes API endpoint be limited to known source addresses?                                                                  | Yes if DOKS offers it and Windmill Cloud's outbound addresses are fixed, both to check at first hosting. Otherwise rely on the RBAC-limited runner token                          |
