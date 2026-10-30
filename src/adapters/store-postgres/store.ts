@@ -6,6 +6,7 @@ import pg from "pg";
 import {
   StoreConflictError,
   type CounterKind,
+  type Evidence,
   type Store,
   type StoreOps,
 } from "../../core/store.ts";
@@ -15,6 +16,7 @@ import {
   toEdge,
   toEvidence,
   toGateRequest,
+  toGithubDelivery,
   toNode,
   toProject,
   toRun,
@@ -41,6 +43,22 @@ async function run<T>(work: () => Promise<T>): Promise<T> {
     throw error;
   }
 }
+
+const EVIDENCE_COLUMNS =
+  "id, node_id, run_id, kind, ref, commit_sha, payload, recorded_by, recorded_at, supersedes_id";
+
+const evidenceValues = (e: Evidence): unknown[] => [
+  e.id,
+  e.nodeId,
+  e.runId,
+  e.kind,
+  e.ref,
+  e.commitSha,
+  json(e.payload),
+  e.recordedBy,
+  e.recordedAt,
+  e.supersedesId,
+];
 
 function ops(db: Queryable): StoreOps {
   const rows = async (text: string, values: unknown[] = []) =>
@@ -224,22 +242,19 @@ function ops(db: Queryable): StoreOps {
 
     async insertEvidence(e) {
       await exec(
-        `insert into factory.evidence (id, node_id, run_id, kind, ref, commit_sha, payload, recorded_by,
-           recorded_at, supersedes_id)
+        `insert into factory.evidence (${EVIDENCE_COLUMNS})
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [
-          e.id,
-          e.nodeId,
-          e.runId,
-          e.kind,
-          e.ref,
-          e.commitSha,
-          json(e.payload),
-          e.recordedBy,
-          e.recordedAt,
-          e.supersedesId,
-        ],
+        evidenceValues(e),
       );
+    },
+    async insertEvidenceOnce(e, ingestKey) {
+      const inserted = await exec(
+        `insert into factory.evidence (${EVIDENCE_COLUMNS}, ingest_key)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         on conflict (ingest_key) do nothing`,
+        [...evidenceValues(e), ingestKey],
+      );
+      return inserted === 1;
     },
     async listEvidence(filter) {
       const result = await rows(
@@ -249,6 +264,42 @@ function ops(db: Queryable): StoreOps {
         [filter.nodeId, filter.commitSha ?? null, filter.kind ?? null],
       );
       return result.map(toEvidence);
+    },
+
+    async listDispatches(filter) {
+      const result = await rows(
+        `select node_id, repo, branch from (
+           select distinct on (node_id) node_id, payload->>'repo' as repo, payload->>'branch' as branch
+           from factory.evidence where kind = 'dispatch_record'
+           order by node_id, recorded_at desc, id desc
+         ) latest
+         where repo = $1 and ($2::text is null or branch = $2)
+         order by node_id`,
+        [filter.repo, filter.branch ?? null],
+      );
+      return result.map((r) => ({
+        nodeId: r.node_id as string,
+        repo: r.repo as string,
+        branch: r.branch as string,
+      }));
+    },
+
+    async recordGithubDelivery(d) {
+      const inserted = await exec(
+        `insert into factory.github_deliveries (delivery_id, event_type, repository, received_at,
+           outcome, reason)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict (delivery_id) do nothing`,
+        [d.deliveryId, d.eventType, d.repository, d.receivedAt, d.outcome, d.reason],
+      );
+      return inserted === 1;
+    },
+    async getGithubDelivery(deliveryId) {
+      const r = await one(
+        "select * from factory.github_deliveries where delivery_id = $1",
+        [deliveryId],
+      );
+      return r && toGithubDelivery(r);
     },
 
     async insertDecision(d) {

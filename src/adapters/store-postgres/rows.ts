@@ -6,6 +6,7 @@ import type {
   Edge,
   Evidence,
   GateRequest,
+  GithubDelivery,
   Json,
   Node,
   Project,
@@ -102,6 +103,15 @@ export const toEvidence = (r: Row): Evidence => ({
   recordedBy: r.recorded_by as string,
   recordedAt: r.recorded_at as Date,
   supersedesId: r.supersedes_id as string | null,
+});
+
+export const toGithubDelivery = (r: Row): GithubDelivery => ({
+  deliveryId: r.delivery_id as string,
+  eventType: r.event_type as string,
+  repository: r.repository as string | null,
+  receivedAt: r.received_at as Date,
+  outcome: r.outcome as GithubDelivery["outcome"],
+  reason: r.reason as string | null,
 });
 
 const toDecision = (r: Row): Decision => ({

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, port, readConfig, text } from "./config.ts";
+import {
+  ConfigError,
+  port,
+  readConfig,
+  secret,
+  secretEnvName,
+  text,
+} from "./config.ts";
 
 describe("readConfig (unit: service kit, ADR 0111)", () => {
   it("reads values from the environment and uses fallbacks for unset ones", () => {
@@ -49,6 +56,24 @@ describe("readConfig (unit: service kit, ADR 0111)", () => {
   it("rejects a blank text setting", () => {
     expect(() => readConfig({ name: text("NAME") }, { NAME: "  " })).toThrow(
       "NAME is empty",
+    );
+  });
+});
+
+describe("secrets by path (unit: service kit, ADR 0111 section 4)", () => {
+  it("maps a secret path to one environment variable", () => {
+    expect(secretEnvName("platform/github/runner-webhook-secret")).toBe(
+      "SECRET_PLATFORM_GITHUB_RUNNER_WEBHOOK_SECRET",
+    );
+  });
+
+  it("reads the secret, and names only the variable when it is missing", () => {
+    const path = "platform/github/runner-webhook-secret";
+    expect(
+      readConfig({ key: secret(path) }, { [secretEnvName(path)]: "test-only-value" }),
+    ).toEqual({ key: "test-only-value" });
+    expect(() => readConfig({ key: secret(path) }, {})).toThrow(
+      "SECRET_PLATFORM_GITHUB_RUNNER_WEBHOOK_SECRET is not set",
     );
   });
 });

@@ -126,7 +126,7 @@ The handoff package was placed into this repo's Launchpad layout in task M0.0. [
 From [ADR 0111](./docs/decisions/0111-kubernetes-ready-conventions.md). They hold for every service from the first release, so the move to Kubernetes is a redeploy, not a rewrite.
 
 - Each service lives in `src/<service>/` with its own `Dockerfile` (base image pinned by digest, non-root user). Start a new one by copying `src/sample-service/`.
-- Configuration comes only from environment variables, through `src/service-kit/config.ts`. The port is `PORT`. A bad setting stops the service at start and names the setting, never its value.
+- Configuration comes only from environment variables, through `src/service-kit/config.ts`. The port is `PORT`. A bad setting stops the service at start and names the setting, never its value. A secret is asked for by path with `secret("platform/...")` (ADR 0111 section 4), never by a variable name of its own.
 - Every service serves `GET /health`, logs one JSON object per line on stdout (`src/service-kit/logger.ts`), and exits 0 on SIGTERM after finishing in-flight requests.
 - Deploys go through the target-agnostic deploy adapter (deploy, preview, health, logs, teardown). Code outside it never builds a platform URL.
 - Each project has an explicit boundary: its own credentials, secrets under `projects/<slug>/...`, its own network rules and resource limits.

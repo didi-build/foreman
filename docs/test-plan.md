@@ -94,6 +94,19 @@ Mutation testing: run mutation testing on the guard module in CI (for example St
 8. A verdict citing a missing file or line range is rejected.
 9. The agent's token cannot create a check run, and a check run for a commit other than the run's `head_sha` is rejected.
 
+### GitHub evidence ingestion (ADR 0113)
+
+Against the fake GitHub only (D-178): `test/github-ingest.test.ts` (core functions on the memory store), `test/github-receiver.test.ts` (the receiver over in-process HTTP with signed deliveries), `src/adapters/github/*.test.ts` (signatures and the M3 stub), and `test/db/github-ingest.test.ts` (Postgres as `factory_ingest`).
+
+1. Replaying a delivery records one evidence row and one delivery row, also when two copies race.
+2. Polling after the webhooks adds nothing; with the receiver down, polling records the same facts with the same keys.
+3. A missing or wrong signature, or a body over 1 MB, stores nothing and reads nothing from GitHub.
+4. A check completion on an older commit records nothing, and the head stays on the newest commit.
+5. The runner App's `QA` check run never counts toward the conclusion; a check named `QA` from any other App does.
+6. Failure, success, failure on one commit records three results and the newest fails `ci_green_on_head`; one attempt seen by a webhook and a poll is recorded once.
+7. A fork PR, a PR from an undispatched branch, and a PR by another author link to no node.
+8. `factory_ingest` writes only deliveries and `ci_run` or `merge_commit` under a key, and cannot update, delete, move a node or write decisions.
+
 ### Infrastructure as code
 
 1. A plan on the scratch project is a no-op after apply, and a deliberate change shows as a diff.

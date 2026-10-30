@@ -11,8 +11,10 @@ import {
   type DecisionPointOutcome,
   type DecisionPointRecord,
   type Edge,
+  type Dispatch,
   type Evidence,
   type GateRequest,
+  type GithubDelivery,
   type Node,
   type Project,
   type Run,
@@ -31,6 +33,9 @@ interface State {
   specVersions: Map<string, SpecVersion>;
   transitions: Map<string, Transition>;
   evidence: Map<string, Evidence>;
+  /** `evidence.ingest_key`: key to evidence id. */
+  ingestKeys: Map<string, string>;
+  githubDeliveries: Map<string, GithubDelivery>;
   decisions: Map<string, Decision>;
   decisionEvents: Map<string, DecisionEvent>;
   nodeDecisions: Set<string>;
@@ -50,6 +55,8 @@ const emptyState = (): State => ({
   specVersions: new Map(),
   transitions: new Map(),
   evidence: new Map(),
+  ingestKeys: new Map(),
+  githubDeliveries: new Map(),
   decisions: new Map(),
   decisionEvents: new Map(),
   nodeDecisions: new Set(),
@@ -82,6 +89,20 @@ const byTimeThenId =
     time(a).getTime() - time(b).getTime() || a.id.localeCompare(b.id);
 
 function ops(state: State): StoreOps {
+  async function insertEvidence(e: Evidence): Promise<void> {
+    if (e.kind === "qa_verdict") {
+      for (const existing of state.evidence.values()) {
+        if (existing.kind === "qa_verdict" && existing.runId === e.runId) {
+          throw new StoreConflictError(
+            "evidence_one_verdict_per_run",
+            "One QA verdict per run",
+          );
+        }
+      }
+    }
+    insertUnique(state.evidence, e.id, e, "evidence_pkey");
+  }
+
   return {
     async insertProject(p) {
       for (const existing of state.projects.values()) {
@@ -169,18 +190,12 @@ function ops(state: State): StoreOps {
         .map(copy);
     },
 
-    async insertEvidence(e) {
-      if (e.kind === "qa_verdict") {
-        for (const existing of state.evidence.values()) {
-          if (existing.kind === "qa_verdict" && existing.runId === e.runId) {
-            throw new StoreConflictError(
-              "evidence_one_verdict_per_run",
-              "One QA verdict per run",
-            );
-          }
-        }
-      }
-      insertUnique(state.evidence, e.id, e, "evidence_pkey");
+    insertEvidence,
+    async insertEvidenceOnce(e, ingestKey) {
+      if (state.ingestKeys.has(ingestKey)) return false;
+      await insertEvidence(e);
+      state.ingestKeys.set(ingestKey, e.id);
+      return true;
     },
     async listEvidence(filter) {
       return [...state.evidence.values()]
@@ -192,6 +207,39 @@ function ops(state: State): StoreOps {
         )
         .sort(byTimeThenId<Evidence>((e) => e.recordedAt))
         .map(copy);
+    },
+
+    async listDispatches(filter) {
+      const latest = new Map<string, Evidence>();
+      for (const e of [...state.evidence.values()].sort(
+        byTimeThenId<Evidence>((e) => e.recordedAt),
+      )) {
+        if (e.kind === "dispatch_record") latest.set(e.nodeId, e);
+      }
+      const dispatches: Dispatch[] = [];
+      for (const e of latest.values()) {
+        const p = e.payload as Record<string, unknown> | null;
+        if (
+          p !== null &&
+          typeof p === "object" &&
+          typeof p.repo === "string" &&
+          typeof p.branch === "string" &&
+          p.repo === filter.repo &&
+          (filter.branch === undefined || p.branch === filter.branch)
+        ) {
+          dispatches.push({ nodeId: e.nodeId, repo: p.repo, branch: p.branch });
+        }
+      }
+      return dispatches.sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+    },
+
+    async recordGithubDelivery(d) {
+      if (state.githubDeliveries.has(d.deliveryId)) return false;
+      state.githubDeliveries.set(d.deliveryId, copy(d));
+      return true;
+    },
+    async getGithubDelivery(deliveryId) {
+      return copy(state.githubDeliveries.get(deliveryId) ?? null);
     },
 
     async insertDecision(d) {
@@ -376,6 +424,8 @@ function cloneState(state: State): State {
     specVersions: new Map(state.specVersions),
     transitions: new Map(state.transitions),
     evidence: new Map(state.evidence),
+    ingestKeys: new Map(state.ingestKeys),
+    githubDeliveries: new Map(state.githubDeliveries),
     decisions: new Map(state.decisions),
     decisionEvents: new Map(state.decisionEvents),
     nodeDecisions: new Set(state.nodeDecisions),
