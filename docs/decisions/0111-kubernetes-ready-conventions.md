@@ -6,7 +6,7 @@
 
 ## Context
 
-The second release moves to Kubernetes: a pod per project, per-project isolation, monitoring, and eventually leaving Cloudflare (D-134). The first release builds no cluster and no Kubernetes-specific code. It follows conventions now, so the move later is a redeploy, not a rewrite.
+The second release moves to Kubernetes: a pod per project, per-project isolation, monitoring, and eventually leaving Cloudflare (D-134). The first release builds no cluster and no Kubernetes-specific code, except a small cluster for agent runs only if [ADR 0106](./0106-agent-execution-environment.md) (proposed) is accepted. It follows conventions now, so the move later is a redeploy, not a rewrite.
 
 ## Decision
 
@@ -76,7 +76,7 @@ The service kit has unit tests for the same rules. `test/service-dockerfiles.tes
 
 ## Constraints
 
-- No cluster, no Helm charts, no Kubernetes manifests, no Kubernetes client code (M0.8 constraint).
+- No cluster, no Helm charts, no Kubernetes manifests, no Kubernetes client code (M0.8 constraint). Following [ADR 0106](./0106-agent-execution-environment.md) (proposed): the one exception is the agents-only cluster, with Kubernetes-specific code only in the Kubernetes agent runtime adapter and that cluster's infrastructure code.
 - The service kit uses only Node built-ins. No new dependencies.
 - `src/core/` stays free of HTTP and process concerns (ADR 0101). The service kit is a separate folder.
 
