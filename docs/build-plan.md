@@ -271,7 +271,9 @@ Goal: Didi can act from his phone and nothing waits invisibly.
 - What: daily and per-run cost from the `runs` table, with the alert and call thresholds read from settings.
 - Success: crossing each threshold in a test raises the right alert. Work continues after the alert.
 
-## Milestone 5: Linear mirror
+## Milestone 5: Linear mirror (dropped, D-192)
+
+Dropped: M5.1, M5.2 and the Linear spike are not built. The GitHub part of M5.3 (bot identities) is done with the GitHub Apps in M3. Kept below for the record.
 
 Goal: Linear shows the state and cannot silently drift.
 
@@ -371,7 +373,7 @@ Protected set (P-18), never changed by the system without Didi, enforced through
 - M0.0 comes first. M1 needs M0. M2 needs M1. M3 needs M2.
 - M4 can start once the API exists (M1.4) and run in parallel with M3.
 - M5.1 and M5.2 can start after M1. M5.2 integrates with M3.
-- M6 needs M3, M4 and M5.
+- M6 needs M3 and M4 (M5 is dropped, D-192).
 
 ## Review points, in one list
 
@@ -384,5 +386,5 @@ Protected set (P-18), never changed by the system without Didi, enforced through
 7. Before M3.6: the minimum Machine 1 scope.
 8. After M3: the rehearsal.
 9. M4.3: notification providers and spend.
-10. M5.1: before running the Linear setup on the real team.
+10. M5.1: before running the Linear setup on the real team. Dropped with M5 (D-192).
 11. M6.2: go or no-go.
