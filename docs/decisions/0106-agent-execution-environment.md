@@ -147,7 +147,7 @@ Rehearsal values (D-185). They are settings in each bot file. The dollar caps ar
 | Council   | 40    | 20      | 3       |
 | Triage    | 40    | 20      | 3       |
 
-**Models.** Runs start on the lower-cost models (D-185): Claude Sonnet 5.5 by default, and Claude Haiku 5.5 for a role where a rehearsal comparison shows it holds quality (Triage is the first candidate). The model is a setting in each bot file. The QA model must differ from the Developer's (D-158).
+**Models.** Runs start on the lower-cost models (D-185): Claude Sonnet 5.5 by default, and Claude Haiku 5.5 for a role where a rehearsal comparison shows it holds quality (Triage is the first candidate). The model is a setting in each bot file. QA runs on Claude Opus 5.5 (D-186): its model must differ from the Developer's (D-158), and a reviewer stronger than the coder catches more. QA runs are short and capped at 2 USD, so a review costs about 0.50 to 1 USD.
 
 **Prompt caching is required** (D-185). Each run resends its conversation every turn, so caching is the largest saving. Every runtime must use it: Claude Code does by default, and any runtime that calls a model API directly marks the stable part of its prompt for caching. The egress proxy forwards model request bodies byte for byte and changes only the credential header, because any change to the body breaks the cache. Each run records its cached and uncached token counts in `runs.tokens`.
 
