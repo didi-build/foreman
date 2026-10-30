@@ -6,6 +6,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 import type { Logger } from "./logger.ts";
 
 /** Handle a request and return true, or return false to let the server answer 404. */
@@ -19,6 +20,11 @@ export interface ServiceOptions {
   port: number;
   logger: Logger;
   handle?: RequestHandler;
+  /**
+   * Handle an HTTP CONNECT request (a proxy tunnel). Without it, CONNECT requests are closed.
+   * The handler owns the socket, so the service must close open tunnels itself on stop.
+   */
+  onConnect?: (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
   /** In-flight requests get this long to finish after a stop is requested. */
   shutdownTimeoutMs?: number;
 }
@@ -47,6 +53,7 @@ export async function startService(options: ServiceOptions): Promise<RunningServ
   const server: Server = createServer((request, response) => {
     void respond(request, response);
   });
+  if (options.onConnect) server.on("connect", options.onConnect);
 
   async function respond(
     request: IncomingMessage,

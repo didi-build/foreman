@@ -1,12 +1,13 @@
 # 0111. Conventions that make the move to Kubernetes cheap
 
 - **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29), confirming P-10.
+- **Amended by D-193** (2026-10-30): the first-release Kubernetes exception also covers the state API and receiver deployments.
 - **Date:** 2026-10-28
 - **Related:** D-134, P-10, [build plan M0.8](../build-plan.md#m08-conventions-that-make-kubernetes-easy-proposed-d-134), `docs/architecture/technical-architecture.md` section 2.10, ADRs [0101](./0101-repo-layout-and-tooling.md), [0102](./0102-state-api-hosting-and-agent-auth.md), [0110](./0110-infrastructure-as-code.md)
 
 ## Context
 
-The second release moves to Kubernetes: a pod per project, per-project isolation, monitoring, and eventually leaving Cloudflare (D-134). The first release builds no cluster and no Kubernetes-specific code, except a small cluster for agent runs only ([ADR 0106](./0106-agent-execution-environment.md), D-182). It follows conventions now, so the move later is a redeploy, not a rewrite.
+The second release moves to Kubernetes: a pod per project, per-project isolation, monitoring, and eventually leaving Cloudflare (D-134). The first release builds no cluster and no Kubernetes-specific code, except one small cluster with two node pools: a platform pool for the state API and the GitHub receiver, and a tainted agents pool for agent runs ([ADR 0106](./0106-agent-execution-environment.md), D-182, D-193). It follows conventions now, so the move later is a redeploy, not a rewrite.
 
 ## Decision
 
@@ -76,7 +77,7 @@ The service kit has unit tests for the same rules. `test/service-dockerfiles.tes
 
 ## Constraints
 
-- No cluster, no Helm charts, no Kubernetes manifests, no Kubernetes client code (M0.8 constraint). Following [ADR 0106](./0106-agent-execution-environment.md): the one exception is the agents-only cluster, with Kubernetes-specific code only in the Kubernetes agent runtime adapter and that cluster's infrastructure code.
+- No cluster, no Helm charts, no Kubernetes manifests, no Kubernetes client code (M0.8 constraint). Following [ADR 0106](./0106-agent-execution-environment.md) and D-193: the one exception is the cluster with a platform pool and an agents pool. Kubernetes-specific code lives only in the Kubernetes agent runtime adapter, the cluster's infrastructure code, and the deployment manifests for the state API and the receiver.
 - The service kit uses only Node built-ins. No new dependencies.
 - `src/core/` stays free of HTTP and process concerns (ADR 0101). The service kit is a separate folder.
 

@@ -90,7 +90,7 @@ Goal: a clean repo, the risky unknowns checked, and the provider chosen. The Lin
 - What: write ADR 0111 and add the conventions to `AGENTS.md`: container-ready services, a target-agnostic deploy adapter interface, the per-project isolation model, secrets by path behind an interface, the model endpoint and API key as settings in each bot file (the key as a secret path; D-142), and an IaC layout with platform and project modules.
 - Why: the second release moves to Kubernetes, and these keep the switch from being a rewrite.
 - How: follow `docs/architecture/technical-architecture.md` section 2.10. Add CI checks: each service builds as a container image, serves a health endpoint, and reads config only from the environment.
-- Constraints: do not build a cluster. No Kubernetes-specific code yet. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), agent runs are the one exception: a small cluster for agent jobs only, with Kubernetes-specific code only in the Kubernetes agent runtime adapter and that cluster's infrastructure code.
+- Constraints: do not build a cluster. No Kubernetes-specific code yet. Following [ADR 0106](./decisions/0106-agent-execution-environment.md) and D-193, one small cluster with two node pools is the one exception: a platform pool for the state API and the GitHub receiver, and a tainted agents pool for agent jobs. Kubernetes-specific code lives only in the Kubernetes agent runtime adapter, the cluster's infrastructure code, and the deployment manifests for the API and the receiver.
 - Success: ADR 0111 is merged. A sample service builds as a container in CI and passes the health check. `AGENTS.md` carries the conventions.
 
 Review point at the end of M0: Didi reviews ADRs 0101, 0102, 0103, 0107, 0110, 0111 and the spike results.
@@ -197,7 +197,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: adapters to start the Developer (Claude Code), QA (Claude for now, D-158; ADR 0112), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
-- How: per ADR 0106, 0107 and 0112. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), each run is a Kubernetes Job on a small DigitalOcean cluster that runs agent jobs only. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
+- How: per ADR 0106, 0107 and 0112. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), each run is a Kubernetes Job on the agents pool of a small DigitalOcean cluster. The pool is tainted so nothing else runs there; the state API and the GitHub receiver run on the cluster's platform pool (D-193). Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
 - Constraints: one agent per item, up to 3 Developer agents per project. Each agent is scoped to one project's repo and credentials. No production access. ADR 0106 must be merged before this task starts, and must state where agent containers run and the egress rule ADR 0112 relies on (QA reaches only the model endpoint and the state API).
 - Success: each adapter can start an agent on a trivial task in the rehearsal project and record a run with model, turns, minutes, cost and outcome. A simulated usage-exhausted response queues and resumes.
 
@@ -271,7 +271,9 @@ Goal: Didi can act from his phone and nothing waits invisibly.
 - What: daily and per-run cost from the `runs` table, with the alert and call thresholds read from settings.
 - Success: crossing each threshold in a test raises the right alert. Work continues after the alert.
 
-## Milestone 5: Linear mirror
+## Milestone 5: Linear mirror (dropped, D-192)
+
+Dropped: M5.1, M5.2 and the Linear spike are not built. The GitHub part of M5.3 (bot identities) is done with the GitHub Apps in M3. Kept below for the record.
 
 Goal: Linear shows the state and cannot silently drift.
 
@@ -310,12 +312,12 @@ Goal: a pod per project, per-project isolation, monitoring, and a way off Cloudf
 
 This is its own project, run through the factory starting with the Interview. It is outlined here so the first release leaves room for it:
 
-- A cluster on DigitalOcean (D-165; managed or self-run, decided then; following [ADR 0106](./decisions/0106-agent-execution-environment.md), a small managed cluster already runs agent jobs from the first release, and this release grows it or adds a larger one), GitOps, Vault for secrets, and replicas. Self-host Windmill on it (D-163), and move infrastructure state off Cloudflare R2 (D-144, D-165).
+- A cluster on DigitalOcean (D-165; managed or self-run, decided then; following [ADR 0106](./decisions/0106-agent-execution-environment.md), a small managed cluster with a platform pool and an agents pool already runs from the first release, D-193, and this release grows it or adds a larger one), GitOps, Vault for secrets, and replicas. Self-host Windmill on it (D-163), and move infrastructure state off Cloudflare R2 (D-144, D-165).
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
 - A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.
 - A self-hosted model gateway (LiteLLM or Bifrost, chosen then; O-10) as a pod, with the agent runtime adapters pointed at it by changing the model endpoint setting in each bot file. OpenRouter is not chosen (D-142).
-- Move the state API and the GitHub receiver onto the cluster (agent runs are already there, following [ADR 0106](./decisions/0106-agent-execution-environment.md)). Then move projects off Cloudflare one at a time.
+- The state API, the GitHub receiver and agent runs are already on the cluster from the first release ([ADR 0106](./decisions/0106-agent-execution-environment.md), D-193). Move projects off Cloudflare one at a time.
 - First, import the existing Cloudflare resources of current projects into infrastructure as code, and add the proven `infra/` module to Launchpad (outside this repo; Launchpad is public, so no account ids or secrets), with a Kubernetes variant.
 - Revisit the managed Postgres (D-118) and whether to self-host Windmill because of token and cost burn.
 
@@ -371,7 +373,7 @@ Protected set (P-18), never changed by the system without Didi, enforced through
 - M0.0 comes first. M1 needs M0. M2 needs M1. M3 needs M2.
 - M4 can start once the API exists (M1.4) and run in parallel with M3.
 - M5.1 and M5.2 can start after M1. M5.2 integrates with M3.
-- M6 needs M3, M4 and M5.
+- M6 needs M3 and M4 (M5 is dropped, D-192).
 
 ## Review points, in one list
 
@@ -384,5 +386,5 @@ Protected set (P-18), never changed by the system without Didi, enforced through
 7. Before M3.6: the minimum Machine 1 scope.
 8. After M3: the rehearsal.
 9. M4.3: notification providers and spend.
-10. M5.1: before running the Linear setup on the real team.
+10. M5.1: before running the Linear setup on the real team. Dropped with M5 (D-192).
 11. M6.2: go or no-go.
