@@ -106,6 +106,7 @@ describe("code track with the real guards (integration: contracts, library and g
         runtime: "claude_code",
         model,
         headSha: HEAD,
+        prNumber: null,
         botVersion: "v1",
         startedAt: time.now(),
         endedAt: null,
@@ -117,6 +118,8 @@ describe("code track with the real guards (integration: contracts, library and g
         budget: {},
         parentRunId: null,
         transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
       });
       return runId;
     };

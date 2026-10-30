@@ -28,6 +28,9 @@ import {
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
 
+/** The advisory lock key for run admission. Any fixed number no other code uses. */
+const RUN_ADMISSION_LOCK = 31060007;
+
 /** Turns a unique-violation from Postgres into the core's conflict error; rethrows the rest. */
 async function run<T>(work: () => Promise<T>): Promise<T> {
   try {
@@ -425,9 +428,11 @@ function ops(db: Queryable): StoreOps {
 
     async insertRun(r) {
       await exec(
-        `insert into factory.runs (id, project_id, node_id, bot, agent_id, runtime, model, head_sha, bot_version,
-           started_at, ended_at, outcome, turns, minutes, cost_usd, tokens, budget, parent_run_id, transcript_ref)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+        `insert into factory.runs (id, project_id, node_id, bot, agent_id, runtime, model, head_sha, pr_number,
+           bot_version, started_at, ended_at, outcome, turns, minutes, cost_usd, tokens, budget, parent_run_id,
+           transcript_ref, usage_exhausted_cause, retry_after_seconds)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+           $22)`,
         [
           r.id,
           r.projectId,
@@ -437,6 +442,7 @@ function ops(db: Queryable): StoreOps {
           r.runtime,
           r.model,
           r.headSha,
+          r.prNumber,
           r.botVersion,
           r.startedAt,
           r.endedAt,
@@ -448,6 +454,8 @@ function ops(db: Queryable): StoreOps {
           json(r.budget),
           r.parentRunId,
           r.transcriptRef,
+          r.usageExhaustedCause,
+          r.retryAfterSeconds,
         ],
       );
     },
@@ -461,6 +469,18 @@ function ops(db: Queryable): StoreOps {
         [filter.nodeId],
       );
       return result.map(toRun);
+    },
+    async listActiveRuns() {
+      const result = await rows(
+        "select * from factory.runs where ended_at is null order by started_at, id",
+      );
+      return result.map(toRun);
+    },
+    async lockRunAdmission() {
+      // One transaction-scoped advisory lock for all admission. The cluster limit counts every
+      // project's runs, so a narrower lock (the node row, or one per project) would let two
+      // dispatches in different projects both take the last cluster slot.
+      await exec("select pg_advisory_xact_lock($1)", [RUN_ADMISSION_LOCK]);
     },
     async insertRunToken(t) {
       await exec(
@@ -479,7 +499,7 @@ function ops(db: Queryable): StoreOps {
       const changed = await exec(
         `update factory.runs
          set ended_at = $2, outcome = $3, turns = $4, minutes = $5, cost_usd = $6, tokens = $7,
-             transcript_ref = $8
+             transcript_ref = $8, usage_exhausted_cause = $9, retry_after_seconds = $10
          where id = $1 and ended_at is null`,
         [
           id,
@@ -490,6 +510,8 @@ function ops(db: Queryable): StoreOps {
           end.costUsd,
           end.tokens === null ? null : json(end.tokens),
           end.transcriptRef,
+          end.usageExhaustedCause,
+          end.retryAfterSeconds,
         ],
       );
       return changed === 1;

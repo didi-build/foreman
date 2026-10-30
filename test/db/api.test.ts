@@ -55,6 +55,7 @@ describe.skipIf(!adminUrl)(
         runtime: "claude_code",
         model: "model-a",
         headSha: role === "qa" ? HEAD : null,
+        prNumber: null,
         botVersion: "v1",
         startedAt: NOW,
         endedAt: null,
@@ -66,6 +67,8 @@ describe.skipIf(!adminUrl)(
         budget: {},
         parentRunId: null,
         transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
       });
       await runner.insertRunToken({
         tokenHash: hashToken(token),

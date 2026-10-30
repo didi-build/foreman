@@ -170,6 +170,8 @@ The runner checks these at dispatch, from the `runs` table, inside the transacti
 - One active QA run per project, pull request and head commit. A duplicate event is ignored, and a new commit cancels the active run (ADR 0112).
 - At most `agent_cluster_max_active_runs` active runs across the cluster (a setting, sized to the node pool). Above it, the dispatch is queued as for `usage_exhausted`, without an alert.
 
+Built in M3.2 slice 1 (`src/core/runs.ts`). The check takes one Postgres advisory lock for all admission, because the cluster limit counts every project's runs. A newer head commit for QA is refused with the older run's id; the runner cancels it, records its end, and dispatches again, so an item never has two active runs. Migration 0003 adds `runs.pr_number` and, for `usage_exhausted` ends, the cause (`rate_limit`, `capacity`, `out_of_credit`) and the provider's retry-after.
+
 Each namespace's ResourceQuota is the backstop. If a Job's pod cannot be created within a few minutes (setting), the runner deletes the Job and queues the dispatch.
 
 ### 8. What the second release adds

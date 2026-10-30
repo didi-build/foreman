@@ -212,6 +212,52 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("seeds the usage-exhausted wait and leaves the cluster run limit to be set (migration 0003)", () => {
+      const values = sql(
+        "select string_agg(key || '=' || value::text, ',' order by key) from factory.settings where key in ('usage_exhausted_wait_minutes', 'agent_cluster_max_active_runs');",
+      );
+      expect(values.out).toBe("usage_exhausted_wait_minutes=30");
+      const index = sql("select to_regclass('factory.runs_active') is not null;");
+      expect(index.out).toBe("t");
+    });
+
+    it("keeps a usage-exhausted cause and retry-after on usage_exhausted ends only", () => {
+      const end = (fields: string) =>
+        sql(
+          `update factory.runs set ${fields} where id = '${ID.run}';`,
+          "factory_runner",
+        );
+      const at = `ended_at = ${AT}`;
+      expectRejected(
+        end(`${at}, outcome = 'usage_exhausted'`),
+        /runs_usage_exhausted_detail/,
+      );
+      expectRejected(
+        end(`${at}, outcome = 'success', usage_exhausted_cause = 'rate_limit'`),
+        /runs_usage_exhausted_detail/,
+      );
+      expectRejected(
+        end("usage_exhausted_cause = 'rate_limit'"),
+        /runs_usage_exhausted_detail/,
+      );
+      expectRejected(
+        end(`${at}, outcome = 'fail', retry_after_seconds = 60`),
+        /runs_usage_exhausted_detail/,
+      );
+      expectRejected(
+        end(`${at}, outcome = 'usage_exhausted', usage_exhausted_cause = 'tired'`),
+        /check constraint/,
+      );
+      expectRejected(end("pr_number = 0"), /check constraint/);
+      const ok = sql(
+        `update factory.runs set ${at}, outcome = 'usage_exhausted', usage_exhausted_cause = 'out_of_credit',
+           retry_after_seconds = 120, pr_number = 7 where id = '${ID.run}' returning usage_exhausted_cause;`,
+        "factory_runner",
+      );
+      expect(ok.ok, ok.err).toBe(true);
+      expect(ok.out).toBe("out_of_credit");
+    });
+
     it("requires a commit on evidence a head-commit guard reads", () => {
       expectRejected(
         sql(
