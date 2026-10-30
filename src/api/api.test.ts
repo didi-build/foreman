@@ -99,6 +99,7 @@ async function issue(
     runtime: "claude_code",
     model: "model-a",
     headSha: options.headSha ?? null,
+    prNumber: null,
     botVersion: "v1",
     startedAt: NOW,
     endedAt: options.ended ? NOW : null,
@@ -110,6 +111,8 @@ async function issue(
     budget: {},
     parentRunId: null,
     transcriptRef: null,
+    usageExhaustedCause: null,
+    retryAfterSeconds: null,
   });
   await store.insertRunToken({
     tokenHash: hashToken(token),

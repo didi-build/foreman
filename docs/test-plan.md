@@ -47,6 +47,16 @@ The guards are the 24 in ADR 0105's guard list (D-176). The evidence each one re
 
 Mutation testing: run mutation testing on the guard module in CI (for example Stryker for TypeScript). Surviving mutants in guard logic fail the check, or each survivor is justified in the PR. This applies the Grok QA rule that an unexercised guard is a defect.
 
+### Agent runs (ADR 0106 sections 6 and 7, build plan M3.2)
+
+Unit tests on the memory store: `src/core/runs.test.ts`. On Postgres: `test/db/runs.test.ts` and the run constraints in `test/db/schema.test.ts`.
+
+1. Admission: one active run per item, at most 3 active Developer runs per project, one active QA run per project, pull request and head commit (a duplicate is refused, a newer head names the older run to cancel), at most `agent_cluster_max_active_runs` active runs, nothing while the kill switch is on. A refusal writes nothing.
+2. Concurrency on Postgres: several dispatches at once for one item, for the last Developer slot, for the last cluster slot and for one QA head each admit exactly one.
+3. Budgets: each role's limits are recorded in `runs.budget`.
+4. Run ends: turns, minutes, cost, cached and uncached tokens and the outcome are recorded once; a second end changes nothing.
+5. Usage exhausted: the failure counter does not move, the dispatch waits for `usage_exhausted_wait_minutes` or a longer retry-after, and an out-of-credit end is recorded apart.
+
 ### Runner behaviour
 
 1. Reconcile pass: releases blocked items whose blockers are Done, dispatches ready items with no active run, flags stalls, advances from evidence, closes stale gate requests, mirrors state, and rolls up spend.

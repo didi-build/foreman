@@ -371,6 +371,7 @@ describe.skipIf(!adminUrl)(
         runtime: "claude_code",
         model: "model-a",
         headSha: SHA,
+        prNumber: null,
         botVersion: "v1",
         startedAt: T0,
         endedAt: null,
@@ -382,6 +383,8 @@ describe.skipIf(!adminUrl)(
         budget: { maxTurns: 10, maxUsd: 1 },
         parentRunId: null,
         transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
       };
       await store.insertRun(run);
       const end = {
@@ -392,6 +395,8 @@ describe.skipIf(!adminUrl)(
         costUsd: 0.31,
         tokens: { in: 10, out: 5 },
         transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
       };
       expect(await store.endRun(run.id, end)).toBe(true);
       expect(await store.endRun(run.id, end)).toBe(false);
@@ -531,6 +536,7 @@ describe.skipIf(!adminUrl)(
         runtime: "claude_code",
         model: "model-a",
         headSha: SHA,
+        prNumber: null,
         botVersion: "v1",
         endedAt: null,
         outcome: null,
@@ -541,6 +547,8 @@ describe.skipIf(!adminUrl)(
         budget: {},
         parentRunId: null,
         transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
       };
       const later = { ...run, id: id(), nodeId: n.id, startedAt: T1 };
       const earlier = { ...run, id: id(), nodeId: n.id, startedAt: T0 };

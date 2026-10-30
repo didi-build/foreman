@@ -154,26 +154,31 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 
 ## runs
 
-| Column               | Type         | Notes                                                                                            |
-| -------------------- | ------------ | ------------------------------------------------------------------------------------------------ |
-| id                   | uuid pk      |                                                                                                  |
-| project_id           | uuid fk      |                                                                                                  |
-| node_id              | uuid null    |                                                                                                  |
-| bot                  | text         | Role bot name                                                                                    |
-| agent_id             | text null    |                                                                                                  |
-| runtime              | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                           |
-| model                | text         |                                                                                                  |
-| head_sha             | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112) |
-| bot_version          | text         | Prompt, model and schema version behind the result                                               |
-| started_at, ended_at | timestamptz  |                                                                                                  |
-| outcome              | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                  |
-| turns                | integer null |                                                                                                  |
-| minutes              | numeric null |                                                                                                  |
-| cost_usd             | numeric null |                                                                                                  |
-| tokens               | jsonb null   |                                                                                                  |
-| budget               | jsonb        | The limits applied to this run                                                                   |
-| parent_run_id        | uuid null    | A bot run that dispatched agents                                                                 |
-| transcript_ref       | text null    | Where the transcript is kept. Never inline secrets                                               |
+| Column                | Type         | Notes                                                                                                                            |
+| --------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| id                    | uuid pk      |                                                                                                                                  |
+| project_id            | uuid fk      |                                                                                                                                  |
+| node_id               | uuid null    |                                                                                                                                  |
+| bot                   | text         | Role bot name                                                                                                                    |
+| agent_id              | text null    |                                                                                                                                  |
+| runtime               | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                           |
+| model                 | text         |                                                                                                                                  |
+| head_sha              | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                 |
+| pr_number             | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit |
+| bot_version           | text         | Prompt, model and schema version behind the result                                                                               |
+| started_at, ended_at  | timestamptz  |                                                                                                                                  |
+| outcome               | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                  |
+| turns                 | integer null |                                                                                                                                  |
+| minutes               | numeric null |                                                                                                                                  |
+| cost_usd              | numeric null |                                                                                                                                  |
+| tokens                | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                            |
+| budget                | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                    |
+| parent_run_id         | uuid null    | A bot run that dispatched agents                                                                                                 |
+| transcript_ref        | text null    | Where the transcript is kept. Never inline secrets                                                                               |
+| usage_exhausted_cause | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                  |
+| retry_after_seconds   | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                     |
+
+A run is active while `ended_at` is null. Dispatch admission reads the active runs (index `runs_active`) under one advisory lock, in the transaction that inserts the run (ADR 0106 section 7, `src/core/runs.ts`).
 
 ## counters
 
@@ -193,17 +198,19 @@ Rules (Proposed interpretation, to confirm in the M1 ADR):
 
 ## settings
 
-| Key                               | Default            | Notes                                                                                               |
-| --------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------- |
-| `kill_switch`                     | false              | When true, the runner takes no transitions and dispatches nothing                                   |
-| `dry_run`                         | true until cutover | When true, the runner records planned actions (transitions with mode `dry_run`) and acts on nothing |
-| `reconcile_interval_minutes`      | 5                  |                                                                                                     |
-| `failure_threshold`               | 3                  |                                                                                                     |
-| `qa_round_cap`                    | 3                  |                                                                                                     |
-| `pii_credential_ttl_minutes`      | 60                 | Enforced by the runner                                                                              |
-| `stall_phone_alert_after_minutes` | 60                 | After this a stalled item raises a push alert                                                       |
-| `daily_spend_call_usd`            | 25                 | A phone call fires when daily spend passes this                                                     |
-| `spend_alert_usd`                 | to set             | Alert threshold. Work continues                                                                     |
+| Key                               | Default            | Notes                                                                                                                             |
+| --------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `kill_switch`                     | false              | When true, the runner takes no transitions and dispatches nothing                                                                 |
+| `dry_run`                         | true until cutover | When true, the runner records planned actions (transitions with mode `dry_run`) and acts on nothing                               |
+| `reconcile_interval_minutes`      | 5                  |                                                                                                                                   |
+| `failure_threshold`               | 3                  |                                                                                                                                   |
+| `qa_round_cap`                    | 3                  |                                                                                                                                   |
+| `pii_credential_ttl_minutes`      | 60                 | Enforced by the runner                                                                                                            |
+| `stall_phone_alert_after_minutes` | 60                 | After this a stalled item raises a push alert                                                                                     |
+| `daily_spend_call_usd`            | 25                 | A phone call fires when daily spend passes this                                                                                   |
+| `spend_alert_usd`                 | to set             | Alert threshold. Work continues                                                                                                   |
+| `usage_exhausted_wait_minutes`    | 30                 | Wait before a dispatch queued by a `usage_exhausted` end is tried again, or the provider's retry-after if longer (migration 0003) |
+| `agent_cluster_max_active_runs`   | not seeded         | Active runs allowed across the agent cluster. Sized to the node pool at first hosting. While unset, every dispatch is refused     |
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
 

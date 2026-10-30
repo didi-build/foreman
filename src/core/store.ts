@@ -184,6 +184,9 @@ export type GateClose =
 export type RunOutcome =
   "success" | "fail" | "timeout" | "cancelled" | "budget_exceeded" | "usage_exhausted";
 
+/** Why a run ended `usage_exhausted` (ADR 0106 section 6). Only money fixes `out_of_credit`. */
+export type UsageExhaustedCause = "rate_limit" | "capacity" | "out_of_credit";
+
 export interface Run {
   id: string;
   projectId: string;
@@ -193,6 +196,8 @@ export interface Run {
   runtime: string;
   model: string;
   headSha: string | null;
+  /** The pull request a QA run reviews (ADR 0112). */
+  prNumber: number | null;
   botVersion: string;
   startedAt: Date;
   endedAt: Date | null;
@@ -204,6 +209,8 @@ export interface Run {
   budget: Json;
   parentRunId: string | null;
   transcriptRef: string | null;
+  usageExhaustedCause: UsageExhaustedCause | null;
+  retryAfterSeconds: number | null;
 }
 
 export interface RunEnd {
@@ -214,6 +221,10 @@ export interface RunEnd {
   costUsd: number | null;
   tokens: Json;
   transcriptRef: string | null;
+  /** Set only, and always, when the outcome is `usage_exhausted`. */
+  usageExhaustedCause: UsageExhaustedCause | null;
+  /** The provider's retry-after, only with `usage_exhausted`. */
+  retryAfterSeconds: number | null;
 }
 
 export type CounterKind = "failure" | "qa_round";
@@ -376,6 +387,13 @@ export interface StoreOps {
   getRun(id: string): Promise<Run | null>;
   /** A node's runs, oldest first. */
   listRuns(filter: { nodeId: string }): Promise<Run[]>;
+  /** Every run with no end yet, across all projects, oldest first. */
+  listActiveRuns(): Promise<Run[]>;
+  /**
+   * Makes run admission one at a time: a second caller waits here until the first one's
+   * transaction ends. Use inside `transaction`, before reading the active runs.
+   */
+  lockRunAdmission(): Promise<void>;
   /** Records how a run ended. Returns false if it had already ended. */
   endRun(id: string, end: RunEnd): Promise<boolean>;
 

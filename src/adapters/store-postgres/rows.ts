@@ -159,6 +159,7 @@ export const toRun = (r: Row): Run => ({
   runtime: r.runtime as string,
   model: r.model as string,
   headSha: r.head_sha as string | null,
+  prNumber: r.pr_number as number | null,
   botVersion: r.bot_version as string,
   startedAt: r.started_at as Date,
   endedAt: r.ended_at as Date | null,
@@ -170,6 +171,8 @@ export const toRun = (r: Row): Run => ({
   budget: r.budget as Json,
   parentRunId: r.parent_run_id as string | null,
   transcriptRef: r.transcript_ref as string | null,
+  usageExhaustedCause: r.usage_exhausted_cause as Run["usageExhaustedCause"],
+  retryAfterSeconds: r.retry_after_seconds as number | null,
 });
 
 export const toRunToken = (r: Row): RunToken => ({

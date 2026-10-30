@@ -362,6 +362,14 @@ function ops(state: State): StoreOps {
         .sort(byTimeThenId<Run>((r) => r.startedAt))
         .map(copy);
     },
+    async listActiveRuns() {
+      return [...state.runs.values()]
+        .filter((r) => r.endedAt === null)
+        .sort(byTimeThenId<Run>((r) => r.startedAt))
+        .map(copy);
+    },
+    // Every transaction here already runs alone, so there is nothing to lock.
+    async lockRunAdmission() {},
     async insertRunToken(t) {
       for (const existing of state.runTokens.values()) {
         if (existing.runId === t.runId)

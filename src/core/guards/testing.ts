@@ -137,6 +137,7 @@ export async function fixture(nodePatch: Partial<Node> = {}): Promise<Fixture> {
         runtime: "claude_code",
         model,
         headSha: HEAD,
+        prNumber: null,
         botVersion: "v1",
         startedAt: at(),
         endedAt: null,
@@ -148,6 +149,8 @@ export async function fixture(nodePatch: Partial<Node> = {}): Promise<Fixture> {
         budget: {},
         parentRunId: null,
         transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
         ...extra,
       });
       return runId;
