@@ -44,7 +44,7 @@ A signed token (for example a JWT) was considered. The opaque token is simpler: 
 
 - TLS ends at the hosting platform's load balancer (DigitalOcean, D-141). Plain HTTP is never exposed. The exact product is chosen at M1.4.
 - Tokens travel only in the `Authorization` header, never in a URL. Logs record the request path without its query string, and an error's type without its message, because either can carry a token or personal data (`src/service-kit/server.ts`).
-- An agent's token lives in its environment while it reads untrusted text (PR diffs, issue bodies), so a prompt injection could try to send it somewhere. The token's reach is the limit: one role, one project, one run, short expiry, and no transition rights. Limiting where agents can connect at all is part of the agent execution environment (ADR 0106, M3).
+- An agent's token lives in its environment while it reads untrusted text (PR diffs, issue bodies), so a prompt injection could try to send it somewhere. The token's reach is the limit: one role, one project, one run, short expiry, and no transition rights. Limiting where agents can connect at all is part of the agent execution environment ([ADR 0106](./0106-agent-execution-environment.md), M3, proposed).
 
 ## Constraints
 

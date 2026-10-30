@@ -259,7 +259,7 @@ Rules:
 | 0103 | Managed Postgres provider and region                                                       | M0                |
 | 0104 | Final column-level schema, the reversal mechanism for decisions, counter rules             | M1 (review point) |
 | 0105 | Contracts format and consistency test                                                      | M2                |
-| 0106 | Agent execution environment and budget enforcement                                         | M3                |
+| 0106 | Agent execution environment and budget enforcement                                         | M3 (proposed)     |
 | 0107 | Dispatch adapters per runtime and the Grok verification result                             | M0 spike, M3      |
 | 0108 | Linear adapter, statuses setup and app identity                                            | M5                |
 | 0109 | Notification providers                                                                     | M4                |
