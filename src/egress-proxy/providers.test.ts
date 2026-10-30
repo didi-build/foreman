@@ -31,15 +31,23 @@ describe("parseProviders (unit: egress proxy provider settings, ADR 0106 section
     expect(providers[0]?.upstream.hostname).toBe("api.anthropic.com");
   });
 
+  it("accepts an empty list, for a proxy that serves no model traffic (the QA fetch step)", () => {
+    expect(parseProviders("[]")).toEqual([]);
+  });
+
   const secretLooking = "sk-ant-not-a-real-key-0123456789";
   it.each([
     ["not JSON", "{", /not valid JSON/],
-    ["an empty list", "[]", /non-empty JSON array/],
-    ["an object", "{}", /non-empty JSON array/],
+    ["an object", "{}", /must be a JSON array/],
     ["a non-object entry", "[1]", /entry 1 is not an object/],
     ["an unknown field", [{ ...anthropic, key: secretLooking }], /unknown field/],
     ["a bad name", [{ ...anthropic, name: "Anthropic!" }], /invalid name/],
     ["the reserved name health", [{ ...anthropic, name: "health" }], /invalid name/],
+    [
+      "the reserved name state-api (D-195)",
+      [{ ...anthropic, name: "state-api" }],
+      /invalid name/,
+    ],
     ["a repeated name", [anthropic, anthropic], /entry 2 repeats/],
     [
       "plain http",

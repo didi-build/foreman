@@ -1,6 +1,7 @@
-// Header rewriting for model traffic (ADR 0106 sections 5 and 6). The proxy changes only what it
-// must: it drops hop-by-hop headers and any credential the agent sent, and sets the provider's
-// credential. Every other header, and the body, passes through unchanged.
+// Header rewriting (ADR 0106 sections 5 and 6, D-195). The proxy changes only what it must. For
+// model traffic it drops hop-by-hop headers and any credential the agent sent, and sets the
+// provider's credential. For the state API route it drops only hop-by-hop headers and Host, so
+// the agent's own state API token passes through. Every other header, and the body, is unchanged.
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 
 import type { CredentialStyle } from "./providers.ts";
@@ -65,6 +66,16 @@ export function upstreamRequestHeaders(
   if (style === "x-api-key") out["x-api-key"] = credential;
   else out.authorization = `Bearer ${credential}`;
   return out;
+}
+
+/**
+ * The headers to send to the state API. The agent's Authorization header is its per-run state API
+ * token, so it passes through unchanged. Host is dropped so the HTTP client sets the upstream's.
+ */
+export function stateApiRequestHeaders(
+  incoming: IncomingHttpHeaders,
+): OutgoingHttpHeaders {
+  return copyWithout(incoming, new Set(["host"]));
 }
 
 /** The upstream response headers to pass back to the agent. */

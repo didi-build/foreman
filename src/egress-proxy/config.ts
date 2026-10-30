@@ -1,8 +1,9 @@
-// The egress proxy's settings, only from the environment (ADR 0111). Problems name the setting,
+// The egress proxy's settings, only from the environment (ADR 0111, D-195). Problems name the setting,
 // never its value. Each provider's credential is read by its secret path (D-143).
 import { port, readConfig, secret, type Setting } from "../service-kit/config.ts";
 import { parseAllowedHosts } from "./hosts.ts";
 import { parseProviders, type Provider } from "./providers.ts";
+import { parseStateApiUpstream, type StateApiUpstream } from "./state-api.ts";
 
 export interface ProxyConfig {
   port: number;
@@ -10,6 +11,8 @@ export interface ProxyConfig {
   allowedHosts: ReadonlySet<string>;
   providers: Provider[];
   maxModelRequests: number;
+  /** The state API route's one upstream (D-195), or undefined when the route is off. */
+  stateApi: StateApiUpstream | undefined;
   /** Credential values by provider name. Never logged. */
   credentials: ReadonlyMap<string, string>;
 }
@@ -41,6 +44,15 @@ const settings = {
       return value;
     },
   } satisfies Setting<number>,
+  /**
+   * The in-cluster state API address for the `/state-api` route (D-195), as `http://host:port`.
+   * Unset or empty turns the route off, as for the QA fetch step's proxy.
+   */
+  stateApi: {
+    env: "STATE_API_UPSTREAM",
+    fallback: "",
+    parse: parseStateApiUpstream,
+  } satisfies Setting<StateApiUpstream | undefined>,
 };
 
 export function readProxyConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {

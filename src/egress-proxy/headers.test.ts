@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { downstreamResponseHeaders, upstreamRequestHeaders } from "./headers.ts";
+import {
+  downstreamResponseHeaders,
+  stateApiRequestHeaders,
+  upstreamRequestHeaders,
+} from "./headers.ts";
 
 const agentHeaders = {
   host: "10.0.0.5:8080",
@@ -60,6 +64,24 @@ describe("upstreamRequestHeaders (unit: egress proxy credential rewrite, ADR 010
     expect(() => upstreamRequestHeaders(agentHeaders, "bearer", undefined)).toThrow(
       /credential is missing/,
     );
+  });
+});
+
+describe("stateApiRequestHeaders (unit: egress proxy state API route, D-195)", () => {
+  it("passes the agent's Authorization through unchanged, and drops host and hop-by-hop ones", () => {
+    const out = stateApiRequestHeaders(agentHeaders);
+    expect(out.authorization).toBe("Bearer agent-placeholder-token");
+    expect(out["content-type"]).toBe("application/json");
+    for (const dropped of [
+      "host",
+      "proxy-authorization",
+      "connection",
+      "x-drop-me",
+      "keep-alive",
+      "transfer-encoding",
+    ]) {
+      expect(out).not.toHaveProperty(dropped);
+    }
   });
 });
 

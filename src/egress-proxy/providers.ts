@@ -16,10 +16,12 @@ export interface Provider {
 
 const NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const SECRET_PATH = /^(?:platform|projects)(?:\/[a-z0-9][a-z0-9_-]*)+$/;
-const RESERVED_NAMES = new Set(["health"]);
+// `health` is the service's own endpoint and `state-api` is the state API route (D-195).
+const RESERVED_NAMES = new Set(["health", "state-api"]);
 
 /**
- * Parse the JSON provider list. Errors name the entry's position and field, never a value, so a
+ * Parse the JSON provider list. An empty list serves no model traffic, as for the QA fetch step's
+ * proxy, which reaches GitHub only (ADR 0106 section 3). Errors name the entry's position and field, never a value, so a
  * secret pasted into the wrong field cannot reach the logs.
  */
 export function parseProviders(raw: string): Provider[] {
@@ -29,9 +31,7 @@ export function parseProviders(raw: string): Provider[] {
   } catch {
     throw new Error("is not valid JSON");
   }
-  if (!Array.isArray(entries) || entries.length === 0) {
-    throw new Error("must be a non-empty JSON array");
-  }
+  if (!Array.isArray(entries)) throw new Error("must be a JSON array");
   const names = new Set<string>();
   return entries.map((entry: unknown, index) => {
     const where = `entry ${index + 1}`;
