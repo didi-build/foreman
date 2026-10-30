@@ -1,8 +1,9 @@
 # 0102. State API hosting and agent authentication
 
-- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-02. The DigitalOcean product and monthly amount are still approved at M1.4.
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-02. The monthly amount is approved at first hosting.
+- **Amended by D-193** (2026-10-30): the API runs on the platform pool of the DigitalOcean Kubernetes cluster, not on a droplet or App Platform. Everything about tokens is unchanged.
 - **Date:** 2026-10-28
-- **Related:** O-02, [build plan M0.6](../build-plan.md#m06-state-api-hosting-and-agent-authentication-o-02), `docs/architecture/technical-architecture.md` sections 2.3, 2.10 and 4, D-134, D-140, N-19, [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
+- **Related:** O-02, [build plan M0.6](../build-plan.md#m06-state-api-hosting-and-agent-authentication-o-02), `docs/architecture/technical-architecture.md` sections 2.3, 2.10 and 4, D-134, D-140, D-193, N-19, [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 
 ## Context
 
@@ -24,7 +25,7 @@ The handoff names three hosting options: Windmill scripts exposed as endpoints, 
 
 A small Node HTTP service in `src/api/`, shipped as a container image (Dockerfile, config only from the environment, `/health`, JSON logs, clean shutdown; ADR 0111 sets the shared conventions). It uses Node's built-in HTTP server through `src/service-kit/server.ts`, with no framework (settled in M1.4). It connects to Postgres with a role that has only the grants the API needs, never the owner role.
 
-Where it runs: DigitalOcean, Toronto region (D-141). There is no existing droplet, so this is new spend. Didi chose DigitalOcean on 2026-10-28. The DigitalOcean product (App Platform or a droplet) and the monthly amount are approved by Didi at M1.4, when the service first needs to run. Nothing is created before then. The container stays target-agnostic (D-134), so the host can change without a rewrite.
+Where it runs: DigitalOcean, Toronto region (D-141). Didi chose DigitalOcean on 2026-10-28. It runs on the platform pool of the one DigitalOcean Kubernetes cluster, next to the GitHub receiver, in a platform namespace with its own default-deny NetworkPolicy (D-193, [ADR 0106](./0106-agent-execution-environment.md) section 1). Agent pods run on a separate, tainted agents pool and reach the API only through its normal endpoint. The cluster and its monthly amount are approved by Didi at first hosting, when the service first needs to run. Nothing is created before then. The container stays target-agnostic (D-134), so the host can change without a rewrite.
 
 ### Agent authentication
 
@@ -42,7 +43,7 @@ A signed token (for example a JWT) was considered. The opaque token is simpler: 
 
 ### Transport and logging
 
-- TLS ends at the hosting platform's load balancer (DigitalOcean, D-141). Plain HTTP is never exposed. The exact product is chosen at M1.4.
+- TLS ends at the cluster's inbound entry point (DigitalOcean, D-141). Plain HTTP is never exposed. Whether that is a DigitalOcean load balancer or an ingress is chosen at first hosting (D-193).
 - Tokens travel only in the `Authorization` header, never in a URL. Logs record the request path without its query string, and an error's type without its message, because either can carry a token or personal data (`src/service-kit/server.ts`).
 - An agent's token lives in its environment while it reads untrusted text (PR diffs, issue bodies), so a prompt injection could try to send it somewhere. The token's reach is the limit: one role, one project, one run, short expiry, and no transition rights. Limiting where agents can connect at all is part of the agent execution environment ([ADR 0106](./0106-agent-execution-environment.md), M3, accepted, D-191).
 

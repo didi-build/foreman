@@ -210,7 +210,7 @@ Rules (Proposed interpretation, to confirm in the M1 ADR):
 | `daily_spend_call_usd`            | 25                 | A phone call fires when daily spend passes this                                                                                   |
 | `spend_alert_usd`                 | to set             | Alert threshold. Work continues                                                                                                   |
 | `usage_exhausted_wait_minutes`    | 30                 | Wait before a dispatch queued by a `usage_exhausted` end is tried again, or the provider's retry-after if longer (migration 0003) |
-| `agent_cluster_max_active_runs`   | not seeded         | Active runs allowed across the agent cluster. Sized to the node pool at first hosting. While unset, every dispatch is refused     |
+| `agent_cluster_max_active_runs`   | not seeded         | Active runs allowed across the cluster's agents pool. Sized to that pool at first hosting. While unset, every dispatch is refused |
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
 

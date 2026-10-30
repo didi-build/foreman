@@ -1,8 +1,9 @@
 # 0113. GitHub evidence ingestion
 
 - **Status:** accepted at the M2.3 review point (D-180, 2026-10-29).
+- **Amended by D-193** (2026-10-30): the receiver shares the cluster's platform pool with the state API, instead of one droplet or App Platform host.
 - **Date:** 2026-10-29
-- **Related:** build plan M2.3 and M2.4, D-156, D-160, D-164, D-178, essentials 1 and 6, `docs/guards.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0104](./0104-state-store-schema.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
+- **Related:** build plan M2.3 and M2.4, D-156, D-160, D-164, D-178, D-193, essentials 1 and 6, `docs/guards.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0104](./0104-state-store-schema.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 
 ## Context
 
@@ -16,7 +17,7 @@ A new container service, `src/github-receiver/`, with the ADR 0111 conventions, 
 
 - Not a route on the state API: the API's role (`factory_api`) cannot write evidence a guard trusts, by design (essential 6, ADR 0102). Giving the API that power to receive webhooks would break that separation.
 - Not Windmill webhooks: every delivery would be a Windmill execution, and the free tier's 1,000 a month (D-164) would be gone in days.
-- It runs on the same host as the state API (one droplet, or one App Platform app with two components), so it adds no separate host.
+- It runs next to the state API on the platform pool of the one DigitalOcean Kubernetes cluster (D-193, [ADR 0106](./0106-agent-execution-environment.md) section 1), so it adds no separate host. It accepts inbound webhooks only.
 
 ### 2. Authenticity, before anything is parsed
 
@@ -107,4 +108,4 @@ Details the sections above left open, as built in `src/core/github-ingest.ts`, `
 
 - A second small service to deploy beside the API, and migration 0002 (a table, a column and a role).
 - A missed webhook delays evidence by up to one reconcile interval (2 hours until Kubernetes, D-164).
-- At M3, the runner App's webhook must point at the receiver, which needs a public HTTPS URL on the host.
+- At M3, the runner App's webhook must point at the receiver, which needs a public HTTPS URL on the cluster's inbound entry point (a DigitalOcean load balancer or an ingress, chosen at first hosting, D-193).

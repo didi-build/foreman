@@ -112,15 +112,15 @@ Agents need somewhere to run. Options for the M3 ADR: a Windmill worker with the
 
 ### 2.10 Preparing for Kubernetes (Proposed, D-134, ADR 0111)
 
-The second release moves to Kubernetes for a pod per project, per-project isolation and monitoring, and eventually off Cloudflare. The first release does not build a cluster, except a small cluster for agent runs only, following [ADR 0106](../decisions/0106-agent-execution-environment.md) (D-182). It is built so the switch is easy:
+The second release moves to Kubernetes for a pod per project, per-project isolation and monitoring, and eventually off Cloudflare. The first release does not build a cluster, except one small cluster with two node pools, following [ADR 0106](../decisions/0106-agent-execution-environment.md) (D-182, D-193): a platform pool for the state API and the GitHub receiver, and a tainted agents pool for agent runs. It is built so the switch is easy:
 
-- Containers: the state API and the agent runners are container images with a Dockerfile. They read config only from the environment, expose a health endpoint, log structured JSON, and shut down cleanly. No platform-specific code.
+- Containers: the state API and the agent runners are container images with a Dockerfile. They read config only from the environment, expose a health endpoint, log structured JSON, and shut down cleanly. No platform-specific code. Kubernetes-specific code lives only in the Kubernetes agent runtime adapter, the cluster's infrastructure code, and the API and receiver deployment manifests (D-193).
 - A target-agnostic deploy adapter: the operations are deploy, preview, health, logs and teardown, with a Cloudflare implementation first. Previews and staging are concepts in the adapter, not Cloudflare URLs in the code. A contract test runs against two targets (Cloudflare and a fake second one).
 - The isolation model is defined up front: each project has its own boundary of credentials, secrets path (`projects/<slug>/...`), network rules and resource limits. In the first release the boundary is enforced by credentials and the secrets path. In the second it maps to a namespace with network policies and quotas.
 - Secrets are referenced by path behind an interface: Windmill resources now, Vault later.
 - Agent runtime adapters take the model endpoint and API key from the bot file as settings (the key as a secret path, never its value), so a self-hosted model gateway (LiteLLM or Bifrost) can be inserted in the second release without code changes. The first release calls model providers directly, with no gateway (D-142).
 - The IaC layout separates platform modules from project modules. A project module takes a target (Cloudflare now, Kubernetes later), so a project can move without a rewrite.
-- Monitoring hooks: structured logs, health endpoints, and the `runs` and `transitions` tables already provide the data. The monitoring stack (metrics, logs, dashboards, alerts wired into the existing alert and call tiers) arrives with Kubernetes.
+- Monitoring hooks: structured logs, health endpoints, and the `runs` and `transitions` tables already provide the data. The monitoring stack (metrics, logs, dashboards, alerts wired into the existing alert and call tiers) arrives in the second release.
 - The second release is its own project, run through the factory with the Interview first. It is outlined in Milestone 7 of the build plan and not detailed here.
 
 ### 2.11 Decision points (Proposed, P-11, P-12)
@@ -245,8 +245,8 @@ Rules:
 
 ## 7. Deployment
 
-- Windmill Cloud for the runner. Managed Postgres for the state store. The API location is decided in M0. Infrastructure is declared as code (section 2.9).
-- The API and agent runners ship as containers. Where they run in the first release is decided in ADRs 0102 and 0106. As guidance, always-on services fit the droplet. Agent runs go to a small agents-only Kubernetes cluster ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-182). The move to Kubernetes in the second release is a redeploy, not a rewrite (section 2.10).
+- Windmill Cloud for the runner. Managed Postgres for the state store. The API location is set in ADR 0102, amended by D-193. Infrastructure is declared as code (section 2.9).
+- The API and agent runners ship as containers. In the first release they run on one small DigitalOcean Kubernetes cluster with two node pools ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-193). The state API and the GitHub receiver run on the platform pool. Agent runs go to the agents pool, which is tainted so nothing else runs there. How inbound traffic reaches the API and the receiver (a load balancer or an ingress) is decided at first hosting. Supabase stays the database and Windmill Cloud stays the runner. The second release adds self-hosted Windmill, Vault, the model gateway, monitoring, GitOps and project deploys (section 2.10).
 - The factory is its own first project. Its production deploys stay with Didi. Gates stay fully on during bootstrap.
 - Environments: a staging project used for rehearsals, and the real projects. A rehearsal never touches real projects.
 
