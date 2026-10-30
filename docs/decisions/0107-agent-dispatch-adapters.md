@@ -81,7 +81,7 @@ The QA model reads; plain code checks. Preview and staging checks (D-103, the Do
 
 ## Depends on
 
-ADR 0106 (agent execution environment and budget enforcement, M3) is not written yet. It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.
+[ADR 0106](./0106-agent-execution-environment.md) (agent execution environment and budget enforcement, M3) is accepted (D-191). It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.
 
 ## Constraints
 

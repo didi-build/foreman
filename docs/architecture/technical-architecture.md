@@ -112,7 +112,7 @@ Agents need somewhere to run. Options for the M3 ADR: a Windmill worker with the
 
 ### 2.10 Preparing for Kubernetes (Proposed, D-134, ADR 0111)
 
-The second release moves to Kubernetes for a pod per project, per-project isolation and monitoring, and eventually off Cloudflare. The first release does not build a cluster. It is built so the switch is easy:
+The second release moves to Kubernetes for a pod per project, per-project isolation and monitoring, and eventually off Cloudflare. The first release does not build a cluster, except a small cluster for agent runs only, following [ADR 0106](../decisions/0106-agent-execution-environment.md) (D-182). It is built so the switch is easy:
 
 - Containers: the state API and the agent runners are container images with a Dockerfile. They read config only from the environment, expose a health endpoint, log structured JSON, and shut down cleanly. No platform-specific code.
 - A target-agnostic deploy adapter: the operations are deploy, preview, health, logs and teardown, with a Cloudflare implementation first. Previews and staging are concepts in the adapter, not Cloudflare URLs in the code. A contract test runs against two targets (Cloudflare and a fake second one).
@@ -246,7 +246,7 @@ Rules:
 ## 7. Deployment
 
 - Windmill Cloud for the runner. Managed Postgres for the state store. The API location is decided in M0. Infrastructure is declared as code (section 2.9).
-- The API and agent runners ship as containers. Where they run in the first release is decided in ADRs 0102 and 0106. As guidance, always-on services fit the droplet and bursty work fits on-demand compute. The move to Kubernetes in the second release is a redeploy, not a rewrite (section 2.10).
+- The API and agent runners ship as containers. Where they run in the first release is decided in ADRs 0102 and 0106. As guidance, always-on services fit the droplet. Agent runs go to a small agents-only Kubernetes cluster ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-182). The move to Kubernetes in the second release is a redeploy, not a rewrite (section 2.10).
 - The factory is its own first project. Its production deploys stay with Didi. Gates stay fully on during bootstrap.
 - Environments: a staging project used for rehearsals, and the real projects. A rehearsal never touches real projects.
 

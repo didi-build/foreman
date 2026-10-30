@@ -108,7 +108,7 @@ The handoff package was placed into this repo's Launchpad layout in task M0.0. [
 - Linear specifically: write through Linear's own API under the runner's own app identity, behind an adapter. Do not use the Linear MCP for runner writes.
 - Cloudflare appears only in the deploy adapter. The library and the state API stay portable: no Cloudflare-specific APIs, bindings or runtime features outside that adapter.
 - Infrastructure is declared as code (Terraform or OpenTofu, chosen in ADR 0110). A change made by hand is a defect. Infrastructure changes show their plan on the PR. A plan that includes DNS changes, new secrets or wider permissions, or deleting data goes through the matching gate first. Plans and state never contain secret values. Production applies are Didi's.
-- Services are container-ready: each ships a Dockerfile, reads config only from the environment, exposes a health endpoint, logs structured JSON, and shuts down cleanly. They run on the droplet or on-demand compute in the first release and on Kubernetes in the second. Reference secrets by path through an interface (Windmill resources now, Vault later). Keep each project's boundary (credentials, secrets path, network rules, resource limits) explicit so it can become a namespace later.
+- Services are container-ready: each ships a Dockerfile, reads config only from the environment, exposes a health endpoint, logs structured JSON, and shuts down cleanly. They run on the droplet in the first release and on Kubernetes in the second. Agent runs are the exception: they run as Jobs on a small agents-only cluster from the first release (ADR 0106, D-182). Reference secrets by path through an interface (Windmill resources now, Vault later). Keep each project's boundary (credentials, secrets path, network rules, resource limits) explicit so it can become a namespace later.
 
 ### 4. Code and repo conventions
 
@@ -131,10 +131,10 @@ From [ADR 0111](./docs/decisions/0111-kubernetes-ready-conventions.md). They hol
 - Deploys go through the target-agnostic deploy adapter (deploy, preview, health, logs, teardown). Code outside it never builds a platform URL.
 - Each project has an explicit boundary: its own credentials, secrets under `projects/<slug>/...`, its own network rules and resource limits.
 - Secrets are read by path through one interface (Windmill resources now, Vault later), never from files in the repo.
-- Agent runtime adapters read the model endpoint and API key from the bot file as settings (the key as a secret path, never its value). There is no model gateway in the first release: adapters call model providers directly. A self-hosted gateway arrives with Kubernetes in the second release (D-142).
+- Agent runtime adapters read the model endpoint and API key from the bot file as settings (the key as a secret path, never its value). There is no model gateway in the first release: agents call model providers through their run's egress proxy, which adds the key so the agent never holds it (ADR 0106). A self-hosted gateway arrives with Kubernetes in the second release (D-142).
 - Infrastructure modules separate platform from project, and the project module takes a deploy target (ADR 0110). Cloudflare is declared only in `infra/modules/platform/cloudflare/`; stacks never name a provider (D-146, `npm run infra-boundaries`).
 - Known violation of essential 9 until moved: Launchpad's gallery is hosted on Cloudflare (`wrangler.jsonc`, `wrangler.preview.jsonc`, the preview workflow). Do not build on it; the gallery moves to another host (D-145, N-23).
-- No Kubernetes manifests, charts or client code until the second release.
+- No Kubernetes manifests, charts or client code until the second release, with one exception: agent runs use a small agents-only cluster from the first release ([ADR 0106](./docs/decisions/0106-agent-execution-environment.md), D-182). Kubernetes-specific code lives only in the Kubernetes agent runtime adapter and that cluster's infrastructure code.
 
 ### 5. Security and gates
 

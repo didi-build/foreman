@@ -90,7 +90,7 @@ Goal: a clean repo, the risky unknowns checked, and the provider chosen. The Lin
 - What: write ADR 0111 and add the conventions to `AGENTS.md`: container-ready services, a target-agnostic deploy adapter interface, the per-project isolation model, secrets by path behind an interface, the model endpoint and API key as settings in each bot file (the key as a secret path; D-142), and an IaC layout with platform and project modules.
 - Why: the second release moves to Kubernetes, and these keep the switch from being a rewrite.
 - How: follow `docs/architecture/technical-architecture.md` section 2.10. Add CI checks: each service builds as a container image, serves a health endpoint, and reads config only from the environment.
-- Constraints: do not build a cluster. No Kubernetes-specific code yet.
+- Constraints: do not build a cluster. No Kubernetes-specific code yet. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), agent runs are the one exception: a small cluster for agent jobs only, with Kubernetes-specific code only in the Kubernetes agent runtime adapter and that cluster's infrastructure code.
 - Success: ADR 0111 is merged. A sample service builds as a container in CI and passes the health check. `AGENTS.md` carries the conventions.
 
 Review point at the end of M0: Didi reviews ADRs 0101, 0102, 0103, 0107, 0110, 0111 and the spike results.
@@ -168,6 +168,7 @@ Goal: the runner can say what it would do, and be right.
 
 ### M2.4 Reconcile pass in dry-run mode
 
+- Held until real data exists (D-181).
 - What: the reconcile pass of `docs/architecture/technical-architecture.md` section 2.5, writing `dry_run` transitions and acting on nothing.
 - Why: it is how the cutover is rehearsed.
 - How: a function in the library plus a Windmill schedule every 2 hours until Kubernetes exists (D-164; setting `reconcile_interval_minutes`), with the execution count alert (P-21). It respects the kill switch and `dry_run`.
@@ -175,6 +176,7 @@ Goal: the runner can say what it would do, and be right.
 
 ### M2.5 Dry-run report
 
+- Held with M2.4 (D-181).
 - What: a report that compares what the runner would do with what is true today.
 - Why: it is the main input to the go or no-go decision (O-07).
 - How: for each node, show the mapped state, the planned transition, and the guard result. List differences from Linear and from recent history.
@@ -195,7 +197,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: adapters to start the Developer (Claude Code), QA (Claude for now, D-158; ADR 0112), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
-- How: per ADR 0106, 0107 and 0112. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
+- How: per ADR 0106, 0107 and 0112. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), each run is a Kubernetes Job on a small DigitalOcean cluster that runs agent jobs only. Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
 - Constraints: one agent per item, up to 3 Developer agents per project. Each agent is scoped to one project's repo and credentials. No production access. ADR 0106 must be merged before this task starts, and must state where agent containers run and the egress rule ADR 0112 relies on (QA reaches only the model endpoint and the state API).
 - Success: each adapter can start an agent on a trivial task in the rehearsal project and record a run with model, turns, minutes, cost and outcome. A simulated usage-exhausted response queues and resumes.
 
@@ -308,12 +310,12 @@ Goal: a pod per project, per-project isolation, monitoring, and a way off Cloudf
 
 This is its own project, run through the factory starting with the Interview. It is outlined here so the first release leaves room for it:
 
-- A cluster on DigitalOcean (D-165; managed or self-run, decided then), GitOps, Vault for secrets, and replicas. Self-host Windmill on it (D-163), and move infrastructure state off Cloudflare R2 (D-144, D-165).
+- A cluster on DigitalOcean (D-165; managed or self-run, decided then; following [ADR 0106](./decisions/0106-agent-execution-environment.md), a small managed cluster already runs agent jobs from the first release, and this release grows it or adds a larger one), GitOps, Vault for secrets, and replicas. Self-host Windmill on it (D-163), and move infrastructure state off Cloudflare R2 (D-144, D-165).
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
 - A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.
 - A self-hosted model gateway (LiteLLM or Bifrost, chosen then; O-10) as a pod, with the agent runtime adapters pointed at it by changing the model endpoint setting in each bot file. OpenRouter is not chosen (D-142).
-- Move the state API and the agent runners onto the cluster. Then move projects off Cloudflare one at a time.
+- Move the state API and the GitHub receiver onto the cluster (agent runs are already there, following [ADR 0106](./decisions/0106-agent-execution-environment.md)). Then move projects off Cloudflare one at a time.
 - First, import the existing Cloudflare resources of current projects into infrastructure as code, and add the proven `infra/` module to Launchpad (outside this repo; Launchpad is public, so no account ids or secrets), with a Kubernetes variant.
 - Revisit the managed Postgres (D-118) and whether to self-host Windmill because of token and cost burn.
 
