@@ -11,6 +11,13 @@ import {
 } from "../../../egress-proxy/state-api.ts";
 import type { AgentRole, RunLimits } from "../runtime.ts";
 import {
+  TASK_FILE_KEY,
+  TASK_FILE_PATH,
+  TASK_MOUNT_PATH,
+  taskFileJson,
+  type AgentTaskFile,
+} from "./task.ts";
+import {
   agentNamespace,
   checkRunId,
   componentSelector,
@@ -242,6 +249,25 @@ export function runSecrets(
     secrets.push(secret(names.githubTokenSecret, { token: credentials.githubToken }));
   }
   return secrets;
+}
+
+/**
+ * The run's task file as a Secret, mounted read-only into the agent pod only (./task.ts). Built
+ * apart from `runSecrets` because it holds the run's text, not a credential.
+ */
+export function taskSecret(spec: KubernetesRunSpec, task: AgentTaskFile): Secret {
+  return {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: runNames(spec.runId).taskSecret,
+      namespace: agentNamespace(spec.projectSlug),
+      labels: runLabels(spec, "agent"),
+    },
+    type: "Opaque",
+    immutable: true,
+    stringData: { [TASK_FILE_KEY]: taskFileJson(spec.role, task) },
+  };
 }
 
 /** QA's per-run volume for the fetched tree (ADR 0106 section 5). */
@@ -519,6 +545,7 @@ function agentEnv(
     FOREMAN_MAX_TURNS: String(limits.maxTurns),
     FOREMAN_MAX_BUDGET_USD: String(limits.maxUsd),
     FOREMAN_STATE_API_URL: `${proxyBase}${STATE_API_PREFIX}`,
+    FOREMAN_TASK_FILE: TASK_FILE_PATH,
     HOME: "/work",
     TMPDIR: "/tmp",
   };
@@ -549,12 +576,30 @@ function agentVolumes(
   settings: KubernetesRunSettings,
   names: RunNames,
 ): { volumes: Volume[]; volumeMounts: VolumeMount[] } {
+  // The task file: read-only, readable by the pod's group only (fsGroup), never by others.
+  const task: Volume = {
+    name: "task",
+    secret: {
+      secretName: names.taskSecret,
+      items: [{ key: TASK_FILE_KEY, path: TASK_FILE_KEY }],
+      defaultMode: 0o440,
+    },
+  };
+  const taskMount: VolumeMount = {
+    name: "task",
+    mountPath: TASK_MOUNT_PATH,
+    readOnly: true,
+  };
   if (spec.role !== "qa") {
-    return { volumes: scratchVolumes(settings), volumeMounts: scratchMounts() };
+    return {
+      volumes: [...scratchVolumes(settings), task],
+      volumeMounts: [...scratchMounts(), taskMount],
+    };
   }
   return {
     volumes: [
       ...scratchVolumes(settings),
+      task,
       // QA reads the fetched tree and can never change it.
       {
         name: "workspace",
@@ -563,6 +608,7 @@ function agentVolumes(
     ],
     volumeMounts: [
       ...scratchMounts(),
+      taskMount,
       { name: "workspace", mountPath: "/workspace", readOnly: true },
     ],
   };

@@ -6,6 +6,7 @@ on:
       - "src/**"
       - ".dockerignore"
       - "scripts/check-service-container.sh"
+      - "scripts/check-agent-container.sh"
       - ".github/workflows/containers.yml"
 
 concurrency:
@@ -37,5 +38,30 @@ jobs:
           done
           if [ -z "$found" ]; then
             echo "::error::No src/*/Dockerfile found. The reference service src/sample-service must exist."
+            exit 1
+          fi
+
+  agent-images:
+    name: agent-image-conventions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build each agent image and check the job conventions (ADR 0106 section 4)
+        run: |
+          set -euo pipefail
+          found=""
+          for dockerfile in src/agent-images/*/Dockerfile; do
+            [ -f "$dockerfile" ] || continue
+            found="yes"
+            echo "::group::$(dirname "$dockerfile")"
+            scripts/check-agent-container.sh "$(dirname "$dockerfile")"
+            echo "::endgroup::"
+          done
+          if [ -z "$found" ]; then
+            echo "::error::No src/agent-images/*/Dockerfile found."
             exit 1
           fi

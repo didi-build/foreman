@@ -14,10 +14,11 @@ import {
   SETTINGS,
   STATE_TOKEN,
   credentialsFor,
+  taskFor,
 } from "./fixtures.ts";
 import type { KubernetesRunSpec } from "./manifests.ts";
 import { runNames } from "./names.ts";
-import type { Job } from "./objects.ts";
+import type { Job, Secret } from "./objects.ts";
 import {
   createKubernetesRuntime,
   type KubernetesRunHandle,
@@ -39,6 +40,7 @@ beforeEach(() => {
 const task = (spec: KubernetesRunSpec) => ({
   ...spec,
   credentials: credentialsFor(spec),
+  task: taskFor(spec),
 });
 const result = (fields: Record<string, unknown>) =>
   `log line\n${JSON.stringify({ foremanResult: 1, ...fields })}\n`;
@@ -62,6 +64,7 @@ describe("start (adapter contract: object order, ADR 0106 sections 2 and 5)", ()
       `create Secret/${n.stateTokenSecret}`,
       `create Secret/${n.modelSecret}`,
       `create Secret/${n.githubTokenSecret}`,
+      `create Secret/${n.taskSecret}`,
       `create NetworkPolicy/${n.agentPolicy}`,
       `create NetworkPolicy/${n.proxyPolicy}`,
       `create Job/${n.proxyJob}`,
@@ -83,6 +86,26 @@ describe("start (adapter contract: object order, ADR 0106 sections 2 and 5)", ()
       expect(text).not.toContain(secret);
     }
     expect(JSON.parse(text)).toEqual(handle);
+  });
+
+  it("creates nothing for a task that breaks the rules", async () => {
+    const bad = {
+      ...task(DEVELOPER),
+      task: { ...taskFor(DEVELOPER), allowedTools: [] },
+    };
+    await expect(runtime.start(bad, LIMITS)).rejects.toThrow(/allowed tools/);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("writes the task file into its own Secret and tells the agent where it is", async () => {
+    await runtime.start(task(DEVELOPER), LIMITS);
+    const n = runNames(DEVELOPER.runId);
+    const secret = fake.get<Secret>("Secret", NS, n.taskSecret);
+    expect(JSON.parse(secret?.stringData["task.json"] ?? "")).toEqual(
+      taskFor(DEVELOPER),
+    );
+    const agent = fake.get<Job>("Job", NS, n.agentJob);
+    expect(envValue(agent, "FOREMAN_TASK_FILE")).toBe("/task/task.json");
   });
 
   it("creates nothing for a run that breaks the rules", async () => {
@@ -110,6 +133,7 @@ describe("QA (adapter contract: the fetch step first, ADR 0106 section 5)", () =
       `create Secret/${n.stateTokenSecret}`,
       `create Secret/${n.modelSecret}`,
       `create Secret/${n.githubTokenSecret}`,
+      `create Secret/${n.taskSecret}`,
       `create PersistentVolumeClaim/${n.workspaceClaim}`,
       `create NetworkPolicy/${n.fetchPolicy}`,
       `create NetworkPolicy/${n.fetchProxyPolicy}`,

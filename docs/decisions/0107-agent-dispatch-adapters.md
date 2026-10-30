@@ -79,6 +79,10 @@ The QA model reads; plain code checks. Preview and staging checks (D-103, the Do
 - The model endpoint and API key come from the bot file as settings, the key as a secret path resolved through the secrets interface (D-142). Values are never logged. The first release calls providers directly. A self-hosted gateway (LiteLLM or Bifrost) can be inserted in the second release by changing the endpoint setting, with no code change. OpenRouter is not chosen.
 - A "usage exhausted" response becomes status `usage_exhausted`, so the dispatch is queued and resumed, not counted as a failure (FR-11).
 
+### Built in M3.2 slice 4
+
+The in-container side is in `src/agent-images/`: one image for Claude Code (Developer, Designer) and one for the Messages API (QA, Council, Triage), each printing the result line that `src/adapters/agent-runtime/kubernetes/result.ts` reads. The runner hands each run a task file (`src/adapters/agent-runtime/kubernetes/task.ts`), mounted from a per-run Secret into the agent pod only. Tests are listed in `docs/test-plan.md` under "Agent images".
+
 ## Depends on
 
 [ADR 0106](./0106-agent-execution-environment.md) (agent execution environment and budget enforcement, M3) is accepted (D-191). It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.

@@ -1,0 +1,308 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  mapRunEnd,
+  parseAgentResult,
+} from "../../adapters/agent-runtime/kubernetes/result.ts";
+import { CEILING_MESSAGE } from "../../egress-proxy/proxy.ts";
+import { ConfigError } from "../../service-kit/config.ts";
+import {
+  providerErrorFromClaudeCode,
+  providerErrorFromHttp,
+  retryAfterSeconds,
+} from "./provider-error.ts";
+import { errorResult, redact, resultLine, type AgentResult } from "./result.ts";
+import { PLACEHOLDER_CREDENTIAL, readImageSettings, secretValues } from "./settings.ts";
+import { parseTask } from "./task.ts";
+import { addTokens, tokensFromUsage } from "./tokens.ts";
+
+// Unit: the helpers every agent image shares (ADR 0106 sections 4 to 6). No network.
+
+const STATE_TOKEN = "state-token-value-not-real-0123456789";
+const GITHUB_TOKEN = "github-token-value-not-real-0123456789";
+
+const ENV = {
+  FOREMAN_RUN_ID: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
+  FOREMAN_ROLE: "qa",
+  FOREMAN_MODEL: "claude-opus-5-5",
+  FOREMAN_MAX_TURNS: "50",
+  FOREMAN_MAX_BUDGET_USD: "2",
+  FOREMAN_TASK_FILE: "/task/task.json",
+  ANTHROPIC_BASE_URL: "http://10.245.0.10:8080/anthropic",
+  FOREMAN_STATE_API_URL: "http://10.245.0.10:8080/state-api",
+  FOREMAN_STATE_API_TOKEN: STATE_TOKEN,
+  HOME: "/work",
+};
+
+const sample: AgentResult = {
+  status: "success",
+  finalText: "Done.",
+  structured: { verdict: "pass" },
+  turns: 3,
+  costUsd: 0.0207,
+  tokens: { uncachedInput: 12, cachedInput: 4500, cacheWriteInput: 300, output: 80 },
+  errorText: "",
+  providerError: null,
+};
+
+describe("image settings (unit: config from the environment, fail closed)", () => {
+  it("reads every setting the Kubernetes runtime writes into the agent Job", () => {
+    expect(readImageSettings("claude-api", ENV)).toEqual({
+      runId: ENV.FOREMAN_RUN_ID,
+      role: "qa",
+      model: "claude-opus-5-5",
+      maxTurns: 50,
+      maxUsd: 2,
+      taskFile: "/task/task.json",
+      modelBaseUrl: "http://10.245.0.10:8080/anthropic",
+      stateApiUrl: "http://10.245.0.10:8080/state-api",
+      stateApiToken: STATE_TOKEN,
+      workDir: "/work",
+    });
+  });
+
+  it("refuses a role the image does not run", () => {
+    expect(() => readImageSettings("claude-code", ENV)).toThrow(/FOREMAN_ROLE/);
+    expect(() =>
+      readImageSettings("claude-api", { ...ENV, FOREMAN_ROLE: "developer" }),
+    ).toThrow(/FOREMAN_ROLE is not a role this image runs/);
+  });
+
+  it("names every missing or bad setting, never its value", () => {
+    const env: Record<string, string> = {
+      ...ENV,
+      FOREMAN_MAX_TURNS: "ten",
+      FOREMAN_MAX_BUDGET_USD: "-1",
+      ANTHROPIC_BASE_URL: `http://user:${STATE_TOKEN}@proxy/anthropic`,
+    };
+    delete env.FOREMAN_STATE_API_TOKEN;
+    let error: unknown;
+    try {
+      readImageSettings("claude-api", env);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ConfigError);
+    const problems = (error as ConfigError).problems;
+    expect(problems).toEqual([
+      "FOREMAN_MAX_TURNS is not a whole number above 0",
+      "FOREMAN_MAX_BUDGET_USD is not an amount above 0",
+      "ANTHROPIC_BASE_URL must be an http(s) URL with no credentials, query or fragment",
+      "FOREMAN_STATE_API_TOKEN is not set",
+    ]);
+    expect(String((error as Error).message)).not.toContain(STATE_TOKEN);
+  });
+
+  it("lists every credential value the run may see, the placeholder included", () => {
+    const settings = readImageSettings("claude-api", ENV);
+    expect(secretValues(settings, { GITHUB_TOKEN })).toEqual([
+      STATE_TOKEN,
+      GITHUB_TOKEN,
+      PLACEHOLDER_CREDENTIAL,
+    ]);
+  });
+});
+
+describe("task file (unit: the same rules as the runner)", () => {
+  const qaTask = {
+    foremanTask: 1,
+    instructions: "Review.",
+    input: "diff",
+    nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    evidenceIds: [],
+  };
+
+  it("accepts a valid task and refuses one its role does not allow", () => {
+    expect(parseTask("qa", JSON.stringify(qaTask))).toEqual(qaTask);
+    expect(() => parseTask("council", JSON.stringify(qaTask))).toThrow(/evidence ids/);
+    expect(() => parseTask("qa", "not json")).toThrow(/not JSON/);
+    expect(() =>
+      parseTask("qa", JSON.stringify({ ...qaTask, foremanTask: 2 })),
+    ).toThrow(/version 1/);
+  });
+});
+
+describe("result line (unit: round trip through the runtime's parser, ADR 0106 section 4)", () => {
+  it("is one JSON line that the Kubernetes runtime parses back to the same result", () => {
+    const line = resultLine(sample, []);
+    expect(line).not.toContain("\n");
+    expect(parseAgentResult(`some log line\n${line}\n`)).toEqual(sample);
+  });
+
+  it("round-trips an error with a provider error and no counts", () => {
+    const failed: AgentResult = {
+      ...errorResult("the model provider answered 429"),
+      providerError: {
+        status: 429,
+        type: "rate_limit_error",
+        message: "slow down",
+        retryAfterSeconds: 30,
+      },
+    };
+    expect(parseAgentResult(resultLine(failed, []))).toEqual(failed);
+  });
+
+  it("removes every credential value, at any depth", () => {
+    const leaky: AgentResult = {
+      ...sample,
+      finalText: `token ${STATE_TOKEN} and ${PLACEHOLDER_CREDENTIAL}`,
+      structured: { nested: [GITHUB_TOKEN] },
+    };
+    const line = resultLine(leaky, [STATE_TOKEN, GITHUB_TOKEN, PLACEHOLDER_CREDENTIAL]);
+    for (const secret of [STATE_TOKEN, GITHUB_TOKEN, PLACEHOLDER_CREDENTIAL]) {
+      expect(line).not.toContain(secret);
+    }
+    expect(line).toContain("[redacted]");
+    expect(redact("short", ["short"])).toBe("short");
+  });
+
+  it.each([
+    [{ status: "max_turns" }, "budget_exceeded", "max_turns"],
+    [{ status: "max_budget" }, "budget_exceeded", "max_budget"],
+    [
+      { status: "error", errorText: CEILING_MESSAGE },
+      "budget_exceeded",
+      "proxy_ceiling",
+    ],
+    [
+      {
+        status: "error",
+        providerError: {
+          status: 429,
+          type: "rate_limit_error",
+          message: "",
+          retryAfterSeconds: 40,
+        },
+      },
+      "usage_exhausted",
+      "rate_limit",
+    ],
+    [
+      {
+        status: "error",
+        providerError: {
+          status: 529,
+          type: "overloaded_error",
+          message: "",
+          retryAfterSeconds: null,
+        },
+      },
+      "usage_exhausted",
+      "capacity",
+    ],
+    [
+      {
+        status: "error",
+        providerError: {
+          status: 402,
+          type: "billing_error",
+          message: "",
+          retryAfterSeconds: null,
+        },
+      },
+      "usage_exhausted",
+      "out_of_credit",
+    ],
+  ] as const)("maps %j to %s (%s) through the runtime", (fields, outcome, detail) => {
+    const result = { ...errorResult(""), ...fields } as AgentResult;
+    const parsed = parseAgentResult(resultLine(result, []));
+    const end = mapRunEnd("failed", null, parsed, "claude-opus-5-5");
+    expect(end).toMatchObject({ outcome, detail });
+    if (detail === "rate_limit") expect(end.retryAfterSeconds).toBe(40);
+  });
+});
+
+describe("provider errors (unit: 429, 529, 402 and the proxy's ceiling)", () => {
+  const headers = (values: Record<string, string>) => ({
+    get: (name: string) => values[name] ?? null,
+  });
+
+  it("reads Anthropic's error body and the retry-after header", () => {
+    expect(
+      providerErrorFromHttp(429, headers({ "retry-after": "30" }), {
+        type: "error",
+        error: { type: "rate_limit_error", message: "slow down" },
+      }),
+    ).toEqual({
+      status: 429,
+      type: "rate_limit_error",
+      message: "slow down",
+      retryAfterSeconds: 30,
+    });
+    expect(
+      providerErrorFromHttp(529, headers({}), {
+        type: "error",
+        error: { type: "overloaded_error", message: "Overloaded" },
+      }),
+    ).toMatchObject({ status: 529, type: "overloaded_error", retryAfterSeconds: null });
+    expect(
+      providerErrorFromHttp(402, null, {
+        type: "error",
+        error: { type: "billing_error", message: "credit" },
+      }),
+    ).toMatchObject({ status: 402, type: "billing_error" });
+  });
+
+  it("reads the proxy's own error body", () => {
+    expect(providerErrorFromHttp(403, null, { error: CEILING_MESSAGE })).toMatchObject({
+      status: 403,
+      message: CEILING_MESSAGE,
+    });
+  });
+
+  it("reads retry-after as seconds or an HTTP date, and ignores anything else", () => {
+    const now = new Date("2026-10-30T12:00:00Z");
+    expect(retryAfterSeconds("120", now)).toBe(120);
+    expect(retryAfterSeconds("Fri, 30 Oct 2026 12:01:30 GMT", now)).toBe(90);
+    expect(retryAfterSeconds("Fri, 30 Oct 2026 11:00:00 GMT", now)).toBe(0);
+    expect(retryAfterSeconds("soon", now)).toBeNull();
+    expect(retryAfterSeconds(null, now)).toBeNull();
+  });
+
+  it("reads Claude Code's api_error_status and the error type in its text", () => {
+    expect(
+      providerErrorFromClaudeCode(
+        429,
+        'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"x"}}',
+      ),
+    ).toMatchObject({ status: 429, type: "rate_limit_error", retryAfterSeconds: null });
+    expect(providerErrorFromClaudeCode(null, "something else")).toBeNull();
+  });
+});
+
+describe("token accounting (unit: cached and uncached input apart, D-185)", () => {
+  it("keeps uncached input, cache reads and cache writes apart", () => {
+    expect(
+      tokensFromUsage({
+        input_tokens: 12,
+        cache_read_input_tokens: 4500,
+        cache_creation_input_tokens: 300,
+        output_tokens: 80,
+      }),
+    ).toEqual({
+      uncachedInput: 12,
+      cachedInput: 4500,
+      cacheWriteInput: 300,
+      output: 80,
+    });
+  });
+
+  it("treats missing or null counts as zero and adds runs of turns", () => {
+    const first = tokensFromUsage({
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: null,
+    });
+    const second = tokensFromUsage({
+      input_tokens: 2,
+      output_tokens: 1,
+      cache_read_input_tokens: 90,
+    });
+    expect(addTokens(first, second)).toEqual({
+      uncachedInput: 12,
+      cachedInput: 90,
+      cacheWriteInput: 0,
+      output: 6,
+    });
+  });
+});
