@@ -40,6 +40,29 @@ describe("readProxyConfig (unit: egress proxy settings, ADR 0111)", () => {
     expect(config.providers.map((p) => p.name)).toEqual(["anthropic"]);
     expect(config.maxModelRequests).toBe(200);
     expect(config.credentials.get("anthropic")).toBe(KEY_VALUE);
+    expect(config.stateApi).toBeUndefined();
+  });
+
+  it("reads the state API route's upstream when set (D-195)", () => {
+    const config = readProxyConfig({
+      ...goodEnv,
+      STATE_API_UPSTREAM: "http://state-api.foreman-platform.svc.cluster.local:8080",
+    });
+    expect(config.stateApi).toEqual({
+      host: "state-api.foreman-platform.svc.cluster.local",
+      port: 8080,
+    });
+  });
+
+  it("reads an empty allow-list and an empty provider list (QA and its fetch step)", () => {
+    const config = readProxyConfig({
+      RUN_ID: "run_fetch",
+      ALLOWED_HOSTS: "",
+      MODEL_PROVIDERS: "[]",
+      MAX_MODEL_REQUESTS: "1",
+    });
+    expect(config.allowedHosts.size).toBe(0);
+    expect(config.providers).toEqual([]);
   });
 
   it("names a missing provider secret by its variable, never a value", () => {
@@ -54,6 +77,8 @@ describe("readProxyConfig (unit: egress proxy settings, ADR 0111)", () => {
     ["MAX_MODEL_REQUESTS", "0"],
     ["MAX_MODEL_REQUESTS", "1.5"],
     ["MAX_MODEL_REQUESTS", "-3"],
+    ["STATE_API_UPSTREAM", "http://api.example.com:8080"],
+    ["STATE_API_UPSTREAM", "http://169.254.169.254"],
   ])("stops on a bad %s, naming it but not its value", (name, value) => {
     const found = problems({ ...goodEnv, [name]: value });
     expect(found).toHaveLength(1);

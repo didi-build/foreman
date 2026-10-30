@@ -85,6 +85,8 @@ The proxy:
 
 Built in M3.2 slice 2 (`src/egress-proxy/`). Its settings are `RUN_ID`, `ALLOWED_HOSTS` (comma-separated host names), `MODEL_PROVIDERS` (a JSON list of `name`, `upstream`, `credential` as `x-api-key`, `bearer` or `none`, and `secretPath`) and `MAX_MODEL_REQUESTS` (twice the turn limit). Each provider is served at `/<name>` on the proxy port, so Claude Code's `ANTHROPIC_BASE_URL` is `http://<proxy address>:<port>/anthropic`. A request past the ceiling gets 403 with a fixed message, not 429, because model clients retry a 429 as a rate limit. The runtime adapter records such a run as `budget_exceeded`, not `usage_exhausted`.
 
+The state API route (D-195) is built in M3.2 slice 3: `STATE_API_UPSTREAM` names the one in-cluster state API address, and `/state-api/...` is forwarded there with the agent's own `Authorization` unchanged. The Kubernetes runtime adapter, the run manifests and the namespace and RBAC objects are in `src/adapters/agent-runtime/kubernetes/` (slice 3).
+
 **What DOKS enforces.** DOKS runs Cilium as its network plugin, and Cilium enforces standard Kubernetes NetworkPolicy (DigitalOcean's tutorial on Cilium network policies in DOKS, and a 2020 eBPF Summit talk by a DigitalOcean engineer saying all DOKS clusters run Cilium; both found by search on 2026-10-30). This was not read on DigitalOcean's own product docs, which this session could not open, so check 1 in "How success is judged" proves enforcement on the real cluster before any agent runs. Whether Cilium's host name rules (`toFQDNs`) work on DOKS was not confirmed. The proxy is kept either way, because standard NetworkPolicy filters by address, not by host name.
 
 ### 3. Egress allow-list per role

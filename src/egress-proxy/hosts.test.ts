@@ -85,6 +85,15 @@ describe("parseAllowedHosts (unit: egress proxy settings)", () => {
     }
   });
 
+  it("reads an empty list as no CONNECT host at all (QA, Council and Triage)", () => {
+    expect(parseAllowedHosts("").size).toBe(0);
+    expect(parseAllowedHosts("  ").size).toBe(0);
+    expect(checkConnectTarget("github.com:443", parseAllowedHosts(""))).toMatchObject({
+      ok: false,
+      reason: "host not allowed",
+    });
+  });
+
   it("canonicalHost refuses names that look like IPv4 addresses", () => {
     expect(canonicalHost("1.2.3.4")).toBeUndefined();
     expect(canonicalHost("example.123")).toBeUndefined();

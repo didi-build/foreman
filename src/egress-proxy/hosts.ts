@@ -23,8 +23,13 @@ export function canonicalHost(name: string): string | undefined {
   return host;
 }
 
-/** Parse the comma-separated allow-list. Errors name the entry's position, never its text. */
+/**
+ * Parse the comma-separated allow-list. Empty means no CONNECT host at all, as for QA, Council
+ * and Triage, which reach only their model providers and the state API (ADR 0106 section 3).
+ * Errors name the entry's position, never its text.
+ */
 export function parseAllowedHosts(raw: string): ReadonlySet<string> {
+  if (raw.trim() === "") return new Set();
   const entries = raw.split(",").map((entry) => entry.trim());
   const hosts = new Set<string>();
   entries.forEach((entry, index) => {

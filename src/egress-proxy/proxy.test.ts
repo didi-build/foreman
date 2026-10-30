@@ -1,7 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import {
+  createServer as createHttpServer,
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type Server as HttpServer,
+} from "node:http";
 import {
   createServer as createHttpsServer,
   type Server as HttpsServer,
@@ -21,6 +26,7 @@ import { startService, type RunningService } from "../service-kit/server.ts";
 import { parseAllowedHosts } from "./hosts.ts";
 import { parseProviders } from "./providers.ts";
 import { CEILING_MESSAGE, createEgressProxy, type EgressProxy } from "./proxy.ts";
+import { parseStateApiUpstream } from "./state-api.ts";
 
 // Integration: the proxy over real sockets on localhost. No real DNS and no real network: the
 // resolver is a fake, the vetted public address is mapped to a local TCP server by the connect
@@ -30,7 +36,12 @@ const RUN_ID = "run_test_1";
 const PROVIDER_KEY = "provider-key-value-0123456789";
 const AGENT_KEY = "agent-placeholder-key-987654";
 const BODY_MARKER = "BODY-MARKER-must-not-be-logged";
+const STATE_TOKEN = "state-api-run-token-0123456789";
+const STATE_HOST = "state-api.foreman-platform.svc.cluster.local";
 const GITHUB_ADDRESS = "140.82.112.3";
+/** The public address the fake DNS gives the model provider's name. */
+const MODEL_ADDRESS = "34.120.0.10";
+const MODEL_HOST = "models.example.com";
 
 const DNS: Record<string, string[]> = {
   "github.com": [GITHUB_ADDRESS],
@@ -38,6 +49,9 @@ const DNS: Record<string, string[]> = {
   "mixed.example.com": [GITHUB_ADDRESS, "10.0.0.7"],
   "private6.example.com": ["fd00:ec2::254"],
   "mapped.example.com": ["::ffff:10.0.0.1"],
+  [MODEL_HOST]: [MODEL_ADDRESS],
+  "private-model.example.com": ["10.0.0.9"],
+  [STATE_HOST]: ["127.0.0.1"],
 };
 
 let certDir: string;
@@ -56,6 +70,32 @@ interface Seen {
 }
 let upstreamSeen: Seen[] = [];
 
+// Stand in for the in-cluster state API, and for a second private service the route must never
+// reach.
+let stateApi: HttpServer;
+let stateApiPort: number;
+let stateApiSeen: Seen[] = [];
+let otherService: HttpServer;
+let otherServicePort: number;
+let otherServiceSeen: Seen[] = [];
+
+function recordingServer(seen: () => Seen[]): HttpServer {
+  return createHttpServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = Buffer.concat(chunks);
+      seen().push({
+        path: request.url,
+        headers: request.headers,
+        bodyHash: sha256(body),
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, echoed: body.length }));
+    });
+  });
+}
+
 beforeAll(async () => {
   certDir = mkdtempSync(join(tmpdir(), "egress-proxy-test-"));
   execFileSync(
@@ -73,7 +113,7 @@ beforeAll(async () => {
       "-subj",
       "/CN=127.0.0.1",
       "-addext",
-      "subjectAltName=IP:127.0.0.1",
+      `subjectAltName=DNS:${MODEL_HOST},IP:127.0.0.1`,
       "-keyout",
       join(certDir, "key.pem"),
       "-out",
@@ -121,11 +161,20 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   upstreamPort = (upstream.address() as AddressInfo).port;
+
+  stateApi = recordingServer(() => stateApiSeen);
+  await new Promise<void>((resolve) => stateApi.listen(0, "127.0.0.1", resolve));
+  stateApiPort = (stateApi.address() as AddressInfo).port;
+  otherService = recordingServer(() => otherServiceSeen);
+  await new Promise<void>((resolve) => otherService.listen(0, "127.0.0.1", resolve));
+  otherServicePort = (otherService.address() as AddressInfo).port;
 });
 
 afterAll(async () => {
   await new Promise((resolve) => tunnelTarget.close(resolve));
   await new Promise((resolve) => upstream.close(resolve));
+  await new Promise((resolve) => stateApi.close(resolve));
+  await new Promise((resolve) => otherService.close(resolve));
   rmSync(certDir, { recursive: true, force: true });
 });
 
@@ -144,6 +193,8 @@ afterEach(async () => {
   await harness.service.stop();
   harness = undefined;
   upstreamSeen = [];
+  stateApiSeen = [];
+  otherServiceSeen = [];
 });
 
 async function start(
@@ -151,6 +202,7 @@ async function start(
     maxModelRequests?: number;
     trustTestCa?: boolean;
     dns?: Record<string, string[]>[];
+    stateApi?: boolean;
   } = {},
 ): Promise<Harness> {
   const logs: string[] = [];
@@ -163,21 +215,31 @@ async function start(
   const proxy = createEgressProxy({
     runId: RUN_ID,
     allowedHosts: parseAllowedHosts(
-      "github.com,metadata.example.com,mixed.example.com,private6.example.com,mapped.example.com,missing.example.com,rebind.example.com",
+      `github.com,metadata.example.com,mixed.example.com,private6.example.com,mapped.example.com,missing.example.com,rebind.example.com,${STATE_HOST}`,
     ),
     providers: parseProviders(
       JSON.stringify([
         {
           name: "anthropic",
-          upstream: `https://127.0.0.1:${upstreamPort}`,
+          upstream: `https://${MODEL_HOST}:${upstreamPort}`,
           credential: "x-api-key",
           secretPath: "projects/test/models/anthropic",
         },
         {
           name: "openai",
-          upstream: `https://127.0.0.1:${upstreamPort}/v1`,
+          upstream: `https://${MODEL_HOST}:${upstreamPort}/v1`,
           credential: "bearer",
           secretPath: "projects/test/models/openai",
+        },
+        {
+          name: "private",
+          upstream: `https://private-model.example.com:${upstreamPort}`,
+          credential: "none",
+        },
+        {
+          name: "literal",
+          upstream: `https://127.0.0.1:${stateApiPort}`,
+          credential: "none",
         },
       ]),
     ),
@@ -186,6 +248,10 @@ async function start(
       ["openai", PROVIDER_KEY],
     ]),
     maxModelRequests: overrides.maxModelRequests ?? 100,
+    stateApi:
+      overrides.stateApi === false
+        ? undefined
+        : parseStateApiUpstream(`http://127.0.0.1:${stateApiPort}`),
     logger,
     resolve: async (host) => {
       resolved.push(host);
@@ -199,6 +265,7 @@ async function start(
     },
     connect: (address, port) => {
       connected.push(`${address}:${port}`);
+      if (address === MODEL_ADDRESS) return netConnect(upstreamPort, "127.0.0.1");
       if (address !== GITHUB_ADDRESS)
         throw new Error(`unexpected connect to ${address}`);
       return netConnect(tunnelTargetPort, "127.0.0.1");
@@ -355,7 +422,7 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
     expect(seen.headers["x-api-key"]).toBe(PROVIDER_KEY);
     expect(seen.headers.authorization).toBeUndefined();
     expect(seen.headers["anthropic-version"]).toBe("2023-06-01");
-    expect(seen.headers.host).toBe(`127.0.0.1:${upstreamPort}`);
+    expect(seen.headers.host).toBe(`${MODEL_HOST}:${upstreamPort}`);
     expect(JSON.stringify(seen.headers)).not.toContain(AGENT_KEY);
   });
 
@@ -392,6 +459,29 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
     expect(rest).toBe("event: last\ndata: 2\n\n");
   });
 
+  it("connects to the provider's vetted address and checks the certificate against its name", async () => {
+    const { connected, resolved } = await start();
+    const response = await fetch(proxyUrl("/anthropic/v1/messages"), {
+      method: "POST",
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    expect(resolved).toEqual([MODEL_HOST]);
+    expect(connected).toEqual([`${MODEL_ADDRESS}:${upstreamPort}`]);
+  });
+
+  it.each([
+    ["a name that resolves to a private address", "/private/v1/messages"],
+    ["the state API's own address", "/literal/v1/messages"],
+  ])("refuses a provider whose upstream is %s", async (_label, path) => {
+    const { connected } = await start();
+    const response = await fetch(proxyUrl(path), { method: "POST", body: "{}" });
+    expect(response.status).toBe(502);
+    expect(connected).toEqual([]);
+    expect(upstreamSeen).toEqual([]);
+    expect(stateApiSeen).toEqual([]);
+  });
+
   it("trusts only the system's authorities when no test authority is given", async () => {
     await start({ trustTestCa: false });
     const response = await fetch(proxyUrl("/anthropic/v1/messages"), {
@@ -418,6 +508,138 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
     expect(statuses).toEqual([200, 200, 403]);
     expect(upstreamSeen).toHaveLength(2);
     expect(logs.join("\n")).toContain('"reason":"request ceiling"');
+  });
+});
+
+/** A plain HTTP request to the proxy with any request target and headers. */
+function rawRequest(
+  target: string,
+  headers: Record<string, string> = {},
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: harness?.service.port,
+      path: target,
+      headers,
+    });
+    request.on("response", (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+describe("egress proxy state API route (integration: localhost fakes, D-195)", () => {
+  it("forwards to the configured state API with the agent's token and body unchanged", async () => {
+    await start();
+    const body = Buffer.from(`{"note":"${BODY_MARKER}"}`);
+    const response = await fetch(proxyUrl("/state-api/v1/runs/abc?view=full"), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${STATE_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, echoed: body.length });
+    expect(stateApiSeen).toHaveLength(1);
+    const seen = stateApiSeen[0] as Seen;
+    expect(seen.path).toBe("/v1/runs/abc?view=full");
+    expect(seen.headers.authorization).toBe(`Bearer ${STATE_TOKEN}`);
+    expect(seen.headers.host).toBe(`127.0.0.1:${stateApiPort}`);
+    expect(seen.bodyHash).toBe(sha256(body));
+    expect(upstreamSeen).toEqual([]);
+  });
+
+  it("does not count state API calls against the model request ceiling", async () => {
+    await start({ maxModelRequests: 1 });
+    for (let i = 0; i < 3; i += 1) {
+      const response = await fetch(proxyUrl("/state-api/v1/health"));
+      expect(response.status).toBe(200);
+    }
+    const model = await fetch(proxyUrl("/anthropic/v1/messages"), {
+      method: "POST",
+      body: "{}",
+    });
+    expect(model.status).toBe(200);
+  });
+
+  it("answers 404 when the route is off, and reaches nothing", async () => {
+    await start({ stateApi: false });
+    expect((await fetch(proxyUrl("/state-api/v1/runs"))).status).toBe(404);
+    expect(stateApiSeen).toEqual([]);
+  });
+
+  it("cannot be steered to another host or port", async () => {
+    await start();
+    const other = `127.0.0.1:${otherServicePort}`;
+    // The Host header names the other service: ignored.
+    expect(await rawRequest("/state-api/v1/runs", { host: other })).toBe(200);
+    // An absolute URL is plain proxying: refused.
+    expect(await rawRequest(`http://${other}/state-api/v1/runs`, { host: other })).toBe(
+      403,
+    );
+    // Tricks in the path are not the route, or stay on the state API.
+    expect(await rawRequest(`/state-api@${other}/v1/runs`)).toBe(404);
+    expect(await rawRequest(`/state-api:${otherServicePort}/v1/runs`)).toBe(404);
+    expect(await rawRequest(`/state-api//${other}/v1/runs`)).toBe(200);
+    expect(otherServiceSeen).toEqual([]);
+    expect(stateApiSeen.map((seen) => seen.path)).toEqual([
+      "/v1/runs",
+      `//${other}/v1/runs`,
+    ]);
+    expect(
+      stateApiSeen.every((seen) => seen.headers.host === `127.0.0.1:${stateApiPort}`),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["its address as an IP literal", () => `127.0.0.1:${stateApiPort}`, 403],
+    [
+      "its name on 443, which resolves to a private address",
+      () => `${STATE_HOST}:443`,
+      403,
+    ],
+    ["its name on its own port", () => `${STATE_HOST}:${stateApiPort}`, 403],
+  ])(
+    "still refuses a CONNECT to the state API by %s",
+    async (_label, target, expected) => {
+      const { service, connected } = await start();
+      const { status, socket } = await connectThrough(service.port, target());
+      socket.destroy();
+      expect(status).toBe(expected);
+      expect(connected).toEqual([]);
+      expect(stateApiSeen).toEqual([]);
+    },
+  );
+
+  it("logs the call without its path, body or token", async () => {
+    const { logs } = await start();
+    const response = await fetch(
+      proxyUrl(`/state-api/v1/${BODY_MARKER}?t=${STATE_TOKEN}`),
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${STATE_TOKEN}` },
+        body: BODY_MARKER,
+      },
+    );
+    await response.arrayBuffer();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const entries = logs.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        message: "state api request",
+        status: 200,
+        runId: RUN_ID,
+      }),
+    );
+    const text = logs.join("\n");
+    expect(text).not.toContain(STATE_TOKEN);
+    expect(text).not.toContain(BODY_MARKER);
   });
 });
 
