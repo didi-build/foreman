@@ -33,7 +33,7 @@ Form (D-160): after the runner validates a verdict, the runner posts one check r
 ### Keys and tokens (D-159)
 
 - The QA App's private key is held only by the runner, at a secrets path (ADR 0111 section 4). It is never given to an agent and never logged.
-- Per run, the runner mints an installation token limited to one repository and the read permissions only, passes it through the agent's environment, and revokes it when the run ends.
+- Per run, the runner mints an installation token limited to one repository and the read permissions only, and revokes it when the run ends. The token never enters the QA agent's container: a separate fetch step uses it to fetch the head commit and hands QA a cleaned, read-only copy ([ADR 0106](./0106-agent-execution-environment.md) section 5, D-184).
 - This GitHub token is separate from the agent's state API token (ADR 0102), which has its own scope.
 
 ### Repo access (D-159)
