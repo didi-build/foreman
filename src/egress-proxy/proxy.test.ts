@@ -402,7 +402,7 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
     expect(upstreamSeen).toEqual([]);
   });
 
-  it("refuses model requests past the ceiling with 429", async () => {
+  it("refuses model requests past the ceiling with 403, which clients do not retry", async () => {
     const { logs } = await start({ maxModelRequests: 2 });
     const statuses: number[] = [];
     for (let i = 0; i < 3; i += 1) {
@@ -411,11 +411,11 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
         body: "{}",
       });
       statuses.push(response.status);
-      if (response.status === 429)
+      if (response.status === 403)
         expect(await response.json()).toEqual({ error: CEILING_MESSAGE });
       else await response.arrayBuffer();
     }
-    expect(statuses).toEqual([200, 200, 429]);
+    expect(statuses).toEqual([200, 200, 403]);
     expect(upstreamSeen).toHaveLength(2);
     expect(logs.join("\n")).toContain('"reason":"request ceiling"');
   });

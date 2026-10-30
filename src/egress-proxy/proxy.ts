@@ -4,7 +4,8 @@
 //    (rebinding) cannot change where the tunnel goes. TLS inside the tunnel is not decrypted.
 // 2. Model traffic: each provider is served at `/<name>` over plain HTTP inside the namespace and
 //    forwarded over TLS to its upstream. The body passes byte for byte; only the credential
-//    header changes. Requests past the run's ceiling get 429.
+//    header changes. Requests past the run's ceiling get 403, not 429: model clients retry a 429
+//    as a rate limit, and the runner must record this run as budget_exceeded, not usage_exhausted.
 // Logs carry the run id, host names, durations and outcomes. Never a payload or a credential.
 import { lookup } from "node:dns/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -183,7 +184,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
         reason: "request ceiling",
         maxModelRequests,
       });
-      sendJson(response, 429, { error: CEILING_MESSAGE });
+      sendJson(response, 403, { error: CEILING_MESSAGE });
       return true;
     }
     modelRequests += 1;
