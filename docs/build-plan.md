@@ -320,7 +320,6 @@ This is its own project, run through the factory starting with the Interview. It
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
 - A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.
-- A self-hosted model gateway (LiteLLM or Bifrost, chosen then; O-10) as a pod, with the agent runtime adapters pointed at it by changing the model endpoint setting in each bot file. OpenRouter is not chosen (D-142).
 - The state API, the GitHub receiver and agent runs are already on the cluster from the first release ([ADR 0106](./decisions/0106-agent-execution-environment.md), D-193). Move projects off Cloudflare one at a time.
 - First, import the existing Cloudflare resources of current projects into infrastructure as code, and add the proven `infra/` module to Launchpad (outside this repo; Launchpad is public, so no account ids or secrets), with a Kubernetes variant.
 - Revisit the managed Postgres (D-118) and whether to self-host Windmill because of token and cost burn.
@@ -337,7 +336,7 @@ Small models that return typed choices, scores or probabilities (D-148). They fi
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | Classification, spot decisions                                               | N-01 (small visual tweak), N-02 (Triage rubric), N-06 (severity), N-08 (PII flag), the Triage track in M3.6 |
 | Agent guardrails, LLM guardrails                                             | Screening untrusted PR text before QA                                                                       |
-| Model routing, LLM cascades                                                  | The self-hosted model gateway (O-10) and the spend alerts (M4.5)                                            |
+| Model routing, LLM cascades                                                  | Routing in the core (ADR 0114) and the spend alerts (M4.5)                                                  |
 | LLM-as-a-judge                                                               | Evidence for the QA guard (P-04), never a verdict the runner trusts on its own (P-12)                       |
 | Context compaction (with a classifier on what to compact), memory management | The deferred context graph (N-14)                                                                           |
 | Search and rerank, reranker in RAG                                           | The deferred context graph (N-14)                                                                           |
