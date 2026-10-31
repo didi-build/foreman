@@ -329,9 +329,9 @@ This is its own project, run through the factory starting with the Interview. It
 
 The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), a role for Cursor agents, and the Recruiter flows on the runner.
 
-## Milestone 9: decision models (release 3 or 4, not scheduled, not detailed)
+## Milestone 9: decision models (release 3, after the Kubernetes platform, D-216; not detailed)
 
-Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of a rule or a Sonnet call, without changing flows, and only advise (P-12). Jev's System One is a pilot candidate; compare alternatives then (O-11). Use cases and the open items they would help:
+Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of the stand-in LLM, without changing flows, and only advise (P-12). Until then a decision point is filled by a rule, or by the cheapest catalog model with structured output, never Sonnet (D-214). The first decision model is Cloudflare Clef-Flash on DeepInfra, which is compatible with Jev's System One (D-215). Use cases and the open items they would help:
 
 | Use case                                                                     | Helps with                                                                                                  |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
