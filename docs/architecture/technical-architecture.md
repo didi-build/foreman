@@ -68,10 +68,10 @@ Runs every 2 hours until Kubernetes exists, then every 5 minutes once Windmill i
 4. Advance from evidence: if an agent has pushed fixes and CI is green on the head commit, move the item to review and dispatch QA. If main has deployed to staging after a merge, dispatch the staging check.
 5. Stall check: flag running items that stopped making progress (no run activity within the run's budget window).
 6. Clean up: close gate requests that are no longer needed or are absorbed by a newer request on the same topic.
-7. Mirror: write the current state to Linear through the adapter and report mismatches (do not overwrite silently).
+7. Mirror: dropped with the Linear mirror (D-192). The pass has no mirror step.
 8. Spend: roll up cost per day, raise the alert threshold, and raise a call at `daily_spend_call_usd`.
 
-In `dry_run` mode the pass computes the same plan but writes transitions with mode `dry_run` and acts on nothing.
+In `dry_run` mode the pass computes the same plan but writes transitions with mode `dry_run` and acts on nothing. The pass also runs the GitHub polling backstop for each repository with dispatched work, before step 2 (ADR 0113 section 6). The dry-run pass is built in `src/core/reconcile.ts` (M2.4): it writes only `dry_run` transition rows and the evidence polling records, and stops if `dry_run` is false, since live mode is not built yet.
 
 ### 2.6 Contracts as data (Proposed)
 

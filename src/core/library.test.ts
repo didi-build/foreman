@@ -521,6 +521,42 @@ describe("state library (unit, build plan M1.3, schema invariants)", () => {
   });
 });
 
+describe("checking a transition without writing (unit, build plan M2.4)", () => {
+  it("answers as requestTransition would, with the evidence ids, and writes nothing", async () => {
+    const { store, library, item } = await setup();
+    const node = await item();
+    await library.requestTransition(move(node.id, "ready"));
+    await library.requestTransition(move(node.id, "in_progress"));
+    expect(await library.checkTransition(move(node.id, "done"))).toMatchObject({
+      outcome: "rejected",
+      reason: "guard_failed",
+    });
+    const green = await library.recordEvidence({
+      nodeId: node.id,
+      runId: null,
+      kind: "ci_run",
+      ref: "ci/1",
+      commitSha: null,
+      payload: { pass: true },
+      recordedBy: "test",
+    });
+    expect(await library.checkTransition(move(node.id, "done"))).toEqual({
+      outcome: "allowed",
+      guardReport: [{ name: "ci_green", pass: true, evidenceIds: [green.id] }],
+      evidenceIds: [green.id],
+    });
+    expect(await library.checkTransition(move(node.id, "in_progress"))).toMatchObject({
+      outcome: "noop",
+    });
+    expect(await library.checkTransition(move(node.id, "triage"))).toMatchObject({
+      outcome: "rejected",
+      reason: "illegal_move",
+    });
+    expect(await store.listTransitions(node.id)).toHaveLength(2);
+    expect(await stateOf(store, node.id)).toBe("in_progress");
+  });
+});
+
 describe("escalation keywords never match as states (unit, ADR 0105)", () => {
   /** Hand-built, unvalidated contracts: the library must stay safe without the validator. */
   async function keywordLibrary(contracts: Contracts) {

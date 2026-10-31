@@ -256,6 +256,74 @@ function tokensJson(tokens: RunTokens): Json {
   return counts;
 }
 
+/** The run a dispatch records. `planDispatch` builds one with a planned id and never stores it. */
+function newRun(
+  id: string,
+  node: Node,
+  request: DispatchRequest,
+  budget: RunLimits,
+  now: Date,
+): Run {
+  return {
+    id,
+    projectId: node.projectId,
+    nodeId: node.id,
+    bot: request.role,
+    agentId: request.agentId ?? null,
+    runtime: request.runtime,
+    model: request.model,
+    headSha: request.headSha ?? null,
+    prNumber: request.prNumber ?? null,
+    botVersion: request.botVersion,
+    startedAt: now,
+    endedAt: null,
+    outcome: null,
+    turns: null,
+    minutes: null,
+    costUsd: null,
+    tokens: null,
+    budget: { ...budget },
+    parentRunId: request.parentRunId ?? null,
+    transcriptRef: null,
+    usageExhaustedCause: null,
+    retryAfterSeconds: null,
+  };
+}
+
+/**
+ * Every admission rule, read-only: the kill switch, the usage-exhausted wait and the capacity
+ * rules over the active runs plus `alsoActive`. Returns the node when admitted.
+ */
+async function admission(
+  store: StoreOps,
+  request: DispatchRequest,
+  now: Date,
+  alsoActive: readonly Run[],
+): Promise<
+  Exclude<DispatchResult, { admitted: true }> | { admitted: true; node: Node }
+> {
+  if ((await store.getSetting("kill_switch"))?.value === true) {
+    return { admitted: false, reason: "kill_switch" };
+  }
+  const node = await store.getNode(request.nodeId);
+  if (!node) throw new LibraryError(`No node ${request.nodeId}`);
+  const queued = await queuedDispatch(store, node.id, now);
+  if (queued && !queued.ready) {
+    return { admitted: false, reason: "usage_exhausted_wait" };
+  }
+  const refusal = admissionRefusal(
+    request,
+    node,
+    [...(await store.listActiveRuns()), ...alsoActive],
+    await positiveIntegerSetting(store, "agent_cluster_max_active_runs"),
+  );
+  return refusal ?? { admitted: true, node };
+}
+
+/** The id a planned run carries. It is never stored, so it cannot collide with a real run. */
+export const plannedRunId = (nodeId: string, role: AgentRole): string =>
+  `planned:${role}:${nodeId}`;
+
 export function createRuns({ store, clock, ids, limits }: RunsOptions) {
   return {
     /**
@@ -268,50 +336,34 @@ export function createRuns({ store, clock, ids, limits }: RunsOptions) {
       const budget = limits[request.role];
       return store.transaction(async (tx) => {
         await tx.lockRunAdmission();
-        if ((await tx.getSetting("kill_switch"))?.value === true) {
-          return { admitted: false, reason: "kill_switch" };
-        }
-        const node = await tx.getNode(request.nodeId);
-        if (!node) throw new LibraryError(`No node ${request.nodeId}`);
         const now = clock.now();
-        const queued = await queuedDispatch(tx, node.id, now);
-        if (queued && !queued.ready) {
-          return { admitted: false, reason: "usage_exhausted_wait" };
-        }
-        const refusal = admissionRefusal(
-          request,
-          node,
-          await tx.listActiveRuns(),
-          await positiveIntegerSetting(tx, "agent_cluster_max_active_runs"),
-        );
-        if (refusal) return refusal;
-        const run: Run = {
-          id: ids.next(),
-          projectId: node.projectId,
-          nodeId: node.id,
-          bot: request.role,
-          agentId: request.agentId ?? null,
-          runtime: request.runtime,
-          model: request.model,
-          headSha: request.headSha ?? null,
-          prNumber: request.prNumber ?? null,
-          botVersion: request.botVersion,
-          startedAt: now,
-          endedAt: null,
-          outcome: null,
-          turns: null,
-          minutes: null,
-          costUsd: null,
-          tokens: null,
-          budget: { ...budget },
-          parentRunId: request.parentRunId ?? null,
-          transcriptRef: null,
-          usageExhaustedCause: null,
-          retryAfterSeconds: null,
-        };
+        const admitted = await admission(tx, request, now, []);
+        if (!admitted.admitted) return admitted;
+        const run = newRun(ids.next(), admitted.node, request, budget, now);
         await tx.insertRun(run);
         return { admitted: true, run };
       });
+    },
+
+    /**
+     * The dry-run path (M2.4): the same admission rules as `dispatch`, and it writes nothing.
+     * `planned` are runs this caller has already planned in the same pass; they count as
+     * active, so a pass never plans past the Developer or cluster limit. An admitted plan
+     * returns the run `dispatch` would record, with a planned id (`plannedRunId`), unsaved.
+     */
+    async planDispatch(
+      request: DispatchRequest,
+      planned: readonly Run[] = [],
+    ): Promise<DispatchResult> {
+      checkDispatchRequest(request);
+      const now = clock.now();
+      const admitted = await admission(store, request, now, planned);
+      if (!admitted.admitted) return admitted;
+      const id = plannedRunId(admitted.node.id, request.role);
+      return {
+        admitted: true,
+        run: newRun(id, admitted.node, request, limits[request.role], now),
+      };
     },
 
     /**
