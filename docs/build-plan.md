@@ -330,7 +330,7 @@ The full intake agent for Machine 1 (the interview as a chat with the Council, C
 
 ## Milestone 9: decision models (release 3, after the Kubernetes platform, D-216; not detailed)
 
-Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of the stand-in LLM, without changing flows, and only advise (P-12). Until then a decision point is filled by a rule, or by the cheapest catalog model with structured output, never Sonnet (D-214). The first decision model is Cloudflare Clef-Flash on DeepInfra, which is compatible with Jev's System One (D-215). Use cases and the open items they would help:
+Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of the stand-in LLM, without changing flows, and only advise (P-12). Until then a decision point is filled by a rule, or by the cheapest catalog model with structured output, never Sonnet (D-214). The first decision model is Nace.AI Drex v2.0 on DeepInfra, with Cloudflare Clef-Flash as the alternative; both are compatible with Jev's System One, and the scorecard compares them (D-215). It comes before the Scanner (Milestone 10) and self-improvement (Milestone 11), which both build on it (D-216). Use cases and the open items they would help:
 
 | Use case                                                                     | Helps with                                                                                                  |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
