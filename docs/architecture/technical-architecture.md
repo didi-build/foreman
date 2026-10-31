@@ -267,3 +267,4 @@ Rules:
 | 0111 | Conventions that make the move to Kubernetes cheap                                         | M0 (M0.8)         |
 | 0112 | QA runtime, GitHub access and independence                                                 | M0, built in M3.2 |
 | 0113 | GitHub evidence ingestion                                                                  | M2 (M2.3)         |
+| 0114 | Model evaluation, routing and service tiers (proposed, review point)                       | M3.2, M4.5        |
