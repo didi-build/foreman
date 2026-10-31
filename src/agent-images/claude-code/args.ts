@@ -1,28 +1,12 @@
 // The exact Claude Code command for a Developer or Designer run (ADR 0106 sections 4 to 6, D-172).
 // Pure: the same settings and task give the same command. The CLI is called by its path with an
 // argument list, never through a shell, so nothing in the task is ever parsed as shell syntax.
+import { passedThrough } from "../shared/environment.ts";
 import type { AgentTaskFile } from "../shared/task.ts";
 import { PLACEHOLDER_CREDENTIAL, type ImageSettings } from "../shared/settings.ts";
 
 /** One argument is capped at 128 KiB on Linux; keep the prompt and instructions well below. */
 export const MAX_ARGUMENT_BYTES = 100 * 1024;
-
-/** Variables passed through from the pod to the CLI when set. Nothing else reaches it. */
-const PASSED_THROUGH = [
-  "PATH",
-  "TMPDIR",
-  "LANG",
-  "HTTPS_PROXY",
-  "https_proxy",
-  "NO_PROXY",
-  "no_proxy",
-  "GITHUB_TOKEN",
-  "FOREMAN_RUN_ID",
-  "FOREMAN_ROLE",
-  "FOREMAN_REPOSITORY",
-  "FOREMAN_STATE_API_URL",
-  "FOREMAN_STATE_API_TOKEN",
-] as const;
 
 export interface ClaudeCommand {
   /** The pinned CLI's absolute path. */
@@ -83,11 +67,8 @@ export function claudeCommand(
     "--",
     task.input,
   ];
-  const passed: Record<string, string> = {};
-  for (const name of PASSED_THROUGH) {
-    const value = env[name];
-    if (value !== undefined) passed[name] = value;
-  }
+  // Variables passed through from the pod when set (../shared/environment.ts).
+  const passed = passedThrough(env);
   return {
     file: cliPath,
     args,

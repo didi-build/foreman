@@ -44,9 +44,13 @@ export const STATE_TOKEN = "state-token-value-not-real-0123456789";
 export const GITHUB_TOKEN = "github-token-value-not-real-0123456789";
 export const MODEL_SECRET_PATH = "projects/rehearsal/models/anthropic";
 
+/** The Developer and Designer image (D-222) and the Messages API image (QA, Council, Triage). */
+export const OPENCODE_IMAGE = `registry.example.com/foreman/opencode${digest("c")}`;
+export const CLAUDE_API_IMAGE = `registry.example.com/foreman/claude-api${digest("d")}`;
+
 const base = {
   projectSlug: "rehearsal",
-  image: `registry.example.com/foreman/claude-code${digest("c")}`,
+  image: CLAUDE_API_IMAGE,
   model: "claude-sonnet-5-5",
   providers: [
     {
@@ -55,6 +59,7 @@ const base = {
       credential: "x-api-key" as const,
       secretPath: MODEL_SECRET_PATH,
       baseUrlEnv: "ANTHROPIC_BASE_URL",
+      api: { kind: "anthropic" as const, path: "/v1" },
     },
   ],
   serviceTier: "standard" as const,
@@ -65,13 +70,14 @@ const base = {
     },
   },
   flexCapacityRetries: 3,
-  maxRejectedModelRequests: 5,
+  maxRejectedModelRequests: 6,
 };
 
 export const DEVELOPER: KubernetesRunSpec = {
   ...base,
   runId: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
   role: "developer",
+  image: OPENCODE_IMAGE,
   repository: "didi-build/rehearsal",
   allowedHosts: ["github.com", "api.github.com", "registry.npmjs.org"],
 };

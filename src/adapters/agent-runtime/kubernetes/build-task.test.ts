@@ -53,7 +53,7 @@ function parts(extra: Partial<KubernetesTaskParts> = {}): KubernetesTaskParts {
       },
     ],
     input: "Fixture input.",
-    capacity: { flexCapacityRetries: 3, maxRejectedModelRequests: 5 },
+    capacity: { flexCapacityRetries: 3, maxRejectedModelRequests: 6 },
     stateApiToken: STATE_TOKEN,
     githubToken: GITHUB_TOKEN,
     modelCredentials: { [MODEL_SECRET_PATH]: MODEL_KEY, [OTHER_PATH]: OTHER_KEY },
