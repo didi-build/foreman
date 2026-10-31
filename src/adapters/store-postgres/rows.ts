@@ -184,6 +184,7 @@ export const toRun = (r: Row): Run => ({
   capacityWaitSeconds: r.capacity_wait_seconds as number | null,
   firstTokenMs: r.first_token_ms as number | null,
   reportedCostUsd: num(r.reported_cost_usd),
+  modelPrice: r.model_price as Run["modelPrice"],
 });
 
 export const toRunToken = (r: Row): RunToken => ({

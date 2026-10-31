@@ -159,6 +159,7 @@ describe("run Jobs (unit: budgets enforced by Kubernetes, ADR 0106 section 6)", 
     );
     const agent = stage.clientJob(PROXY_IP);
     expect(value(agent, "FOREMAN_SERVICE_TIER")).toBe("flex");
+    expect(JSON.parse(value(agent, "FOREMAN_MODEL_PRICE") ?? "")).toEqual(QA.price);
     expect(value(agent, "FOREMAN_MAX_MINUTES")).toBe("20");
     expect(value(agent, "FOREMAN_FLEX_CAPACITY_RETRIES")).toBe("2");
     expect(value(stage.proxyJob, "MAX_REJECTED_MODEL_REQUESTS")).toBe("4");
@@ -506,6 +507,32 @@ describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
       "no rejected-request ceiling",
       { ...DEVELOPER, maxRejectedModelRequests: 0 },
       /maxRejectedModelRequests/,
+    ],
+    [
+      "a run with no price (ADR 0114 section 5)",
+      { ...DEVELOPER, price: null as never },
+      /price must be an object/,
+    ],
+    [
+      "a price with no Standard price",
+      {
+        ...DEVELOPER,
+        price: {
+          tiers: ["standard", "flex"],
+          pricePerMTok: { flex: { input: 1, cachedInput: 0.1, output: 2 } },
+        },
+        serviceTier: "flex",
+      },
+      /price has no Standard price/,
+    ],
+    [
+      "a price with none for the requested, supported tier",
+      {
+        ...DEVELOPER,
+        price: { ...DEVELOPER.price, tiers: ["standard", "flex"] },
+        serviceTier: "flex",
+      },
+      /price has no price for the requested tier/,
     ],
     [
       "a provider named state-api",

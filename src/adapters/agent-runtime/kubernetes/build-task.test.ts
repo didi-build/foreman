@@ -17,6 +17,7 @@ import {
   STATE_TOKEN,
 } from "./fixtures.ts";
 import { createKubernetesRuntime } from "./runtime.ts";
+import { firstRunPrice } from "../../../core/routing-testing.ts";
 
 const OTHER_PATH = "projects/rehearsal/models/deepinfra";
 const OTHER_KEY = "other-model-key-value-not-real-0123";
@@ -29,6 +30,7 @@ function parts(extra: Partial<KubernetesTaskParts> = {}): KubernetesTaskParts {
       model: "claude-sonnet-5-5",
       provider: "anthropic",
       serviceTierRequested: "standard",
+      modelPrice: firstRunPrice("claude-sonnet-5-5"),
       nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
       headSha: null,
       prNumber: null,
@@ -90,6 +92,15 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     });
   });
 
+  it("passes the price recorded on the run, and refuses a run without one (ADR 0114 section 5)", () => {
+    const task = buildKubernetesTask(parts());
+    expect(task.price).toEqual(firstRunPrice("claude-sonnet-5-5"));
+    const run = { ...parts().run, modelPrice: null };
+    expect(() => buildKubernetesTask(parts({ run }))).toThrow(
+      "the run has no recorded price",
+    );
+  });
+
   it("refuses a run whose provider has no provider setting", () => {
     const others = parts().providers.filter((p) => p.name !== "anthropic");
     expect(() => buildKubernetesTask(parts({ providers: others }))).toThrow(
@@ -106,6 +117,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
           model: "claude-opus-5-5",
           provider: "anthropic",
           serviceTierRequested: "standard",
+          modelPrice: firstRunPrice("claude-opus-5-5"),
           nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
           headSha: QA.headSha ?? null,
           prNumber: QA.prNumber ?? null,
@@ -145,6 +157,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
           model: "claude-opus-5-5",
           provider: "anthropic",
           serviceTierRequested: "standard",
+          modelPrice: firstRunPrice("claude-opus-5-5"),
           nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
           headSha: QA.headSha ?? null,
           prNumber: QA.prNumber ?? null,

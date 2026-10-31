@@ -1,6 +1,6 @@
 // Builds the task `start` takes from the run the core admitted (ADR 0106 section 5, ADR 0107,
-// ADR 0114 sections 5, 8 and 9). The model, the provider and the tier come from the run's route,
-// and the Flex capacity bounds from the runner's settings (`runCapacityLimits`). The run's proxy
+// ADR 0114 sections 5, 8 and 9). The model, the provider, the tier and the price come from the
+// run's route as recorded on the run, and the Flex capacity bounds from the runner's settings (`runCapacityLimits`). The run's proxy
 // gets only the route's provider, so a run can reach no other provider and its proxy holds no
 // other provider's credential. The instructions and tools come from the bot file; the input is
 // the core's (src/core/task-input.ts). Credential values pass through to `start` and are never
@@ -35,6 +35,7 @@ export interface KubernetesTaskParts {
     | "model"
     | "provider"
     | "serviceTierRequested"
+    | "modelPrice"
     | "nodeId"
     | "headSha"
     | "prNumber"
@@ -75,6 +76,8 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
   if (!provider || providers.length !== 1) {
     throw new Error("the run's provider needs exactly one provider setting");
   }
+  // Without its recorded price the run's dollar limit cannot be enforced: fail closed.
+  if (!run.modelPrice) throw new Error("the run has no recorded price");
   const models: Record<string, string> = {};
   if (provider.secretPath) {
     const value = parts.modelCredentials[provider.secretPath];
@@ -110,6 +113,7 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
     allowedHosts: [...bot.allowedHosts],
     providers: [{ ...provider }],
     serviceTier: run.serviceTierRequested,
+    price: structuredClone(run.modelPrice),
     flexCapacityRetries: parts.capacity.flexCapacityRetries,
     maxRejectedModelRequests: parts.capacity.maxRejectedModelRequests,
     credentials: {

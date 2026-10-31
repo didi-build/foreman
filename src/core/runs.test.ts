@@ -13,6 +13,7 @@ import {
   FIRST_MODEL_CATALOG,
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
+  firstRunPrice,
   seedRoutingSettings,
   TEST_TASK_TYPES,
 } from "./routing-testing.ts";
@@ -159,7 +160,6 @@ async function setup(clusterLimit: number | null = 10) {
     outcome: "success",
     turns: 12,
     minutes: 4.5,
-    costUsd: 0.42,
     tokens: {
       uncachedInput: 1200,
       cachedInput: 48000,
@@ -478,6 +478,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
         capacityWaitSeconds: null,
         firstTokenMs: null,
         reportedCostUsd: null,
+        modelPrice: firstRunPrice(model),
       });
     },
   );
@@ -629,7 +630,9 @@ describe("run ends (ADR 0107 outcomes)", () => {
       outcome: "success",
       turns: 12,
       minutes: 4.5,
-      costUsd: 0.42,
+      // Worked out by the core at Sonnet 5.5's Standard price: 1200 x 2 + 48000 x 0.2 +
+      // 3000 x 2.5 + 900 x 10, per million.
+      costUsd: 0.0285,
       tokens: {
         uncachedInput: 1200,
         cachedInput: 48000,
@@ -672,7 +675,7 @@ describe("run ends (ADR 0107 outcomes)", () => {
       t.report({ usageExhaustedCause: "rate_limit" }),
       t.report({ retryAfterSeconds: 60 }),
       t.report({ turns: -1 }),
-      t.report({ costUsd: Number.NaN }),
+      t.report({ minutes: Number.NaN }),
       t.report({ tokens: { uncachedInput: 1.5, cachedInput: 0, output: 0 } }),
     ]) {
       await expect(t.runs.recordEnd(runId, bad)).rejects.toThrow(LibraryError);
@@ -952,6 +955,161 @@ describe("what the runtime measured about the route (ADR 0114 sections 2, 8 and 
       await expect(t.runs.recordEnd(runId, t.report(bad))).rejects.toThrow(field);
     }
     expect((await t.store.getRun(runId))?.endedAt).toBeNull();
+  });
+});
+
+describe("cost_usd from the run's recorded price (ADR 0114 sections 2, 5 and 8, O-25)", () => {
+  /** An open model of another family on DeepInfra, for the tests only. Not a real catalog entry. */
+  const OPEN_MODEL = "test/qwen-coder";
+  const openCatalog = (version: string, standardInput: number): Json => ({
+    version,
+    models: {
+      ...FIRST_MODEL_CATALOG.models,
+      [OPEN_MODEL]: {
+        provider: "deepinfra",
+        family: "qwen",
+        tiers: ["standard", "flex"],
+        // No cache-write price: DeepInfra lists none (docs/costs.md section 2).
+        pricePerMTok: {
+          standard: { input: standardInput, cachedInput: 0.1, output: 1 },
+          flex: { input: 0.24, cachedInput: 0.08, output: 0.8 },
+        },
+        maxOutputTokens: 16384,
+        resold: false,
+        priceSource: "test",
+        priceReadOn: "2026-10-31",
+      },
+    },
+  });
+  const ONE_MILLION_EACH = {
+    uncachedInput: 1_000_000,
+    cachedInput: 1_000_000,
+    cacheWriteInput: 1_000_000,
+    output: 1_000_000,
+  };
+
+  /** A Developer run routed to the open model on Flex, ended with one million of each token. */
+  async function openRun() {
+    const t = await setup();
+    await t.setting("model_catalog", openCatalog("test.1", 0.3));
+    await t.setting("model_routing_policy", {
+      version: "test.1",
+      qaIndependence: "model_id",
+      taskTypes: {
+        "developer:code": {
+          candidates: [{ provider: "deepinfra", model: OPEN_MODEL, tier: "flex" }],
+          onCapacity: "wait",
+        },
+      },
+    });
+    const runId = await t.started(t.request(await t.item()));
+    return { t, runId };
+  }
+
+  async function costAt(served: RunReport["serviceTierServed"]) {
+    const { t, runId } = await openRun();
+    await t.runs.recordEnd(
+      runId,
+      t.report({
+        tokens: ONE_MILLION_EACH,
+        serviceTierServed: served,
+        reportedCostUsd: 9,
+      }),
+    );
+    return t.store.getRun(runId);
+  }
+
+  it("records the route's catalog entry on the run at admission", async () => {
+    const { t, runId } = await openRun();
+    expect((await t.store.getRun(runId))?.modelPrice).toEqual({
+      tiers: ["standard", "flex"],
+      pricePerMTok: {
+        standard: { input: 0.3, cachedInput: 0.1, output: 1 },
+        flex: { input: 0.24, cachedInput: 0.08, output: 0.8 },
+      },
+    });
+  });
+
+  it.each([
+    // Cache writes at the uncached input rate, since the catalog lists no cache-write price.
+    ["flex", 0.24 + 0.08 + 0.24 + 0.8],
+    ["standard", 0.3 + 0.1 + 0.3 + 1],
+    // Not a tier the provider supports for the model: billed at Standard.
+    ["priority", 0.3 + 0.1 + 0.3 + 1],
+    // ADR 0114 section 8: a mixed or unknown run is priced at Standard.
+    ["mixed", 0.3 + 0.1 + 0.3 + 1],
+    [null, 0.3 + 0.1 + 0.3 + 1],
+  ] as const)("prices a run served at %s", async (served, expected) => {
+    const run = await costAt(served);
+    expect(run?.costUsd).toBeCloseTo(expected, 9);
+    // The runtime's own figure is kept apart.
+    expect(run?.reportedCostUsd).toBe(9);
+  });
+
+  it("prices today's Claude routes at the catalog's Standard price, cache writes included", async () => {
+    const t = await setup();
+    const runId = await t.started(t.request(await t.item(), "qa"));
+    await t.runs.recordEnd(
+      runId,
+      t.report({ tokens: ONE_MILLION_EACH, serviceTierServed: "standard" }),
+    );
+    // Opus 5.5: 4 + 0.2 + 5 + 20.
+    expect((await t.store.getRun(runId))?.costUsd).toBeCloseTo(29.2, 9);
+  });
+
+  it("is reproducible: a later catalog change does not change how a recorded run is priced", async () => {
+    const { t, runId } = await openRun();
+    // The catalog moves on after admission, with a new version and a new Standard price.
+    await t.setting("model_catalog", openCatalog("test.2", 3));
+    await t.runs.recordEnd(
+      runId,
+      t.report({ tokens: ONE_MILLION_EACH, serviceTierServed: "standard" }),
+    );
+    const run = await t.store.getRun(runId);
+    expect(run?.modelCatalogVersion).toBe("test.1");
+    expect(run?.costUsd).toBeCloseTo(1.7, 9);
+    // A run admitted under the new catalog records and pays the new price.
+    const later = await t.started(t.request(await t.item()));
+    await t.runs.recordEnd(
+      later,
+      t.report({ tokens: ONE_MILLION_EACH, serviceTierServed: "standard" }),
+    );
+    expect((await t.store.getRun(later))?.costUsd).toBeCloseTo(3 + 0.1 + 3 + 1, 9);
+  });
+
+  it("records no cost without tokens, or for a run with no recorded price", async () => {
+    const t = await setup();
+    const runId = await t.started(t.request(await t.item()));
+    expect(await t.runs.recordRunnerEnd(runId, "cancelled")).toBe(true);
+    expect((await t.store.getRun(runId))?.costUsd).toBeNull();
+
+    const nodeId = await t.item();
+    const unpriced = await t.started(t.request(nodeId));
+    const stored = await t.store.getRun(unpriced);
+    if (!stored) throw new Error("no run");
+    // A run without a price (none is admitted so; this stands in for a row written by hand).
+    const runs = createRuns({
+      store: {
+        ...t.store,
+        transaction: (work) =>
+          t.store.transaction((tx) =>
+            work({
+              ...tx,
+              getRun: async (id) =>
+                id === unpriced ? { ...stored, modelPrice: null } : tx.getRun(id),
+            }),
+          ),
+      },
+      clock: { now: () => new Date(START) },
+      ids: { next: () => "unused" },
+      limits: REHEARSAL_RUN_LIMITS,
+      taskTypes: TEST_TASK_TYPES,
+    });
+    expect(await runs.recordEnd(unpriced, t.report())).toBe(true);
+    expect(await t.store.getRun(unpriced)).toMatchObject({
+      outcome: "success",
+      costUsd: null,
+    });
   });
 });
 

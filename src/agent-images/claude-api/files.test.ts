@@ -6,10 +6,9 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { createWorkspace, type FileReadLog } from "./files.ts";
-import { hasPrice, requestCostUsd } from "./pricing.ts";
 
-// Unit: QA's read-only file tool over a fixture tree (ADR 0112), and the price table the
-// dollar limit uses (ADR 0106 section 6). Local files only.
+// Unit: QA's read-only file tool over a fixture tree (ADR 0112). Local files only. The dollar
+// limit's prices come from the run's catalog entry and are tested in ../shared/shared.test.ts.
 
 const ADD_TS = "export function add(a: number, b: number) {\n  return a - b;\n}\n";
 
@@ -90,50 +89,5 @@ describe("workspace tools (unit: read, search and list only, inside the tree)", 
       isError: true,
       content: "path must be a string",
     });
-  });
-});
-
-describe("prices (unit: the dollar limit's arithmetic)", () => {
-  it("prices uncached input, cache reads, cache writes and output apart", () => {
-    // 1M of each at Opus 5.5: 4 + 0.2 + 5 + 20.
-    expect(
-      requestCostUsd("claude-opus-5-5", {
-        uncachedInput: 1_000_000,
-        cachedInput: 1_000_000,
-        cacheWriteInput: 1_000_000,
-        output: 1_000_000,
-      }),
-    ).toBeCloseTo(29.2, 6);
-    expect(
-      requestCostUsd("claude-sonnet-5-5", {
-        uncachedInput: 1000,
-        cachedInput: 0,
-        output: 1000,
-      }),
-    ).toBeCloseTo(0.012, 9);
-  });
-
-  it("uses Haiku 5.5's long-prompt rate card above 100K prompt tokens", () => {
-    const short = {
-      uncachedInput: 100_000,
-      cachedInput: 0,
-      cacheWriteInput: 0,
-      output: 0,
-    };
-    const long = { ...short, uncachedInput: 100_001 };
-    expect(requestCostUsd("claude-haiku-5-5", short)).toBeCloseTo(0.01, 9);
-    expect(requestCostUsd("claude-haiku-5-5", long)).toBeCloseTo(0.0500005, 9);
-  });
-
-  it("fails closed for a model with no price", () => {
-    expect(hasPrice("claude-opus-5-5")).toBe(true);
-    expect(hasPrice("some-other-model")).toBe(false);
-    expect(() =>
-      requestCostUsd("some-other-model", {
-        uncachedInput: 1,
-        cachedInput: 0,
-        output: 0,
-      }),
-    ).toThrow(/no price/);
   });
 });

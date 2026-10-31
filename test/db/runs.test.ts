@@ -16,6 +16,7 @@ import {
   FIRST_MODEL_CATALOG,
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
+  firstRunPrice,
   TEST_TASK_TYPES,
 } from "../../src/core/routing-testing.ts";
 import {
@@ -146,7 +147,6 @@ describe.skipIf(!adminUrl)(
           outcome: "cancelled",
           turns: null,
           minutes: null,
-          costUsd: null,
           tokens: null,
         });
       }
@@ -235,7 +235,6 @@ describe.skipIf(!adminUrl)(
           retryAfterSeconds: 3600,
           turns: 3,
           minutes: 1.25,
-          costUsd: 0.07,
           tokens: { uncachedInput: 500, cachedInput: 20000, output: 300 },
         }),
       ).toBe(true);
@@ -244,6 +243,8 @@ describe.skipIf(!adminUrl)(
         usageExhaustedCause: "out_of_credit",
         retryAfterSeconds: 3600,
         minutes: 1.25,
+        // The core's figure at Sonnet 5.5's Standard price: 500 x 2 + 20000 x 0.2 + 300 x 10.
+        costUsd: 0.008,
         tokens: { uncachedInput: 500, cachedInput: 20000, output: 300 },
       });
       expect(await store.listActiveRuns()).toEqual([]);
@@ -290,7 +291,6 @@ describe.skipIf(!adminUrl)(
           usageExhaustedCause: "capacity",
           turns: 4,
           minutes: 6,
-          costUsd: 0.12,
           tokens: null,
           serviceTierServed: "standard",
           capacityRetries: 3,
@@ -333,6 +333,58 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("records the route's price on the run, and prices the end from it after the catalog changes (migration 0008)", async () => {
+      const nodeId = await item(await project());
+      const result = await runs.dispatch(request(nodeId, "qa"), credential());
+      if (!result.admitted) throw new Error(result.reason);
+      expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
+        firstRunPrice("claude-opus-5-5"),
+      );
+      const catalog = FIRST_MODEL_CATALOG;
+      try {
+        // A new catalog version at ten times Opus 5.5's price, set after admission.
+        const opus = catalog.models["claude-opus-5-5"];
+        await setting(ROUTING_SETTINGS.catalog, {
+          version: "test.2",
+          models: {
+            ...catalog.models,
+            "claude-opus-5-5": {
+              ...opus,
+              pricePerMTok: {
+                standard: { input: 40, cachedInput: 2, cacheWrite: 50, output: 200 },
+              },
+            },
+          },
+        });
+        await runs.recordEnd(result.run.id, {
+          outcome: "success",
+          turns: 2,
+          minutes: 1,
+          tokens: {
+            uncachedInput: 1000,
+            cachedInput: 4000,
+            cacheWriteInput: 4000,
+            output: 170,
+          },
+          serviceTierServed: "standard",
+          reportedCostUsd: 0.5,
+        });
+        // 1000 x 4 + 4000 x 0.2 + 4000 x 5 + 170 x 20, per million, at the recorded price.
+        expect(await store.getRun(result.run.id)).toMatchObject({
+          modelCatalogVersion: catalog.version,
+          costUsd: 0.0282,
+          reportedCostUsd: 0.5,
+        });
+      } finally {
+        await setting(ROUTING_SETTINGS.catalog, catalog);
+      }
+      await expect(
+        pool.query("update factory.runs set model_price = '[]' where id = $1", [
+          result.run.id,
+        ]),
+      ).rejects.toThrow(/check constraint/);
+    });
+
     it("records the route on the run and its decision record in the admitting transaction", async () => {
       const nodeId = await item(await project());
       const result = await runs.dispatch(request(nodeId, "qa"), credential());
@@ -371,7 +423,6 @@ describe.skipIf(!adminUrl)(
         outcome: "success",
         turns: 1,
         minutes: 1,
-        costUsd: 0,
         tokens: null,
       });
       const existing = await pool.query(

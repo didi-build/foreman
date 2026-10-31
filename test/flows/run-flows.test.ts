@@ -468,7 +468,9 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
       outcome: "success",
       turns: 12,
       minutes: 6,
-      costUsd: 0.4,
+      // The core's figure, at the run's recorded Sonnet 5.5 price: 100 x 2 + 900 x 0.2 + 50 x 10.
+      costUsd: 0.00088,
+      reportedCostUsd: 0.4,
     });
     expect(ended?.tokens).toEqual(RESULT.tokens);
     expect(JSON.stringify(ended)).not.toContain(RESULT.finalText);
@@ -528,7 +530,7 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
     expect((await f.store.getRun(input.runId))?.endedAt).toEqual(endedAt);
   });
 
-  it("records what the runtime measured about the route, and keeps its cost as the reported cost", async () => {
+  it("records what the runtime measured about the route, keeps its cost as the reported cost, and prices the run itself", async () => {
     const { f, input } = await activeRun();
     f.runtime.status.set(input.runId, {
       state: "finished",
@@ -541,7 +543,7 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
     });
     await recordRunEnd(f.deps, input);
     expect(await f.store.getRun(input.runId)).toMatchObject({
-      costUsd: 0.4,
+      costUsd: 0.00088,
       reportedCostUsd: 0.4,
       serviceTierServed: "standard",
       capacityRetries: 0,

@@ -2,6 +2,7 @@
 // implements it (src/adapters/store-postgres/). Shapes follow the factory schema (ADR 0104).
 // Ids and times are always passed in: the core takes them from its injected id source and
 // clock (D-162), so nothing here generates them.
+import type { RunPrice } from "./routing.ts";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -231,6 +232,11 @@ export interface Run {
   firstTokenMs: number | null;
   /** The runtime's own cost figure, kept for comparison with `costUsd`. */
   reportedCostUsd: number | null;
+  /**
+   * The route's prices from the catalog version on the run, copied at admission (migration 0008).
+   * `costUsd` is worked out from it. Null only for a run recorded without one: it is not priced.
+   */
+  modelPrice: RunPrice | null;
 }
 
 /** A provider service tier (ADR 0114 section 8). */

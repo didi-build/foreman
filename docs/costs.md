@@ -40,11 +40,11 @@ Cache write prices on DeepInfra are not listed. Some models on the page also car
 
 **Anthropic, direct, for comparison:**
 
-| Model             | Input | Cached input | Output | Note                                                                                                          |
-| ----------------- | ----- | ------------ | ------ | ------------------------------------------------------------------------------------------------------------- |
-| Claude Haiku 5.5  | 0.10  | 0.01         | 0.50   | Cached input from `src/agent-images/claude-api/pricing.ts`. A higher rate applies above 100,000 prompt tokens |
-| Claude Sonnet 5.5 | 2     | 0.20         | 10     | Anthropic list price                                                                                          |
-| Claude Opus 5.5   | 4     | 0.20         | 20     | Anthropic list price                                                                                          |
+| Model             | Input | Cached input | Output | Note                                                                                                                                                                                              |
+| ----------------- | ----- | ------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Haiku 5.5  | 0.10  | 0.01         | 0.50   | Cached input from the price table the Messages API image had before the model catalog replaced it. A higher rate applies above 100,000 prompt tokens, which the catalog does not model yet (O-26) |
+| Claude Sonnet 5.5 | 2     | 0.20         | 10     | Anthropic list price                                                                                                                                                                              |
+| Claude Opus 5.5   | 4     | 0.20         | 20     | Anthropic list price                                                                                                                                                                              |
 
 ## 3. Workload model
 

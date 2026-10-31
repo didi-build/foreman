@@ -58,6 +58,12 @@ const base = {
     },
   ],
   serviceTier: "standard" as const,
+  price: {
+    tiers: ["standard" as const],
+    pricePerMTok: {
+      standard: { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 10 },
+    },
+  },
   flexCapacityRetries: 3,
   maxRejectedModelRequests: 5,
 };
