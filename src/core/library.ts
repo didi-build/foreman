@@ -83,6 +83,21 @@ export class LibraryError extends Error {
 /** Thrown inside a transaction when another writer moved the node first; the write rolls back. */
 class LostRace extends Error {}
 
+/** Thrown inside a transaction when the writes that go with a move refuse; it all rolls back. */
+class WritesRefused extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
+/**
+ * Writes that commit with a transition or not at all (`requestTransitionWith`). Returns null when
+ * done, or a reason to refuse, which rolls back the transition and these writes together.
+ */
+export type AlsoWrite = (tx: StoreOps) => Promise<string | null>;
+
 const MAX_ATTEMPTS = 3;
 
 export interface LibraryOptions {
@@ -297,6 +312,7 @@ export function createLibrary({
 
   async function attemptTransition(
     request: TransitionRequest,
+    alsoWrite?: AlsoWrite,
   ): Promise<TransitionResult | LostRace> {
     const checked = await checkMove(request);
     if ("outcome" in checked) return checked;
@@ -304,6 +320,10 @@ export function createLibrary({
     const blockedReason = request.blockedReason ?? null;
 
     const dryRun = await dryRunIsOn();
+    // Writes that go with the move are acts, and dry run never acts.
+    if (alsoWrite && dryRun) {
+      return { outcome: "refused", reason: "dry_run", guardReport };
+    }
     const at = clock.now();
     const transition: Transition = {
       id: ids.next(),
@@ -345,9 +365,14 @@ export function createLibrary({
         });
         // Another writer moved the node since it was read: undo the transition row too.
         if (!changed) throw new LostRace();
+        const refusal = alsoWrite ? await alsoWrite(tx) : null;
+        if (refusal) throw new WritesRefused(refusal);
       });
     } catch (error) {
       if (error instanceof LostRace) return error;
+      if (error instanceof WritesRefused) {
+        return { outcome: "refused", reason: error.reason, guardReport };
+      }
       throw error;
     }
     return {
@@ -364,12 +389,13 @@ export function createLibrary({
    */
   async function requestTransition(
     request: TransitionRequest,
+    alsoWrite?: AlsoWrite,
   ): Promise<TransitionResult> {
     if (await settingIsOn("kill_switch")) {
       return { outcome: "refused", reason: "kill_switch", guardReport: [] };
     }
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const result = await attemptTransition(request);
+      const result = await attemptTransition(request, alsoWrite);
       if (!(result instanceof LostRace)) return result;
     }
     return { outcome: "refused", reason: "too_much_contention", guardReport: [] };
@@ -589,7 +615,17 @@ export function createLibrary({
       };
     },
 
-    requestTransition,
+    requestTransition: (request: TransitionRequest) => requestTransition(request),
+
+    /**
+     * `requestTransition` with more writes in the same transaction: the move, the node change
+     * and `alsoWrite` commit together or not at all. The dispatch uses it to record the run's
+     * handle and `dispatch_record` with its move (build plan M3.2). These are acts, so in dry run
+     * it refuses with `dry_run` and writes nothing; the kill switch refuses as always. A lost race
+     * retries the whole of it from a fresh read.
+     */
+    requestTransitionWith: (request: TransitionRequest, alsoWrite: AlsoWrite) =>
+      requestTransition(request, alsoWrite),
 
     /**
      * `requestTransition` for a trigger that carries its own id, such as an event or a bot

@@ -410,6 +410,8 @@ export interface StoreOps {
   insertRun(run: Run): Promise<void>;
   insertRunToken(token: RunToken): Promise<void>;
   getRunToken(tokenHash: string): Promise<RunToken | null>;
+  /** Revokes the run's token, if it has one that is not revoked yet. Returns true if it did. */
+  revokeRunToken(runId: string, at: Date): Promise<boolean>;
   getRun(id: string): Promise<Run | null>;
   /** A node's runs, oldest first. */
   listRuns(filter: { nodeId: string }): Promise<Run[]>;
@@ -422,6 +424,13 @@ export interface StoreOps {
   lockRunAdmission(): Promise<void>;
   /** Records how a run ended. Returns false if it had already ended. */
   endRun(id: string, end: RunEnd): Promise<boolean>;
+  /**
+   * Keeps the runtime's handle on a run (migration 0006), so a later flow can poll or cancel it.
+   * Writes only while the run has not ended and has no handle yet; returns false otherwise.
+   */
+  setRunHandle(id: string, handle: Json): Promise<boolean>;
+  /** The handle the runtime returned for the run, or null when none was kept. */
+  getRunHandle(id: string): Promise<Json | null>;
 
   getCounter(nodeId: string, kind: CounterKind): Promise<number>;
   setCounter(nodeId: string, kind: CounterKind, count: number, at: Date): Promise<void>;

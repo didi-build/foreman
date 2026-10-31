@@ -36,7 +36,15 @@ flows:
   - name: record_run_end
     path: f/foreman/record_run_end
     entry: flows/record-run-end.ts
-    # Called with the handle the dispatch returned. Who keeps the handle between passes is open.
+    # Called with a run id. The handle the dispatch kept on the run (runs.handle, migration 0006)
+    # is read from the store. Who calls it in live mode is open, as for dispatch.
+    trigger: called
+
+  - name: cancel_runs
+    path: f/foreman/cancel_runs
+    entry: flows/cancel-runs.ts
+    # D-202: called right after the kill switch is turned on, and run by the reconcile flow on
+    # every pass the kill switch stops. It stops every active agent run and ends it cancelled.
     trigger: called
 
   - name: request_transition
@@ -58,7 +66,15 @@ flows:
       # D-170: every approval expires after a short time. One day, as in M0.4, until M4.1 sets it.
       timeout_seconds: 86400
       continue_on_disapprove_timeout: true
+      # D-200: the three answers are the form's `answer` field, so the page's own cancel button is
+      # hidden and a resume can only be an answer or a timeout. Checked against Windmill's
+      # OpenFlow spec at deploy (first-hosting runbook, step 15).
+      hide_cancel: true
       resume_form:
+        answer:
+          type: string
+          required: true
+          enum: [Approve, Reject, Changes requested]
         reply: { type: string, required: true }
 
 # GitHub webhooks go to the receiver service (ADR 0113), not to Windmill, so no flow ingests

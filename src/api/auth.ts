@@ -1,7 +1,6 @@
 // Per-run agent authentication (ADR 0102). A token is an opaque random value; only its SHA-256
 // hash is stored, linked to one run, one role and one project. Ending the run revokes it.
-import { createHash } from "node:crypto";
-
+import { hashRunToken } from "../core/run-tokens.ts";
 import type { AgentRole, Run, StoreOps } from "../core/store.ts";
 
 export interface Caller {
@@ -10,8 +9,8 @@ export interface Caller {
   run: Run;
 }
 
-export const hashToken = (token: string): string =>
-  createHash("sha256").update(token, "utf8").digest("hex");
+/** The same hash the runner stores at dispatch (src/core/run-tokens.ts). */
+export const hashToken = hashRunToken;
 
 /** Tokens are long random values; anything outside this range cannot be one. */
 const TOKEN = /^[A-Za-z0-9_-]{32,256}$/;

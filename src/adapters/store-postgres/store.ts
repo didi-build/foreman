@@ -7,6 +7,7 @@ import {
   StoreConflictError,
   type CounterKind,
   type Evidence,
+  type Json,
   type Store,
   type StoreOps,
 } from "../../core/store.ts";
@@ -507,6 +508,26 @@ function ops(db: Queryable): StoreOps {
         tokenHash,
       ]);
       return r && toRunToken(r);
+    },
+    async revokeRunToken(runId, at) {
+      const changed = await exec(
+        `update factory.run_tokens set revoked_at = $2
+         where run_id = $1 and revoked_at is null`,
+        [runId, at],
+      );
+      return changed === 1;
+    },
+    async setRunHandle(id, handle) {
+      const changed = await exec(
+        `update factory.runs set handle = $2
+         where id = $1 and ended_at is null and handle is null`,
+        [id, json(handle)],
+      );
+      return changed === 1;
+    },
+    async getRunHandle(id) {
+      const r = await one("select handle from factory.runs where id = $1", [id]);
+      return (r?.handle as Json | null | undefined) ?? null;
     },
     async endRun(id, end) {
       const changed = await exec(

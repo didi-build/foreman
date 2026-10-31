@@ -15,6 +15,7 @@ import {
   type Evidence,
   type GateRequest,
   type GithubDelivery,
+  type Json,
   type Node,
   type Project,
   type Run,
@@ -42,6 +43,8 @@ interface State {
   gateRequests: Map<string, GateRequest>;
   runs: Map<string, Run>;
   runTokens: Map<string, RunToken>;
+  /** `runs.handle`, by run id. */
+  runHandles: Map<string, Json>;
   counters: Map<string, number>;
   settings: Map<string, Setting>;
   decisionPointRecords: Map<string, DecisionPointRecord>;
@@ -63,6 +66,7 @@ const emptyState = (): State => ({
   gateRequests: new Map(),
   runs: new Map(),
   runTokens: new Map(),
+  runHandles: new Map(),
   counters: new Map(),
   settings: new Map(),
   decisionPointRecords: new Map(),
@@ -380,11 +384,28 @@ function ops(state: State): StoreOps {
     async getRunToken(tokenHash) {
       return copy(state.runTokens.get(tokenHash) ?? null);
     },
+    async revokeRunToken(runId, at) {
+      for (const [hash, token] of state.runTokens) {
+        if (token.runId !== runId || token.revokedAt !== null) continue;
+        state.runTokens.set(hash, { ...token, revokedAt: copy(at) });
+        return true;
+      }
+      return false;
+    },
     async endRun(id, end) {
       const run = state.runs.get(id);
       if (!run || run.endedAt !== null) return false;
       state.runs.set(id, { ...run, ...copy(end) });
       return true;
+    },
+    async setRunHandle(id, handle) {
+      const run = state.runs.get(id);
+      if (!run || run.endedAt !== null || state.runHandles.has(id)) return false;
+      state.runHandles.set(id, copy(handle));
+      return true;
+    },
+    async getRunHandle(id) {
+      return copy(state.runHandles.get(id) ?? null);
     },
 
     async getCounter(nodeId, kind: CounterKind) {
@@ -440,6 +461,7 @@ function cloneState(state: State): State {
     gateRequests: new Map(state.gateRequests),
     runs: new Map(state.runs),
     runTokens: new Map(state.runTokens),
+    runHandles: new Map(state.runHandles),
     counters: new Map(state.counters),
     settings: new Map(state.settings),
     decisionPointRecords: new Map(state.decisionPointRecords),

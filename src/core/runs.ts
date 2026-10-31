@@ -4,7 +4,8 @@
 // runtime adapter and reports back here.
 //
 // Admission also chooses the run's model route (ADR 0114 sections 2 and 5): the route is recorded
-// on the run, with its P-11 decision record, in the same transaction that inserts the run.
+// on the run, with its P-11 decision record, in the same transaction that inserts the run. The
+// run's state API token is stored there too, as its hash (ADR 0102), and ending the run revokes it.
 import { LibraryError, type Clock, type IdSource } from "./library.ts";
 import {
   chooseRoute,
@@ -27,6 +28,7 @@ import type {
   StoreOps,
   UsageExhaustedCause,
 } from "./store.ts";
+import { RUN_TOKEN_HASH, runTokenExpiry } from "./run-tokens.ts";
 import { taskTypeFor, type TaskTypes } from "./task-types.ts";
 
 /** The limits a run is started with (ADR 0107). Recorded in `runs.budget`. */
@@ -77,6 +79,11 @@ export type DispatchRefusal =
   | "cluster_limit_unset"
   | "cluster_full"
   | "no_route";
+
+/** The run's state API token as the core sees it: only its SHA-256 hash (src/core/run-tokens.ts). */
+export interface RunCredential {
+  tokenHash: string;
+}
 
 /**
  * A refused dispatch wrote nothing. `qa_newer_head`: the pull request has an active QA run on an
@@ -388,15 +395,48 @@ export const plannedRunId = (nodeId: string, role: AgentRole): string =>
   `planned:${role}:${nodeId}`;
 
 export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions) {
+  /**
+   * Records how a run ended and revokes its state API token, in one transaction (ADR 0102:
+   * ending a run revokes its token). Returns false, changing nothing, if the run had already
+   * ended or does not exist. It never touches a counter: the P-03 rules decide those, and a
+   * usage_exhausted end is not a failure (FR-11).
+   */
+  async function recordEnd(runId: string, report: RunReport): Promise<boolean> {
+    checkRunReport(report);
+    const endedAt = clock.now();
+    return store.transaction(async (tx) => {
+      const ended = await tx.endRun(runId, {
+        endedAt,
+        outcome: report.outcome,
+        turns: report.turns,
+        minutes: report.minutes,
+        costUsd: report.costUsd,
+        tokens: report.tokens ? tokensJson(report.tokens) : null,
+        transcriptRef: report.transcriptRef ?? null,
+        usageExhaustedCause: report.usageExhaustedCause ?? null,
+        retryAfterSeconds: report.retryAfterSeconds ?? null,
+      });
+      if (ended) await tx.revokeRunToken(runId, endedAt);
+      return ended;
+    });
+  }
+
   return {
     /**
      * Decides whether a run may start now and, if so, records it with its role's limits and
-     * its route, and records the route as a P-11 decision (confidence 1: a rule decided). The
-     * check and the inserts are one transaction under the admission lock, so two dispatches can
-     * never both pass, and a run never exists without its route. A refusal writes nothing.
+     * its route, records the route as a P-11 decision (confidence 1: a rule decided), and stores
+     * the hash of the run's state API token with its expiry (ADR 0102). The check and the inserts
+     * are one transaction under the admission lock, so two dispatches can never both pass, and a
+     * run never exists without its route or its token. A refusal writes nothing.
      */
-    async dispatch(request: DispatchRequest): Promise<DispatchResult> {
+    async dispatch(
+      request: DispatchRequest,
+      credential: RunCredential,
+    ): Promise<DispatchResult> {
       checkDispatchRequest(request);
+      if (!RUN_TOKEN_HASH.test(credential.tokenHash)) {
+        throw new LibraryError("tokenHash must be a hex SHA-256");
+      }
       const budget = limits[request.role];
       return store.transaction(async (tx) => {
         await tx.lockRunAdmission();
@@ -406,6 +446,14 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
         const { node, route } = admitted;
         const run = newRun(ids.next(), node, request, route, budget, now);
         await tx.insertRun(run);
+        await tx.insertRunToken({
+          tokenHash: credential.tokenHash,
+          runId: run.id,
+          role: request.role,
+          projectId: node.projectId,
+          expiresAt: runTokenExpiry(now, budget.maxMinutes),
+          revokedAt: null,
+        });
         await tx.insertDecisionPointRecord({
           id: ids.next(),
           projectId: node.projectId,
@@ -444,23 +492,20 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
       };
     },
 
+    recordEnd,
+
     /**
-     * Records how a run ended. Returns false, changing nothing, if the run had already ended or
-     * does not exist. It never touches a counter: the P-03 rules decide those, and a
-     * usage_exhausted end is not a failure (FR-11).
+     * Records an end the runner itself decided, with nothing measured: `cancelled` after it
+     * stopped the run (the kill switch, D-202, or a start it could not record), `fail` when the
+     * run never started. Same transaction and token revocation as `recordEnd`.
      */
-    async recordEnd(runId: string, report: RunReport): Promise<boolean> {
-      checkRunReport(report);
-      return store.endRun(runId, {
-        endedAt: clock.now(),
-        outcome: report.outcome,
-        turns: report.turns,
-        minutes: report.minutes,
-        costUsd: report.costUsd,
-        tokens: report.tokens ? tokensJson(report.tokens) : null,
-        transcriptRef: report.transcriptRef ?? null,
-        usageExhaustedCause: report.usageExhaustedCause ?? null,
-        retryAfterSeconds: report.retryAfterSeconds ?? null,
+    recordRunnerEnd(runId: string, outcome: "cancelled" | "fail"): Promise<boolean> {
+      return recordEnd(runId, {
+        outcome,
+        turns: null,
+        minutes: null,
+        costUsd: null,
+        tokens: null,
       });
     },
 

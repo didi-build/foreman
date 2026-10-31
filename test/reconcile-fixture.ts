@@ -214,7 +214,11 @@ export async function createReconcileFixture(
     return created;
   }
 
-  async function openGate(nodeId: string, topicKey: string): Promise<GateRequest> {
+  async function openGate(
+    nodeId: string,
+    topicKey: string,
+    extra: Partial<GateRequest> = {},
+  ): Promise<GateRequest> {
     const gate: GateRequest = {
       id: nextId(),
       projectId,
@@ -231,6 +235,7 @@ export async function createReconcileFixture(
       createdAt: clock.now(),
       answeredAt: null,
       lastNotifiedAt: null,
+      ...extra,
     };
     await store.insertGateRequest(gate);
     return gate;

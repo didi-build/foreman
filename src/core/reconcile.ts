@@ -43,11 +43,11 @@ import {
   type DispatchRequest,
   type RoleRunLimits,
 } from "./runs.ts";
+import { DISPATCH_GUARD } from "./run-start.ts";
 import type { AgentRole, GateRequest, Node, Run, Store, StoreOps } from "./store.ts";
 import type { TaskTypes } from "./task-types.ts";
 
-/** The guard that marks a move as the dispatch of a ready node (contracts/machine-2). */
-export const DISPATCH_GUARD = "agent_ready_not_on_hold";
+export { DISPATCH_GUARD };
 
 /** The guard section 2.5 step 4 advances on: CI green on the head commit. */
 export const ADVANCE_GUARD = "ci_green_on_head";
