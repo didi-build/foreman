@@ -4,6 +4,9 @@
 import { describe, expect, it } from "vitest";
 
 import { run } from "../../flows/reconcile.ts";
+import type { FlowDeps } from "../../flows/lib/compose.ts";
+import { setupMerge } from "../merge-fixture.ts";
+import { HEAD } from "../reconcile-fixture.ts";
 import { createFlowFixture } from "./flow-fixture.ts";
 
 async function withRelease() {
@@ -65,5 +68,34 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
     expect(result.problems).toEqual([
       "the Windmill execution count could not be read: no alert check",
     ]);
+  });
+
+  it("in live mode runs the merge pass: it merges a passed PR once, and later passes merge nothing", async () => {
+    const t = await setupMerge();
+    await t.passedOn(HEAD);
+    const notUsed = async (): Promise<never> => {
+      throw new Error("the merge pass starts no agent");
+    };
+    const deps: FlowDeps = {
+      ...t.deps,
+      runtime: { start: notUsed, poll: notUsed, cancel: notUsed },
+      tasks: { taskFor: notUsed },
+      newRunToken: () => "not-used",
+      executionsThisMonth: async () => 120,
+      close: async () => undefined,
+    };
+    const first = await run(deps);
+    expect(first.stopped).toBe("live_mode_not_built");
+    expect(first.merged).toMatchObject([
+      { nodeId: t.node.id, result: { outcome: "applied" } },
+    ]);
+    expect((await run(deps)).merged).toEqual([]);
+    expect(t.github.merges).toHaveLength(1);
+    expect(await t.state()).toBe("verifying_on_staging");
+  });
+
+  it("runs no merge pass in dry run", async () => {
+    const { f } = await withRelease();
+    expect((await run(f.deps)).merged).toBeNull();
   });
 });

@@ -7,6 +7,10 @@
 // "pending"), so the latest `ci_run` names the head. Evidence for any other commit is stale and
 // ignored (docs/schema.md). No `ci_run` means no linked PR yet, and every head-commit guard fails.
 //
+// The mergeable state. `no_merge_conflict_on_head` reads the newest `merge_check` on the head
+// commit: GitHub's `mergeable` for that head, which the runner reads and records itself right
+// before it merges (src/core/merge.ts). A check for any other commit is stale and ignored.
+//
 // The merge commit. Staging guards read the most recent `merge_commit` evidence; its `commitSha`
 // is the merge commit on main, and staging checks must name that commit.
 //
@@ -27,6 +31,12 @@ export interface CiRunPayload {
 export interface CheckPayload {
   /** `preview_check`, `staging_check` and `visual_comparison`: did the check pass. */
   pass: boolean;
+}
+
+export interface MergeCheckPayload {
+  pr: number;
+  /** GitHub's answer for the head: true, false (a conflict), or null (not worked out yet). */
+  mergeable: boolean | null;
 }
 
 export interface MergeCommitPayload {
@@ -100,6 +110,13 @@ export function readCiRun(payload: Json): CiRunPayload | null {
   if (!isPositiveInteger(pr)) return null;
   if (changedPaths !== undefined && !isStringList(changedPaths)) return null;
   return { conclusion, pr, ...(changedPaths ? { changedPaths } : {}) };
+}
+
+export function readMergeCheck(payload: Json): MergeCheckPayload | null {
+  if (!isRecord(payload) || !isPositiveInteger(payload.pr)) return null;
+  const { mergeable } = payload;
+  if (mergeable !== true && mergeable !== false && mergeable !== null) return null;
+  return { pr: payload.pr, mergeable };
 }
 
 export function readCheck(payload: Json): CheckPayload | null {

@@ -102,18 +102,18 @@ Enforcement: no UPDATE or DELETE for any application role (revoke, or a trigger 
 
 ## evidence (append-only)
 
-| Column        | Type        | Notes                                                                                                                                                                    |
-| ------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| id            | uuid pk     |                                                                                                                                                                          |
-| node_id       | uuid fk     |                                                                                                                                                                          |
-| kind          | text        | `ci_run`, `test_report`, `preview_check`, `staging_check`, `qa_verdict`, `visual_comparison`, `merge_commit`, `spec_paths`, `dispatch_record`, `docs_note`, `screenshot` |
-| ref           | text        | Url or external id                                                                                                                                                       |
-| commit_sha    | text null   | The commit the evidence covers. Required for CI, preview, staging, QA verdict and visual comparison                                                                      |
-| payload       | jsonb       | For example verdict, findings, round number, pass or fail                                                                                                                |
-| recorded_by   | text        | Actor id                                                                                                                                                                 |
-| recorded_at   | timestamptz |                                                                                                                                                                          |
-| supersedes_id | uuid null   | A new record replaces an old one without editing it                                                                                                                      |
-| ingest_key    | text null   | Unique. Set only by GitHub ingestion, only on `ci_run` and `merge_commit` (migration 0002, ADR 0113), so webhooks and polling record a fact once                         |
+| Column        | Type        | Notes                                                                                                                                                                                                                    |
+| ------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| id            | uuid pk     |                                                                                                                                                                                                                          |
+| node_id       | uuid fk     |                                                                                                                                                                                                                          |
+| kind          | text        | `ci_run`, `test_report`, `preview_check`, `staging_check`, `qa_verdict`, `visual_comparison`, `merge_check` (migration 0010), `merge_commit`, `spec_paths`, `dispatch_record`, `docs_note`, `screenshot`, `agent_report` |
+| ref           | text        | Url or external id                                                                                                                                                                                                       |
+| commit_sha    | text null   | The commit the evidence covers. Required for CI, preview, staging, QA verdict, visual comparison and merge check                                                                                                         |
+| payload       | jsonb       | For example verdict, findings, round number, pass or fail                                                                                                                                                                |
+| recorded_by   | text        | Actor id                                                                                                                                                                                                                 |
+| recorded_at   | timestamptz |                                                                                                                                                                                                                          |
+| supersedes_id | uuid null   | A new record replaces an old one without editing it                                                                                                                                                                      |
+| ingest_key    | text null   | Unique. Only on `ci_run` and `merge_commit` (migration 0002, ADR 0113), so webhooks and polling record a fact once. The runner's merge uses the same key for its `merge_commit` (M3.3)                                   |
 
 Rule: a guard reads only evidence whose `commit_sha` equals the PR's current head commit. A new commit makes earlier verdicts stale automatically.
 

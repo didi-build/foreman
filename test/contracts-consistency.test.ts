@@ -111,6 +111,9 @@ interface FileMove {
   from: string;
   to: string;
   fallback_move?: boolean;
+  trigger?: string;
+  guards?: string[];
+  evidence?: string[];
 }
 
 function fileTransitions(file: string): FileMove[] {
@@ -161,4 +164,55 @@ describe("fallback moves are pinned to the spec's prose (contract consistency, A
       expect(cells?.at(-1)).toContain(words);
     },
   );
+});
+
+/** The merge guard (build plan M3.3, D-218): what every move on which the runner merges carries. */
+const MERGE_GUARD = [
+  "qa_verdict_independent_on_head",
+  "docs_updated_or_none",
+  "ci_green_on_head",
+  "no_merge_conflict_on_head",
+  "qa_rounds_below_cap",
+  "privileged_paths_approved",
+];
+
+describe("every merging move carries the merge guard (contract consistency, D-218)", () => {
+  // A merging move is one whose spec row says the runner merges the PR.
+  const merging = PAIRS.flatMap(({ file }) =>
+    fileTransitions(file)
+      .filter((t) => /The runner then merges the PR/.test(String(t.trigger)))
+      .map((t) => ({ file, move: t })),
+  );
+
+  it("finds the merging move of both tracks", () => {
+    expect(merging.map(({ file, move }) => `${file}:${move.from}->${move.to}`)).toEqual(
+      [
+        "code.yaml:in_qa_review->verifying_on_staging",
+        "design.yaml:in_qa_review->verifying_on_staging",
+      ],
+    );
+  });
+
+  it.each(merging)("$file $move.from to $move.to has every check", ({ move }) => {
+    expect(move.guards).toEqual(expect.arrayContaining(MERGE_GUARD));
+    expect(move.evidence).toEqual(
+      expect.arrayContaining(["merge_check", "merge_commit"]),
+    );
+  });
+
+  it("checks production protection where the code track deploys on push to main", () => {
+    const code = merging.find(({ file }) => file === "code.yaml");
+    expect(code?.move.guards).toContain("prod_env_protected");
+  });
+
+  it("the spec names the merge guard's checks in both merging rows", () => {
+    for (const { heading } of PAIRS.slice(0, 2)) {
+      const row = tableRows(heading).find(
+        (r) => r[0] === "In QA review to Verifying on staging (pass)",
+      );
+      expect(row?.[1], heading).toMatch(/no merge conflict/);
+      expect(row?.[1], heading).toMatch(/round cap/);
+      expect(row?.[1], heading).toMatch(/privileged path/);
+    }
+  });
 });

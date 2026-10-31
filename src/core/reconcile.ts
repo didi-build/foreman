@@ -6,9 +6,10 @@
 // What a dry-run pass writes, and what it never writes:
 // - It writes dry-run transition rows (mode `dry_run`) through the library, which writes that mode
 //   whenever the `dry_run` setting is on or missing. The node itself never changes.
-// - It writes the evidence the GitHub polling backstop records (`ci_run`, `merge_commit`). That is
-//   real evidence of what GitHub reports, recorded the same way as a webhook, and webhooks record
-//   it in dry run too (ADR 0113 sections 5 and 6). Recording a fact is not acting on it.
+// - It writes the evidence the GitHub polling backstop records (`ci_run`, `merge_commit`), and the
+//   `merge_check` the merge step reads from GitHub (M3.3). That is real evidence of what GitHub
+//   reports, recorded the same way as a webhook, and webhooks record it in dry run too (ADR 0113
+//   sections 5 and 6). Recording a fact is not acting on it.
 // - It never inserts a run, starts an agent, records a dispatch, closes or opens a gate request,
 //   changes a counter or a setting, or sends anything. Dispatch admission is evaluated with
 //   `runs.planDispatch`, which reads only.
@@ -18,15 +19,18 @@
 // takes the moves out of a non-escalated state that requires a blocked reason (Blocked);
 // dispatch takes the moves guarded by `agent_ready_not_on_hold`, the guard that says a node is
 // ready for an agent; advance from evidence takes the moves guarded by `ci_green_on_head`, the
-// evidence section 2.5 step 4 names. The bot to dispatch is the owner of the state, from the
-// contracts.
+// evidence section 2.5 step 4 names, except the moves on which the runner merges (guard
+// `qa_verdict_independent_on_head`): those need the merge, so the merge step plans them through
+// src/core/merge.ts, which also records GitHub's mergeable state as a fact. The bot to dispatch
+// is the owner of the state, from the contracts. The merge itself is never done here: in live
+// mode the reconcile flow runs the merge pass (flows/reconcile.ts, O-31).
 import type {
   Contracts,
   GuardCheck,
   GuardRegistry,
   TransitionContract,
 } from "./contracts.ts";
-import type { GitHubReader } from "./github.ts";
+import type { GitHub } from "./github.ts";
 import { pollRepository, type PollResult } from "./github-ingest.ts";
 import { readCiRun } from "./guards/evidence.ts";
 import {
@@ -37,6 +41,7 @@ import {
   type TransitionOutcome,
   type TransitionRequest,
 } from "./library.ts";
+import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import {
   createRuns,
   type DispatchRefusal,
@@ -78,7 +83,8 @@ export interface ReconcileDeps {
   guards: GuardRegistry;
   clock: Clock;
   ids: IdSource;
-  github: GitHubReader;
+  /** Read by the polling backstop and the merge step; the merge calls are made only in live mode. */
+  github: GitHub;
   /** Logins of the Developer and Designer Apps (D-156), for the polling backstop. */
   appLogins: readonly string[];
   /** The runner App's slug (D-156), for the polling backstop. */
@@ -205,6 +211,8 @@ export interface ReconcileReport {
   dispatches: DispatchPlan[];
   attention: AttentionItem[];
   advances: AdvancePlan[];
+  /** The merge moves (In QA review to Verifying on staging) the pass planned or found blocked. */
+  merges: MovePlan[];
   stalls: Stall[];
   gateCleanup: GateCleanupCandidate[];
   executions: ExecutionAlert | null;
@@ -294,6 +302,7 @@ export async function reconcile(
     dispatches: [],
     attention: [],
     advances: [],
+    merges: [],
     stalls: [],
     gateCleanup: [],
     executions: null,
@@ -533,8 +542,8 @@ export async function reconcile(
   // of the next state's owner (QA).
   for (const node of nodes) {
     if (stateOf(node.state)?.escalated) continue;
-    for (const move of movesFrom(node).filter((m) =>
-      m.guards.includes(ADVANCE_GUARD),
+    for (const move of movesFrom(node).filter(
+      (m) => m.guards.includes(ADVANCE_GUARD) && !m.guards.includes(MERGE_MOVE_GUARD),
     )) {
       const advance: AdvancePlan = await requestMove(node, move.to);
       if (advance.outcome === "planned" || advance.outcome === "already_planned") {
@@ -546,6 +555,45 @@ export async function reconcile(
       report.advances.push(advance);
     }
   }
+  // Step 4, the merge moves: a node whose QA passed on its head merges, or, when its PR is merged
+  // already, records the move. The merge step reads the PR and records its mergeable state on the
+  // head (a fact, like the polling backstop), then plans the move as a dry-run row. It merges
+  // nothing and opens no gate request.
+  const merges = createMerges(deps);
+  for (const node of nodes) {
+    if (stateOf(node.state)?.escalated) continue;
+    const move = merges.mergeMoveFor(node);
+    if (!move) continue;
+    const base = { nodeId: node.id, fromState: node.state, toState: move.to };
+    let inspected;
+    try {
+      inspected = await merges.inspect(node.id);
+    } catch {
+      report.merges.push({
+        ...base,
+        outcome: "rejected",
+        reason: "github_read_failed",
+        guardReport: [],
+      });
+      continue;
+    }
+    if (inspected.stop) {
+      // Guards that fail before GitHub is read: the plan names them, and nothing is written.
+      if (inspected.stop.reason === "guard_failed") {
+        report.merges.push(await requestMove(node, move.to));
+      } else {
+        report.merges.push({
+          ...base,
+          outcome: inspected.stop.outcome,
+          reason: inspected.stop.reason,
+          guardReport: [],
+        });
+      }
+      continue;
+    }
+    report.merges.push(await requestMove(node, move.to));
+  }
+
   // Step 4 also says to dispatch the staging check once main has deployed to staging. No
   // evidence records a staging deploy yet (ADR 0113 records `deployment_status` as a delivery
   // only), so that half is not built here.

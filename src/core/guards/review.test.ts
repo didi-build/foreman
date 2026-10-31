@@ -383,4 +383,68 @@ describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", 
       expect((await f.check("not_third_failed_round")).detail).toMatch(/not a number/);
     });
   });
+
+  describe("no_merge_conflict_on_head (M3.3, D-218)", () => {
+    it("passes when GitHub reported mergeable true for the head", async () => {
+      const f = await fixture();
+      await f.ci(HEAD);
+      await f.evidence("merge_check", HEAD, { pr: 7, mergeable: true });
+      expect(await f.check("no_merge_conflict_on_head")).toMatchObject({ pass: true });
+    });
+    it("fails on a conflict (false) and while GitHub has not worked it out (null)", async () => {
+      const f = await fixture();
+      await f.ci(HEAD);
+      await f.evidence("merge_check", HEAD, { pr: 7, mergeable: false });
+      expect((await f.check("no_merge_conflict_on_head")).detail).toMatch(/conflict/);
+      await f.evidence("merge_check", HEAD, { pr: 7, mergeable: null });
+      expect((await f.check("no_merge_conflict_on_head")).detail).toMatch(
+        /has not worked out/,
+      );
+    });
+    it("reads the newest check on the head", async () => {
+      const f = await fixture();
+      await f.ci(HEAD);
+      await f.evidence("merge_check", HEAD, { pr: 7, mergeable: null });
+      await f.evidence("merge_check", HEAD, { pr: 7, mergeable: true });
+      expect((await f.check("no_merge_conflict_on_head")).pass).toBe(true);
+    });
+    it("ignores a check for an older head (stale)", async () => {
+      const f = await fixture();
+      await f.ci(OLD);
+      await f.evidence("merge_check", OLD, { pr: 7, mergeable: true });
+      await f.ci(HEAD);
+      expect((await f.check("no_merge_conflict_on_head")).detail).toMatch(
+        /no merge check on head/,
+      );
+    });
+    it("fails with no PR, and without throwing on a malformed payload", async () => {
+      const f = await fixture();
+      expect((await f.check("no_merge_conflict_on_head")).detail).toMatch(
+        /no linked pull request/,
+      );
+      await f.ci(HEAD);
+      await f.evidence("merge_check", HEAD, { pr: 7 });
+      expect((await f.check("no_merge_conflict_on_head")).detail).toBe(
+        "malformed merge_check payload",
+      );
+    });
+  });
+
+  describe("qa_rounds_below_cap (M3.3)", () => {
+    it("passes below the cap, including after two failed rounds, and fails at it", async () => {
+      const f = await fixture();
+      expect((await f.check("qa_rounds_below_cap")).pass).toBe(true);
+      await f.counter("qa_round", 2);
+      expect((await f.check("qa_rounds_below_cap")).pass).toBe(true);
+      await f.counter("qa_round", 3);
+      expect((await f.check("qa_rounds_below_cap")).detail).toMatch(
+        /reach the cap of 3/,
+      );
+    });
+    it("fails when the cap setting is not a number", async () => {
+      const f = await fixture();
+      await f.setting("qa_round_cap", "three");
+      expect((await f.check("qa_rounds_below_cap")).detail).toMatch(/not a number/);
+    });
+  });
 });

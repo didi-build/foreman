@@ -90,6 +90,7 @@ export type EvidenceKind =
   | "staging_check"
   | "qa_verdict"
   | "visual_comparison"
+  | "merge_check"
   | "merge_commit"
   | "spec_paths"
   | "dispatch_record"

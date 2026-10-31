@@ -148,6 +148,12 @@ describe("code track with the real guards (integration: contracts, library and g
       { verdict: "pass", findings: [], evidenceIds: [ci.id, preview.id] },
       qaRun,
     );
+    // The merge guard also needs GitHub's mergeable state on the head (D-218, M3.3).
+    const blocked = await move("verifying_on_staging");
+    expect(blocked.guardReport.filter((c) => !c.pass).map((c) => c.name)).toEqual([
+      "no_merge_conflict_on_head",
+    ]);
+    await record("merge_check", HEAD, { pr: 12, mergeable: true });
     const pass = await move("verifying_on_staging");
     expect(pass.outcome, JSON.stringify(pass.guardReport)).toBe("applied");
 

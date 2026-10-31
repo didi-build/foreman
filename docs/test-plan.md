@@ -32,13 +32,15 @@ Principles, from `AGENTS.md`: testing is intentional. Each test names the seam i
 
 For each guard: pass, fail, missing evidence, evidence for an older commit, and evidence for the right commit but the wrong kind.
 
-The guards are the 24 in ADR 0105's guard list (D-176). The evidence each one reads, the head-commit rule and the payload shapes are in [guards.md](./guards.md).
+The guards are the 26 in ADR 0105's guard list (D-176, and two from M3.3). The evidence each one reads, the head-commit rule and the payload shapes are in [guards.md](./guards.md).
 
 - `blockers_done`, `design_spec_merged`, `no_pending_gate`, `agent_ready_not_on_hold`.
 - `ci_green_on_head`, `docs_updated_or_none`.
 - `qa_verdict_independent_on_head` (ADR 0112): fails without CI green and a preview check on the head commit, without a pass whose citations were verified, or for an old commit. While D-158 waives the different-family rule, a verdict from the same model id as the builder fails; once a second family is approved, the same family fails.
 - `privileged_paths_approved`: a PR touching a privileged path without an approval record fails. A new commit after approval requires a fresh approval.
 - `prod_env_protected`: a repo whose deploy runs on push to main with an unprotected production environment fails.
+- `no_merge_conflict_on_head` (M3.3, D-218): passes on `mergeable: true` for the head; fails on `false`, on `null`, on a check for an older head, with no PR, and on a malformed payload.
+- `qa_rounds_below_cap` (M3.3): passes after two failed rounds and fails at the cap, so the pass move does not count a round twice.
 - `qa_failed_with_findings`, `not_third_failed_round`.
 - `staging_check_on_merge_commit`, `staging_check_failed`.
 - `plan_attached`, `options_attached`, `approval_recorded`, `changes_requested_recorded`.
@@ -136,7 +138,7 @@ Tests are in `test/flows/`, with fake adapters on the memory store (`flow-fixtur
 3. Kill switch: when set, no transition is taken and nothing is dispatched within one cycle. When cleared, the runner resumes cleanly.
 4. Dry run: with `dry_run` true, the pass writes `dry_run` transitions and changes nothing outside the store.
 5. Escalation: three failures (guard failed after done, QA fail, staging fail, repeated dispatch failure) escalate to the Council. A third failed QA round escalates. A CI red during development does not increment the counter.
-6. Merge: each failure of the merge guard blocks the merge with the missing condition named.
+6. Merge (build plan M3.3, `test/merge.test.ts`, `test/db/merge.test.ts`): each failure of the merge guard blocks the merge with the missing condition named, and nothing is merged or recorded. The squash merge names the head the guards checked, so a commit that lands after the check is refused by GitHub (the fake) and nothing is recorded. A failure after the merge is recovered by the reconcile flow's merge pass with one merge, one `merge_commit` and one move. A privileged-path PR opens one `privileged_path` gate request for its head and waits; Didi's approval through the approval page lets it merge, and a new commit needs a new approval. A QA pass report leads to the merge. Dry run merges nothing and opens no gate request. `test/contracts-consistency.test.ts` holds every merging move to the merge guard (D-218).
 7. Staging: a failed staging check reopens the same item and increments `failure`. Dependents are released only on Done.
 8. Design handoff: on Done, the linked developer item gets a Spec section (merge commit, paths on main, final decisions) and is released.
 9. Usage exhaustion: dispatches queue and resume. No run is killed mid-transition. Plumbing continues.

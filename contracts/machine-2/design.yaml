@@ -124,8 +124,19 @@ transitions:
     to: verifying_on_staging
     tracks: [design]
     trigger: QA reports a pass on the preview branch. The runner then merges the PR.
-    guards: [qa_verdict_independent_on_head, docs_updated_or_none]
-    evidence: [visual_comparison, ci_run, preview_check, qa_verdict, merge_commit]
+    # The merge guard (build plan M3.3, D-218), as on the code track. prod_env_protected is the
+    # code track's only (D-218 names the CI, no-conflict and privileged-path checks for this move).
+    guards:
+      [
+        qa_verdict_independent_on_head,
+        docs_updated_or_none,
+        ci_green_on_head,
+        no_merge_conflict_on_head,
+        qa_rounds_below_cap,
+        privileged_paths_approved,
+      ]
+    evidence:
+      [visual_comparison, ci_run, preview_check, qa_verdict, merge_check, merge_commit]
     timeout: The QA bot's budget (not set). Re-dispatch once, then the Council.
     fallback: Stays In QA review with the missing condition named.
 

@@ -7,7 +7,9 @@
 //
 // Which moves a report triggers comes from the contracts, as for the dispatch move (run-start.ts):
 // a move out of the node's state, for its track, in a state the run's role owns. Escalations, the
-// prose fallbacks, the dispatch move and the moves on which the runner merges the PR are left out.
+// prose fallbacks and the dispatch move are left out. A move on which the runner merges the PR
+// (QA's pass, guard `qa_verdict_independent_on_head`) goes through the merge (src/core/merge.ts,
+// M3.3): the merge guard decides, the runner squash-merges, and only then is the move written.
 // When a state has more than one such move (QA's pass and fail), each is asked for in contract
 // order and the guards let at most one through. A report counts only for the state the run worked
 // in: if the node has moved since the run started, other than by the run's own dispatch move, the
@@ -15,21 +17,18 @@
 // stays where it is, which is the contract's fallback. The failure counter half of that fallback
 // is the P-03 rules, built with M3.5.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
+import type { GitHub } from "./github.ts";
 import {
   createLibrary,
   type Clock,
   type IdSource,
   type TransitionOutcome,
 } from "./library.ts";
+import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import type { Node, Store } from "./store.ts";
 
-/**
- * The guard of the moves on which the runner merges the PR after QA passes (contracts/machine-2).
- * The merge is built with M3.3 (D-218), so until then a QA pass does not move the item: moving it
- * to staging verification without the merge would skip the merge and its guards.
- */
-export const MERGE_MOVE_GUARD = "qa_verdict_independent_on_head";
+export { MERGE_MOVE_GUARD };
 
 const ACTOR = { kind: "runner" as const, id: "run_end" };
 
@@ -39,6 +38,8 @@ export interface RunReportsOptions {
   guards: GuardRegistry;
   clock: Clock;
   ids: IdSource;
+  /** For the merge on a QA pass. */
+  github: GitHub;
 }
 
 /** Why no move was asked for. */
@@ -62,6 +63,10 @@ export type ReportedMove =
       transitionId?: string;
       /** The guards that failed, on every move asked for. */
       failedGuards: string[];
+      /** The merge commit, when the move was the merge and the PR is merged. */
+      mergeCommitSha?: string;
+      /** The privileged-path gate request a merge waits on. */
+      gateRequestId?: string;
     };
 
 /** The trigger id of the report a run made: one per run, so a repeated end moves once. */
@@ -73,6 +78,7 @@ export const reportTrigger = (runId: string) => ({
 export function createRunReports(options: RunReportsOptions) {
   const { store, contracts } = options;
   const library = createLibrary(options);
+  const merges = createMerges(options);
 
   const stateOf = (name: string) =>
     Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
@@ -86,7 +92,6 @@ export function createRunReports(options: RunReportsOptions) {
         !move.fallbackMove &&
         move.from === node.state &&
         !move.guards.includes(DISPATCH_GUARD) &&
-        !move.guards.includes(MERGE_MOVE_GUARD) &&
         (!move.tracks || (node.track !== null && move.tracks.includes(node.track))),
     );
   }
@@ -137,7 +142,29 @@ export function createRunReports(options: RunReportsOptions) {
 
       const failedGuards: string[] = [];
       let last: ReportedMove | undefined;
+      // What the merge left, kept on the result even when a later move is the last asked for.
+      let mergeFacts: { mergeCommitSha?: string; gateRequestId?: string } = {};
       for (const move of moves) {
+        if (move.guards.includes(MERGE_MOVE_GUARD)) {
+          const merged = await merges.mergeOnPass(node.id, trigger);
+          failedGuards.push(...merged.failedGuards);
+          mergeFacts = {
+            ...(merged.mergeCommitSha ? { mergeCommitSha: merged.mergeCommitSha } : {}),
+            ...(merged.gateRequestId ? { gateRequestId: merged.gateRequestId } : {}),
+          };
+          last = {
+            requested: true,
+            outcome: merged.outcome,
+            toState: move.to,
+            ...(merged.reason ? { reason: merged.reason } : {}),
+            ...(merged.transitionId ? { transitionId: merged.transitionId } : {}),
+            failedGuards,
+            ...mergeFacts,
+          };
+          // As for any move: only a merge the guards refused leaves room for the next one.
+          if (merged.outcome !== "rejected") break;
+          continue;
+        }
         const result = await library.requestTransitionOnce({
           nodeId: node.id,
           toState: move.to,
@@ -155,6 +182,7 @@ export function createRunReports(options: RunReportsOptions) {
           ...(result.reason ? { reason: result.reason } : {}),
           ...(result.transitionId ? { transitionId: result.transitionId } : {}),
           failedGuards,
+          ...mergeFacts,
         };
         // Only a move the guards refused leaves room for the next one.
         if (result.outcome !== "rejected") break;
