@@ -174,6 +174,7 @@ describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
     expect(await verifyStaging(deps, { ...input, sha: "a".repeat(40) })).toEqual({
       outcome: "verified",
       results: [],
+      builderRuns: [],
     });
   });
 
