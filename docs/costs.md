@@ -170,7 +170,58 @@ All work on one model, sorted by quiet month. Model names are DeepInfra's model 
 
 Infrastructure is about 110 a month with domains and the alerts provider, and does not change in a busy month. The totals are rounded planning figures from 2026-10-31.
 
-## 6. Caveats
+## 6. Budget options: busy month under 300
+
+Didi's target, 2026-10-31: the whole monthly bill stays under 300 even in a busy month (D-212). Fixed costs take about 130 of it (infrastructure about 110, Claude Pro 20), which leaves about 170 for models in a busy month, or about 34 in a quiet month.
+
+How the rows are worked out:
+
+- Developer work, with its fix rounds, is taken as about 75% of the token use and QA as about 25%. This is an assumption, chosen because it gives the "about 100" quiet month for Developer on Qwen3 Coder and QA on Kimi K2.6 in section 4. The real split comes from the run records.
+- QA uses a model from another family than the Developer, as it will once D-209 applies.
+- Totals are all-in: fixed costs plus 5 times the quiet-month model usage. The Flex column applies Flex only to models that support it.
+
+### Developer and QA pairs
+
+| Developer              | QA                     | Busy month, Standard | Busy month, Flex | Under 300 |
+| ---------------------- | ---------------------- | -------------------- | ---------------- | --------- |
+| DeepSeek V4 Flash 0731 | MiMo V2.6 Flash        | 192                  | 183              | Yes       |
+| DeepSeek V4 Flash 0731 | Qwen3.8 Flash          | 201                  | 192              | Yes       |
+| DeepSeek V4 Flash 0731 | GLM 5.3 Flash          | 215                  | 205              | Yes       |
+| DeepSeek V4 Flash 0731 | MiMo V2.6 Pro          | 216                  | 206              | Yes       |
+| DeepSeek V4.1 Flash    | Qwen3.8 Flash          | 228                  | 212              | Yes       |
+| DeepSeek V4 Flash 0731 | MiniMax M3             | 250                  | 226              | Yes       |
+| DeepSeek V4 Flash 0731 | Qwen3 Coder 480B Turbo | 276                  | 247              | Yes       |
+| DeepSeek V4 Flash 0731 | GLM 4.7                | 285                  | 254              | Yes       |
+| DeepSeek V4.1 Flash    | GLM 4.7                | 311                  | 275              | On Flex   |
+| Qwen3.5 35B            | DeepSeek V4 Flash 0731 | 330                  | 290              | On Flex   |
+| Qwen3 Coder 480B Turbo | MiMo V2.6 Flash        | about 440            | about 375        | No        |
+| Qwen3 Coder 480B Turbo | Kimi K2.6              | about 630            | about 530        | No        |
+| Kimi K2.6              | Any cheap model        | about 650 and up     | about 550 and up | No        |
+
+A strong coding model as the main Developer model does not fit. The Developer has to run mostly on a Flash-class model.
+
+### Cheap by default, stronger model for hard items
+
+Most Developer work runs on DeepSeek V4 Flash 0731. About 20% of items go to a stronger model (routing by task type, ADR 0114). QA runs on MiMo V2.6 Flash.
+
+| Model for the hard 20% | Busy month, Standard | Busy month, Flex | Under 300 |
+| ---------------------- | -------------------- | ---------------- | --------- |
+| Qwen3 Coder 480B Turbo | about 240            | about 220        | Yes       |
+| Kimi K2.6              | about 305            | about 275        | On Flex   |
+
+### Planning choice
+
+Plan around DeepSeek V4 Flash 0731 for the Developer, Qwen3.8 Flash or GLM 5.3 Flash for QA, and Qwen3 Coder 480B Turbo for the hard items: about 220 to 250 in a busy month. This is a starting point for the model catalog, not a routing decision. The scorecard (ADR 0114 section 4) shows whether the cheap models finish tasks without extra fix rounds; if they do not, cost per finished task rises and the plan is revisited.
+
+What would push a busy month over 300:
+
+- Worse cache hit rates. The rows above assume the workload model's caching; much worse caching can roughly double model costs.
+- More escalations to the stronger model than 20%.
+- Flex not being served, so runs bill at Standard.
+
+Ways to get back under: drop Claude Pro (about 20) or lower the share of hard items. There is no spend cap that stops work (D-011). The daily spend phone call starts at 25 a day (D-117, setting `daily_spend_call_usd`), which is about 750 over a month, well above this target.
+
+## 7. Caveats
 
 - **Cost per finished task is what counts**, not price per token. A cheaper model that needs more fix rounds, fails QA more often or escalates more can cost more per finished item. The scorecard measures this (ADR 0114 section 3).
 - **Cache hit rates drive the totals.** Most input is cached in the workload model. With worse cache hit rates, Qwen3 Coder could cost about 180 a quiet month instead of about 80. Prompt caching is required (D-185), and each run records cached and uncached tokens.
