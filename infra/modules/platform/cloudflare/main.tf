@@ -22,11 +22,13 @@ variable "settings" {
 variable "kv_stores" {
   description = "Key-value stores to create, by short name."
   type        = set(string)
+  default     = []
 }
 
 variable "txt_records" {
   description = "TXT records to create: host name to content."
   type        = map(string)
+  default     = {}
 }
 
 resource "cloudflare_workers_kv_namespace" "store" {

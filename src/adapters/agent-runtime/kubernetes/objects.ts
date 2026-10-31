@@ -12,6 +12,8 @@ export interface ObjectMeta {
 
 export interface LabelSelector {
   matchLabels: Labels;
+  /** Used by the platform namespace's policies to select every agent namespace. */
+  matchExpressions?: { key: string; operator: "Exists"; values?: never }[];
 }
 
 export interface ResourceList {
