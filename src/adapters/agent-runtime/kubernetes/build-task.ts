@@ -1,9 +1,11 @@
 // Builds the task `start` takes from the run the core admitted (ADR 0106 section 5, ADR 0107,
-// ADR 0114 section 5). The model and the provider come from the run's route, and the run's proxy
+// ADR 0114 sections 5, 8 and 9). The model, the provider and the tier come from the run's route,
+// and the Flex capacity bounds from the runner's settings (`runCapacityLimits`). The run's proxy
 // gets only the route's provider, so a run can reach no other provider and its proxy holds no
 // other provider's credential. The instructions and tools come from the bot file; the input is
 // the core's (src/core/task-input.ts). Credential values pass through to `start` and are never
 // kept here.
+import type { RunCapacityLimits } from "../../../core/runs.ts";
 import type { AgentRole, Run } from "../../../core/store.ts";
 import type { ModelProviderSetting } from "./manifests.ts";
 import type { KubernetesAgentTask } from "./runtime.ts";
@@ -28,8 +30,17 @@ export interface KubernetesBotFile {
 export interface KubernetesTaskParts {
   run: Pick<
     Run,
-    "id" | "bot" | "model" | "provider" | "nodeId" | "headSha" | "prNumber"
+    | "id"
+    | "bot"
+    | "model"
+    | "provider"
+    | "serviceTierRequested"
+    | "nodeId"
+    | "headSha"
+    | "prNumber"
   >;
+  /** From the settings (migration 0007), read when the run is started. */
+  capacity: RunCapacityLimits;
   projectSlug: string;
   /** `owner/name`. Only Developer, Designer and QA runs get it. */
   repository: string;
@@ -98,6 +109,9 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
       : {}),
     allowedHosts: [...bot.allowedHosts],
     providers: [{ ...provider }],
+    serviceTier: run.serviceTierRequested,
+    flexCapacityRetries: parts.capacity.flexCapacityRetries,
+    maxRejectedModelRequests: parts.capacity.maxRejectedModelRequests,
     credentials: {
       stateApiToken: parts.stateApiToken,
       ...(parts.githubToken !== undefined ? { githubToken: parts.githubToken } : {}),

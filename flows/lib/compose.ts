@@ -20,7 +20,7 @@ import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHubReader } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { BotProfile, ReconcileDeps } from "../../src/core/reconcile.ts";
-import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
+import { REHEARSAL_RUN_LIMITS, type RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { AgentRole, Node, Project, Run } from "../../src/core/store.ts";
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
@@ -44,6 +44,8 @@ export interface RunToStart {
   branch: string | null;
   /** QA: the runner's evidence ids the verdict may cite (ADR 0107). */
   evidenceIds: string[];
+  /** The Flex capacity bounds from the settings (ADR 0114 section 9). */
+  capacity: RunCapacityLimits;
   stateApiToken: string;
 }
 

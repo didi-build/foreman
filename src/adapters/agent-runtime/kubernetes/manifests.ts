@@ -9,6 +9,7 @@ import {
   STATE_API_PREFIX,
   parseStateApiUpstream,
 } from "../../../egress-proxy/state-api.ts";
+import type { ServiceTier } from "../../../core/store.ts";
 import type { AgentRole, RunLimits } from "../runtime.ts";
 import {
   TASK_FILE_KEY,
@@ -106,6 +107,12 @@ export interface KubernetesRunSpec {
   /** QA only: the GitHub hosts its fetch step may reach. */
   fetchAllowedHosts?: string[];
   providers: ModelProviderSetting[];
+  /** The tier the run's route asked for (ADR 0114 section 8). */
+  serviceTier: ServiceTier;
+  /** How many Flex capacity rejections the agent retries (`flex_capacity_retries`, ADR 0114 section 9). */
+  flexCapacityRetries: number;
+  /** How many 429 answers the agent's proxy lets through (`max_rejected_model_requests`). */
+  maxRejectedModelRequests: number;
 }
 
 /** Credential values for one run. Passed to `start` only, never kept, never logged. */
@@ -138,6 +145,7 @@ export const NON_PUBLIC_IPV4 = [
 ];
 
 const NO_CONNECT_HOSTS: readonly AgentRole[] = ["qa", "council", "triage"];
+const TIERS: readonly ServiceTier[] = ["standard", "flex", "priority"];
 const NEEDS_REPOSITORY: readonly AgentRole[] = ["developer", "designer", "qa"];
 
 /**
@@ -157,6 +165,18 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
   }
   if (!Number.isFinite(limits.maxUsd) || limits.maxUsd <= 0) {
     throw new Error("maxUsd must be above 0");
+  }
+  if (!TIERS.includes(spec.serviceTier)) {
+    throw new Error("serviceTier must be standard, flex or priority");
+  }
+  if (!Number.isInteger(spec.flexCapacityRetries) || spec.flexCapacityRetries < 0) {
+    throw new Error("flexCapacityRetries must be a whole number of at least 0");
+  }
+  if (
+    !Number.isInteger(spec.maxRejectedModelRequests) ||
+    spec.maxRejectedModelRequests < 1
+  ) {
+    throw new Error("maxRejectedModelRequests must be a positive whole number");
   }
   if (NO_CONNECT_HOSTS.includes(spec.role) && spec.allowedHosts.length > 0) {
     throw new Error(
@@ -321,6 +341,7 @@ export function agentStage(
       ALLOWED_HOSTS: spec.allowedHosts.join(","),
       MODEL_PROVIDERS: proxyProvidersJson(spec),
       MAX_MODEL_REQUESTS: String(limits.maxTurns * 2),
+      MAX_REJECTED_MODEL_REQUESTS: String(spec.maxRejectedModelRequests),
       STATE_API_UPSTREAM: settings.stateApi.upstream,
     },
     modelSecret: spec.providers.some((p) => p.secretPath)
@@ -356,6 +377,7 @@ export function fetchStage(
       ALLOWED_HOSTS: (spec.fetchAllowedHosts ?? []).join(","),
       MODEL_PROVIDERS: "[]",
       MAX_MODEL_REQUESTS: "1",
+      MAX_REJECTED_MODEL_REQUESTS: "1",
       STATE_API_UPSTREAM: "",
     },
     modelSecret: undefined,
@@ -544,6 +566,10 @@ function agentEnv(
     FOREMAN_MODEL: spec.model,
     FOREMAN_MAX_TURNS: String(limits.maxTurns),
     FOREMAN_MAX_BUDGET_USD: String(limits.maxUsd),
+    // A capacity wait counts against the minute limit (ADR 0114 section 9).
+    FOREMAN_MAX_MINUTES: String(limits.maxMinutes),
+    FOREMAN_SERVICE_TIER: spec.serviceTier,
+    FOREMAN_FLEX_CAPACITY_RETRIES: String(spec.flexCapacityRetries),
     FOREMAN_STATE_API_URL: `${proxyBase}${STATE_API_PREFIX}`,
     FOREMAN_TASK_FILE: TASK_FILE_PATH,
     HOME: "/work",

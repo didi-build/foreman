@@ -21,6 +21,7 @@ import {
 import {
   createRuns,
   REHEARSAL_RUN_LIMITS,
+  runCapacityLimits,
   type DispatchRequest,
   type DispatchResult,
   type Runs,
@@ -254,6 +255,72 @@ describe.skipIf(!adminUrl)(
       });
       now += 60_000;
       expect((await runs.dispatch(request(nodeId), credential())).admitted).toBe(true);
+    });
+
+    it("seeds the Flex capacity bounds, which the runner reads (migration 0007)", async () => {
+      expect((await store.getSetting("flex_capacity_retries"))?.value).toBe(3);
+      expect((await store.getSetting("max_rejected_model_requests"))?.value).toBe(5);
+      expect(await runCapacityLimits(store)).toEqual({
+        flexCapacityRetries: 3,
+        maxRejectedModelRequests: 5,
+      });
+    });
+
+    it("records a capacity end with what the runtime measured, and takes the next candidate at once (ADR 0114)", async () => {
+      const policy = FIRST_ROUTING_POLICY;
+      await setting(ROUTING_SETTINGS.policy, {
+        ...policy,
+        taskTypes: {
+          ...policy.taskTypes,
+          "developer:code": {
+            candidates: [
+              { provider: "anthropic", model: "claude-sonnet-5-5", tier: "standard" },
+              { provider: "anthropic", model: "claude-opus-5-5", tier: "standard" },
+            ],
+            onCapacity: "next_candidate",
+          },
+        },
+      });
+      try {
+        const nodeId = await item(await project());
+        const first = await runs.dispatch(request(nodeId), credential());
+        if (!first.admitted) throw new Error(first.reason);
+        await runs.recordEnd(first.run.id, {
+          outcome: "usage_exhausted",
+          usageExhaustedCause: "capacity",
+          turns: 4,
+          minutes: 6,
+          costUsd: 0.12,
+          tokens: null,
+          serviceTierServed: "standard",
+          capacityRetries: 3,
+          capacityWaitSeconds: 210,
+          firstTokenMs: null,
+          reportedCostUsd: 0.12,
+        });
+        expect(await store.getRun(first.run.id)).toMatchObject({
+          usageExhaustedCause: "capacity",
+          serviceTierServed: "standard",
+          capacityRetries: 3,
+          capacityWaitSeconds: 210,
+          firstTokenMs: null,
+          reportedCostUsd: 0.12,
+        });
+        const next = await runs.dispatch(request(nodeId), credential());
+        if (!next.admitted) throw new Error(next.reason);
+        expect(next.run.model).toBe("claude-opus-5-5");
+        const records = await pool.query(
+          `select output from factory.decision_point_records
+           where node_id = $1 and decision_point = 'model_route' order by recorded_at, id`,
+          [nodeId],
+        );
+        expect(records.rows.at(-1)?.output).toMatchObject({
+          model: "claude-opus-5-5",
+          afterCapacity: "next_candidate",
+        });
+      } finally {
+        await setting(ROUTING_SETTINGS.policy, policy);
+      }
     });
 
     it("seeds the first routing policy, catalog, approved providers and output needs (migration 0005)", async () => {

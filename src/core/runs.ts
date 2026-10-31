@@ -6,9 +6,14 @@
 // Admission also chooses the run's model route (ADR 0114 sections 2 and 5): the route is recorded
 // on the run, with its P-11 decision record, in the same transaction that inserts the run. The
 // run's state API token is stored there too, as its hash (ADR 0102), and ending the run revokes it.
+//
+// After a capacity end, a task type whose policy says `onCapacity: "next_candidate"` is not held
+// by the usage-exhausted wait when a later candidate passes the hard rules: the next dispatch takes
+// that candidate at once. Otherwise the dispatch waits as for `wait` (D-221).
 import { LibraryError, type Clock, type IdSource } from "./library.ts";
 import {
   chooseRoute,
+  type CapacityEnd,
   MODEL_ROUTE_DECIDER,
   MODEL_ROUTE_DECISION_POINT,
   routeInputHash,
@@ -24,6 +29,7 @@ import type {
   Node,
   Run,
   RunOutcome,
+  ServedTier,
   Store,
   StoreOps,
   UsageExhaustedCause,
@@ -119,6 +125,17 @@ export interface RunReport {
   usageExhaustedCause?: UsageExhaustedCause | null;
   /** The provider's retry-after, only with `usage_exhausted`. */
   retryAfterSeconds?: number | null;
+  // What the runtime measured about the route (ADR 0114 sections 2, 8 and 9). Each is null or
+  // left out when the runtime could not report it.
+  /** The tier the provider's responses reported: one tier, or `mixed`. */
+  serviceTierServed?: ServedTier | null;
+  /** Flex capacity rejections the runtime retried inside the run. */
+  capacityRetries?: number | null;
+  /** The whole seconds the runtime waited on those retries. */
+  capacityWaitSeconds?: number | null;
+  firstTokenMs?: number | null;
+  /** The runtime's own cost figure. */
+  reportedCostUsd?: number | null;
 }
 
 /** A node whose latest run ended `usage_exhausted`: its dispatch waits (ADR 0106 section 6). */
@@ -127,8 +144,27 @@ export interface QueuedDispatch {
   cause: UsageExhaustedCause;
   /** When it may be dispatched again; null while the wait setting is missing. */
   resumeAt: Date | null;
+  /** True once the wait has passed, or at once when the next candidate applies. */
   ready: boolean;
+  /**
+   * True after a capacity end when the policy says `next_candidate` and a later candidate passes
+   * the hard rules: the next dispatch takes it without waiting (ADR 0114 section 5).
+   */
+  nextCandidate: boolean;
 }
+
+/** The Flex capacity bounds a run is started with (ADR 0114 section 9, migration 0007). */
+export interface RunCapacityLimits {
+  /** How many Flex capacity rejections one run retries. 0 means none. */
+  flexCapacityRetries: number;
+  /** How many requests the run's proxy lets through after a 429 before it answers 403. */
+  maxRejectedModelRequests: number;
+}
+
+export const CAPACITY_SETTINGS = {
+  flexCapacityRetries: "flex_capacity_retries",
+  maxRejectedModelRequests: "max_rejected_model_requests",
+} as const;
 
 export interface RunsOptions {
   store: Store;
@@ -165,22 +201,62 @@ export function usageResumeAt(run: Run, waitMinutes: number | null): Date | null
 
 async function queuedDispatch(
   store: StoreOps,
-  nodeId: string,
+  node: Node,
+  taskTypes: TaskTypes,
   now: Date,
 ): Promise<QueuedDispatch | null> {
-  const latest = (await store.listRuns({ nodeId })).at(-1);
+  const latest = (await store.listRuns({ nodeId: node.id })).at(-1);
   if (latest?.outcome !== "usage_exhausted" || !latest.usageExhaustedCause) return null;
   const waitMinutes = await positiveIntegerSetting(
     store,
     "usage_exhausted_wait_minutes",
   );
   const resumeAt = usageResumeAt(latest, waitMinutes);
+  let nextCandidate = false;
+  if (latest.usageExhaustedCause === "capacity" && isAgentRole(latest.bot)) {
+    const choice = chooseRoute(await routeInput(store, latest.bot, node, taskTypes));
+    nextCandidate = choice.routed && choice.route.afterCapacity === "next_candidate";
+  }
   return {
     runId: latest.id,
     cause: latest.usageExhaustedCause,
     resumeAt,
-    ready: resumeAt !== null && now.getTime() >= resumeAt.getTime(),
+    ready: nextCandidate || (resumeAt !== null && now.getTime() >= resumeAt.getTime()),
+    nextCandidate,
   };
+}
+
+const AGENT_ROLES: readonly string[] = [
+  "developer",
+  "qa",
+  "designer",
+  "council",
+  "triage",
+];
+const isAgentRole = (bot: string): bot is AgentRole => AGENT_ROLES.includes(bot);
+
+/**
+ * The run capacity bounds from settings. A missing or bad setting refuses the start before
+ * anything is written, and the error names the setting, never its value.
+ */
+export async function runCapacityLimits(store: StoreOps): Promise<RunCapacityLimits> {
+  const retries = (await store.getSetting(CAPACITY_SETTINGS.flexCapacityRetries))
+    ?.value;
+  if (!isCount(retries)) {
+    throw new LibraryError(
+      `${CAPACITY_SETTINGS.flexCapacityRetries} must be a whole number of at least 0`,
+    );
+  }
+  const rejected = await positiveIntegerSetting(
+    store,
+    CAPACITY_SETTINGS.maxRejectedModelRequests,
+  );
+  if (rejected === null) {
+    throw new LibraryError(
+      `${CAPACITY_SETTINGS.maxRejectedModelRequests} must be a whole number above 0`,
+    );
+  }
+  return { flexCapacityRetries: retries, maxRejectedModelRequests: rejected };
 }
 
 /**
@@ -240,6 +316,9 @@ function checkRunReport(report: RunReport): void {
   for (const [name, value] of [
     ["turns", report.turns],
     ["retryAfterSeconds", report.retryAfterSeconds ?? null],
+    ["capacityRetries", report.capacityRetries ?? null],
+    ["capacityWaitSeconds", report.capacityWaitSeconds ?? null],
+    ["firstTokenMs", report.firstTokenMs ?? null],
   ] as const) {
     if (value !== null && !isCount(value)) {
       throw new LibraryError(`${name} must be a whole number of at least 0`);
@@ -248,9 +327,16 @@ function checkRunReport(report: RunReport): void {
   for (const [name, value] of [
     ["minutes", report.minutes],
     ["costUsd", report.costUsd],
+    ["reportedCostUsd", report.reportedCostUsd ?? null],
   ] as const) {
     if (value !== null && !isAmount(value))
       throw new LibraryError(`${name} must be at least 0`);
+  }
+  const served = report.serviceTierServed ?? null;
+  if (served !== null && !SERVED_TIERS.includes(served)) {
+    throw new LibraryError(
+      "serviceTierServed must be standard, flex, priority or mixed",
+    );
   }
   if (report.tokens) {
     const { uncachedInput, cachedInput, cacheWriteInput, output } = report.tokens;
@@ -271,6 +357,8 @@ function checkRunReport(report: RunReport): void {
     throw new LibraryError("only a usage_exhausted end has a retry-after");
   }
 }
+
+const SERVED_TIERS: readonly ServedTier[] = ["standard", "flex", "priority", "mixed"];
 
 /** Only the known counts, so nothing else a runtime adds is stored. */
 function tokensJson(tokens: RunTokens): Json {
@@ -330,7 +418,10 @@ function newRun(
   };
 }
 
-/** What the route choice reads: the role's task type, the item's runs and the routing settings. */
+/**
+ * What the route choice reads: the role's task type, the item's runs, the routing settings and,
+ * when the item's latest run ended with a capacity end on the same task type, that run's route.
+ */
 async function routeInput(
   store: StoreOps,
   role: AgentRole,
@@ -339,16 +430,30 @@ async function routeInput(
 ): Promise<RouteInput> {
   const value = async (key: string): Promise<Json> =>
     (await store.getSetting(key))?.value ?? null;
+  const earlierRuns = await store.listRuns({ nodeId: node.id });
+  const taskType = taskTypeFor(taskTypes, role);
+  const latest = earlierRuns.at(-1);
+  const capacityEnd: CapacityEnd | null =
+    latest?.outcome === "usage_exhausted" &&
+    latest.usageExhaustedCause === "capacity" &&
+    latest.taskType === taskType
+      ? {
+          provider: latest.provider,
+          model: latest.model,
+          tier: latest.serviceTierRequested,
+        }
+      : null;
   return {
     role,
-    taskType: taskTypeFor(taskTypes, role),
-    earlierRuns: await store.listRuns({ nodeId: node.id }),
+    taskType,
+    earlierRuns,
     settings: {
       policy: await value(ROUTING_SETTINGS.policy),
       catalog: await value(ROUTING_SETTINGS.catalog),
       providers: await value(ROUTING_SETTINGS.providers),
       outputNeeds: await value(ROUTING_SETTINGS.outputNeeds),
     },
+    ...(capacityEnd ? { capacityEnd } : {}),
   };
 }
 
@@ -371,7 +476,7 @@ async function admission(
   }
   const node = await store.getNode(request.nodeId);
   if (!node) throw new LibraryError(`No node ${request.nodeId}`);
-  const queued = await queuedDispatch(store, node.id, now);
+  const queued = await queuedDispatch(store, node, taskTypes, now);
   if (queued && !queued.ready) {
     return { admitted: false, reason: "usage_exhausted_wait" };
   }
@@ -415,6 +520,11 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
         transcriptRef: report.transcriptRef ?? null,
         usageExhaustedCause: report.usageExhaustedCause ?? null,
         retryAfterSeconds: report.retryAfterSeconds ?? null,
+        serviceTierServed: report.serviceTierServed ?? null,
+        capacityRetries: report.capacityRetries ?? null,
+        capacityWaitSeconds: report.capacityWaitSeconds ?? null,
+        firstTokenMs: report.firstTokenMs ?? null,
+        reportedCostUsd: report.reportedCostUsd ?? null,
       });
       if (ended) await tx.revokeRunToken(runId, endedAt);
       return ended;
@@ -510,8 +620,10 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
     },
 
     /** The node's queued dispatch after a usage_exhausted end, or null if it is not queued. */
-    queuedDispatch(nodeId: string): Promise<QueuedDispatch | null> {
-      return queuedDispatch(store, nodeId, clock.now());
+    async queuedDispatch(nodeId: string): Promise<QueuedDispatch | null> {
+      const node = await store.getNode(nodeId);
+      if (!node) throw new LibraryError(`No node ${nodeId}`);
+      return queuedDispatch(store, node, taskTypes, clock.now());
     },
   };
 }

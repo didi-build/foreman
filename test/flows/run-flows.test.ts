@@ -522,8 +522,83 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
     expect(both.map((r) => r.outcome).sort()).toEqual(["already_recorded", "recorded"]);
     const endedAt = (await f.store.getRun(input.runId))?.endedAt;
     f.advanceMinutes(5);
-    expect(await recordRunEnd(f.deps, input)).toEqual({ outcome: "already_recorded" });
+    expect(await recordRunEnd(f.deps, input)).toMatchObject({
+      outcome: "already_recorded",
+    });
     expect((await f.store.getRun(input.runId))?.endedAt).toEqual(endedAt);
+  });
+
+  it("records what the runtime measured about the route, and keeps its cost as the reported cost", async () => {
+    const { f, input } = await activeRun();
+    f.runtime.status.set(input.runId, {
+      state: "finished",
+      result: {
+        ...RESULT,
+        serviceTierServed: "standard",
+        capacityRetries: 0,
+        capacityWaitSeconds: 0,
+      },
+    });
+    await recordRunEnd(f.deps, input);
+    expect(await f.store.getRun(input.runId)).toMatchObject({
+      costUsd: 0.4,
+      reportedCostUsd: 0.4,
+      serviceTierServed: "standard",
+      capacityRetries: 0,
+      capacityWaitSeconds: 0,
+      firstTokenMs: null,
+    });
+  });
+
+  it("asks for the Developer's done move once the end is recorded, and the guards decide", async () => {
+    const { f, node, input } = await activeRun();
+    f.runtime.status.set(input.runId, { state: "finished", result: RESULT });
+    // No CI on the head yet: the move is refused and the item stays In development.
+    expect(await recordRunEnd(f.deps, input)).toMatchObject({
+      outcome: "recorded",
+      move: {
+        requested: true,
+        outcome: "rejected",
+        toState: "in_qa_review",
+        failedGuards: ["ci_green_on_head", "docs_updated_or_none"],
+      },
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("in_development");
+
+    // The runner's evidence arrives, and the flow runs again for the same run.
+    await f.evidence(
+      node.id,
+      "ci_run",
+      { conclusion: "success", pr: 7 },
+      {
+        commitSha: HEAD,
+      },
+    );
+    await f.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: HEAD });
+    expect(await recordRunEnd(f.deps, input)).toMatchObject({
+      outcome: "already_recorded",
+      move: { outcome: "applied", toState: "in_qa_review" },
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("in_qa_review");
+    expect(await recordRunEnd(f.deps, input)).toMatchObject({
+      move: { outcome: "noop", reason: "duplicate_trigger" },
+    });
+    const moves = (await f.transitions(node.id)).map((t) => t.toState);
+    expect(moves).toEqual(["in_development", "in_qa_review"]);
+  });
+
+  it("asks for no move after an end that is not a success", async () => {
+    const { f, node, input } = await activeRun();
+    f.runtime.status.set(input.runId, {
+      state: "finished",
+      result: { ...RESULT, outcome: "fail" },
+    });
+    expect(await recordRunEnd(f.deps, input)).toMatchObject({
+      move: { requested: false, reason: "not_success" },
+    });
+    expect((await f.transitions(node.id)).map((t) => t.toState)).toEqual([
+      "in_development",
+    ]);
   });
 
   it("records a usage-exhausted end with its cause, which queues the dispatch", async () => {

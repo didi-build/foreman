@@ -18,6 +18,7 @@ const goodEnv = {
     },
   ]),
   MAX_MODEL_REQUESTS: "200",
+  MAX_REJECTED_MODEL_REQUESTS: "5",
   [secretEnvName(SECRET_PATH)]: KEY_VALUE,
 };
 
@@ -60,6 +61,7 @@ describe("readProxyConfig (unit: egress proxy settings, ADR 0111)", () => {
       ALLOWED_HOSTS: "",
       MODEL_PROVIDERS: "[]",
       MAX_MODEL_REQUESTS: "1",
+      MAX_REJECTED_MODEL_REQUESTS: "1",
     });
     expect(config.allowedHosts.size).toBe(0);
     expect(config.providers).toEqual([]);
@@ -77,6 +79,8 @@ describe("readProxyConfig (unit: egress proxy settings, ADR 0111)", () => {
     ["MAX_MODEL_REQUESTS", "0"],
     ["MAX_MODEL_REQUESTS", "1.5"],
     ["MAX_MODEL_REQUESTS", "-3"],
+    ["MAX_REJECTED_MODEL_REQUESTS", "0"],
+    ["MAX_REJECTED_MODEL_REQUESTS", "x"],
     ["STATE_API_UPSTREAM", "http://api.example.com:8080"],
     ["STATE_API_UPSTREAM", "http://169.254.169.254"],
   ])("stops on a bad %s, naming it but not its value", (name, value) => {

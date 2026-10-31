@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { CEILING_MESSAGE } from "../../../egress-proxy/proxy.ts";
+import {
+  CEILING_MESSAGE,
+  REJECTED_CEILING_MESSAGE,
+} from "../../../egress-proxy/proxy.ts";
+import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-error.ts";
 import type { JobStatus } from "./objects.ts";
 import { jobMinutes, jobState, mapRunEnd, parseAgentResult } from "./result.ts";
 
@@ -160,6 +164,14 @@ describe("mapRunEnd (unit: outcome mapping, ADR 0106 section 6)", () => {
       { status: "error", providerError: { status: 403, message: CEILING_MESSAGE } },
       "proxy_ceiling",
     ],
+    [
+      "the proxy's rejected-request ceiling (ADR 0114 section 9)",
+      {
+        status: "error",
+        providerError: { status: 403, message: REJECTED_CEILING_MESSAGE },
+      },
+      "proxy_rejected_ceiling",
+    ],
   ])("maps %s to budget_exceeded", (_label, fields, detail) => {
     expect(mapRunEnd("failed", JOB, parse(fields), "m")).toMatchObject({
       outcome: "budget_exceeded",
@@ -215,6 +227,74 @@ describe("mapRunEnd (unit: outcome mapping, ADR 0106 section 6)", () => {
     const result = mapRunEnd(state, JOB, fields === null ? null : parse(fields), "m");
     expect(result).toMatchObject({ outcome: "fail", detail });
     expect(result.usageExhaustedCause).toBeUndefined();
+  });
+
+  it.each([
+    ["engine_overloaded", { status: 429, type: "engine_overloaded" }],
+    ["overloaded_error", { status: 429, type: "overloaded_error" }],
+    ["the type in the message", { status: 429, message: "engine_overloaded: retry" }],
+  ])(
+    "maps a Flex 429 with an overload error (%s) to capacity, from the route's tier (ADR 0114 section 9)",
+    (_label, error) => {
+      const fields = { status: "error", providerError: error };
+      expect(mapRunEnd("failed", JOB, parse(fields), "m", "flex")).toMatchObject({
+        outcome: "usage_exhausted",
+        usageExhaustedCause: "capacity",
+      });
+      // The same answer to a Standard request is a rate limit.
+      expect(mapRunEnd("failed", JOB, parse(fields), "m", "standard")).toMatchObject({
+        outcome: "usage_exhausted",
+        usageExhaustedCause: "rate_limit",
+      });
+    },
+  );
+
+  it("maps any other 429 on Flex to a rate limit", () => {
+    const fields = {
+      status: "error",
+      providerError: { status: 429, type: "rate_limit_error" },
+    };
+    expect(mapRunEnd("failed", JOB, parse(fields), "m", "flex")).toMatchObject({
+      usageExhaustedCause: "rate_limit",
+    });
+    expect(
+      isFlexCapacityRejection("flex", {
+        status: 503,
+        type: "engine_overloaded",
+        message: "",
+        retryAfterSeconds: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("passes on what the runtime measured about the route, and drops bad values", () => {
+    const result = mapRunEnd(
+      "failed",
+      JOB,
+      parse({
+        status: "error",
+        serviceTierServed: "mixed",
+        capacityRetries: 3,
+        capacityWaitSeconds: 210,
+        firstTokenMs: "fast",
+      }),
+      "m",
+      "flex",
+    );
+    expect(result).toMatchObject({
+      serviceTierServed: "mixed",
+      capacityRetries: 3,
+      capacityWaitSeconds: 210,
+    });
+    expect(result).not.toHaveProperty("firstTokenMs");
+    expect(
+      mapRunEnd(
+        "complete",
+        JOB,
+        parse({ status: "success", serviceTierServed: "batch" }),
+        "m",
+      ),
+    ).not.toHaveProperty("serviceTierServed");
   });
 
   it("does not take the ceiling message from the agent's final text", () => {

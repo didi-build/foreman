@@ -38,6 +38,8 @@ interface Usage {
   output_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
+  /** The tier the provider says it served. Left out unless a test sets it. */
+  service_tier?: string;
 }
 
 const DEFAULT_USAGE: Usage = {

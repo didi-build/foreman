@@ -614,5 +614,142 @@ describe("the input hash", () => {
     };
     expect(routeInputHash(withDeveloper)).not.toBe(hash);
     expect(routeInputHash({ ...base, taskType: "triage" })).not.toBe(hash);
+    const capacityEnd = {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      tier: "standard" as const,
+    };
+    expect(routeInputHash({ ...base, capacityEnd })).not.toBe(hash);
+  });
+});
+
+describe("after a capacity end (ADR 0114 section 5, D-221)", () => {
+  const SONNET = "claude-sonnet-5-5";
+  const OPUS = "claude-opus-5-5";
+  const capacityPolicy = (onCapacity: string, candidates: Json[]): Json => ({
+    version: "test.1",
+    qaIndependence: "model_id",
+    taskTypes: { "developer:code": { candidates, onCapacity } },
+  });
+  const ranOn = (model: string, provider = "anthropic", tier = "standard") =>
+    ({ provider, model, tier }) as RouteInput["capacityEnd"];
+
+  it("takes the first passing candidate after the one that ran, with next_candidate", () => {
+    const choice = chooseRoute({
+      ...input({
+        settings: {
+          policy: capacityPolicy("next_candidate", [
+            candidate(SONNET),
+            candidate("test/unpriced"),
+            candidate(OPUS),
+          ]),
+        },
+      }),
+      capacityEnd: ranOn(SONNET),
+    });
+    expect(routed(choice)).toMatchObject({
+      model: OPUS,
+      afterCapacity: "next_candidate",
+    });
+  });
+
+  it("does not go back before the candidate that ran", () => {
+    const choice = chooseRoute({
+      ...input({
+        settings: {
+          policy: capacityPolicy("next_candidate", [
+            candidate(SONNET),
+            candidate(OPUS),
+          ]),
+        },
+      }),
+      capacityEnd: ranOn(OPUS),
+    });
+    // No candidate after Opus: the choice is as for wait, from the first candidate (D-221).
+    expect(routed(choice)).toMatchObject({
+      model: SONNET,
+      afterCapacity: "no_later_candidate",
+    });
+  });
+
+  it("chooses as for wait when no later candidate passes the hard rules (D-221)", () => {
+    const choice = chooseRoute({
+      ...input({
+        settings: {
+          policy: capacityPolicy("next_candidate", [
+            candidate(SONNET),
+            candidate("test/qwen-coder", "together"),
+          ]),
+        },
+      }),
+      capacityEnd: ranOn(SONNET),
+    });
+    expect(routed(choice)).toMatchObject({
+      model: SONNET,
+      afterCapacity: "no_later_candidate",
+    });
+  });
+
+  it("chooses as for wait when the policy no longer lists the candidate that ran", () => {
+    const choice = chooseRoute({
+      ...input({
+        settings: {
+          policy: capacityPolicy("next_candidate", [
+            candidate(SONNET),
+            candidate(OPUS),
+          ]),
+        },
+      }),
+      capacityEnd: ranOn("test/qwen-coder", "deepinfra", "flex"),
+    });
+    expect(routed(choice)).toMatchObject({
+      model: SONNET,
+      afterCapacity: "no_later_candidate",
+    });
+  });
+
+  it("keeps today's first candidate with wait, marked as a wait", () => {
+    const choice = chooseRoute({
+      ...input({
+        settings: {
+          policy: capacityPolicy("wait", [candidate(SONNET), candidate(OPUS)]),
+        },
+      }),
+      capacityEnd: ranOn(SONNET),
+    });
+    expect(routed(choice)).toMatchObject({ model: SONNET, afterCapacity: "wait" });
+  });
+
+  it("matches the candidate that ran by provider, model and tier", () => {
+    const choice = chooseRoute({
+      ...input({
+        settings: {
+          policy: capacityPolicy("next_candidate", [
+            candidate("test/qwen-coder", "deepinfra", "flex"),
+            candidate("test/qwen-coder", "deepinfra", "standard"),
+          ]),
+        },
+      }),
+      capacityEnd: ranOn("test/qwen-coder", "deepinfra", "flex"),
+    });
+    // From Flex to Standard on the same model.
+    expect(routed(choice)).toMatchObject({
+      tier: "standard",
+      afterCapacity: "next_candidate",
+    });
+  });
+
+  it("still refuses with no_route when no candidate passes at all", () => {
+    const noRoute = refused(
+      chooseRoute({
+        ...input({
+          settings: {
+            policy: capacityPolicy("next_candidate", [candidate("test/unpriced")]),
+          },
+        }),
+        capacityEnd: ranOn("test/unpriced"),
+      }),
+    );
+    expect(noRoute.rejected).toHaveLength(1);
   });
 });

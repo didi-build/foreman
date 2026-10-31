@@ -1,10 +1,13 @@
 // The run-end flow (build plan M3.1 and M3.2, ADR 0106 section 6, ADR 0107). It polls one run
 // through the agent runtime with the handle kept on the run (`runs.handle`, migration 0006) and,
 // once the run has finished, records its end through the runs module, which revokes the run's
-// token in the same transaction, then lets the runtime clean up. The store records an end once,
-// so a repeated trigger records one end. In dry run it reports what it would record and writes
-// nothing. Under the kill switch it refuses: the cancel-runs flow ends those runs. It never
-// touches a counter or a transition: those are the P-03 rules and the guards (M3.5).
+// token in the same transaction, then lets the runtime clean up. Once the end is recorded, the
+// move a successful run's report triggers is asked for through the library, so the contract's
+// guards decide (src/core/run-reports.ts); a retried trigger asks again and writes one move. The
+// store records an end once, so a repeated trigger records one end. In dry run it reports what it
+// would record and writes nothing. Under the kill switch it refuses: the cancel-runs flow ends
+// those runs. It never touches a counter: those are the P-03 rules (M3.5).
+import { createRunReports, type ReportedMove } from "../src/core/run-reports.ts";
 import { createRuns, type RunReport } from "../src/core/runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
 import { runReport } from "./lib/runs.ts";
@@ -17,8 +20,10 @@ export interface RecordRunEndInput {
 
 export type RecordRunEndResult =
   | { outcome: "refused"; reason: "kill_switch" }
-  | { outcome: "no_run" | "no_handle" | "already_recorded" | "running" }
-  | { outcome: "would_record" | "recorded"; report: RunReport };
+  | { outcome: "no_run" | "no_handle" | "running" }
+  | { outcome: "already_recorded"; move: ReportedMove }
+  | { outcome: "would_record"; report: RunReport }
+  | { outcome: "recorded"; report: RunReport; move: ReportedMove };
 
 export async function run(
   deps: FlowDeps,
@@ -26,9 +31,11 @@ export async function run(
 ): Promise<RecordRunEndResult> {
   if (await killSwitchOn(deps.store))
     return { outcome: "refused", reason: "kill_switch" };
+  const reported = () => createRunReports(deps).requestReportedMove(input.runId);
   const known = await deps.store.getRun(input.runId);
   if (!known) return { outcome: "no_run" };
-  if (known.endedAt !== null) return { outcome: "already_recorded" };
+  if (known.endedAt !== null)
+    return { outcome: "already_recorded", move: await reported() };
   const handle = await deps.store.getRunHandle(input.runId);
   if (handle === null) return { outcome: "no_handle" };
   const status = await deps.runtime.poll(handle);
@@ -37,7 +44,10 @@ export async function run(
   if (await dryRunOn(deps.store)) return { outcome: "would_record", report };
   const recorded = await createRuns(deps).recordEnd(input.runId, report);
   await deps.runtime.cleanup?.(handle);
-  return recorded ? { outcome: "recorded", report } : { outcome: "already_recorded" };
+  const move = await reported();
+  return recorded
+    ? { outcome: "recorded", report, move }
+    : { outcome: "already_recorded", move };
 }
 
 export const main = (input: RecordRunEndInput): Promise<RecordRunEndResult> =>

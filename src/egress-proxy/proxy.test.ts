@@ -25,7 +25,12 @@ import { createLogger } from "../service-kit/logger.ts";
 import { startService, type RunningService } from "../service-kit/server.ts";
 import { parseAllowedHosts } from "./hosts.ts";
 import { parseProviders } from "./providers.ts";
-import { CEILING_MESSAGE, createEgressProxy, type EgressProxy } from "./proxy.ts";
+import {
+  CEILING_MESSAGE,
+  createEgressProxy,
+  REJECTED_CEILING_MESSAGE,
+  type EgressProxy,
+} from "./proxy.ts";
 import { parseStateApiUpstream } from "./state-api.ts";
 
 // Integration: the proxy over real sockets on localhost. No real DNS and no real network: the
@@ -149,6 +154,17 @@ beforeAll(async () => {
         releaseStream = () => response.end("event: last\ndata: 2\n\n");
         return;
       }
+      if (request.url === "/v1/busy") {
+        // A provider that is busy: not served, not billed.
+        response.writeHead(429, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            type: "error",
+            error: { type: "overloaded_error", message: "busy" },
+          }),
+        );
+        return;
+      }
       if (request.url?.startsWith("/v1/echo")) {
         // The body goes back, so the response is checked byte for byte too.
         response.writeHead(201, { "content-type": "application/octet-stream" });
@@ -200,6 +216,7 @@ afterEach(async () => {
 async function start(
   overrides: {
     maxModelRequests?: number;
+    maxRejectedModelRequests?: number;
     trustTestCa?: boolean;
     dns?: Record<string, string[]>[];
     stateApi?: boolean;
@@ -248,6 +265,7 @@ async function start(
       ["openai", PROVIDER_KEY],
     ]),
     maxModelRequests: overrides.maxModelRequests ?? 100,
+    maxRejectedModelRequests: overrides.maxRejectedModelRequests ?? 5,
     stateApi:
       overrides.stateApi === false
         ? undefined
@@ -508,6 +526,57 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
     expect(statuses).toEqual([200, 200, 403]);
     expect(upstreamSeen).toHaveLength(2);
     expect(logs.join("\n")).toContain('"reason":"request ceiling"');
+  });
+
+  /** POSTs to a model path through the proxy and returns the status, reading the body. */
+  async function post(path: string): Promise<{ status: number; body: string }> {
+    const response = await fetch(proxyUrl(path), { method: "POST", body: "{}" });
+    return { status: response.status, body: await response.text() };
+  }
+
+  it("does not count a request the upstream answered with 429 against the ceiling (ADR 0114 section 9)", async () => {
+    await start({ maxModelRequests: 2, maxRejectedModelRequests: 5 });
+    const statuses: number[] = [];
+    for (const path of [
+      "/openai/busy",
+      "/openai/busy",
+      "/openai/busy",
+      "/anthropic/v1/messages",
+      "/anthropic/v1/messages",
+      "/anthropic/v1/messages",
+    ]) {
+      statuses.push((await post(path)).status);
+    }
+    // Three rejections, then the two served requests the ceiling allows, then the ceiling.
+    expect(statuses).toEqual([429, 429, 429, 200, 200, 403]);
+    expect(upstreamSeen).toHaveLength(5);
+  });
+
+  it("passes the 429 to the client unchanged", async () => {
+    await start();
+    const answer = await post("/openai/busy");
+    expect(answer.status).toBe(429);
+    expect(JSON.parse(answer.body)).toEqual({
+      type: "error",
+      error: { type: "overloaded_error", message: "busy" },
+    });
+  });
+
+  it("answers 403 past the rejected-request ceiling, so a runtime that retries without end stops", async () => {
+    const { logs } = await start({
+      maxModelRequests: 100,
+      maxRejectedModelRequests: 2,
+    });
+    const answers = [];
+    for (let i = 0; i < 3; i += 1) answers.push(await post("/openai/busy"));
+    expect(answers.map((a) => a.status)).toEqual([429, 429, 403]);
+    expect(JSON.parse(answers[2]?.body ?? "")).toEqual({
+      error: REJECTED_CEILING_MESSAGE,
+    });
+    // Served requests are refused too: the run is over.
+    expect((await post("/anthropic/v1/messages")).status).toBe(403);
+    expect(upstreamSeen).toHaveLength(2);
+    expect(logs.join("\n")).toContain('"reason":"rejected request ceiling"');
   });
 });
 

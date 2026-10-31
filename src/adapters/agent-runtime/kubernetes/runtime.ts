@@ -268,7 +268,10 @@ export function createKubernetesRuntime(options: {
       // before the runner read it was stopped from outside the run: `cancel`, or by hand.
       if (state === "gone") return cancelled(handle, "job_deleted");
       const result = state === "deadline" ? null : await readResult(handle);
-      return finish(handle, mapRunEnd(state, agentJob, result, handle.spec.model));
+      return finish(
+        handle,
+        mapRunEnd(state, agentJob, result, handle.spec.model, handle.spec.serviceTier),
+      );
     },
 
     async cancel(handle) {

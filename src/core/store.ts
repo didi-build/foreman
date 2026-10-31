@@ -251,6 +251,12 @@ export interface RunEnd {
   usageExhaustedCause: UsageExhaustedCause | null;
   /** The provider's retry-after, only with `usage_exhausted`. */
   retryAfterSeconds: number | null;
+  // What the runtime measured about the route (ADR 0114 sections 2, 8 and 9); null when unknown.
+  serviceTierServed: ServedTier | null;
+  capacityRetries: number | null;
+  capacityWaitSeconds: number | null;
+  firstTokenMs: number | null;
+  reportedCostUsd: number | null;
 }
 
 export type CounterKind = "failure" | "qa_round";

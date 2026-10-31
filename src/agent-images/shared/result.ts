@@ -78,6 +78,16 @@ export function resultLine(result: AgentResult, secrets: readonly string[]): str
               : { retryAfterSeconds: result.providerError.retryAfterSeconds }),
           },
         }),
+    ...(result.serviceTierServed === undefined
+      ? {}
+      : { serviceTierServed: result.serviceTierServed }),
+    ...(result.capacityRetries === undefined
+      ? {}
+      : { capacityRetries: result.capacityRetries }),
+    ...(result.capacityWaitSeconds === undefined
+      ? {}
+      : { capacityWaitSeconds: result.capacityWaitSeconds }),
+    ...(result.firstTokenMs === undefined ? {} : { firstTokenMs: result.firstTokenMs }),
   };
   return JSON.stringify(redact(line, secrets));
 }

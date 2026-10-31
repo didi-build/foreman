@@ -57,6 +57,9 @@ const base = {
       baseUrlEnv: "ANTHROPIC_BASE_URL",
     },
   ],
+  serviceTier: "standard" as const,
+  flexCapacityRetries: 3,
+  maxRejectedModelRequests: 5,
 };
 
 export const DEVELOPER: KubernetesRunSpec = {

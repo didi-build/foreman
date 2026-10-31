@@ -4,6 +4,11 @@
 // output need). It returns the first policy candidate that passes every hard rule, or `no_route`
 // with the reason each candidate failed. The hard rules live here, never in data alone.
 //
+// After a capacity end (a run on the item ended `usage_exhausted` with cause `capacity`), a task
+// type whose policy says `onCapacity: "next_candidate"` takes the first candidate after the one
+// that ran that passes the hard rules. When none does, the choice is as for `wait` (D-221): the
+// first candidate that passes, and the dispatch queues.
+//
 // Settings are checked strictly. A malformed policy, catalog, provider list or output need fails
 // closed: nothing is routed. Problems name the field, never a value from the setting.
 import { createHash } from "node:crypto";
@@ -66,10 +71,24 @@ export interface RouteCandidate {
 
 /**
  * `wait`: after a capacity end the dispatch queues, as today. `next_candidate`: the next dispatch
- * takes the next candidate. Only `wait` is acted on yet; `next_candidate` is parsed and kept on
- * the route for the slice that builds Flex capacity handling (ADR 0114 section 11).
+ * of the item takes the next candidate after the one that ran that passes the hard rules, and
+ * queues as for `wait` when none does (D-221).
  */
 export type OnCapacity = "wait" | "next_candidate";
+
+/** The route of the item's latest run, when that run ended with a capacity end. */
+export interface CapacityEnd {
+  provider: string;
+  model: string;
+  tier: ServiceTier;
+}
+
+/**
+ * How a choice after a capacity end went. `next_candidate`: a later candidate was chosen, and the
+ * dispatch does not wait. `wait`: the policy says wait. `no_later_candidate`: the policy says
+ * next_candidate but no later candidate passed, so the choice is as for wait (D-221).
+ */
+export type AfterCapacity = "next_candidate" | "wait" | "no_later_candidate";
 
 export interface TaskTypeRouting {
   candidates: RouteCandidate[];
@@ -112,6 +131,11 @@ export interface RouteInput {
   /** The item's earlier runs, any order. */
   earlierRuns: readonly EarlierRun[];
   settings: RoutingSettingValues;
+  /**
+   * Set when the item's latest run ended `usage_exhausted` with cause `capacity` and had this
+   * input's task type: the route it ran on.
+   */
+  capacityEnd?: CapacityEnd;
 }
 
 export interface Route {
@@ -124,6 +148,8 @@ export interface Route {
   onCapacity: OnCapacity;
   policyVersion: string;
   catalogVersion: string;
+  /** Present only when the input had a capacity end. */
+  afterCapacity?: AfterCapacity;
 }
 
 export type HardRule =
@@ -548,27 +574,28 @@ export function chooseRoute(input: RouteInput): RouteChoice {
 
   const developerRuns = input.earlierRuns.filter((run) => run.bot === "developer");
   const rejected: CandidateRejection[] = [];
-  for (const [index, candidate] of routing.candidates.entries()) {
-    const model = Object.hasOwn(catalog.models, candidate.model)
-      ? catalog.models[candidate.model]
-      : undefined;
-    const failed: CandidateRejection["failed"] = [];
-    const check = (rule: HardRule, detail: string | null) => {
-      if (detail !== null) failed.push({ rule, detail });
-    };
-    if (input.role === "qa") {
-      check(
-        "qa_independence",
-        qaIndependenceProblem(policy, candidate, model, developerRuns),
-      );
-    }
-    check("known_price", priceProblem(candidate, model));
-    check("approved_provider", providerProblem(providers, candidate, model));
-    check("output_cap", outputCapProblem(model, need));
-    if (failed.length === 0 && model) {
-      return {
-        routed: true,
-        route: {
+  /** The first candidate from `from` on that passes every hard rule, or null. */
+  const firstPassing = (from: number, keepRejections: boolean): Route | null => {
+    for (const [index, candidate] of routing.candidates.entries()) {
+      if (index < from) continue;
+      const model = Object.hasOwn(catalog.models, candidate.model)
+        ? catalog.models[candidate.model]
+        : undefined;
+      const failed: CandidateRejection["failed"] = [];
+      const check = (rule: HardRule, detail: string | null) => {
+        if (detail !== null) failed.push({ rule, detail });
+      };
+      if (input.role === "qa") {
+        check(
+          "qa_independence",
+          qaIndependenceProblem(policy, candidate, model, developerRuns),
+        );
+      }
+      check("known_price", priceProblem(candidate, model));
+      check("approved_provider", providerProblem(providers, candidate, model));
+      check("output_cap", outputCapProblem(model, need));
+      if (failed.length === 0 && model) {
+        return {
           taskType: input.taskType,
           provider: candidate.provider,
           model: candidate.model,
@@ -578,11 +605,40 @@ export function chooseRoute(input: RouteInput): RouteChoice {
           onCapacity: routing.onCapacity,
           policyVersion: policy.version,
           catalogVersion: catalog.version,
-        },
-      };
+        };
+      }
+      if (keepRejections) {
+        const { provider, model: id, tier } = candidate;
+        rejected.push({ index, provider, model: id, tier, failed });
+      }
     }
-    const { provider, model: id, tier } = candidate;
-    rejected.push({ index, provider, model: id, tier, failed });
+    return null;
+  };
+
+  const capacityEnd = input.capacityEnd;
+  let afterCapacity: AfterCapacity | undefined;
+  if (capacityEnd) {
+    afterCapacity = "wait";
+    if (routing.onCapacity === "next_candidate") {
+      // The candidate that ran. If the policy no longer lists it, no candidate is "after" it.
+      const ran = routing.candidates.findIndex(
+        (c) =>
+          c.provider === capacityEnd.provider &&
+          c.model === capacityEnd.model &&
+          c.tier === capacityEnd.tier,
+      );
+      const next = ran >= 0 ? firstPassing(ran + 1, false) : null;
+      if (next)
+        return { routed: true, route: { ...next, afterCapacity: "next_candidate" } };
+      afterCapacity = "no_later_candidate";
+    }
+  }
+  const route = firstPassing(0, true);
+  if (route) {
+    return {
+      routed: true,
+      route: afterCapacity ? { ...route, afterCapacity } : route,
+    };
   }
   return { routed: false, noRoute: { settingsProblems: [], rejected } };
 }
@@ -619,7 +675,9 @@ function canonicalJson(value: unknown): string {
 
 /**
  * The SHA-256 of everything the choice reads: the role, the task type, the model and family of
- * each Developer run on the item (in order), and the four settings as stored.
+ * each Developer run on the item (in order), the four settings as stored, and the capacity end
+ * when there is one. An input without a capacity end hashes as it did before capacity ends
+ * were read.
  */
 export function routeInputHash(input: RouteInput): string {
   const developerRuns = input.earlierRuns
@@ -632,6 +690,7 @@ export function routeInputHash(input: RouteInput): string {
         taskType: input.taskType,
         developerRuns,
         settings: input.settings,
+        capacityEnd: input.capacityEnd,
       }),
     )
     .digest("hex");
@@ -650,5 +709,6 @@ export function routeOutput(route: Route, runId: string): Json {
     onCapacity: route.onCapacity,
     policyVersion: route.policyVersion,
     catalogVersion: route.catalogVersion,
+    ...(route.afterCapacity ? { afterCapacity: route.afterCapacity } : {}),
   };
 }

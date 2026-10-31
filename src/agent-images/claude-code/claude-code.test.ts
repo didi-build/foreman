@@ -218,6 +218,25 @@ describe("Claude Code result (unit: --output-format json to the result line)", (
     });
   });
 
+  it("reads the served tier Claude Code reports, and leaves it out when it names none (ADR 0114)", () => {
+    const success = (tier: unknown) =>
+      parseClaudeCodeResult(
+        JSON.stringify({
+          ...base,
+          usage: { ...usage, service_tier: tier },
+          subtype: "success",
+          is_error: false,
+          result: "Done.",
+        }),
+        0,
+      );
+    expect(success("standard").serviceTierServed).toBe("standard");
+    expect(success("flex").serviceTierServed).toBe("flex");
+    expect(success("batch")).not.toHaveProperty("serviceTierServed");
+    // The image cannot count Claude Code's own retries, so it reports none.
+    expect(success("standard")).not.toHaveProperty("capacityRetries");
+  });
+
   it("is an error result when there is no result object", () => {
     expect(parseClaudeCodeResult("Segmentation fault\n", 139)).toMatchObject({
       status: "error",
