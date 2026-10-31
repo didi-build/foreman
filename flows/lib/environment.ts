@@ -31,6 +31,6 @@ export const VALUE_NAMES = {
   clusterCaCertificate: "agent_cluster_ca_certificate",
   /** The Kubernetes run settings as JSON (ADR 0106), no secret in it. */
   agentRunSettings: "agent_run_settings",
-  /** Runtime, model and bot version per role as JSON, until bot files are loaded. */
+  /** Runtime and bot version per role as JSON, until bot files are loaded. The route names the model. */
   botProfiles: "bot_profiles",
 } as const;

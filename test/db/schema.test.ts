@@ -56,6 +56,11 @@ const ID = {
 const SHA = "a".repeat(40);
 const AT = "'2026-10-29T00:00:00Z'";
 
+/** The route columns every run carries (migration 0005), and a valid route for them. */
+const ROUTE_COLUMNS =
+  "task_type, provider, model_family, service_tier_requested, routing_policy_version, model_catalog_version";
+const ROUTE_VALUES = "'qa:review', 'anthropic', 'claude', 'standard', 'p.1', 'c.1'";
+
 const FIXTURES = `
 insert into factory.projects (id, slug, name, repo, created_at)
   values ('${ID.project}', 'rehearsal', 'Rehearsal', 'didi-build/rehearsal', ${AT});
@@ -65,8 +70,10 @@ insert into factory.nodes (id, project_id, type, track, state, owner_role, title
 insert into factory.spec_versions (version, content_hash, loaded_at) values ('${SHA}', 'h', ${AT});
 insert into factory.transitions (id, node_id, from_state, to_state, trigger_kind, actor_kind, actor_id, guard_result, spec_version, mode, at)
   values ('${ID.transition}', '${ID.node}', 'triage', 'ready_for_dev', 'reconcile', 'runner', 'runner', '[]', '${SHA}', 'applied', ${AT});
-insert into factory.runs (id, project_id, node_id, bot, runtime, model, head_sha, bot_version, started_at, budget)
-  values ('${ID.run}', '${ID.project}', '${ID.node}', 'qa', 'claude_code', 'model-a', '${SHA}', 'v1', ${AT}, '{}');
+insert into factory.runs (id, project_id, node_id, bot, runtime, model, head_sha, bot_version, started_at, budget,
+    ${ROUTE_COLUMNS})
+  values ('${ID.run}', '${ID.project}', '${ID.node}', 'qa', 'claude_code', 'model-a', '${SHA}', 'v1', ${AT}, '{}',
+    ${ROUTE_VALUES});
 insert into factory.evidence (id, node_id, run_id, kind, ref, commit_sha, recorded_by, recorded_at)
   values ('${ID.evidence}', '${ID.node}', null, 'ci_run', 'run/1', '${SHA}', 'runner', ${AT});
 insert into factory.decisions (id, project_id, kind, text_verbatim, by_actor, recorded_at)
@@ -365,6 +372,95 @@ describe.skipIf(!adminUrl)(
         ),
         /check constraint/,
       );
+    });
+
+    it("keeps the route columns well formed: tiers, task type, and counts of at least 0 (migration 0005)", () => {
+      const set = (fields: string) =>
+        sql(
+          `update factory.runs set ${fields} where id = '${ID.run}';`,
+          "factory_runner",
+        );
+      for (const bad of [
+        "service_tier_requested = 'turbo'",
+        "service_tier_requested = null",
+        "service_tier_served = 'cheap'",
+        "task_type = 'Developer Code'",
+        "provider = 'Anthropic Inc'",
+        "model_family = ''",
+        "routing_policy_version = ''",
+        "model_catalog_version = null",
+        "capacity_retries = -1",
+        "capacity_wait_seconds = -1",
+        "first_token_ms = -1",
+        "reported_cost_usd = -0.01",
+      ]) {
+        expectRejected(set(bad), /check constraint|not-null constraint/);
+      }
+      const ok = sql(
+        `update factory.runs set service_tier_requested = 'flex', service_tier_served = 'mixed', capacity_retries = 2,
+           capacity_wait_seconds = 90, first_token_ms = 0, reported_cost_usd = 0.5 where id = '${ID.run}'
+         returning service_tier_served;`,
+        "factory_runner",
+      );
+      expect(ok.ok, ok.err).toBe(true);
+      expect(ok.out).toBe("mixed");
+    });
+
+    it("refuses a run without a route (migration 0005)", () => {
+      expectRejected(
+        sql(
+          `insert into factory.runs (id, project_id, bot, runtime, model, bot_version, started_at, budget)
+           values (gen_random_uuid(), '${ID.project}', 'developer', 'claude_code', 'model-a', 'v1', ${AT}, '{}');`,
+          "factory_runner",
+        ),
+        /not-null constraint/,
+      );
+    });
+  },
+);
+
+describe.skipIf(!adminUrl)(
+  "migration 0005 on a table that already holds runs (database integration, ADR 0114)",
+  () => {
+    const name = `foreman_route_migration_test_${process.pid}`;
+    let url = "";
+    beforeAll(() => {
+      url = createTestDatabase(name);
+    });
+    afterAll(() => dropTestDatabase(name));
+
+    it("stops with a named reason and changes nothing, rather than inventing routes", () => {
+      const dir = "db/migrations";
+      const files = readdirSync(dir)
+        .filter((f) => f.endsWith(".sql"))
+        .sort();
+      const route = files.indexOf("0005_run_route.sql");
+      expect(route).toBeGreaterThan(0);
+      for (const file of files.slice(0, route)) {
+        const applied = psql(url, readFileSync(join(dir, file), "utf8"));
+        expect(applied.ok, `${file}: ${applied.err}`).toBe(true);
+      }
+      const seeded = psql(
+        url,
+        `insert into factory.projects (id, slug, name, repo, created_at)
+           values ('${ID.project}', 'rehearsal', 'Rehearsal', 'didi-build/rehearsal', ${AT});
+         insert into factory.runs (id, project_id, bot, runtime, model, bot_version, started_at, budget)
+           values ('${ID.run}', '${ID.project}', 'developer', 'claude_code', 'model-a', 'v1', ${AT}, '{}');`,
+      );
+      expect(seeded.ok, seeded.err).toBe(true);
+      const migrated = psql(url, readFileSync(join(dir, files[route] ?? ""), "utf8"));
+      expect(migrated.ok).toBe(false);
+      expect(migrated.err).toMatch(/0005 needs an empty factory\.runs/);
+      const unchanged = psql(
+        url,
+        "select count(*) from information_schema.columns where table_schema = 'factory' and table_name = 'runs' and column_name = 'task_type';",
+      );
+      expect(unchanged.out).toBe("0");
+      const settings = psql(
+        url,
+        "select count(*) from factory.settings where key like 'model_%';",
+      );
+      expect(settings.out).toBe("0");
     });
   },
 );

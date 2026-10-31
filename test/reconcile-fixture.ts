@@ -12,6 +12,11 @@ import {
   type ReconcileDeps,
   type ReconcileInput,
 } from "../src/core/reconcile.ts";
+import {
+  seedRoutingSettings,
+  TEST_TASK_TYPES,
+  testRouteColumns,
+} from "../src/core/routing-testing.ts";
 import { REHEARSAL_RUN_LIMITS } from "../src/core/runs.ts";
 import type {
   AgentRole,
@@ -31,15 +36,11 @@ export const HEAD = "b".repeat(40);
 export const START = Date.UTC(2026, 9, 31, 8, 0, 0);
 export const MINUTE = 60_000;
 
-const BOT: BotProfile = {
-  runtime: "claude_code",
-  model: "claude-sonnet-5-5",
-  botVersion: "v1",
-};
+const BOT: BotProfile = { runtime: "claude_code", botVersion: "v1" };
 const BOTS: Record<AgentRole, BotProfile> = {
   developer: BOT,
   designer: BOT,
-  qa: { ...BOT, model: "claude-opus-5-5" },
+  qa: BOT,
   council: BOT,
   triage: BOT,
 };
@@ -80,6 +81,7 @@ export async function createReconcileFixture(
     runnerAppSlug: RUNNER_APP,
     limits: REHEARSAL_RUN_LIMITS,
     bots: BOTS,
+    taskTypes: TEST_TASK_TYPES,
   };
 
   const projectId = nextId();
@@ -111,6 +113,7 @@ export async function createReconcileFixture(
   ] as const) {
     await setting(key, value);
   }
+  await seedRoutingSettings(store, clock.now());
 
   async function node(
     state: string,
@@ -204,6 +207,7 @@ export async function createReconcileFixture(
       transcriptRef: null,
       usageExhaustedCause: null,
       retryAfterSeconds: null,
+      ...testRouteColumns(role),
       ...extra,
     };
     await store.insertRun(created);

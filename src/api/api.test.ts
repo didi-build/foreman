@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createLibrary } from "../core/library.ts";
 import { createMemoryStore } from "../core/memory-store.ts";
+import { testRouteColumns } from "../core/routing-testing.ts";
 import type { AgentRole, Node, Store } from "../core/store.ts";
 import { createLogger } from "../service-kit/logger.ts";
 import { startService, type RunningService } from "../service-kit/server.ts";
@@ -113,6 +114,7 @@ async function issue(
     transcriptRef: null,
     usageExhaustedCause: null,
     retryAfterSeconds: null,
+    ...testRouteColumns(role),
   });
   await store.insertRunToken({
     tokenHash: hashToken(token),

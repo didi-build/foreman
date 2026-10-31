@@ -10,7 +10,10 @@ import { createKubernetesClient } from "../../src/adapters/agent-runtime/kuberne
 import type { KubernetesRunSettings } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import { createKubernetesRuntime } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
 import type { AgentRuntime } from "../../src/adapters/agent-runtime/runtime.ts";
-import { loadContractFiles } from "../../src/adapters/contracts-file/load.ts";
+import {
+  loadContractFiles,
+  loadTaskTypesFile,
+} from "../../src/adapters/contracts-file/load.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
@@ -18,6 +21,7 @@ import type { GitHubReader } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { BotProfile, ReconcileDeps } from "../../src/core/reconcile.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
+import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { AgentRole, Decision, GateRequest, Run } from "../../src/core/store.ts";
 import type { ApprovalReply } from "./approval.ts";
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
@@ -104,20 +108,26 @@ export function parseBotProfiles(raw: string): Record<AgentRole, BotProfile> {
   const profiles = {} as Record<AgentRole, BotProfile>;
   for (const role of AGENT_ROLES) {
     const p = (value as Record<string, Partial<BotProfile> | undefined> | null)?.[role];
-    if (!p || !text(p.runtime) || !text(p.model) || !text(p.botVersion)) {
+    if (!p || !text(p.runtime) || !text(p.botVersion)) {
       throw new Error(`${VALUE_NAMES.botProfiles} has no complete profile for ${role}`);
     }
-    profiles[role] = { runtime: p.runtime, model: p.model, botVersion: p.botVersion };
+    // A model in the profile is ignored: each run's route names it (ADR 0114 section 5).
+    profiles[role] = { runtime: p.runtime, botVersion: p.botVersion };
   }
   return profiles;
 }
 
 export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
+  const specVersion = await env.value(VALUE_NAMES.specVersion);
   const { contracts, problems } = validateContracts(
-    loadContractFiles(await env.value(VALUE_NAMES.specVersion)).raw,
+    loadContractFiles(specVersion).raw,
     GUARD_NAMES,
   );
   if (!contracts) throw new Error(`The contracts are invalid: ${problems.join("; ")}`);
+  const checked = validateTaskTypes(specVersion, loadTaskTypesFile());
+  if (!checked.taskTypes) {
+    throw new Error(`The task types are invalid: ${checked.problems.join("; ")}`);
+  }
   const bots = parseBotProfiles(await env.value(VALUE_NAMES.botProfiles));
   const appLogins = [
     await env.value(VALUE_NAMES.developerAppLogin),
@@ -142,6 +152,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     runnerAppSlug,
     limits: REHEARSAL_RUN_LIMITS,
     bots,
+    taskTypes: checked.taskTypes,
     runtime: lazyRuntime(async () =>
       createKubernetesRuntime({
         client: createKubernetesClient({

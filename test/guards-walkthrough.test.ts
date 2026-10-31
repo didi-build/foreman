@@ -8,6 +8,7 @@ import { validateContracts } from "../src/core/contracts.ts";
 import { GUARD_NAMES, GUARDS } from "../src/core/guards/index.ts";
 import { createLibrary, type Clock, type IdSource } from "../src/core/library.ts";
 import { createMemoryStore } from "../src/core/memory-store.ts";
+import { testRouteColumns } from "../src/core/routing-testing.ts";
 import type { EvidenceKind, Json } from "../src/core/store.ts";
 
 const PROJECT = "00000000-0000-4000-8000-000000000001";
@@ -120,6 +121,7 @@ describe("code track with the real guards (integration: contracts, library and g
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        ...testRouteColumns(bot),
       });
       return runId;
     };

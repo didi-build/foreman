@@ -11,6 +11,7 @@ import type {
   Run,
   Store,
 } from "../store.ts";
+import { testRouteColumns } from "../routing-testing.ts";
 import { GUARDS } from "./index.ts";
 
 export const OLD = "a".repeat(40);
@@ -151,6 +152,7 @@ export async function fixture(nodePatch: Partial<Node> = {}): Promise<Fixture> {
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        ...testRouteColumns(bot),
         ...extra,
       });
       return runId;

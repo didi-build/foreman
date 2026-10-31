@@ -154,31 +154,44 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 
 ## runs
 
-| Column                | Type         | Notes                                                                                                                            |
-| --------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| id                    | uuid pk      |                                                                                                                                  |
-| project_id            | uuid fk      |                                                                                                                                  |
-| node_id               | uuid null    |                                                                                                                                  |
-| bot                   | text         | Role bot name                                                                                                                    |
-| agent_id              | text null    |                                                                                                                                  |
-| runtime               | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                           |
-| model                 | text         |                                                                                                                                  |
-| head_sha              | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                 |
-| pr_number             | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit |
-| bot_version           | text         | Prompt, model and schema version behind the result                                                                               |
-| started_at, ended_at  | timestamptz  |                                                                                                                                  |
-| outcome               | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                  |
-| turns                 | integer null |                                                                                                                                  |
-| minutes               | numeric null |                                                                                                                                  |
-| cost_usd              | numeric null |                                                                                                                                  |
-| tokens                | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                            |
-| budget                | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                    |
-| parent_run_id         | uuid null    | A bot run that dispatched agents                                                                                                 |
-| transcript_ref        | text null    | Where the transcript is kept. Never inline secrets                                                                               |
-| usage_exhausted_cause | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                  |
-| retry_after_seconds   | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                     |
+| Column                 | Type         | Notes                                                                                                                            |
+| ---------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| id                     | uuid pk      |                                                                                                                                  |
+| project_id             | uuid fk      |                                                                                                                                  |
+| node_id                | uuid null    |                                                                                                                                  |
+| bot                    | text         | Role bot name                                                                                                                    |
+| agent_id               | text null    |                                                                                                                                  |
+| runtime                | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                           |
+| model                  | text         |                                                                                                                                  |
+| head_sha               | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                 |
+| pr_number              | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit |
+| bot_version            | text         | Prompt, model and schema version behind the result                                                                               |
+| started_at, ended_at   | timestamptz  |                                                                                                                                  |
+| outcome                | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                  |
+| turns                  | integer null |                                                                                                                                  |
+| minutes                | numeric null |                                                                                                                                  |
+| cost_usd               | numeric null |                                                                                                                                  |
+| tokens                 | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                            |
+| budget                 | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                    |
+| parent_run_id          | uuid null    | A bot run that dispatched agents                                                                                                 |
+| transcript_ref         | text null    | Where the transcript is kept. Never inline secrets                                                                               |
+| usage_exhausted_cause  | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                  |
+| retry_after_seconds    | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                     |
+| task_type              | text         | From `contracts/task-types.yaml`, for example `developer:code` (ADR 0114 section 1, migration 0005)                              |
+| provider               | text         | The provider entry name, as in the egress proxy's provider list, for example `anthropic` (migration 0005)                        |
+| model_family           | text         | From the model catalog. The QA independence rule reads it here (migration 0005)                                                  |
+| service_tier_requested | text         | `standard`, `flex` or `priority` (migration 0005)                                                                                |
+| service_tier_served    | text null    | `standard`, `flex`, `priority` or `mixed`, from the provider's responses. Null when none reported it (migration 0005)            |
+| routing_policy_version | text         | The `model_routing_policy` version the route came from (migration 0005)                                                          |
+| model_catalog_version  | text         | The `model_catalog` version the family and price came from (migration 0005)                                                      |
+| capacity_retries       | integer null | Flex capacity rejections retried inside the run, at least 0 (ADR 0114 section 9, migration 0005)                                 |
+| capacity_wait_seconds  | integer null | Time spent waiting on those retries, at least 0 (migration 0005)                                                                 |
+| first_token_ms         | integer null | Time to the first output token of the first request, where the runtime reports it (migration 0005)                               |
+| reported_cost_usd      | numeric null | The runtime's own cost figure, kept to compare with `cost_usd` (migration 0005)                                                  |
 
 A run is active while `ended_at` is null. Dispatch admission reads the active runs (index `runs_active`) under one advisory lock, in the transaction that inserts the run (ADR 0106 section 7, `src/core/runs.ts`).
+
+The route (`model` and the columns from `task_type` to `model_catalog_version`) is chosen by `src/core/routing.ts` when the run is admitted and written in the same transaction, with a `decision_point_records` row (decision point `model_route`, decider `model_route_rule_v1`, confidence 1). The route columns are not null with no default: migration 0005 stops if `runs` already holds a row, because a run recorded before routing has no route to fill in.
 
 ## counters
 
@@ -198,22 +211,26 @@ Rules (Proposed interpretation, to confirm in the M1 ADR):
 
 ## settings
 
-| Key                                | Default            | Notes                                                                                                                             |
-| ---------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `kill_switch`                      | false              | When true, the runner takes no transitions and dispatches nothing                                                                 |
-| `dry_run`                          | true until cutover | When true, the runner records planned actions (transitions with mode `dry_run`) and acts on nothing                               |
-| `reconcile_interval_minutes`       | 120                | Every 2 hours until Kubernetes hosts Windmill, then 5 (D-164)                                                                     |
-| `windmill_monthly_execution_limit` | 1000               | Windmill Cloud free tier (D-163)                                                                                                  |
-| `windmill_alert_percent`           | 80                 | Alert Didi at this share of the monthly limit (D-167)                                                                             |
-| `failure_threshold`                | 3                  |                                                                                                                                   |
-| `qa_round_cap`                     | 3                  |                                                                                                                                   |
-| `pii_credential_ttl_minutes`       | 60                 | Enforced by the runner                                                                                                            |
-| `stall_phone_alert_after_minutes`  | 60                 | After this a stalled item raises a push alert                                                                                     |
-| `daily_spend_call_usd`             | 25                 | A phone call fires when daily spend passes this                                                                                   |
-| `spend_alert_usd`                  | to set             | Alert threshold. Work continues                                                                                                   |
-| `usage_exhausted_wait_minutes`     | 30                 | Wait before a dispatch queued by a `usage_exhausted` end is tried again, or the provider's retry-after if longer (migration 0003) |
-| `gate_request_expiry_days`         | 7                  | An unanswered gate request expires after this many days (D-199, migration 0004)                                                   |
-| `agent_cluster_max_active_runs`    | not seeded         | Active runs allowed across the cluster's agents pool. Sized to that pool at first hosting. While unset, every dispatch is refused |
+| Key                                | Default                  | Notes                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kill_switch`                      | false                    | When true, the runner takes no transitions and dispatches nothing                                                                                                                                                                                                                                                        |
+| `dry_run`                          | true until cutover       | When true, the runner records planned actions (transitions with mode `dry_run`) and acts on nothing                                                                                                                                                                                                                      |
+| `reconcile_interval_minutes`       | 120                      | Every 2 hours until Kubernetes hosts Windmill, then 5 (D-164)                                                                                                                                                                                                                                                            |
+| `windmill_monthly_execution_limit` | 1000                     | Windmill Cloud free tier (D-163)                                                                                                                                                                                                                                                                                         |
+| `windmill_alert_percent`           | 80                       | Alert Didi at this share of the monthly limit (D-167)                                                                                                                                                                                                                                                                    |
+| `failure_threshold`                | 3                        |                                                                                                                                                                                                                                                                                                                          |
+| `qa_round_cap`                     | 3                        |                                                                                                                                                                                                                                                                                                                          |
+| `pii_credential_ttl_minutes`       | 60                       | Enforced by the runner                                                                                                                                                                                                                                                                                                   |
+| `stall_phone_alert_after_minutes`  | 60                       | After this a stalled item raises a push alert                                                                                                                                                                                                                                                                            |
+| `daily_spend_call_usd`             | 25                       | A phone call fires when daily spend passes this                                                                                                                                                                                                                                                                          |
+| `spend_alert_usd`                  | to set                   | Alert threshold. Work continues                                                                                                                                                                                                                                                                                          |
+| `usage_exhausted_wait_minutes`     | 30                       | Wait before a dispatch queued by a `usage_exhausted` end is tried again, or the provider's retry-after if longer (migration 0003)                                                                                                                                                                                        |
+| `gate_request_expiry_days`         | 7                        | An unanswered gate request expires after this many days (D-199, migration 0004)                                                                                                                                                                                                                                          |
+| `agent_cluster_max_active_runs`    | not seeded               | Active runs allowed across the cluster's agents pool. Sized to that pool at first hosting. While unset, every dispatch is refused                                                                                                                                                                                        |
+| `model_routing_policy`             | version `2026-10-31.1`   | Per task type, the ordered route candidates (provider, model, tier, optional `failFast`) and `onCapacity`, plus `qaIndependence`. Seeded with today's models: Claude Sonnet 5.5 for every task type, Claude Opus 5.5 for `qa:review`, Anthropic, Standard, `model_id` (D-185, D-186, ADR 0114 section 5, migration 0005) |
+| `model_catalog`                    | version `2026-10-31.1`   | Per model: provider, family, supported tiers, price per million tokens per tier, output cap, price source and date. Seeded with the two models the policy uses, at Anthropic list prices (`docs/costs.md` section 2)                                                                                                     |
+| `model_providers_approved`         | `anthropic`, `deepinfra` | Providers that passed D-154, each with the decision that approved it (D-171, D-208). Only Didi changes it                                                                                                                                                                                                                |
+| `model_output_token_needs`         | 16000 per task type      | Output tokens each task type needs. A candidate whose catalog cap is lower is not chosen (ADR 0114 hard rule 4, O-14)                                                                                                                                                                                                    |
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
 

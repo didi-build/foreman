@@ -430,9 +430,11 @@ function ops(db: Queryable): StoreOps {
       await exec(
         `insert into factory.runs (id, project_id, node_id, bot, agent_id, runtime, model, head_sha, pr_number,
            bot_version, started_at, ended_at, outcome, turns, minutes, cost_usd, tokens, budget, parent_run_id,
-           transcript_ref, usage_exhausted_cause, retry_after_seconds)
+           transcript_ref, usage_exhausted_cause, retry_after_seconds, task_type, provider, model_family,
+           service_tier_requested, service_tier_served, routing_policy_version, model_catalog_version,
+           capacity_retries, capacity_wait_seconds, first_token_ms, reported_cost_usd)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-           $22)`,
+           $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)`,
         [
           r.id,
           r.projectId,
@@ -456,6 +458,17 @@ function ops(db: Queryable): StoreOps {
           r.transcriptRef,
           r.usageExhaustedCause,
           r.retryAfterSeconds,
+          r.taskType,
+          r.provider,
+          r.modelFamily,
+          r.serviceTierRequested,
+          r.serviceTierServed,
+          r.routingPolicyVersion,
+          r.modelCatalogVersion,
+          r.capacityRetries,
+          r.capacityWaitSeconds,
+          r.firstTokenMs,
+          r.reportedCostUsd,
         ],
       );
     },
