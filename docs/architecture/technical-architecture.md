@@ -16,20 +16,21 @@ flowchart LR
   Didi[Didi on phone] -->|answers| Approval[Windmill approval pages]
   Push[Push app and call service] --> Didi
   subgraph Runner[Windmill: the runner]
-    Reconcile[Reconcile loop, every 2 h until K8s]
+    Reconcile[Reconcile loop, every 2 h]
     Flows[Transition flows]
     Approval
     Daily[Daily check]
   end
-  Flows --> Lib[State library: transitions, guards, contracts]
+  Flows --> Lib[State library: transitions, guards, contracts, routing]
   Reconcile --> Lib
-  Lib --> Store[(Managed Postgres: state store)]
-  Flows --> Agents[Agents: Claude Code, Claude, Grok]
-  Agents -->|report done, evidence| Flows
-  GitHub[GitHub: PRs, CI, preview, staging] -->|webhooks and API| Flows
+  Lib --> Store[(Supabase Postgres: state store)]
+  Flows -->|dispatch a run| Agents[Agent runs on Kubernetes: Claude Code, Messages API]
+  Agents -->|via the run's egress proxy| Models[Hosted models: DeepInfra, Anthropic]
+  Agents -->|report done, evidence| API[State API]
+  API --> Lib
+  GitHub[GitHub: PRs, CI, preview, staging] -->|webhooks| Receiver[GitHub receiver]
+  Receiver --> Lib
   Flows -->|merge, read CI| GitHub
-  Lib --> LinearAdapter[Linear adapter]
-  LinearAdapter --> Linear[Linear: mirror]
   Flows --> Notify[Notification adapter]
   Notify --> Push
 ```

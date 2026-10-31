@@ -209,7 +209,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: the merge action and its guard.
 - Why: gates as code.
-- How: the guard from the contract: CI green on the head commit, no conflicts, not past the round cap, privileged paths approved, production environment protected where the deploy runs on push to main. Squash merge.
+- How: the guard from the contract: CI green on the head commit, no conflicts, not past the round cap, privileged paths approved, production environment protected where the deploy runs on push to main. Squash merge. Every merging transition carries this guard set, on the design track too (D-218).
 - Constraints: a privileged-path PR is never merged without a recorded approval.
 - Success: tests for each failure of the guard. A privileged-path PR creates a gate request and waits.
 
