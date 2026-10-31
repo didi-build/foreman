@@ -97,6 +97,16 @@ Tests sit next to the code in `src/agent-images/`. None of them calls a model or
 8. Unit, container conventions (`test/agent-image-dockerfiles.test.ts`): each agent image pins its base by digest, runs as a non-root user, has a Dependabot entry that ignores major upgrades, and declares no port and no health check; the Claude Code CLI is pinned to an exact version in the image's own lockfile only. CI builds each image (`scripts/check-agent-container.sh`): no exposed port or health check, and with no settings it exits non-zero with a result line as its last line, on a read-only root.
 9. Mutation checks, recorded on the PR: removing `cache_control` from the stable prefix, dropping the cached-token split and running the CLI through a shell each make tests fail.
 
+### Windmill flows (build plan M3.1)
+
+Tests are in `test/flows/`, with fake adapters on the memory store (`flow-fixture.ts`): the real machine-2 contracts and guards, a fake agent runtime, a fake task source, a fake approval mapping and a Windmill execution count the test sets. Nothing reaches Windmill, a cluster, a model or GitHub.
+
+1. Flow, per flow (`reconcile-flow.test.ts`, `run-flows.test.ts`, `transition-flows.test.ts`): the happy path; the kill switch on refuses and writes nothing; dry run writes only dry-run rows, or nothing where the flow has no dry-run row (dispatch plans, the run end reports, the approval step keeps the reply in its result); a duplicate trigger, in turn and at once, gives one transition, one run, one run end or one decision (the M3.1 success check).
+2. Unit, the trigger taken once (`src/core/library.test.ts`): `requestTransitionOnce` writes one row for a repeated trigger id in applied and in dry-run mode, judges a new trigger afresh, lets a rejected trigger be retried, and refuses under the kill switch.
+3. Unit, composition (`compose.test.ts`): the deps come from the environment by secret path and value name; the cluster token is read only when an agent is started or polled; every part not built yet (the GitHub reader, the task source, the approval mapping, the Windmill binding) refuses and says what it waits on; a bad value is named, never shown.
+4. Unit, repo guards (`windmill-description.test.ts`, `test/import-boundaries.test.ts`): `flows/windmill.yaml` lists every flow entry, the reconcile schedule at the seeded `reconcile_interval_minutes`, and exactly the secrets and values the composition reads. A flow entry is at most 60 lines and names no contract state or guard. Lint lets a flow entry import only `flows/lib/`, the core and the adapters, and nothing outside the flow layer import a flow.
+5. Mutation checks, recorded on the PR: removing the kill-switch check from the run-end flow or the approval step, and breaking the trigger check in `requestTransitionOnce`, each make tests fail.
+
 ### Runner behaviour
 
 1. Reconcile pass: releases blocked items whose blockers are Done, dispatches ready items with no active run, flags stalls, advances from evidence, closes stale gate requests, and rolls up spend. The Linear mirror is dropped (D-192).

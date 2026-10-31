@@ -119,6 +119,15 @@ Register the GitHub Apps of D-156 together, each with its own identity. The runn
 
 Size it to the agents pool: the node's allocatable CPU and memory divided by one run's requests (agent, proxy and, for QA, fetch pods together). Write it as the setting in the store. While it is unset, every dispatch is refused.
 
+## 15. The Windmill workspace and the runner's credentials (new-credentials gate)
+
+The flows (build plan M3.1) are written but not deployed. Each item is its own approval:
+
+- The runner's database login, a user in the `factory_runner` role (ADR 0104), stored at `platform/state-store/runner-database-url` in Windmill resources.
+- A Windmill token that can list the workspace's jobs, for the monthly execution count (D-167). Until it exists, the reconcile flow skips the alert check and says so.
+
+Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
+
 ## Verification
 
 Run the remaining checks in ADR 0106 "How success is judged" on the real cluster, and record their output and date in the M3.2 PR. Never paste a secret value, `plan.json` or `state.json`.

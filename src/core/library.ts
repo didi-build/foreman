@@ -357,6 +357,24 @@ export function createLibrary({
     };
   }
 
+  /**
+   * Moves a node if the contracts allow it and every guard passes, writing the transition and
+   * the node change in one transaction with the version check (schema invariants 1 and 3).
+   * A lost race rolls back and retries from a fresh read.
+   */
+  async function requestTransition(
+    request: TransitionRequest,
+  ): Promise<TransitionResult> {
+    if (await settingIsOn("kill_switch")) {
+      return { outcome: "refused", reason: "kill_switch", guardReport: [] };
+    }
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const result = await attemptTransition(request);
+      if (!(result instanceof LostRace)) return result;
+    }
+    return { outcome: "refused", reason: "too_much_contention", guardReport: [] };
+  }
+
   return {
     async createNode(input: NewNode): Promise<Node> {
       // Every node has a project (schema invariant 7).
@@ -571,20 +589,39 @@ export function createLibrary({
       };
     },
 
+    requestTransition,
+
     /**
-     * Moves a node if the contracts allow it and every guard passes, writing the transition and
-     * the node change in one transaction with the version check (schema invariants 1 and 3).
-     * A lost race rolls back and retries from a fresh read.
+     * `requestTransition` for a trigger that carries its own id, such as an event or a bot
+     * report (a flow's trigger, M3.1). If the node already has a transition row, applied or dry
+     * run, with this trigger kind, trigger id and target state, nothing is written and that row
+     * is returned with `noop` and `duplicate_trigger`. A repeated event or a retried flow run
+     * therefore writes one row in either mode (architecture section 2.4). In applied mode a
+     * duplicate is also a `noop` without this check, because the node is already in the target
+     * state; in dry run the node never moves, so only this check holds it to one row.
      */
-    async requestTransition(request: TransitionRequest): Promise<TransitionResult> {
+    async requestTransitionOnce(request: TransitionRequest): Promise<TransitionResult> {
+      if (!request.trigger.ref) {
+        throw new LibraryError("A trigger needs its id to be taken only once");
+      }
       if (await settingIsOn("kill_switch")) {
         return { outcome: "refused", reason: "kill_switch", guardReport: [] };
       }
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        const result = await attemptTransition(request);
-        if (!(result instanceof LostRace)) return result;
+      const earlier = (await store.listTransitions(request.nodeId)).find(
+        (past) =>
+          past.triggerKind === request.trigger.kind &&
+          past.triggerRef === request.trigger.ref &&
+          past.toState === request.toState,
+      );
+      if (earlier) {
+        return {
+          outcome: "noop",
+          reason: "duplicate_trigger",
+          guardReport: [],
+          transitionId: earlier.id,
+        };
       }
-      return { outcome: "refused", reason: "too_much_contention", guardReport: [] };
+      return requestTransition(request);
     },
   };
 }

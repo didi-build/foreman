@@ -268,3 +268,68 @@ describe("Cloudflare boundary covers every code folder (unit: lint config guard,
     ).toEqual([]);
   });
 });
+
+describe("flow layer boundary (unit: lint config guard, ADR 0101, build plan M3.1)", () => {
+  const layer = (rules: string[]) => rules.includes("layers/layer-imports");
+
+  it("lets a flow entry import the composition module, the core and the adapters", async () => {
+    const clean = [
+      'import { createLibrary } from "../src/core/library.ts";',
+      'import type { AgentRuntime } from "../src/adapters/agent-runtime/runtime.ts";',
+      'import { withFlowDeps } from "./lib/compose.ts";',
+      "export const main = () => withFlowDeps(createLibrary, {} as AgentRuntime<1, 2>);",
+    ].join("\n");
+    expect(await violations("flows/example.ts", clean)).toEqual([]);
+  });
+
+  it.each([
+    ["a package", 'import pg from "pg";'],
+    ["Windmill's client", 'import * as wmill from "windmill-client";'],
+    ["a Node module", 'import { readFileSync } from "node:fs";'],
+    ["the API", 'import { x } from "../src/api/routes.ts";'],
+    ["the service kit", 'import { x } from "../src/service-kit/config.ts";'],
+    ["another flow", 'import { run } from "./dispatch.ts";'],
+    ["a re-export from outside", 'export { x } from "../src/api/routes.ts";'],
+  ])("rejects a flow entry importing %s", async (_label, code) => {
+    expect(layer(await violations("flows/example.ts", code))).toBe(true);
+  });
+
+  it("rejects a dynamic import and an inline disable in a flow entry", async () => {
+    expect(
+      layer(await violations("flows/example.ts", 'export const m = import("pg");')),
+    ).toBe(true);
+    const disabled = [
+      "/* eslint-disable */",
+      'import pg from "pg";',
+      "export { pg };",
+    ].join("\n");
+    expect(layer(await violations("flows/example.ts", disabled))).toBe(true);
+  });
+
+  it("lets the composition module build the pool, and nothing more", async () => {
+    expect(
+      await violations(
+        "flows/lib/example.ts",
+        'import pg from "pg";\nimport { randomUUID } from "node:crypto";\nexport { pg, randomUUID };\n',
+      ),
+    ).toEqual([]);
+    expect(
+      layer(
+        await violations(
+          "flows/lib/example.ts",
+          'import got from "got";\nexport { got };\n',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["the API", "src/api/example.ts"],
+    ["an adapter", "src/adapters/github/example.ts"],
+    ["a service", "src/github-receiver/example.ts"],
+  ])("rejects %s importing a flow", async (_label, file) => {
+    const depth = file.split("/").length - 1;
+    const code = `import { run } from "${"../".repeat(depth)}flows/dispatch.ts";\nexport { run };\n`;
+    expect(layer(await violations(file, code))).toBe(true);
+  });
+});
