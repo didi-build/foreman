@@ -56,7 +56,15 @@ export interface VolumeMount {
 
 export type Volume =
   | { name: string; emptyDir: { sizeLimit: string } }
-  | { name: string; persistentVolumeClaim: { claimName: string; readOnly: boolean } };
+  | { name: string; persistentVolumeClaim: { claimName: string; readOnly: boolean } }
+  | {
+      name: string;
+      secret: {
+        secretName: string;
+        items: { key: string; path: string }[];
+        defaultMode: number;
+      };
+    };
 
 export interface Container {
   name: string;

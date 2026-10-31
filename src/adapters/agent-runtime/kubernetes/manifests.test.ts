@@ -13,6 +13,7 @@ import {
   SETTINGS,
   STATE_TOKEN,
   credentialsFor,
+  taskFor,
 } from "./fixtures.ts";
 import {
   AGENTS_POOL,
@@ -20,6 +21,7 @@ import {
   checkRunSpec,
   fetchStage,
   runSecrets,
+  taskSecret,
   workspaceClaim,
   type KubernetesRunSpec,
 } from "./manifests.ts";
@@ -112,13 +114,17 @@ describe("run pods (unit: pod hardening, ADR 0106 section 4)", () => {
         }
         expect(container.image).toMatch(/@sha256:[0-9a-f]{64}$/);
       }
-      // Only emptyDir and the run's own claim: never a host path.
+      // Only emptyDir, the run's own claim and the run's own task Secret: never a host path.
       for (const volume of pod.volumes) {
         expect(Object.keys(volume).sort()).toSatisfy(
           (keys: string[]) =>
             JSON.stringify(keys) === '["emptyDir","name"]' ||
-            JSON.stringify(keys) === '["name","persistentVolumeClaim"]',
+            JSON.stringify(keys) === '["name","persistentVolumeClaim"]' ||
+            JSON.stringify(keys) === '["name","secret"]',
         );
+        if ("secret" in volume) {
+          expect(volume.secret.secretName).toMatch(/^run-[a-z0-9-]+-task$/);
+        }
       }
       expect(JSON.stringify(job)).not.toContain("hostPath");
     },
@@ -187,6 +193,51 @@ describe("run credentials (unit: mounted only where needed, ADR 0106 section 5)"
     );
     const council = agentStage(COUNCIL, LIMITS, SETTINGS).clientJob(PROXY_IP);
     expect(secretRefs(council)).toEqual([names(COUNCIL).stateTokenSecret]);
+  });
+
+  it("mounts the task file read-only into the agent pod only, readable by its group", () => {
+    for (const spec of [DEVELOPER, QA, COUNCIL]) {
+      const stage = agentStage(spec, LIMITS, SETTINGS);
+      const agent = stage.clientJob(PROXY_IP).spec.template.spec;
+      expect(agent.volumes).toContainEqual({
+        name: "task",
+        secret: {
+          secretName: names(spec).taskSecret,
+          items: [{ key: "task.json", path: "task.json" }],
+          defaultMode: 0o440,
+        },
+      });
+      expect(agent.containers[0]?.volumeMounts).toContainEqual({
+        name: "task",
+        mountPath: "/task",
+        readOnly: true,
+      });
+      expect(value(stage.clientJob(PROXY_IP), "FOREMAN_TASK_FILE")).toBe(
+        "/task/task.json",
+      );
+      expect(JSON.stringify(stage.proxyJob)).not.toContain("-task");
+    }
+    expect(JSON.stringify(fetchStage(QA, SETTINGS).clientJob(PROXY_IP))).not.toContain(
+      names(QA).taskSecret,
+    );
+  });
+
+  it("checks the task file for its role before building its Secret", () => {
+    const secret = taskSecret(QA, taskFor(QA));
+    expect(secret.metadata.name).toBe(names(QA).taskSecret);
+    expect(JSON.parse(secret.stringData["task.json"] ?? "")).toEqual(taskFor(QA));
+    expect(() => taskSecret(QA, { ...taskFor(QA), nodeId: "not-a-uuid" })).toThrow(
+      /node id/,
+    );
+    expect(() =>
+      taskSecret(COUNCIL, { ...taskFor(COUNCIL), outputSchema: undefined }),
+    ).toThrow(/output schema/);
+    expect(() =>
+      taskSecret(COUNCIL, { ...taskFor(COUNCIL), allowedTools: ["Bash"] }),
+    ).toThrow(/no Claude Code tools/);
+    expect(() =>
+      taskSecret(DEVELOPER, { ...taskFor(DEVELOPER), input: "x".repeat(950 * 1024) }),
+    ).toThrow(/too large/);
   });
 
   it("mounts the model credential into the proxy pod only", () => {

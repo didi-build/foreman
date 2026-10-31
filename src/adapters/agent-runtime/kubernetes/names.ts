@@ -60,6 +60,7 @@ export function runNames(runId: string) {
     stateTokenSecret: `${base}-state-api-token`,
     githubTokenSecret: `${base}-github-token`,
     modelSecret: `${base}-model-credentials`,
+    taskSecret: `${base}-task`,
   };
 }
 

@@ -6,6 +6,7 @@ import type {
   RunCredentials,
 } from "./manifests.ts";
 import type { Resources } from "./objects.ts";
+import type { AgentTaskFile } from "./task.ts";
 
 const digest = (n: string): string => `@sha256:${n.repeat(64)}`;
 
@@ -92,5 +93,32 @@ export function credentialsFor(spec: KubernetesRunSpec): RunCredentials {
     ...(spec.role === "council" || spec.role === "triage"
       ? {}
       : { githubToken: GITHUB_TOKEN }),
+  };
+}
+
+export const QA_NODE_ID = "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b";
+export const QA_EVIDENCE_ID = "2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d";
+
+/** A small valid task file for each fixture's role. Not real instructions. */
+export function taskFor(spec: KubernetesRunSpec): AgentTaskFile {
+  const base = {
+    foremanTask: 1 as const,
+    instructions: "Fixture instructions.",
+    input: "Fixture input.",
+  };
+  if (spec.role === "developer" || spec.role === "designer") {
+    return { ...base, allowedTools: ["Read", "Edit", "Bash(git status)"] };
+  }
+  if (spec.role === "qa") {
+    return { ...base, nodeId: QA_NODE_ID, evidenceIds: [QA_EVIDENCE_ID] };
+  }
+  return {
+    ...base,
+    outputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["answer"],
+      properties: { answer: { type: "string" } },
+    },
   };
 }

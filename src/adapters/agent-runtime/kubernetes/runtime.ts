@@ -19,6 +19,7 @@ import {
   checkSettings,
   fetchStage,
   runSecrets,
+  taskSecret,
   workspaceClaim,
   type KubernetesRunSettings,
   type KubernetesRunSpec,
@@ -28,9 +29,12 @@ import {
 import { LABEL_COMPONENT, agentNamespace, runNames, runSelector } from "./names.ts";
 import type { RunObjectKind } from "./objects.ts";
 import { jobState, mapRunEnd, parseAgentResult } from "./result.ts";
+import type { AgentTaskFile } from "./task.ts";
 
 export interface KubernetesAgentTask extends KubernetesRunSpec {
   credentials: RunCredentials;
+  /** The run's task file (./task.ts). Written into a per-run Secret, never kept in the handle. */
+  task: AgentTaskFile;
 }
 
 /** Plain JSON, safe to store between reconcile passes. No credential values. */
@@ -115,6 +119,7 @@ export function createKubernetesRuntime(options: {
       ["Secret", n.stateTokenSecret],
       ["Secret", n.githubTokenSecret],
       ["Secret", n.modelSecret],
+      ["Secret", n.taskSecret],
       ["PersistentVolumeClaim", n.workspaceClaim],
     ];
     return owned;
@@ -202,11 +207,11 @@ export function createKubernetesRuntime(options: {
 
   return {
     async start(task, limits) {
-      const { credentials, ...spec } = task;
+      const { credentials, task: taskFile, ...spec } = task;
       checkRunSpec(spec, limits);
       const namespace = agentNamespace(spec.projectSlug);
       // Build everything first, so a bad input fails before anything is created.
-      const secrets = runSecrets(spec, credentials);
+      const secrets = [...runSecrets(spec, credentials), taskSecret(spec, taskFile)];
       const firstStage =
         spec.role === "qa"
           ? fetchStage(spec, settings)
