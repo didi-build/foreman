@@ -2,8 +2,8 @@
 // order is chosen so a failure part way leaves no running agent the store does not know about,
 // and no move without a running agent:
 //
-// 1. Read the item and build the run's input (D-213). A malformed item refuses here, before
-//    anything is written.
+// 1. Read the item and build the run's input (D-213), with why the item came back on a fix round
+//    (O-41). A malformed item refuses here, before anything is written.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
@@ -21,6 +21,7 @@
 // record until its own deadline (activeDeadlineSeconds), its token expires on its own, and the
 // stall check reports the run. Nothing the agent does can move the item, since the move was never
 // written.
+import { createBuilderRuns } from "../../src/core/builder-runs.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
@@ -97,7 +98,15 @@ export async function startRun(
   if (!node || !project)
     return { outcome: "not_started", reason: "no_node", failedGuards: [] };
   const branch = PUSHING_ROLES.includes(input.role) ? runBranch(node.id) : null;
-  const text = taskInput({ ...input, node, project, branch: branch ?? undefined });
+  // A fix round's input says why the item came back (D-213, O-41).
+  const returned = branch ? await createBuilderRuns(deps).returnReason(node.id) : null;
+  const text = taskInput({
+    ...input,
+    node,
+    project,
+    branch: branch ?? undefined,
+    returned,
+  });
 
   const starts = createRunStart(deps);
   const check = await starts.checkStart(node.id, input.role);

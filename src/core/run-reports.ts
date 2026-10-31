@@ -14,21 +14,47 @@
 // order and the guards let at most one through. A report counts only for the state the run worked
 // in: if the node has moved since the run started, other than by the run's own dispatch move, the
 // report is stale and asks for nothing. A move whose guards fail writes nothing: the item
-// stays where it is, which is the contract's fallback. The failure counter half of that fallback
-// is the P-03 rules, built with M3.5.
+// stays where it is, which is the contract's fallback.
+//
+// QA's fail (P-03, D-169, O-41): the fail move adds one to `qa_round` and to `failure` in the same
+// transaction, then asks for the escalation, which the guards allow once `failure` reaches
+// `failure_threshold`. The third failed round is refused by `not_third_failed_round`, and goes to
+// Escalated to Council instead, counted in the escalation's own transaction (the guard
+// `escalation_trigger_met` names that round). Both take the run's trigger id, so a repeated report
+// counts once; a repeated report after the fail move asks again for an escalation it left behind.
+// Dry run writes the rows as dry run and no counter. The other P-03 counts (a failed guard after a
+// done report, repeated dispatch failure) and the Council's reset are M3.5.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import type { GitHub } from "./github.ts";
 import {
   createLibrary,
+  type AlsoWrite,
   type Clock,
   type IdSource,
+  type Trigger,
   type TransitionOutcome,
+  type TransitionResult,
 } from "./library.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
-import type { Node, Store } from "./store.ts";
+import { ESCALATION_GUARD } from "./staging.ts";
+import type { CounterKind, Node, Store } from "./store.ts";
 
 export { MERGE_MOVE_GUARD };
+
+/** The guard of QA's fail move (contracts/machine-2): the verdict lists findings. */
+export const QA_FAIL_GUARD = "qa_failed_with_findings";
+/** The guard on QA's fail move that refuses the round that reaches the cap. */
+export const ROUND_CAP_GUARD = "not_third_failed_round";
+
+/** The escalation a QA fail asked for, as the library decided it. */
+export interface ReportedEscalation {
+  outcome: TransitionOutcome;
+  toState: string;
+  reason?: string;
+  transitionId?: string;
+  failedGuards: string[];
+}
 
 const ACTOR = { kind: "runner" as const, id: "run_end" };
 
@@ -67,7 +93,12 @@ export type ReportedMove =
       mergeCommitSha?: string;
       /** The privileged-path gate request a merge waits on. */
       gateRequestId?: string;
+      /** After QA's fail: the escalation asked for (O-41). */
+      escalation?: ReportedEscalation;
     };
+
+const FAILURE_LIMIT_REASON =
+  "QA failed the round, and the failure counter reached its limit";
 
 /** The trigger id of the report a run made: one per run, so a repeated end moves once. */
 export const reportTrigger = (runId: string) => ({
@@ -76,12 +107,64 @@ export const reportTrigger = (runId: string) => ({
 });
 
 export function createRunReports(options: RunReportsOptions) {
-  const { store, contracts } = options;
+  const { store, contracts, clock } = options;
   const library = createLibrary(options);
   const merges = createMerges(options);
 
   const stateOf = (name: string) =>
     Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
+  const escalationMove = contracts.transitions.find(
+    (m) => m.escalation && m.from === "any" && m.guards.includes(ESCALATION_GUARD),
+  );
+  const dryRunOn = async () => (await store.getSetting("dry_run"))?.value !== false;
+
+  /** P-03: a failed QA round adds one to `qa_round` and to `failure`, with its move. */
+  const countFailedRound =
+    (nodeId: string): AlsoWrite =>
+    async (tx) => {
+      const at = clock.now();
+      for (const kind of ["qa_round", "failure"] as CounterKind[]) {
+        await tx.setCounter(nodeId, kind, (await tx.getCounter(nodeId, kind)) + 1, at);
+      }
+      return null;
+    };
+
+  /** Asks for the Council with the report's trigger. The guards decide. */
+  async function escalate(
+    nodeId: string,
+    trigger: Trigger,
+    reason: string,
+    alsoWrite?: AlsoWrite,
+  ): Promise<ReportedEscalation | undefined> {
+    if (!escalationMove) return undefined;
+    const result: TransitionResult = await library.requestTransitionOnce(
+      {
+        nodeId,
+        toState: escalationMove.to,
+        blockedReason: reason,
+        trigger,
+        actor: ACTOR,
+        reason,
+      },
+      alsoWrite,
+    );
+    return {
+      outcome: result.outcome,
+      toState: escalationMove.to,
+      ...(result.reason ? { reason: result.reason } : {}),
+      ...(result.transitionId ? { transitionId: result.transitionId } : {}),
+      failedGuards: result.guardReport.filter((c) => !c.pass).map((c) => c.name),
+    };
+  }
+
+  const isQaFailMove = (from: string, to: string): boolean =>
+    contracts.transitions.some(
+      (m) =>
+        !m.escalation &&
+        m.from === from &&
+        m.to === to &&
+        m.guards.includes(QA_FAIL_GUARD),
+    );
 
   /** The moves a report by `role` triggers from the node's state, in contract order. */
   function reportMoves(node: Node, role: string): TransitionContract[] {
@@ -118,6 +201,15 @@ export function createRunReports(options: RunReportsOptions) {
         (past) => past.triggerKind === trigger.kind && past.triggerRef === trigger.ref,
       );
       if (earlier) {
+        // QA's fail move taken, and the item still where it sent it: ask again for the
+        // escalation a failure part way may have left behind (taken once per trigger).
+        const recover =
+          earlier.mode === "applied" &&
+          node.state === earlier.toState &&
+          isQaFailMove(earlier.fromState, earlier.toState);
+        const escalation = recover
+          ? await escalate(node.id, trigger, FAILURE_LIMIT_REASON)
+          : undefined;
         return {
           requested: true,
           outcome: "noop",
@@ -125,6 +217,7 @@ export function createRunReports(options: RunReportsOptions) {
           reason: "duplicate_trigger",
           transitionId: earlier.id,
           failedGuards: [],
+          ...(escalation && escalation.outcome !== "rejected" ? { escalation } : {}),
         };
       }
       if (stateOf(node.state)?.owner?.toLowerCase() !== run.bot) {
@@ -165,16 +258,39 @@ export function createRunReports(options: RunReportsOptions) {
           if (merged.outcome !== "rejected") break;
           continue;
         }
-        const result = await library.requestTransitionOnce({
-          nodeId: node.id,
-          toState: move.to,
-          trigger,
-          actor: ACTOR,
-          reason: `${run.bot} run reported done`,
-        });
-        failedGuards.push(
-          ...result.guardReport.filter((c) => !c.pass).map((c) => c.name),
+        const qaFail = move.guards.includes(QA_FAIL_GUARD);
+        const dryRun = qaFail && (await dryRunOn());
+        // P-03: the counts commit with the move. Dry run writes none.
+        const counts = qaFail && !dryRun ? countFailedRound(node.id) : undefined;
+        const result = await library.requestTransitionOnce(
+          {
+            nodeId: node.id,
+            toState: move.to,
+            trigger,
+            actor: ACTOR,
+            reason: `${run.bot} run reported done`,
+          },
+          counts,
         );
+        const moveFailed = result.guardReport.filter((c) => !c.pass).map((c) => c.name);
+        failedGuards.push(...moveFailed);
+        let escalation: ReportedEscalation | undefined;
+        if (qaFail && result.outcome === "applied") {
+          escalation = await escalate(node.id, trigger, FAILURE_LIMIT_REASON);
+        } else if (
+          qaFail &&
+          result.outcome === "rejected" &&
+          moveFailed.length === 1 &&
+          moveFailed[0] === ROUND_CAP_GUARD
+        ) {
+          // The round that reaches the cap: counted with the escalation, not with a move.
+          escalation = await escalate(
+            node.id,
+            trigger,
+            "QA failed the round that reaches the QA round cap",
+            counts,
+          );
+        }
         last = {
           requested: true,
           outcome: result.outcome,
@@ -183,6 +299,7 @@ export function createRunReports(options: RunReportsOptions) {
           ...(result.transitionId ? { transitionId: result.transitionId } : {}),
           failedGuards,
           ...mergeFacts,
+          ...(escalation && escalation.outcome !== "rejected" ? { escalation } : {}),
         };
         // Only a move the guards refused leaves room for the next one.
         if (result.outcome !== "rejected") break;

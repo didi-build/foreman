@@ -5,6 +5,7 @@
 // test/flows/run-flows.test.ts.
 import { describe, expect, it } from "vitest";
 
+import { createLibrary } from "../src/core/library.ts";
 import { createRunReports } from "../src/core/run-reports.ts";
 import type { AgentRole, Run } from "../src/core/store.ts";
 import { createReconcileFixture, HEAD } from "./reconcile-fixture.ts";
@@ -309,5 +310,144 @@ describe("which moves a report triggers (from the contracts)", () => {
       requested: false,
       reason: "state_changed",
     });
+  });
+});
+
+describe("QA's failed rounds and the counters (P-03, D-169, O-41)", () => {
+  /** An item in review with CI on `sha`, and QA's run ended with a verdict on it. */
+  async function verdictOn(
+    t: Awaited<ReturnType<typeof setup>>,
+    nodeId: string,
+    sha: string,
+    verdict: "pass" | "fail" = "fail",
+  ) {
+    const ciId = await t.evidence(
+      nodeId,
+      "ci_run",
+      { conclusion: "success", pr: 7, changedPaths: ["src/a.ts"] },
+      { commitSha: sha },
+    );
+    await t.evidence(nodeId, "docs_note", { impact: "none" }, { commitSha: sha });
+    const qa = await t.ended(nodeId, "qa");
+    await t.evidence(
+      nodeId,
+      "qa_verdict",
+      {
+        verdict,
+        findings:
+          verdict === "fail"
+            ? [{ path: "src/a.ts", startLine: 1, endLine: 1, note: "n" }]
+            : [],
+        evidenceIds: [ciId],
+      },
+      { commitSha: sha, runId: qa.id },
+    );
+    // Later steps start after this one, as a real clock moves on.
+    t.advanceMinutes(20);
+    return qa;
+  }
+
+  const counters = async (t: Awaited<ReturnType<typeof setup>>, nodeId: string) => ({
+    qaRound: await t.store.getCounter(nodeId, "qa_round"),
+    failure: await t.store.getCounter(nodeId, "failure"),
+  });
+
+  it("a failed round adds one to qa_round and to failure with its move, once for a repeated report", async () => {
+    const t = await setup();
+    const node = await t.node("in_qa_review", { ownerRole: "qa" });
+    const qa = await verdictOn(t, node.id, HEAD);
+    expect(await t.reports.requestReportedMove(qa.id)).toMatchObject({
+      outcome: "applied",
+      toState: "in_development",
+    });
+    expect(await counters(t, node.id)).toEqual({ qaRound: 1, failure: 1 });
+    expect(await t.reports.requestReportedMove(qa.id)).toMatchObject({
+      outcome: "noop",
+      reason: "duplicate_trigger",
+    });
+    expect(await counters(t, node.id)).toEqual({ qaRound: 1, failure: 1 });
+    expect(await t.state(node.id)).toBe("in_development");
+  });
+
+  it("writes a dry-run row and no counter in dry run", async () => {
+    const t = await setup();
+    await t.setting("dry_run", true);
+    const node = await t.node("in_qa_review", { ownerRole: "qa" });
+    const qa = await verdictOn(t, node.id, HEAD);
+    await t.reports.requestReportedMove(qa.id);
+    expect((await t.transitions(node.id)).map((m) => [m.toState, m.mode])).toEqual([
+      ["in_development", "dry_run"],
+    ]);
+    expect(await counters(t, node.id)).toEqual({ qaRound: 0, failure: 0 });
+  });
+
+  it("escalates from the building state once failure reaches failure_threshold", async () => {
+    const t = await setup();
+    const node = await t.node("in_qa_review", { ownerRole: "qa" });
+    // Two failures counted earlier, for example two failed staging checks.
+    await t.store.setCounter(node.id, "failure", 2, t.clock.now());
+    const qa = await verdictOn(t, node.id, HEAD);
+    expect(await t.reports.requestReportedMove(qa.id)).toMatchObject({
+      outcome: "applied",
+      toState: "in_development",
+      escalation: { outcome: "applied", toState: "escalated_to_council" },
+    });
+    expect(await counters(t, node.id)).toEqual({ qaRound: 1, failure: 3 });
+    expect((await t.transitions(node.id)).map((m) => [m.fromState, m.toState])).toEqual(
+      [
+        ["in_qa_review", "in_development"],
+        ["in_development", "escalated_to_council"],
+      ],
+    );
+  });
+
+  it("sends the third failed verdict to the Council, counted once, while the merge guard still reads the count", async () => {
+    const t = await setup();
+    const node = await t.node("in_qa_review", { ownerRole: "qa" });
+    const heads = ["1", "2", "3"].map((c) => c.repeat(40));
+    for (const [i, sha] of heads.slice(0, 2).entries()) {
+      const qa = await verdictOn(t, node.id, sha);
+      expect(await t.reports.requestReportedMove(qa.id)).toMatchObject({
+        outcome: "applied",
+        toState: "in_development",
+      });
+      expect(await counters(t, node.id)).toEqual({ qaRound: i + 1, failure: i + 1 });
+      // The fix round, started after the fail move, reports done on the same head, and the
+      // item goes back to review.
+      t.advanceMinutes(20);
+      const dev = await t.ended(node.id, "developer");
+      expect(await t.reports.requestReportedMove(dev.id)).toMatchObject({
+        outcome: "applied",
+        toState: "in_qa_review",
+      });
+      t.advanceMinutes(20);
+    }
+    // After two failed rounds the merge guard still lets a pass through (O-30).
+    expect(
+      (await t.reports.reportMoves((await t.store.getNode(node.id))!, "qa")).length,
+    ).toBe(2);
+    const capCheck = await createLibrary(t.deps).checkTransition({
+      nodeId: node.id,
+      toState: "verifying_on_staging",
+      trigger: { kind: "reconcile", ref: null },
+      actor: { kind: "runner", id: "test" },
+    });
+    expect(
+      capCheck.guardReport.find((c) => c.name === "qa_rounds_below_cap")?.pass,
+    ).toBe(true);
+
+    const third = await verdictOn(t, node.id, heads[2] ?? "");
+    expect(await t.reports.requestReportedMove(third.id)).toMatchObject({
+      outcome: "rejected",
+      failedGuards: ["not_third_failed_round"],
+      escalation: { outcome: "applied", toState: "escalated_to_council" },
+    });
+    expect(await t.state(node.id)).toBe("escalated_to_council");
+    expect(await counters(t, node.id)).toEqual({ qaRound: 3, failure: 3 });
+    expect(await t.reports.requestReportedMove(third.id)).toMatchObject({
+      outcome: "noop",
+      reason: "duplicate_trigger",
+    });
+    expect(await counters(t, node.id)).toEqual({ qaRound: 3, failure: 3 });
   });
 });

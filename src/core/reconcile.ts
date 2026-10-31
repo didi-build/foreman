@@ -19,21 +19,23 @@
 // Which contract moves each step uses comes from the contracts, never from a list here: release
 // takes the moves out of a non-escalated state that requires a blocked reason (Blocked);
 // dispatch takes the moves guarded by `agent_ready_not_on_hold`, the guard that says a node is
-// ready for an agent; advance from evidence takes the moves guarded by `ci_green_on_head`, the
-// evidence section 2.5 step 4 names, except the moves on which the runner merges (guard
-// `qa_verdict_independent_on_head`): those need the merge, so the merge step plans them through
-// src/core/merge.ts, which also records GitHub's mergeable state as a fact. The moves a staging
-// check takes (guards `staging_check_on_merge_commit` and `staging_check_failed`) go through
-// src/core/staging.ts, which records the staging deploy of the merge commit as a fact. The bot to
-// dispatch is the owner of the state, from the contracts. The merge and the staging check are
-// never done here: in live mode the reconcile flow runs the merge pass and the staging pass
-// (flows/reconcile.ts, O-31, O-37).
+// ready for an agent, and plans with no move the builder run of an item a fail move sent back
+// (src/core/builder-runs.ts); advance from evidence takes the moves guarded by
+// `ci_green_on_head`, the evidence section 2.5 step 4 names, except the moves on which the runner
+// merges (guard `qa_verdict_independent_on_head`): those need the merge, so the merge step plans
+// them through src/core/merge.ts, which also records GitHub's mergeable state as a fact. The
+// moves a staging check takes (guards `staging_check_on_merge_commit` and `staging_check_failed`)
+// go through src/core/staging.ts, which records the staging deploy of the merge commit as a fact.
+// The bot to dispatch is the owner of the state, from the contracts. The merge and the staging
+// check are never done here: in live mode the reconcile flow runs the merge pass, the staging pass
+// and the builder runs pass (flows/reconcile.ts, O-31, O-37, O-41).
 import type {
   Contracts,
   GuardCheck,
   GuardRegistry,
   TransitionContract,
 } from "./contracts.ts";
+import { createBuilderRuns } from "./builder-runs.ts";
 import type { GitHub } from "./github.ts";
 import { pollRepository, type PollResult } from "./github-ingest.ts";
 import { readCiRun } from "./guards/evidence.ts";
@@ -317,6 +319,7 @@ export async function reconcile(
   const { store, contracts, clock } = deps;
   const library = createLibrary(deps);
   const runs = createRuns(deps);
+  const builderRuns = createBuilderRuns(deps);
   const now = clock.now();
   const problems: string[] = [];
   const report: ReconcileReport = {
@@ -481,8 +484,9 @@ export async function reconcile(
       report.releases.push(await requestMove(node, move.to));
   }
 
-  // Step 3. Dispatch: each node ready for an agent with no active run, and each node queued
-  // after `usage_exhausted` once its wait has passed.
+  // Step 3. Dispatch: each node ready for an agent with no active run, each node queued after
+  // `usage_exhausted` once its wait has passed, and each node a failed QA round or staging check
+  // sent back to its building state with no builder run since (src/core/builder-runs.ts).
   const intervalMinutes = await positiveNumberSetting(
     store,
     "reconcile_interval_minutes",
@@ -500,9 +504,15 @@ export async function reconcile(
     );
     const latestRun = (await store.listRuns({ nodeId: node.id })).at(-1);
     const queuedBot = latestRun?.outcome === "usage_exhausted" ? latestRun.bot : null;
-    if (!dispatchMove && queuedBot === null) continue;
+    // A builder run due with no move: the item came back from a failed QA round or staging
+    // check (O-41). It is planned like a queued dispatch.
+    const builderRun = dispatchMove ? null : await builderRuns.check(node.id);
+    const builderRole = builderRun?.due ? builderRun.role : null;
+    if (!dispatchMove && queuedBot === null && builderRole === null) continue;
 
-    const role = dispatchMove ? roleOf(stateOf(node.state)?.owner) : roleOf(queuedBot);
+    const role = dispatchMove
+      ? roleOf(stateOf(node.state)?.owner)
+      : (builderRole ?? roleOf(queuedBot));
     let plan: DispatchPlan;
     if (role === null) {
       plan = { nodeId: node.id, state: node.state, role, outcome: "no_role" };

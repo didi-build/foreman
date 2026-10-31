@@ -9,6 +9,8 @@ import type {
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
+import type { ReconcileDeps } from "../../src/core/reconcile.ts";
+import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
 import { createFakeStagingChecker } from "../staging-fixture.ts";
 
@@ -64,15 +66,20 @@ function createFakeRuntime(): FakeRuntime {
 
 export type FlowFixture = Awaited<ReturnType<typeof createFlowFixture>>;
 
-export async function createFlowFixture() {
-  const f = await createReconcileFixture();
+/**
+ * The flow parts around a fixture's core deps: a fake runtime, a fake task source that keeps
+ * what each start was given, generated tokens and a Windmill execution count the test sets.
+ */
+export function flowDepsFor(
+  base: ReconcileDeps,
+  stagingChecker: StagingChecker = createFakeStagingChecker(),
+) {
   const runtime = createFakeRuntime();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
-  const stagingChecker = createFakeStagingChecker();
   const deps: FlowDeps = {
-    ...f.deps,
+    ...base,
     runtime,
     stagingChecker,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
@@ -99,6 +106,24 @@ export async function createFlowFixture() {
     },
     async close() {},
   };
+  return {
+    deps,
+    runtime,
+    tasksFor,
+    tokens,
+    setExecutions: (count: number | null) => {
+      executions = count;
+    },
+  };
+}
+
+export async function createFlowFixture() {
+  const f = await createReconcileFixture();
+  const stagingChecker = createFakeStagingChecker();
+  const { deps, runtime, tasksFor, tokens, setExecutions } = flowDepsFor(
+    f.deps,
+    stagingChecker,
+  );
 
   /** What a flow could have written for these nodes, to compare before and after. */
   async function footprint(...nodeIds: string[]) {
@@ -120,9 +145,7 @@ export async function createFlowFixture() {
     stagingChecker,
     tasksFor,
     tokens,
-    setExecutions: (count: number | null) => {
-      executions = count;
-    },
+    setExecutions,
     footprint,
     live: () => f.setting("dry_run", false),
     killed: () => f.setting("kill_switch", true),
