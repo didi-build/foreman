@@ -15,6 +15,7 @@ import {
   FIRST_MODEL_CATALOG,
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
+  firstRunPrice,
 } from "./routing-testing.ts";
 import type { AgentRole, Json } from "./store.ts";
 
@@ -117,6 +118,7 @@ describe("the first policy (ADR 0114 section 5, D-185, D-186)", () => {
         onCapacity: "wait",
         policyVersion: "2026-10-31.1",
         catalogVersion: "2026-10-31.1",
+        price: firstRunPrice(model),
       });
     },
   );
@@ -146,6 +148,8 @@ describe("candidate order", () => {
       family: "qwen",
       policyVersion: "test.1",
       catalogVersion: "test.1",
+      // The model's whole price entry from that catalog version, recorded on the run.
+      price: { tiers: ["standard", "flex"], pricePerMTok: QWEN.pricePerMTok },
     });
     const unapprovedFirst = chooseRoute(
       input({

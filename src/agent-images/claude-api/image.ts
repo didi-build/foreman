@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ServiceTier } from "../../core/store.ts";
 import { readConfig, type Setting } from "../../service-kit/config.ts";
 import { createLogger } from "../../service-kit/logger.ts";
+import { parseRunPrice } from "../shared/price.ts";
 import {
   errorResult,
   exitCode,
@@ -22,7 +23,6 @@ import {
 import { readTask, type AgentTaskFile } from "../shared/task.ts";
 import { WORKSPACE_TOOLS, createWorkspace } from "./files.ts";
 import { runLoop, type LoopClock, type MessagesClient } from "./loop.ts";
-import { hasPrice } from "./pricing.ts";
 import { fencedInput, systemText } from "./prompts.ts";
 import { VERDICT_SCHEMA, parseVerdict, postVerdict } from "./verdict.ts";
 
@@ -80,7 +80,24 @@ const apiSettings = {
 };
 
 type Common = ReturnType<typeof readCommon>;
-const readCommon = (env: NodeJS.ProcessEnv) => readConfig(apiSettings, env);
+/**
+ * The loop's settings, and the run's price for its dollar limit (../shared/price.ts). The price is
+ * checked against the requested tier, so it is read once the tier is known; a missing or unusable
+ * price stops the run before any model call.
+ */
+function readCommon(env: NodeJS.ProcessEnv) {
+  const common = readConfig(apiSettings, env);
+  const { price } = readConfig(
+    {
+      price: {
+        env: "FOREMAN_MODEL_PRICE",
+        parse: (raw: string) => parseRunPrice(raw, common.serviceTier),
+      },
+    },
+    env,
+  );
+  return { ...common, price };
+}
 
 const qaSettings = {
   workspace: {
@@ -227,11 +244,6 @@ export async function runClaudeApiImage(
     const settings = readImageSettings("claude-api", env);
     secrets = secretValues(settings, env);
     const common = readCommon(env);
-    if (!hasPrice(settings.model)) {
-      throw new Error(
-        "FOREMAN_MODEL has no price, so its dollar limit cannot be enforced",
-      );
-    }
     const task = readTask(settings.role, settings.taskFile);
     const client = (deps.client ?? sdkClient)(settings);
     result =

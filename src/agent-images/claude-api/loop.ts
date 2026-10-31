@@ -1,7 +1,9 @@
 // A Messages API loop with turn and dollar limits enforced inside it (ADR 0106 section 6), for QA,
 // Council and Triage. One turn is one model request. Before each request the loop stops at the
 // turn limit or once the cost so far has reached the dollar limit, like Claude Code's own caps,
-// so a run overshoots by at most one request. The egress proxy's request ceiling and the Job's
+// so a run overshoots by at most one request. The cost is priced from the route's model catalog
+// entry, which the runner passes with the run (../shared/price.ts), so any model the catalog
+// prices can run here, Claude or not. The egress proxy's request ceiling and the Job's
 // deadline are the backstops.
 //
 // Prompt caching (D-185): tools and the system text never change within a run and are sent in a
@@ -26,11 +28,11 @@ import {
   isFlexCapacityRejection,
   providerErrorFromHttp,
 } from "../shared/provider-error.ts";
+import { requestCostUsd, type RunPrice } from "../shared/price.ts";
 import type { AgentResult } from "../shared/result.ts";
 import { reportedTier, servedTier } from "../shared/tiers.ts";
 import { NO_TOKENS, addTokens, tokensFromUsage } from "../shared/tokens.ts";
 import type { ToolOutput } from "./files.ts";
-import { requestCostUsd } from "./pricing.ts";
 
 /** The part of the SDK client the loop uses, so tests can see each request. */
 export interface MessagesClient {
@@ -66,6 +68,11 @@ export interface LoopOptions {
   model: string;
   maxTurns: number;
   maxUsd: number;
+  /**
+   * The route's prices from the model catalog, as recorded on the run. Each response is priced at
+   * the tier it reports, or at Standard when it reports none (ADR 0114 section 8).
+   */
+  price: RunPrice;
   /** The run's minute limit, which capacity waits count against. */
   maxMinutes: number;
   /** The tier the run's route asked for. */
@@ -205,10 +212,11 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
       throw error;
     }
     turns += 1;
-    tiers.push(reportedTier(response));
+    const tier = reportedTier(response);
+    tiers.push(tier);
     const used = tokensFromUsage(response.usage);
     tokens = addTokens(tokens, used);
-    costUsd += requestCostUsd(options.model, used);
+    costUsd += requestCostUsd(options.price, tier, used);
     lastText = textOf(response) || lastText;
     // The reply goes back exactly as it came, thinking blocks included.
     messages.push({ role: "assistant", content: response.content });

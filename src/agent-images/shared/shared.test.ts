@@ -14,6 +14,10 @@ import {
 import { errorResult, redact, resultLine, type AgentResult } from "./result.ts";
 import { PLACEHOLDER_CREDENTIAL, readImageSettings, secretValues } from "./settings.ts";
 import { parseTask } from "./task.ts";
+import { parseRunPrice, requestCostUsd, type RunPrice } from "./price.ts";
+import { runCostUsd } from "../../core/run-cost.ts";
+import { firstRunPrice } from "../../core/routing-testing.ts";
+import type { ServiceTier } from "../../core/store.ts";
 import { reportedTier, servedTier } from "./tiers.ts";
 import { addTokens, tokensFromUsage } from "./tokens.ts";
 
@@ -93,6 +97,26 @@ describe("image settings (unit: config from the environment, fail closed)", () =
     ]);
     expect(String((error as Error).message)).not.toContain(STATE_TOKEN);
   });
+
+  it.each([
+    "claude-sonnet-5-5",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+    "nace-ai/drex-v2.0",
+  ])("accepts the model id %s", (model) => {
+    expect(
+      readImageSettings("claude-api", { ...ENV, FOREMAN_MODEL: model }).model,
+    ).toBe(model);
+  });
+
+  it.each(["../etc", "a/b/c", "/claude", "claude/", "x".repeat(201), "a b"])(
+    "refuses the model id %j",
+    (model) => {
+      expect(() =>
+        readImageSettings("claude-api", { ...ENV, FOREMAN_MODEL: model }),
+      ).toThrow(/FOREMAN_MODEL is not a model id/);
+    },
+  );
 
   it("lists every credential value the run may see, the placeholder included", () => {
     const settings = readImageSettings("claude-api", ENV);
@@ -288,6 +312,100 @@ describe("provider errors (unit: 429, 529, 402 and the proxy's ceiling)", () => 
       ),
     ).toMatchObject({ status: 429, type: "rate_limit_error", retryAfterSeconds: null });
     expect(providerErrorFromClaudeCode(null, "something else")).toBeNull();
+  });
+});
+
+describe("the run's price (unit: the dollar limit from the catalog entry, ADR 0114 sections 5 and 8)", () => {
+  const OPUS = firstRunPrice("claude-opus-5-5");
+  const SONNET = firstRunPrice("claude-sonnet-5-5");
+  /** A test open model with Flex and no cache-write price. Not a real catalog entry. */
+  const OPEN: RunPrice = {
+    tiers: ["standard", "flex"],
+    pricePerMTok: {
+      standard: { input: 0.3, cachedInput: 0.1, output: 1 },
+      flex: { input: 0.24, cachedInput: 0.08, output: 0.8 },
+    },
+  };
+  const MILLION = {
+    uncachedInput: 1_000_000,
+    cachedInput: 1_000_000,
+    cacheWriteInput: 1_000_000,
+    output: 1_000_000,
+  };
+
+  it("prices today's Claude models as the removed price table did", () => {
+    // 1M of each at Opus 5.5: 4 + 0.2 + 5 + 20.
+    expect(requestCostUsd(OPUS, "standard", MILLION)).toBeCloseTo(29.2, 9);
+    expect(
+      requestCostUsd(SONNET, null, {
+        uncachedInput: 1000,
+        cachedInput: 0,
+        output: 1000,
+      }),
+    ).toBeCloseTo(0.012, 9);
+  });
+
+  it("prices an open model at the tier each response reports, and Standard otherwise", () => {
+    // Cache writes at the uncached input rate: the catalog lists none.
+    expect(requestCostUsd(OPEN, "flex", MILLION)).toBeCloseTo(1.36, 9);
+    expect(requestCostUsd(OPEN, "standard", MILLION)).toBeCloseTo(1.7, 9);
+    expect(requestCostUsd(OPEN, null, MILLION)).toBeCloseTo(1.7, 9);
+    expect(requestCostUsd(OPEN, "priority", MILLION)).toBeCloseTo(1.7, 9);
+  });
+
+  it.each<[RunPrice, ServiceTier | null]>([
+    [OPEN, "flex"],
+    [OPEN, "standard"],
+    [OPEN, null],
+    [OPEN, "priority"],
+    [OPUS, "standard"],
+    [SONNET, "flex"],
+    [
+      {
+        tiers: ["standard", "flex"],
+        pricePerMTok: { standard: { input: 1, cachedInput: 0.1, output: 2 } },
+      },
+      "flex",
+    ],
+  ])("agrees with the core's cost_usd for one response (%#)", (price, tier) => {
+    const tokens = {
+      uncachedInput: 1234,
+      cachedInput: 56789,
+      cacheWriteInput: 321,
+      output: 987,
+    };
+    expect(requestCostUsd(price, tier, tokens)).toBeCloseTo(
+      runCostUsd(price, tokens, tier),
+      9,
+    );
+  });
+
+  it("reads the runner's JSON, and fails closed on a missing or unusable price", () => {
+    expect(parseRunPrice(JSON.stringify(OPEN), "flex")).toEqual(OPEN);
+    expect(parseRunPrice(JSON.stringify(SONNET), "flex")).toEqual(SONNET);
+    for (const [raw, problem] of [
+      ["not json", /is not JSON/],
+      ["[]", /is not a run price/],
+      [JSON.stringify({ ...OPEN, tiers: [] }), /is not a run price/],
+      [JSON.stringify({ ...OPEN, pricePerMTok: { batch: {} } }), /is not a run price/],
+      [
+        JSON.stringify({ ...OPEN, pricePerMTok: { standard: { input: "1" } } }),
+        /is not a price per million tokens/,
+      ],
+      [
+        JSON.stringify({ ...OPEN, pricePerMTok: { flex: OPEN.pricePerMTok.flex } }),
+        /has no Standard price/,
+      ],
+      [
+        JSON.stringify({
+          ...OPEN,
+          pricePerMTok: { standard: OPEN.pricePerMTok.standard },
+        }),
+        /has no price for the requested tier/,
+      ],
+    ] as const) {
+      expect(() => parseRunPrice(raw, "flex")).toThrow(problem);
+    }
   });
 });
 

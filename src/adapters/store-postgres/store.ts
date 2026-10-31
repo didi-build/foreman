@@ -433,9 +433,9 @@ function ops(db: Queryable): StoreOps {
            bot_version, started_at, ended_at, outcome, turns, minutes, cost_usd, tokens, budget, parent_run_id,
            transcript_ref, usage_exhausted_cause, retry_after_seconds, task_type, provider, model_family,
            service_tier_requested, service_tier_served, routing_policy_version, model_catalog_version,
-           capacity_retries, capacity_wait_seconds, first_token_ms, reported_cost_usd)
+           capacity_retries, capacity_wait_seconds, first_token_ms, reported_cost_usd, model_price)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-           $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)`,
+           $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)`,
         [
           r.id,
           r.projectId,
@@ -470,6 +470,7 @@ function ops(db: Queryable): StoreOps {
           r.capacityWaitSeconds,
           r.firstTokenMs,
           r.reportedCostUsd,
+          r.modelPrice === null ? null : json(r.modelPrice as unknown as Json),
         ],
       );
     },

@@ -3,7 +3,7 @@
 // only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the file equals TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
-import { ROUTING_SETTINGS } from "./routing.ts";
+import { ROUTING_SETTINGS, type RunPrice } from "./routing.ts";
 import type { Json, Run, StoreOps } from "./store.ts";
 import type { TaskTypes } from "./task-types.ts";
 
@@ -29,6 +29,9 @@ export const FIRST_ROUTING_POLICY = {
   },
 } satisfies Json;
 
+// `priceSource` names src/agent-images/claude-api/pricing.ts, where these prices were read when
+// migration 0005 seeded them. That table is gone (the catalog is the one source of prices), but
+// the text stays as seeded: test/db/runs.test.ts checks this copy equals the seed.
 const claude = (input: number, cacheWrite: number, output: number) => ({
   provider: "anthropic",
   family: "claude",
@@ -113,7 +116,20 @@ type RouteColumns = Pick<
   | "capacityWaitSeconds"
   | "firstTokenMs"
   | "reportedCostUsd"
+  | "modelPrice"
 >;
+
+/** The price a run on the first policy records for `model` (Sonnet or Opus 5.5). */
+export function firstRunPrice(model: string): RunPrice {
+  const entry =
+    model === OPUS
+      ? FIRST_MODEL_CATALOG.models[OPUS]
+      : FIRST_MODEL_CATALOG.models[SONNET];
+  return {
+    tiers: ["standard"],
+    pricePerMTok: { standard: { ...entry.pricePerMTok.standard } },
+  };
+}
 
 /** The route columns of a run on the first policy, for tests that insert runs directly. */
 export function testRouteColumns(
@@ -132,6 +148,7 @@ export function testRouteColumns(
     capacityWaitSeconds: null,
     firstTokenMs: null,
     reportedCostUsd: null,
+    modelPrice: firstRunPrice(bot === "qa" ? OPUS : SONNET),
     ...overrides,
   };
 }

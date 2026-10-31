@@ -34,6 +34,7 @@ import type {
   StoreOps,
   UsageExhaustedCause,
 } from "./store.ts";
+import { parseRunPrice, runCostUsd } from "./run-cost.ts";
 import { RUN_TOKEN_HASH, runTokenExpiry } from "./run-tokens.ts";
 import { taskTypeFor, type TaskTypes } from "./task-types.ts";
 
@@ -114,11 +115,15 @@ export interface RunTokens {
   output: number;
 }
 
+/**
+ * What a runtime reports at a run's end. It carries no `costUsd`: the core works that out from the
+ * tokens and the run's recorded price (src/core/run-cost.ts). The runtime's own figure is
+ * `reportedCostUsd`.
+ */
 export interface RunReport {
   outcome: RunOutcome;
   turns: number | null;
   minutes: number | null;
-  costUsd: number | null;
   tokens: RunTokens | null;
   transcriptRef?: string | null;
   /** Required with `usage_exhausted`, refused with any other outcome. */
@@ -326,7 +331,6 @@ function checkRunReport(report: RunReport): void {
   }
   for (const [name, value] of [
     ["minutes", report.minutes],
-    ["costUsd", report.costUsd],
     ["reportedCostUsd", report.reportedCostUsd ?? null],
   ] as const) {
     if (value !== null && !isAmount(value))
@@ -372,6 +376,23 @@ function tokensJson(tokens: RunTokens): Json {
   return counts;
 }
 
+/**
+ * The run's cost from its reported tokens and its recorded price (ADR 0114 sections 2 and 8).
+ * Null when the runtime reported no tokens, or the run has no usable price: an end is still
+ * recorded, and its token revoked, rather than refused over a cost that cannot be worked out.
+ */
+function costOf(run: Run, report: RunReport): number | null {
+  if (!report.tokens) return null;
+  const price = parseRunPrice(
+    "model_price",
+    run.modelPrice,
+    run.serviceTierRequested,
+    [],
+  );
+  if (!price) return null;
+  return runCostUsd(price, report.tokens, report.serviceTierServed ?? null);
+}
+
 /** The run a dispatch records. `planDispatch` builds one with a planned id and never stores it. */
 function newRun(
   id: string,
@@ -415,6 +436,7 @@ function newRun(
     capacityWaitSeconds: null,
     firstTokenMs: null,
     reportedCostUsd: null,
+    modelPrice: route.price,
   };
 }
 
@@ -510,12 +532,13 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
     checkRunReport(report);
     const endedAt = clock.now();
     return store.transaction(async (tx) => {
+      const run = await tx.getRun(runId);
       const ended = await tx.endRun(runId, {
         endedAt,
         outcome: report.outcome,
         turns: report.turns,
         minutes: report.minutes,
-        costUsd: report.costUsd,
+        costUsd: run ? costOf(run, report) : null,
         tokens: report.tokens ? tokensJson(report.tokens) : null,
         transcriptRef: report.transcriptRef ?? null,
         usageExhaustedCause: report.usageExhaustedCause ?? null,
@@ -610,13 +633,7 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
      * run never started. Same transaction and token revocation as `recordEnd`.
      */
     recordRunnerEnd(runId: string, outcome: "cancelled" | "fail"): Promise<boolean> {
-      return recordEnd(runId, {
-        outcome,
-        turns: null,
-        minutes: null,
-        costUsd: null,
-        tokens: null,
-      });
+      return recordEnd(runId, { outcome, turns: null, minutes: null, tokens: null });
     },
 
     /** The node's queued dispatch after a usage_exhausted end, or null if it is not queued. */

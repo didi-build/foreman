@@ -56,6 +56,19 @@ export interface CatalogModel {
   priceReadOn: string;
 }
 
+/**
+ * The price a run is costed at: the route's model entry from the catalog version recorded on the
+ * run (`model_catalog_version`), copied onto the run when it is admitted (`runs.model_price`,
+ * migration 0008). The runtime's dollar limit and the core's `cost_usd` both read this copy, so a
+ * later catalog change never changes how a recorded run is priced (D-162).
+ */
+export interface RunPrice {
+  /** The tiers the provider supports for the model. Any other tier is billed at Standard. */
+  tiers: ServiceTier[];
+  /** Every tier the catalog prices for the model. Standard is always there (hard rule 2). */
+  pricePerMTok: Partial<Record<ServiceTier, TierPrice>>;
+}
+
 export interface ModelCatalog {
   version: string;
   models: Record<string, CatalogModel>;
@@ -148,6 +161,8 @@ export interface Route {
   onCapacity: OnCapacity;
   policyVersion: string;
   catalogVersion: string;
+  /** The model's prices from that catalog version, recorded on the run. */
+  price: RunPrice;
   /** Present only when the input had a capacity end. */
   afterCapacity?: AfterCapacity;
 }
@@ -209,7 +224,8 @@ function checkKeys(
   }
 }
 
-function parsePrice(
+/** Checks one tier's price. Returns null and adds problems when it is malformed. */
+export function parseTierPrice(
   where: string,
   value: unknown,
   problems: string[],
@@ -288,7 +304,7 @@ function parseCatalogModel(
         problems.push(`${where}.pricePerMTok: unknown tier ${tier}`);
         continue;
       }
-      const parsed = parsePrice(`${where}.pricePerMTok.${tier}`, price, problems);
+      const parsed = parseTierPrice(`${where}.pricePerMTok.${tier}`, price, problems);
       if (parsed) prices[tier] = parsed;
     }
   }
@@ -605,6 +621,7 @@ export function chooseRoute(input: RouteInput): RouteChoice {
           onCapacity: routing.onCapacity,
           policyVersion: policy.version,
           catalogVersion: catalog.version,
+          price: runPriceOf(model),
         };
       }
       if (keepRejections) {
@@ -641,6 +658,16 @@ export function chooseRoute(input: RouteInput): RouteChoice {
     };
   }
   return { routed: false, noRoute: { settingsProblems: [], rejected } };
+}
+
+/** The run's copy of a catalog model's prices. A copy, so the route never shares the setting's objects. */
+export function runPriceOf(model: CatalogModel): RunPrice {
+  const pricePerMTok: Partial<Record<ServiceTier, TierPrice>> = {};
+  for (const tier of SERVICE_TIERS) {
+    const price = model.pricePerMTok[tier];
+    if (price) pricePerMTok[tier] = { ...price };
+  }
+  return { tiers: [...model.tiers], pricePerMTok };
 }
 
 /** Hard rule 3: an approved provider, and a model its approval covers. */

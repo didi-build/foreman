@@ -9,6 +9,8 @@ import {
   STATE_API_PREFIX,
   parseStateApiUpstream,
 } from "../../../egress-proxy/state-api.ts";
+import { parseRunPrice } from "../../../core/run-cost.ts";
+import type { RunPrice } from "../../../core/routing.ts";
 import type { ServiceTier } from "../../../core/store.ts";
 import type { AgentRole, RunLimits } from "../runtime.ts";
 import {
@@ -109,6 +111,12 @@ export interface KubernetesRunSpec {
   providers: ModelProviderSetting[];
   /** The tier the run's route asked for (ADR 0114 section 8). */
   serviceTier: ServiceTier;
+  /**
+   * The route's prices recorded on the run (`runs.model_price`), for the runtime's dollar limit.
+   * The Messages API image prices each request from it; the Claude Code CLI prices by its own
+   * table, so the Claude Code image does not read it.
+   */
+  price: RunPrice;
   /** How many Flex capacity rejections the agent retries (`flex_capacity_retries`, ADR 0114 section 9). */
   flexCapacityRetries: number;
   /** How many 429 answers the agent's proxy lets through (`max_rejected_model_requests`). */
@@ -171,6 +179,11 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
   }
   if (!Number.isInteger(spec.flexCapacityRetries) || spec.flexCapacityRetries < 0) {
     throw new Error("flexCapacityRetries must be a whole number of at least 0");
+  }
+  const priceProblems: string[] = [];
+  if (!parseRunPrice("price", spec.price, spec.serviceTier, priceProblems)) {
+    // The run's dollar limit could not be enforced: fail closed (ADR 0114 section 5).
+    throw new Error(priceProblems.join("; "));
   }
   if (
     !Number.isInteger(spec.maxRejectedModelRequests) ||
@@ -569,6 +582,7 @@ function agentEnv(
     // A capacity wait counts against the minute limit (ADR 0114 section 9).
     FOREMAN_MAX_MINUTES: String(limits.maxMinutes),
     FOREMAN_SERVICE_TIER: spec.serviceTier,
+    FOREMAN_MODEL_PRICE: JSON.stringify(spec.price),
     FOREMAN_FLEX_CAPACITY_RETRIES: String(spec.flexCapacityRetries),
     FOREMAN_STATE_API_URL: `${proxyBase}${STATE_API_PREFIX}`,
     FOREMAN_TASK_FILE: TASK_FILE_PATH,

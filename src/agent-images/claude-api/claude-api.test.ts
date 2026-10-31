@@ -9,6 +9,7 @@ import {
   parseAgentResult,
 } from "../../adapters/agent-runtime/kubernetes/result.ts";
 import { CEILING_MESSAGE } from "../../egress-proxy/proxy.ts";
+import { firstRunPrice } from "../../core/routing-testing.ts";
 import { PLACEHOLDER_CREDENTIAL } from "../shared/settings.ts";
 import { reply, startFakeProxy, type FakeProxy } from "../testing/fake-proxy.ts";
 import { runClaudeApiImage } from "./image.ts";
@@ -52,10 +53,13 @@ function envFor(
 ) {
   const taskFile = join(dir, `${role}-task.json`);
   writeFileSync(taskFile, JSON.stringify({ foremanTask: 1, ...task }));
+  const model = role === "qa" ? "claude-opus-5-5" : "claude-sonnet-5-5";
   return {
     FOREMAN_RUN_ID: "5e1f0a9b-8c7d-4e6f-a5b4-c3d2e1f0a9b8",
     FOREMAN_ROLE: role,
-    FOREMAN_MODEL: role === "qa" ? "claude-opus-5-5" : "claude-sonnet-5-5",
+    FOREMAN_MODEL: model,
+    // The route's catalog entry as the runner passes it (the first catalog's price for the model).
+    FOREMAN_MODEL_PRICE: JSON.stringify(firstRunPrice(model)),
     FOREMAN_MAX_TURNS: "50",
     FOREMAN_MAX_BUDGET_USD: "2",
     FOREMAN_MAX_MINUTES: "20",
@@ -306,12 +310,25 @@ describe("limits and provider errors (integration: what the runtime records, ADR
     });
   });
 
-  it("fails closed before any request for a model with no price or a missing setting", async () => {
-    let { result } = await run(
-      envFor("qa", qaTask, { FOREMAN_MODEL: "unpriced-model" }),
-    );
-    expect(result?.errorText).toMatch(/FOREMAN_MODEL has no price/);
-    ({ result } = await run(envFor("qa", qaTask, { FOREMAN_HEAD_SHA: "" })));
+  it("fails closed before any request without a usable price, or with a missing setting", async () => {
+    const noFlexPrice = JSON.stringify({
+      tiers: ["standard", "flex"],
+      pricePerMTok: { standard: { input: 2, cachedInput: 0.2, output: 10 } },
+    });
+    for (const [extra, problem] of [
+      [{ FOREMAN_MODEL_PRICE: "" }, /FOREMAN_MODEL_PRICE is not set/],
+      [{ FOREMAN_MODEL_PRICE: "{}" }, /FOREMAN_MODEL_PRICE is not a run price/],
+      [
+        { FOREMAN_MODEL_PRICE: noFlexPrice, FOREMAN_SERVICE_TIER: "flex" },
+        /FOREMAN_MODEL_PRICE has no price for the requested tier/,
+      ],
+    ] as const) {
+      const env: Record<string, string> = envFor("qa", qaTask, extra);
+      if (env.FOREMAN_MODEL_PRICE === "") delete env.FOREMAN_MODEL_PRICE;
+      const { result } = await run(env);
+      expect(result?.errorText).toMatch(problem);
+    }
+    const { result } = await run(envFor("qa", qaTask, { FOREMAN_HEAD_SHA: "" }));
     expect(result?.errorText).toMatch(/FOREMAN_HEAD_SHA is not a commit id/);
     expect(proxy.modelRequests).toEqual([]);
   });
@@ -438,6 +455,48 @@ describe("Flex capacity retry and the served tier (integration, ADR 0114 section
     const { result } = await run(flex());
     expect(result?.status).toBe("success");
     expect(result?.serviceTierServed).toBe(served);
+  });
+
+  it("runs a non-Claude model the catalog prices, at the tier each response reports (ADR 0114 section 8)", async () => {
+    // A test open model on DeepInfra with Flex and no cache-write price. Not a real catalog entry.
+    const open = {
+      FOREMAN_MODEL: "test-org/open-coder-1",
+      FOREMAN_MODEL_PRICE: JSON.stringify({
+        tiers: ["standard", "flex"],
+        pricePerMTok: {
+          standard: { input: 0.3, cachedInput: 0.1, output: 1 },
+          flex: { input: 0.24, cachedInput: 0.08, output: 0.8 },
+        },
+      }),
+    };
+    const usage = {
+      input_tokens: 1_000_000,
+      cache_read_input_tokens: 1_000_000,
+      cache_creation_input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    };
+    proxy.replies.push(
+      reply.toolUse("none", {}, "toolu_1", { ...usage, service_tier: "flex" }),
+      // Served at Standard for a Flex request: priced at Standard.
+      reply.text('{"answer":"ok"}', { ...usage, service_tier: "standard" }),
+    );
+    const { result } = await run(flex({ ...open, FOREMAN_MAX_BUDGET_USD: "5" }));
+    expect(proxy.modelRequests[0]?.body.model).toBe("test-org/open-coder-1");
+    expect(result).toMatchObject({ status: "success", serviceTierServed: "mixed" });
+    // Flex: 0.24 + 0.08 + 0.24 (cache writes at the input rate) + 0.8; Standard: 0.3 + 0.1 + 0.3 + 1.
+    expect(result?.costUsd).toBeCloseTo(1.36 + 1.7, 6);
+
+    // The same model's dollar limit: 1.36 a turn at Flex stops the run before a third request.
+    proxy.modelRequests.length = 0;
+    for (let i = 0; i < 4; i += 1) {
+      proxy.replies.push(
+        reply.toolUse("none", {}, `toolu_${i}`, { ...usage, service_tier: "flex" }),
+      );
+    }
+    const capped = await run(flex({ ...open, FOREMAN_MAX_BUDGET_USD: "2.5" }));
+    expect(proxy.modelRequests).toHaveLength(2);
+    expect(capped.result).toMatchObject({ status: "max_budget", turns: 2 });
+    expect(capped.result?.costUsd).toBeCloseTo(2.72, 6);
   });
 
   it("refuses a bad tier or capacity setting before any request, naming the setting", async () => {

@@ -167,41 +167,42 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 
 ## runs
 
-| Column                 | Type         | Notes                                                                                                                            |
-| ---------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| id                     | uuid pk      |                                                                                                                                  |
-| project_id             | uuid fk      |                                                                                                                                  |
-| node_id                | uuid null    |                                                                                                                                  |
-| bot                    | text         | Role bot name                                                                                                                    |
-| agent_id               | text null    |                                                                                                                                  |
-| runtime                | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                           |
-| model                  | text         |                                                                                                                                  |
-| head_sha               | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                 |
-| pr_number              | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit |
-| bot_version            | text         | Prompt, model and schema version behind the result                                                                               |
-| started_at, ended_at   | timestamptz  |                                                                                                                                  |
-| outcome                | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                  |
-| turns                  | integer null |                                                                                                                                  |
-| minutes                | numeric null |                                                                                                                                  |
-| cost_usd               | numeric null |                                                                                                                                  |
-| tokens                 | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                            |
-| budget                 | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                    |
-| parent_run_id          | uuid null    | A bot run that dispatched agents                                                                                                 |
-| transcript_ref         | text null    | Where the transcript is kept. Never inline secrets                                                                               |
-| usage_exhausted_cause  | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                  |
-| retry_after_seconds    | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                     |
-| task_type              | text         | From `contracts/task-types.yaml`, for example `developer:code` (ADR 0114 section 1, migration 0005)                              |
-| provider               | text         | The provider entry name, as in the egress proxy's provider list, for example `anthropic` (migration 0005)                        |
-| model_family           | text         | From the model catalog. The QA independence rule reads it here (migration 0005)                                                  |
-| service_tier_requested | text         | `standard`, `flex` or `priority` (migration 0005)                                                                                |
-| service_tier_served    | text null    | `standard`, `flex`, `priority` or `mixed`, from the provider's responses. Null when none reported it (migration 0005)            |
-| routing_policy_version | text         | The `model_routing_policy` version the route came from (migration 0005)                                                          |
-| model_catalog_version  | text         | The `model_catalog` version the family and price came from (migration 0005)                                                      |
-| capacity_retries       | integer null | Flex capacity rejections retried inside the run, at least 0 (ADR 0114 section 9, migration 0005)                                 |
-| capacity_wait_seconds  | integer null | Time spent waiting on those retries, at least 0 (migration 0005)                                                                 |
-| first_token_ms         | integer null | Time to the first output token of the first request, where the runtime reports it (migration 0005)                               |
-| reported_cost_usd      | numeric null | The runtime's own cost figure, kept to compare with `cost_usd` (migration 0005)                                                  |
-| handle                 | jsonb null   | What the runtime's `start` returned, to poll or cancel the run. An object, never a credential (migration 0006)                   |
+| Column                 | Type         | Notes                                                                                                                                    |
+| ---------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| id                     | uuid pk      |                                                                                                                                          |
+| project_id             | uuid fk      |                                                                                                                                          |
+| node_id                | uuid null    |                                                                                                                                          |
+| bot                    | text         | Role bot name                                                                                                                            |
+| agent_id               | text null    |                                                                                                                                          |
+| runtime                | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                                   |
+| model                  | text         |                                                                                                                                          |
+| head_sha               | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                         |
+| pr_number              | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit         |
+| bot_version            | text         | Prompt, model and schema version behind the result                                                                                       |
+| started_at, ended_at   | timestamptz  |                                                                                                                                          |
+| outcome                | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                          |
+| turns                  | integer null |                                                                                                                                          |
+| minutes                | numeric null |                                                                                                                                          |
+| cost_usd               | numeric null | Worked out by the core when the end is recorded, from `tokens` and `model_price` at the served tier (ADR 0114 section 2, migration 0008) |
+| tokens                 | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                                    |
+| budget                 | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                            |
+| parent_run_id          | uuid null    | A bot run that dispatched agents                                                                                                         |
+| transcript_ref         | text null    | Where the transcript is kept. Never inline secrets                                                                                       |
+| usage_exhausted_cause  | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                          |
+| retry_after_seconds    | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                             |
+| task_type              | text         | From `contracts/task-types.yaml`, for example `developer:code` (ADR 0114 section 1, migration 0005)                                      |
+| provider               | text         | The provider entry name, as in the egress proxy's provider list, for example `anthropic` (migration 0005)                                |
+| model_family           | text         | From the model catalog. The QA independence rule reads it here (migration 0005)                                                          |
+| service_tier_requested | text         | `standard`, `flex` or `priority` (migration 0005)                                                                                        |
+| service_tier_served    | text null    | `standard`, `flex`, `priority` or `mixed`, from the provider's responses. Null when none reported it (migration 0005)                    |
+| routing_policy_version | text         | The `model_routing_policy` version the route came from (migration 0005)                                                                  |
+| model_catalog_version  | text         | The `model_catalog` version the family and price came from (migration 0005)                                                              |
+| capacity_retries       | integer null | Flex capacity rejections retried inside the run, at least 0 (ADR 0114 section 9, migration 0005)                                         |
+| capacity_wait_seconds  | integer null | Time spent waiting on those retries, at least 0 (migration 0005)                                                                         |
+| first_token_ms         | integer null | Time to the first output token of the first request, where the runtime reports it (migration 0005)                                       |
+| reported_cost_usd      | numeric null | The runtime's own cost figure, kept to compare with `cost_usd` (migration 0005)                                                          |
+| handle                 | jsonb null   | What the runtime's `start` returned, to poll or cancel the run. An object, never a credential (migration 0006)                           |
+| model_price            | jsonb null   | The route's model entry from the catalog version on the run, copied at admission: `tiers` and `pricePerMTok`. An object (migration 0008) |
 
 A run is active while `ended_at` is null. Dispatch admission reads the active runs (index `runs_active`) under one advisory lock, in the transaction that inserts the run (ADR 0106 section 7, `src/core/runs.ts`).
 
@@ -209,7 +210,9 @@ The route (`model` and the columns from `task_type` to `model_catalog_version`) 
 
 The run's state API token is stored in `run_tokens` (one row per run, only the token's SHA-256 hash) in the transaction that inserts the run. It expires at the run's start plus its `maxMinutes` plus 15 minutes, and ending the run revokes it in the transaction that records the end (ADR 0102, `src/core/run-tokens.ts`).
 
-The columns from `service_tier_served` to `reported_cost_usd` are written when the run's end is recorded, in the same transaction, from what the runtime reported in its result line (`src/core/runs.ts`, `recordEnd`); each is null when the runtime could not report it. The Messages API image reports the served tier (one tier when every response named the same one, `mixed` when they differ or only some named one), its Flex capacity retries and the whole seconds it waited on them (0 and 0 when it retried nothing). The Claude Code image reports the one served tier Claude Code names, and no capacity retries, since it cannot count Claude Code's own. No runtime reports `first_token_ms` yet: neither streams its requests. `reported_cost_usd` is the runtime's own cost figure, the same value as `cost_usd` until the core prices runs from the catalog (ADR 0114 section 2).
+The columns from `service_tier_served` to `reported_cost_usd` are written when the run's end is recorded, in the same transaction, from what the runtime reported in its result line (`src/core/runs.ts`, `recordEnd`); each is null when the runtime could not report it. The Messages API image reports the served tier (one tier when every response named the same one, `mixed` when they differ or only some named one), its Flex capacity retries and the whole seconds it waited on them (0 and 0 when it retried nothing). The Claude Code image reports the one served tier Claude Code names, and no capacity retries, since it cannot count Claude Code's own. No runtime reports `first_token_ms` yet: neither streams its requests. `reported_cost_usd` is the runtime's own cost figure, kept to compare with `cost_usd`.
+
+`model_price` is the route's entry from the model catalog version in `model_catalog_version`: the tiers the provider supports for the model and its US dollar price per million tokens at each tier, as `{"tiers": ["standard"], "pricePerMTok": {"standard": {"input": 2, "cachedInput": 0.2, "cacheWrite": 2.5, "output": 10}}}`. The core copies it onto the run in the transaction that admits it and never changes it (migration 0008, O-25). The runner passes the same copy to the agent, whose dollar limit prices each request from it, and the runner does not start a run without one. `cost_usd` is worked out from it when the end is recorded (`src/core/run-cost.ts`), so a later catalog change never changes how a recorded run is priced (D-162): uncached input at `input`, cached input at `cachedInput`, cache writes at `cacheWrite` or, when the catalog lists none, at `input`, and output at `output`, per million tokens. The tier priced is the served tier when the run reports one tier the provider supports for the model; a `mixed` or null served tier, or an unsupported one, is priced at Standard (ADR 0114 section 8). A supported tier with no catalog price is priced at the highest cost any of the model's prices gives (O-26). `cost_usd` is null when the runtime reported no tokens, or the run has no usable `model_price`.
 
 After a `usage_exhausted` end with cause `capacity`, the next dispatch of the item for the same task type reads that run's route. With `onCapacity: "next_candidate"` it takes the first candidate after it that passes the hard rules, without the `usage_exhausted_wait_minutes` wait; when none passes, it waits and then takes the first candidate, as for `wait` (D-221). The route's decision record says which happened (`afterCapacity`: `next_candidate`, `wait` or `no_later_candidate`).
 
