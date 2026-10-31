@@ -39,7 +39,9 @@ jobs:
             echo "::group::$stack"
             if [ ! -f "$stack.terraform.lock.hcl" ]; then
               # No lock file: generate one with hashes for every platform we run on, print it, and fail,
-              # so it is committed instead of floating (ADR 0110).
+              # so it is committed instead of floating (ADR 0110). A stack that uses modules needs them
+              # installed first, or `providers lock` stops at "Module not installed".
+              tofu -chdir="$stack" init -backend=false -input=false
               tofu -chdir="$stack" providers lock -platform=linux_amd64 -platform=windows_amd64 -platform=darwin_arm64
               echo "----- BEGIN $stack.terraform.lock.hcl -----"
               cat "$stack.terraform.lock.hcl"
