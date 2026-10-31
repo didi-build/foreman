@@ -1,5 +1,6 @@
-// Guards around review: CI, docs, the QA verdict (ADR 0112), privileged paths and production
-// protection (ADR 0105).
+// Guards around review and the merge: CI, docs, the QA verdict (ADR 0112), privileged paths,
+// production protection (ADR 0105), and the merge guard's no-conflict and round cap checks
+// (build plan M3.3, D-218).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { EvidenceKind } from "../store.ts";
 import {
@@ -10,6 +11,7 @@ import {
   readCheck,
   readCiRun,
   readDocsNote,
+  readMergeCheck,
   readQaVerdict,
   result,
 } from "./evidence.ts";
@@ -202,30 +204,43 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${source}$`);
 }
 
-/** The PR touches no privileged path, or Didi approved this head commit. */
-export async function privilegedPathsApproved(ctx: GuardContext): Promise<GuardCheck> {
-  const name = "privileged_paths_approved";
+/**
+ * The privileged paths the head commit's PR touches: its `changedPaths` against the default list
+ * and the project's extra paths. Null when there is no head or its changed paths are not
+ * recorded. The merge (src/core/merge.ts) reads it to name the paths in its gate request.
+ */
+export async function privilegedPathsTouched(
+  ctx: GuardContext,
+): Promise<{ headSha: string; ciRunId: string; paths: string[] | null } | null> {
   const head = await headCommit(ctx);
-  if (!head) return result(name, false, [], NO_HEAD);
+  if (!head) return null;
   const ci = readCiRun(head.ciRun.payload);
-  if (!ci?.changedPaths) {
-    return result(
-      name,
-      false,
-      [head.ciRun.id],
-      "the PR's changed paths are not recorded",
-    );
-  }
+  const at = { headSha: head.sha, ciRunId: head.ciRun.id };
+  if (!ci?.changedPaths) return { ...at, paths: null };
   const project = await ctx.store.getProject(ctx.node.projectId);
   const extra = Array.isArray(project?.privilegedPathsExtra)
     ? project.privilegedPathsExtra.filter((p): p is string => typeof p === "string")
     : [];
   const patterns = [...DEFAULT_PRIVILEGED_PATHS, ...extra].map(globToRegExp);
-  const touched = ci.changedPaths.filter((path) =>
-    patterns.some((re) => re.test(path)),
-  );
+  return {
+    ...at,
+    paths: ci.changedPaths.filter((path) => patterns.some((re) => re.test(path))),
+  };
+}
+
+/** The PR touches no privileged path, or Didi approved this head commit. */
+export async function privilegedPathsApproved(ctx: GuardContext): Promise<GuardCheck> {
+  const name = "privileged_paths_approved";
+  const found = await privilegedPathsTouched(ctx);
+  if (!found) return result(name, false, [], NO_HEAD);
+  const ids = [found.ciRunId];
+  const sha = found.headSha;
+  if (!found.paths) {
+    return result(name, false, ids, "the PR's changed paths are not recorded");
+  }
+  const touched = found.paths;
   if (touched.length === 0) {
-    return result(name, true, [head.ciRun.id], "no privileged path touched");
+    return result(name, true, ids, "no privileged path touched");
   }
   const approved = (await ctx.store.listDecisionsForNode(ctx.node.id)).some((d) => {
     const scope = d.scope;
@@ -237,23 +252,18 @@ export async function privilegedPathsApproved(ctx: GuardContext): Promise<GuardC
       scope !== null &&
       !Array.isArray(scope) &&
       scope.kind === "privileged_path" &&
-      scope.commitSha === head.sha
+      scope.commitSha === sha
     );
   });
   if (!approved) {
     return result(
       name,
       false,
-      [head.ciRun.id],
-      `privileged paths need Didi's approval for head ${head.sha}: ${touched.join(", ")}`,
+      ids,
+      `privileged paths need Didi's approval for head ${sha}: ${touched.join(", ")}`,
     );
   }
-  return result(
-    name,
-    true,
-    [head.ciRun.id],
-    `Didi approved privileged paths on head ${head.sha}`,
-  );
+  return result(name, true, ids, `Didi approved privileged paths on head ${sha}`);
 }
 
 /**
@@ -320,4 +330,56 @@ export async function notThirdFailedRound(ctx: GuardContext): Promise<GuardCheck
     );
   }
   return result("not_third_failed_round", true, [], `failed round ${round} of ${cap}`);
+}
+
+/**
+ * GitHub reports no merge conflict for the PR's current head: the newest `merge_check` on the head
+ * commit says `mergeable: true`. It fails closed: no check on the head, a check for another commit
+ * (stale), `false` (a conflict) and `null` (GitHub has not worked it out yet) all fail. The runner
+ * records the check itself right before it merges (src/core/merge.ts, D-218).
+ */
+export async function noMergeConflictOnHead(ctx: GuardContext): Promise<GuardCheck> {
+  const name = "no_merge_conflict_on_head";
+  const head = await headCommit(ctx);
+  if (!head) return result(name, false, [], NO_HEAD);
+  const check = latest(await onCommit(ctx, "merge_check", head.sha));
+  if (!check) return result(name, false, [], `no merge check on head ${head.sha}`);
+  const payload = readMergeCheck(check.payload);
+  if (!payload) return result(name, false, [check.id], "malformed merge_check payload");
+  if (payload.mergeable === null) {
+    return result(
+      name,
+      false,
+      [check.id],
+      `GitHub has not worked out whether head ${head.sha} merges cleanly`,
+    );
+  }
+  if (!payload.mergeable) {
+    return result(name, false, [check.id], `head ${head.sha} has a merge conflict`);
+  }
+  return result(name, true, [check.id], `no merge conflict on head ${head.sha}`);
+}
+
+/**
+ * The item is not past the QA round cap: `qa_round` (failed QA rounds) is below `qa_round_cap`.
+ * The merge counts no round, so unlike `not_third_failed_round` nothing is added: an item whose
+ * second round failed may still merge on a pass, and one at the cap belongs to the Council
+ * (`escalation_trigger_met`), whose resolution resets the counter (P-03).
+ */
+export async function qaRoundsBelowCap(ctx: GuardContext): Promise<GuardCheck> {
+  const name = "qa_rounds_below_cap";
+  const cap = (await ctx.store.getSetting("qa_round_cap"))?.value;
+  if (typeof cap !== "number") {
+    return result(name, false, [], "qa_round_cap setting is not a number");
+  }
+  const rounds = await ctx.store.getCounter(ctx.node.id, "qa_round");
+  if (rounds >= cap) {
+    return result(
+      name,
+      false,
+      [],
+      `${rounds} failed QA rounds reach the cap of ${cap}`,
+    );
+  }
+  return result(name, true, [], `${rounds} failed QA rounds, below the cap of ${cap}`);
 }

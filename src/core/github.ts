@@ -40,3 +40,45 @@ export interface GitHubReader {
   listCheckRuns(repo: string, sha: string): Promise<CheckRun[]>;
   listOpenPullRequests(repo: string): Promise<PullRequest[]>;
 }
+
+/**
+ * Whether GitHub can merge a PR's head into its base without a conflict, as GitHub reports it
+ * now. `mergeable` is null while GitHub is still working it out (GitHub computes it in the
+ * background after a push to either branch). `headSha` is the head the answer is for.
+ */
+export interface Mergeability {
+  headSha: string;
+  mergeable: boolean | null;
+}
+
+/** Why GitHub refused a squash merge. Nothing was merged. */
+export type MergeRefusal =
+  /** The PR's head is no longer the commit the runner checked (GitHub's 409). */
+  | "head_changed"
+  /** GitHub cannot merge it now: a conflict, or a branch rule (GitHub's 405). */
+  | "not_mergeable"
+  /** The PR is closed or already merged. */
+  | "not_open";
+
+export type SquashMergeResult =
+  { merged: true; mergeCommitSha: string } | { merged: false; reason: MergeRefusal };
+
+/**
+ * The runner's merge calls (build plan M3.3, D-102, D-127: the runner may read CI and merge PRs).
+ * The adapter in src/adapters/github/ implements them, with a fake beside it for tests.
+ */
+export interface GitHubMerger {
+  getMergeability(repo: string, number: number): Promise<Mergeability | null>;
+  /**
+   * Squash-merges the PR only if its head is still `expectedHeadSha` (GitHub's merge API takes
+   * the head as `sha`), so a commit pushed after the runner's check is never merged.
+   */
+  squashMerge(
+    repo: string,
+    number: number,
+    expectedHeadSha: string,
+  ): Promise<SquashMergeResult>;
+}
+
+/** Everything the runner reads from and does on GitHub. */
+export type GitHub = GitHubReader & GitHubMerger;

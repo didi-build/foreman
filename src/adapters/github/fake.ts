@@ -1,6 +1,8 @@
-// A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs and changed
-// files held in memory, plus builders for webhook payloads in GitHub's shape (only the fields
-// ingestion reads). Signatures use the real HMAC check, so tests sign deliveries for real.
+// A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs, changed
+// files and mergeability held in memory, a squash merge that behaves like GitHub's (it refuses a
+// head that moved, a PR GitHub cannot merge and a PR that is not open), plus builders for webhook
+// payloads in GitHub's shape (only the fields ingestion reads). Signatures use the real HMAC
+// check, so tests sign deliveries for real.
 import type { CheckRun, PullRequest } from "../../core/github.ts";
 import type { GitHubAdapter } from "./adapter.ts";
 import { signWebhook, verifyWebhookSignature } from "./signature.ts";
@@ -13,6 +15,10 @@ export interface FakeGitHub extends GitHubAdapter {
   merge(repo: string, number: number, mergeCommitSha: string): void;
   setCheckRuns(repo: string, sha: string, runs: CheckRun[]): void;
   setChangedPaths(repo: string, number: number, paths: string[]): void;
+  /** What GitHub reports as the PR's mergeable state. A PR starts as `true` (no conflict). */
+  setMergeable(repo: string, number: number, mergeable: boolean | null): void;
+  /** Squash merges the fake performed, in order. A refused merge is not listed. */
+  readonly merges: readonly { repo: string; number: number; headSha: string }[];
   /** Signs a body with the fake's webhook secret, as GitHub would. */
   sign(body: string): string;
   /** How many read calls were made, for tests that expect none. */
@@ -25,6 +31,8 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const pulls = new Map<string, PullRequest>();
   const checks = new Map<string, CheckRun[]>();
   const paths = new Map<string, string[]>();
+  const mergeable = new Map<string, boolean | null>();
+  const merges: { repo: string; number: number; headSha: string }[] = [];
   let reads = 0;
 
   const pull = (repo: string, number: number): PullRequest => {
@@ -39,6 +47,9 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     sign: (body) => signWebhook(options.webhookSecret, body),
     get reads() {
       return reads;
+    },
+    get merges() {
+      return merges.map((m) => ({ ...m }));
     },
 
     async getPullRequest(repo, number) {
@@ -61,6 +72,33 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
         .map((pr) => structuredClone(pr));
     },
 
+    async getMergeability(repo, number) {
+      reads++;
+      const pr = pulls.get(prKey(repo, number));
+      if (!pr) return null;
+      const key = prKey(repo, number);
+      return {
+        headSha: pr.headSha,
+        mergeable: mergeable.has(key) ? (mergeable.get(key) ?? null) : true,
+      };
+    },
+    async squashMerge(repo, number, expectedHeadSha) {
+      const pr = pull(repo, number);
+      const key = prKey(repo, number);
+      if (pr.state !== "open" || pr.merged)
+        return { merged: false, reason: "not_open" };
+      if (pr.headSha !== expectedHeadSha)
+        return { merged: false, reason: "head_changed" };
+      if (mergeable.has(key) && mergeable.get(key) === false) {
+        return { merged: false, reason: "not_mergeable" };
+      }
+      merges.push({ repo, number, headSha: expectedHeadSha });
+      // A merge commit sha of the fake's own: 40 hex digits, one per merge.
+      const mergeCommitSha = merges.length.toString(16).padStart(40, "d");
+      Object.assign(pr, { state: "closed", merged: true, mergeCommitSha });
+      return { merged: true, mergeCommitSha };
+    },
+
     putPullRequest(pr) {
       pulls.set(prKey(pr.repo, pr.number), structuredClone(pr));
     },
@@ -79,6 +117,9 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     setChangedPaths(repo, number, list) {
       paths.set(prKey(repo, number), [...list]);
+    },
+    setMergeable(repo, number, value) {
+      mergeable.set(prKey(repo, number), value);
     },
   };
 }

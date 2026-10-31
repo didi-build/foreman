@@ -17,7 +17,7 @@ import {
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
-import type { GitHubReader } from "../../src/core/github.ts";
+import type { GitHub } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { BotProfile, ReconcileDeps } from "../../src/core/reconcile.ts";
 import { REHEARSAL_RUN_LIMITS, type RunCapacityLimits } from "../../src/core/runs.ts";
@@ -85,8 +85,11 @@ const AGENT_ROLES: readonly AgentRole[] = [
   "triage",
 ];
 
-/** The runner's GitHub reader. The runner App is registered at M3 (D-178); until then it refuses. */
-function unregisteredGitHub(): GitHubReader {
+/**
+ * The runner's GitHub reads and merge calls. The runner App is registered at M3 (D-178); until
+ * then every call refuses, so nothing is merged.
+ */
+function unregisteredGitHub(): GitHub {
   const refuse = async (): Promise<never> => {
     throw new GitHubNotConfiguredError();
   };
@@ -95,6 +98,8 @@ function unregisteredGitHub(): GitHubReader {
     listChangedPaths: refuse,
     listCheckRuns: refuse,
     listOpenPullRequests: refuse,
+    getMergeability: refuse,
+    squashMerge: refuse,
   };
 }
 

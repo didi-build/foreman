@@ -212,6 +212,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - How: the guard from the contract: CI green on the head commit, no conflicts, not past the round cap, privileged paths approved, production environment protected where the deploy runs on push to main. Squash merge. Every merging transition carries this guard set, on the design track too (D-218).
 - Constraints: a privileged-path PR is never merged without a recorded approval.
 - Success: tests for each failure of the guard. A privileged-path PR creates a gate request and waits.
+- Built: `src/core/merge.ts` with the guards `no_merge_conflict_on_head` and `qa_rounds_below_cap` (migration 0010 adds the `merge_check` evidence kind). A QA pass report and the reconcile flow's merge pass in live mode both merge through it. See O-30 to O-33 and `docs/guards.md`.
 
 ### M3.4 Staging verification
 

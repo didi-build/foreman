@@ -239,22 +239,27 @@ describe("QA's verdict report (in_qa_review)", () => {
     expect(await t.state(t.node.id)).toBe("in_qa_review");
   });
 
-  it("does not ask for the merge move on a pass: the merge is built with M3.3", async () => {
+  it("asks for the merge move first on a pass, which the merge guard decides (M3.3)", async () => {
     const t = await inReview("pass", 0);
     expect(t.reports.reportMoves(t.node, "qa").map((m) => m.to)).toEqual([
+      "verifying_on_staging",
       "in_development",
     ]);
+    // No dispatch record names the PR's repository here, so the merge stops before GitHub, the
+    // fail move's guards refuse a pass, and nothing is merged or written. The merge itself is in
+    // test/merge.test.ts.
     expect(await t.reports.requestReportedMove(t.qa.id)).toMatchObject({
       outcome: "rejected",
       toState: "in_development",
     });
+    expect(t.github.merges).toEqual([]);
     expect(await t.state(t.node.id)).toBe("in_qa_review");
     expect(await t.transitions(t.node.id)).toEqual([]);
   });
 });
 
 describe("which moves a report triggers (from the contracts)", () => {
-  it("takes the Designer's report moves and leaves out dispatch, merge, fallback and escalation moves", async () => {
+  it("takes the Designer's report moves and QA's merge, and leaves out dispatch, fallback and escalation moves", async () => {
     const t = await setup();
     const moves = async (state: string, role: string, track: "code" | "design") =>
       t.reports
@@ -270,6 +275,7 @@ describe("which moves a report triggers (from the contracts)", () => {
       "building_components>in_qa_review",
     ]);
     expect(await moves("in_qa_review", "qa", "design")).toEqual([
+      "in_qa_review>verifying_on_staging",
       "in_qa_review>building_components",
     ]);
     // The dispatch move is the runner's, not a report's.

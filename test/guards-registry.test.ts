@@ -16,8 +16,8 @@ function adrGuardNames(): string[] {
 }
 
 describe("guard registry (unit: registry against ADR 0105 and the contract files)", () => {
-  it("reads 24 names from the ADR table, so the comparison below is not empty", () => {
-    expect(adrGuardNames()).toHaveLength(24);
+  it("reads 26 names from the ADR table (24 from M2.2, two from M3.3), so the comparison below is not empty", () => {
+    expect(adrGuardNames()).toHaveLength(26);
   });
 
   it("holds exactly the ADR's guards", () => {

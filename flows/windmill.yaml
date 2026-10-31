@@ -20,7 +20,9 @@ flows:
     entry: flows/reconcile.ts
     trigger: schedule
     # Every `reconcile_interval_minutes` (setting, 120 until Kubernetes, D-164). Windmill reads
-    # the schedule from here, not from the setting; changing one means changing both.
+    # the schedule from here, not from the setting; changing one means changing both. With
+    # `dry_run` off it runs the merge pass (M3.3, O-31), which merges through the runner App's
+    # GitHub credential (D-127) once that App exists (D-178).
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
@@ -38,7 +40,8 @@ flows:
     entry: flows/record-run-end.ts
     # Called with a run id. The handle the dispatch kept on the run (runs.handle, migration 0006)
     # is read from the store. Once the end is recorded it asks for the move the run's report
-    # triggers, and the guards decide (O-23). Who calls it in live mode is open, as for dispatch.
+    # triggers, and the guards decide (O-23); a QA pass goes through the merge (O-31). Who calls
+    # it in live mode is open, as for dispatch.
     trigger: called
 
   - name: cancel_runs

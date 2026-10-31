@@ -1,6 +1,6 @@
 # Guards
 
-The 24 guards from ADR 0105's guard list, as built in M2.2. Code: `src/core/guards/`, one pure function per guard, registered in `src/core/guards/index.ts` as `GUARDS`. Tests: next to each file, plus `test/guards-registry.test.ts` (the registry against the ADR) and `test/guards-walkthrough.test.ts` (a code item to Done with the real guards).
+The guards from ADR 0105's guard list: 24 built in M2.2, and `no_merge_conflict_on_head` and `qa_rounds_below_cap` added for the merge guard in M3.3 (D-218). Code: `src/core/guards/`, one pure function per guard, registered in `src/core/guards/index.ts` as `GUARDS`. Tests: next to each file, plus `test/guards-registry.test.ts` (the registry against the ADR) and `test/guards-walkthrough.test.ts` (a code item to Done with the real guards).
 
 ## Rules every guard follows
 
@@ -15,9 +15,17 @@ A guard that reads "on the current head commit" takes the head from the most rec
 
 GitHub ingestion (`src/core/github-ingest.ts`, ADR 0113) keeps this true. It records a `ci_run` only when the commit is the PR's head as GitHub reports it at that moment, so a late event about an older commit records nothing. It skips a `pending` row when the commit already has a `ci_run`, so a late or repeated `pending` never hides a finished result. A check rerun that changes the result on the head records a new row, which becomes the newest.
 
-Head-scoped guards: `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `spec_components_exist`.
+Head-scoped guards: `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `no_merge_conflict_on_head`, `spec_components_exist`.
 
 A `docs_note` written by an agent through the state API carries no commit. It counts for the head when it names the head commit, or when it has no commit and was recorded at or after the head's `ci_run`.
+
+## The merge guard (M3.3, D-218)
+
+Every move on which the runner merges a PR (In QA review to Verifying on staging, on every track) carries the same checks: `qa_verdict_independent_on_head`, `docs_updated_or_none`, `ci_green_on_head`, `no_merge_conflict_on_head`, `qa_rounds_below_cap`, `privileged_paths_approved` and `prod_env_protected` (on the design track too, D-224). `test/contracts-consistency.test.ts` holds both files to this set.
+
+`no_merge_conflict_on_head` reads the newest `merge_check` on the head commit. The runner records it itself, right before it merges (`src/core/merge.ts`): it reads the PR's `mergeable` from GitHub for the head GitHub reports, and records nothing when that head is not the node's head. The guard passes only on `true`. `false` (a conflict), `null` (GitHub has not worked it out yet) and a check for any other commit fail. A base branch that moves after the check is caught by GitHub, which refuses a merge it cannot make, and by the fresh check on the next attempt.
+
+`qa_rounds_below_cap` passes while `qa_round < qa_round_cap`. The merge counts no round, so nothing is added to the count, unlike `not_third_failed_round` on the fail move, which runs before its own round is counted.
 
 ## The merge commit
 
@@ -25,17 +33,20 @@ A `docs_note` written by an agent through the state API carries no commit. It co
 
 ## Evidence payloads
 
-| Kind                                                  | Payload                                                                                                                               |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `ci_run`                                              | `{conclusion: "success" \| "failure" \| "pending", pr: positive integer, changedPaths?: string[]}`                                    |
-| `preview_check`, `staging_check`, `visual_comparison` | `{pass: boolean}`                                                                                                                     |
-| `merge_commit`                                        | `{pr: positive integer}`                                                                                                              |
-| `dispatch_record`                                     | `{repo: "owner/name", branch: string}`: where the node's PR must come from (written by the runner at dispatch, M3.2; ADR 0113)        |
-| `docs_note`                                           | `{impact: "updated" \| "none", note?: string}`                                                                                        |
-| `qa_verdict`                                          | `{verdict: "pass" \| "fail", findings: [{path, startLine, endLine, note}], evidenceIds: string[]}` (as `src/api/routes.ts` stores it) |
-| `spec_paths`                                          | `{paths: non-empty string[], components: string[], commits: non-empty [{sha, author}], newFeatures: string[], newFlows: string[]}`    |
-| `test_report`                                         | `{suite: string, pass: boolean, galleryComponents?: string[]}`                                                                        |
-| `agent_report`                                        | `{summary?: string, escalate?: boolean, reason?: string}`                                                                             |
+| Kind                                                  | Payload                                                                                                                                      |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci_run`                                              | `{conclusion: "success" \| "failure" \| "pending", pr: positive integer, changedPaths?: string[]}`                                           |
+| `preview_check`, `staging_check`, `visual_comparison` | `{pass: boolean}`                                                                                                                            |
+| `merge_check`                                         | `{pr: positive integer, mergeable: true \| false \| null}`: GitHub's mergeable state for `commitSha`, the head (written by the runner, M3.3) |
+| `merge_commit`                                        | `{pr: positive integer}`                                                                                                                     |
+| `dispatch_record`                                     | `{repo: "owner/name", branch: string}`: where the node's PR must come from (written by the runner at dispatch, M3.2; ADR 0113)               |
+| `docs_note`                                           | `{impact: "updated" \| "none", note?: string}`                                                                                               |
+| `qa_verdict`                                          | `{verdict: "pass" \| "fail", findings: [{path, startLine, endLine, note}], evidenceIds: string[]}` (as `src/api/routes.ts` stores it)        |
+| `spec_paths`                                          | `{paths: non-empty string[], components: string[], commits: non-empty [{sha, author}], newFeatures: string[], newFlows: string[]}`           |
+| `test_report`                                         | `{suite: string, pass: boolean, galleryComponents?: string[]}`                                                                               |
+| `agent_report`                                        | `{summary?: string, escalate?: boolean, reason?: string}`                                                                                    |
+
+The runner's merge writes `merge_commit` under the same ingest key as GitHub ingestion, with `recordedBy` `runner`, so the merge is recorded once whichever writes first. `merge_check` rows have `recordedBy` `runner` and a `ref` of `github:merge_check:<repo>#<pr>:<sha>`; there is one per attempt and the newest counts.
 
 `ci_run` and `merge_commit` rows written by GitHub ingestion have `recordedBy` `github`, no run, and a `ref` equal to their ingest key (`github:ci_run:<repo>#<pr>:<sha>:pending`; a final result adds its CI attempt, `github:ci_run:<repo>#<pr>:<sha>:<conclusion>:check-run-<id>` with the highest counted check run id, so every rerun is a new row; `github:merge_commit:<repo>#<pr>`). Ingestion always fills `changedPaths`.
 
@@ -44,7 +55,7 @@ A `docs_note` written by an agent through the state API carries no commit. It co
 - Visual approval topic: `visual-approval:<nodeId>`. Escalation topic: `escalation:<nodeId>`.
 - A node's decisions are the ones recorded on it plus the ones linked through `node_decisions`. Only `active` decisions count.
 - `plan_attached`: an active `product_direction`, and an active `council_decision` with `scope.kind` `plan_accepted`.
-- `privileged_paths_approved`: an active `approval` by `didi` with `scope {kind: "privileged_path", commitSha: <head>}`. A new commit needs a fresh approval.
+- `privileged_paths_approved`: an active `approval` by `didi` with `scope {kind: "privileged_path", commitSha: <head>}`. A new commit needs a fresh approval. The merge opens a `privileged_path` gate request owned by `didi` on the topic `privileged-path:<nodeId>`, with payload `{commitSha, repo, pr, paths}`, and the approval page's answer copies `kind` and `commitSha` from it into the decision's scope (`src/core/approvals.ts`). A request for a newer head supersedes the older one.
 - `approval_recorded`: the latest active decision on the visual topic is an `approval` by `didi` with non-empty verbatim text.
 - `changes_requested_recorded`: an active `answer` by `didi` on the visual topic with `scope.outcome` `changes_requested` or `rejected`.
 - `scope_matches_plan`: passes when the latest `spec_paths` declares nothing beyond the plan, or when an active `council_decision` with `scope.kind` `scope_approved` was recorded after that spec.
@@ -74,6 +85,8 @@ A `docs_note` written by an agent through the state API carries no commit. It co
 | `prod_env_protected`             | `project.prodRequiresApproval` is true                                                                                                                                                                                              |
 | `qa_failed_with_findings`        | the latest `qa_verdict` on the head is `fail` with at least one finding                                                                                                                                                             |
 | `not_third_failed_round`         | `qa_round + 1 < qa_round_cap`                                                                                                                                                                                                       |
+| `no_merge_conflict_on_head`      | the newest `merge_check` on the head says `mergeable: true`                                                                                                                                                                         |
+| `qa_rounds_below_cap`            | `qa_round < qa_round_cap`                                                                                                                                                                                                           |
 | `staging_check_on_merge_commit`  | the `staging_check` on the latest merge commit passed                                                                                                                                                                               |
 | `staging_check_failed`           | the `staging_check` on the latest merge commit failed                                                                                                                                                                               |
 | `options_attached`               | screenshot evidence on the node and an open `visual_approval` gate on the visual topic                                                                                                                                              |

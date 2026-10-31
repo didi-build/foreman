@@ -57,7 +57,13 @@ export function machine2(): Contracts {
 export type ReconcileFixture = Awaited<ReturnType<typeof createReconcileFixture>>;
 
 export async function createReconcileFixture(
-  options: { store?: Store; idPrefix?: string; slug?: string } = {},
+  options: {
+    store?: Store;
+    idPrefix?: string;
+    slug?: string;
+    /** The project check's answer for `prod_env_protected` (false unless given). */
+    prodRequiresApproval?: boolean;
+  } = {},
 ) {
   const store = options.store ?? createMemoryStore();
   const prefix = options.idPrefix ?? "50000000-0000-4000-8000";
@@ -93,7 +99,7 @@ export async function createReconcileFixture(
     linearProjectId: null,
     galleryPathOverride: null,
     privilegedPathsExtra: [],
-    prodRequiresApproval: false,
+    prodRequiresApproval: options.prodRequiresApproval ?? false,
     stagingUrl: null,
     createdAt: clock.now(),
   });

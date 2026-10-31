@@ -276,6 +276,26 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("allows merge_check evidence only with its commit (migration 0010)", () => {
+      const check = (sha: string) =>
+        sql(
+          `insert into factory.evidence (id, node_id, kind, ref, commit_sha, payload, recorded_by, recorded_at)
+         values (gen_random_uuid(), '${ID.node}', 'merge_check', 'm', ${sha}, '{"pr": 7, "mergeable": true}', 'runner', ${AT});`,
+          "factory_runner",
+        );
+      expectRejected(check("null"), /evidence_merge_check_commit/);
+      const ok = check(`'${SHA}'`);
+      expect(ok.ok, ok.err).toBe(true);
+      expectRejected(
+        sql(
+          `insert into factory.evidence (id, node_id, kind, ref, commit_sha, recorded_by, recorded_at)
+         values (gen_random_uuid(), '${ID.node}', 'merge_check', 'm', '${SHA}', 'developer', ${AT});`,
+          "factory_api",
+        ),
+        /row-level security/,
+      );
+    });
+
     it("allows one QA verdict per run, and only with a run", () => {
       const verdict = (id: string) =>
         `insert into factory.evidence (id, node_id, run_id, kind, ref, commit_sha, recorded_by, recorded_at)

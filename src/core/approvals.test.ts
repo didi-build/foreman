@@ -63,6 +63,57 @@ describe("an approval page answer (unit, D-200)", () => {
     ).toBe("");
   });
 
+  describe("a privileged-path request (M3.3)", () => {
+    const HEAD = "b".repeat(40);
+    const privileged = (payload: GateRequest["payload"]): GateRequest => ({
+      ...GATE,
+      topicKey: `privileged-path:${GATE.nodeId}`,
+      kind: "privileged_path",
+      payload,
+    });
+
+    it("records an approval with the scope privileged_paths_approved reads: the kind and the request's head", () => {
+      const decision = approvalDecision(
+        privileged({ commitSha: HEAD, pr: 7, paths: ["db/migrations/0010_x.sql"] }),
+        { choice: "approve", words: "ok to merge", approvers: ["anonymous"] },
+      );
+      expect(decision).toMatchObject({
+        kind: "approval",
+        byActor: "didi",
+        nodeId: GATE.nodeId,
+        scope: {
+          kind: "privileged_path",
+          commitSha: HEAD,
+          gateKind: "privileged_path",
+          outcome: "approved",
+        },
+      });
+    });
+
+    it("leaves out a commit that is not a full sha, so the approval matches no head", () => {
+      const scope = approvalDecision(privileged({ commitSha: "main" }), {
+        choice: "approve",
+        words: "ok",
+        approvers: [],
+      }).scope as Record<string, unknown>;
+      expect(scope.kind).toBe("privileged_path");
+      expect(scope).not.toHaveProperty("commitSha");
+    });
+
+    it("records a reject as an answer, which the guard never counts", () => {
+      expect(
+        approvalDecision(privileged({ commitSha: HEAD }), {
+          choice: "reject",
+          words: "no",
+          approvers: [],
+        }),
+      ).toMatchObject({
+        kind: "answer",
+        scope: { outcome: "rejected", commitSha: HEAD },
+      });
+    });
+  });
+
   it("names the three labels the page shows", () => {
     expect(Object.keys(APPROVAL_CHOICE_LABELS)).toEqual([
       "Approve",
