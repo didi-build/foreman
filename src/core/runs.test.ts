@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { LibraryError } from "./library.ts";
 import { createMemoryStore } from "./memory-store.ts";
 import { routeInputHash } from "./routing.ts";
+import { hashRunToken, RUN_TOKEN_MARGIN_MINUTES } from "./run-tokens.ts";
 import {
   FIRST_APPROVED_PROVIDERS,
   FIRST_MODEL_CATALOG,
@@ -36,6 +37,10 @@ const OTHER_PROJECT = "30000000-0000-4000-8000-000000000002";
 const HEAD = "b".repeat(40);
 const NEWER = "c".repeat(40);
 const START = Date.UTC(2026, 9, 30, 9, 0, 0);
+
+let tokenCount = 0;
+/** A fresh token hash for each dispatch. The token itself is generated here and never kept. */
+const credential = () => ({ tokenHash: hashRunToken(`test-token-${++tokenCount}`) });
 
 /**
  * A memory store that also keeps every decision-point record a committed transaction wrote. The
@@ -144,7 +149,7 @@ async function setup(clusterLimit: number | null = 10) {
 
   /** Dispatches and returns the new run's id, failing the test if it was refused. */
   async function started(req: DispatchRequest): Promise<string> {
-    const result = await runs.dispatch(req);
+    const result = await runs.dispatch(req, credential());
     if (!result.admitted) throw new Error(`refused: ${result.reason}`);
     return result.run.id;
   }
@@ -184,7 +189,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
   it("admits a dispatch and records the role's rehearsal limits in the run's budget (D-185)", async () => {
     const t = await setup();
     const nodeId = await t.item();
-    const result = await t.runs.dispatch(t.request(nodeId));
+    const result = await t.runs.dispatch(t.request(nodeId), credential());
     expect(result.admitted).toBe(true);
     if (!result.admitted) return;
     const saved = await t.store.getRun(result.run.id);
@@ -223,7 +228,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
       limits,
       taskTypes: TEST_TASK_TYPES,
     });
-    const result = await runs.dispatch(t.request(nodeId));
+    const result = await runs.dispatch(t.request(nodeId), credential());
     expect(result.admitted && result.run.budget).toEqual({
       maxTurns: 7,
       maxMinutes: 8,
@@ -235,19 +240,21 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     const t = await setup();
     const nodeId = await t.item();
     const first = await t.started(t.request(nodeId));
-    expect(await t.runs.dispatch(t.request(nodeId, "designer"))).toEqual({
+    expect(await t.runs.dispatch(t.request(nodeId, "designer"), credential())).toEqual({
       admitted: false,
       reason: "item_has_active_run",
     });
     expect(await t.runs.recordEnd(first, t.report())).toBe(true);
-    expect((await t.runs.dispatch(t.request(nodeId))).admitted).toBe(true);
+    expect((await t.runs.dispatch(t.request(nodeId), credential())).admitted).toBe(
+      true,
+    );
   });
 
   it("allows at most 3 active Developer runs per project", async () => {
     const t = await setup();
     for (let i = 0; i < 3; i++) await t.started(t.request(await t.item()));
     const before = (await t.store.listActiveRuns()).length;
-    expect(await t.runs.dispatch(t.request(await t.item()))).toEqual({
+    expect(await t.runs.dispatch(t.request(await t.item()), credential())).toEqual({
       admitted: false,
       reason: "developer_limit",
     });
@@ -261,7 +268,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     const t = await setup();
     const nodeId = await t.item();
     await t.started(t.request(nodeId, "qa"));
-    expect(await t.runs.dispatch(t.request(nodeId, "qa"))).toEqual({
+    expect(await t.runs.dispatch(t.request(nodeId, "qa"), credential())).toEqual({
       admitted: false,
       reason: "qa_duplicate",
     });
@@ -272,7 +279,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     const nodeId = await t.item();
     const older = await t.started(t.request(nodeId, "qa"));
     const newer = t.request(nodeId, "qa", { headSha: NEWER });
-    expect(await t.runs.dispatch(newer)).toEqual({
+    expect(await t.runs.dispatch(newer, credential())).toEqual({
       admitted: false,
       reason: "qa_newer_head",
       cancelRunIds: [older],
@@ -281,7 +288,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     expect((await t.store.getRun(older))?.endedAt).toBeNull();
     expect(await t.store.listRuns({ nodeId })).toHaveLength(1);
     await t.runs.recordEnd(older, t.report({ outcome: "cancelled" }));
-    const result = await t.runs.dispatch(newer);
+    const result = await t.runs.dispatch(newer, credential());
     expect(result.admitted && result.run.headSha).toBe(NEWER);
   });
 
@@ -295,10 +302,10 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     const t = await setup();
     const nodeId = await t.item();
     await expect(
-      t.runs.dispatch(t.request(nodeId, "qa", { prNumber: null })),
+      t.runs.dispatch(t.request(nodeId, "qa", { prNumber: null }), credential()),
     ).rejects.toThrow(LibraryError);
     await expect(
-      t.runs.dispatch(t.request(nodeId, "qa", { headSha: null })),
+      t.runs.dispatch(t.request(nodeId, "qa", { headSha: null }), credential()),
     ).rejects.toThrow(LibraryError);
   });
 
@@ -306,7 +313,9 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     const t = await setup(2);
     await t.started(t.request(await t.item()));
     await t.started(t.request(await t.item(OTHER_PROJECT), "triage"));
-    expect(await t.runs.dispatch(t.request(await t.item(), "council"))).toEqual({
+    expect(
+      await t.runs.dispatch(t.request(await t.item(), "council"), credential()),
+    ).toEqual({
       admitted: false,
       reason: "cluster_full",
     });
@@ -314,7 +323,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
 
   it("refuses every dispatch while the cluster limit is not set", async () => {
     const t = await setup(null);
-    expect(await t.runs.dispatch(t.request(await t.item()))).toEqual({
+    expect(await t.runs.dispatch(t.request(await t.item()), credential())).toEqual({
       admitted: false,
       reason: "cluster_limit_unset",
     });
@@ -323,10 +332,70 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
   it("refuses every dispatch while the kill switch is on", async () => {
     const t = await setup();
     await t.setting("kill_switch", true);
-    expect(await t.runs.dispatch(t.request(await t.item()))).toEqual({
+    expect(await t.runs.dispatch(t.request(await t.item()), credential())).toEqual({
       admitted: false,
       reason: "kill_switch",
     });
+  });
+});
+
+describe("the run's state API token (ADR 0102, ADR 0106 section 5)", () => {
+  it("stores only the token's hash, linked to the run, its role and project, with its expiry", async () => {
+    const t = await setup();
+    const token = `generated-${"x".repeat(40)}`;
+    const result = await t.runs.dispatch(t.request(await t.item(), "qa"), {
+      tokenHash: hashRunToken(token),
+    });
+    if (!result.admitted) throw new Error(result.reason);
+    const stored = await t.store.getRunToken(hashRunToken(token));
+    // The QA limit is 20 minutes; the token lives 20 minutes plus the margin.
+    expect(stored).toEqual({
+      tokenHash: hashRunToken(token),
+      runId: result.run.id,
+      role: "qa",
+      projectId: PROJECT,
+      expiresAt: new Date(START + (20 + RUN_TOKEN_MARGIN_MINUTES) * 60_000),
+      revokedAt: null,
+    });
+    expect(JSON.stringify(stored)).not.toContain(token);
+  });
+
+  it("refuses a value that is not a SHA-256 hash, before anything is written", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    await expect(
+      t.runs.dispatch(t.request(nodeId), { tokenHash: "not-a-hash" }),
+    ).rejects.toThrow(new LibraryError("tokenHash must be a hex SHA-256"));
+    expect(await t.store.listRuns({ nodeId })).toEqual([]);
+  });
+
+  it("stores no token for a refused dispatch", async () => {
+    const t = await setup();
+    await t.setting("kill_switch", true);
+    const tokenHash = hashRunToken("refused-token-value-that-is-long-enough");
+    expect(
+      (await t.runs.dispatch(t.request(await t.item()), { tokenHash })).admitted,
+    ).toBe(false);
+    expect(await t.store.getRunToken(tokenHash)).toBeNull();
+  });
+
+  it("revokes the token when the run ends, and only once", async () => {
+    const t = await setup();
+    const { tokenHash } = credential();
+    const result = await t.runs.dispatch(t.request(await t.item()), { tokenHash });
+    if (!result.admitted) throw new Error(result.reason);
+    t.advanceMinutes(5);
+    expect(await t.runs.recordRunnerEnd(result.run.id, "cancelled")).toBe(true);
+    const revokedAt = (await t.store.getRunToken(tokenHash))?.revokedAt;
+    expect(revokedAt).toEqual(new Date(START + 5 * 60_000));
+    expect(await t.store.getRun(result.run.id)).toMatchObject({
+      outcome: "cancelled",
+      turns: null,
+      costUsd: null,
+    });
+    t.advanceMinutes(5);
+    expect(await t.runs.recordEnd(result.run.id, t.report())).toBe(false);
+    expect((await t.store.getRunToken(tokenHash))?.revokedAt).toEqual(revokedAt);
   });
 });
 
@@ -458,7 +527,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
       deepinfra: { decision: "D-208", covers: "self_hosted" },
     });
     const nodeId = await t.item();
-    const result = await t.runs.dispatch(t.request(nodeId));
+    const result = await t.runs.dispatch(t.request(nodeId), credential());
     expect(result).toMatchObject({
       admitted: false,
       reason: "no_route",
@@ -482,7 +551,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     const t = await setup();
     await t.setting("model_catalog", { version: "x", models: { m: { provider: 7 } } });
     const nodeId = await t.item();
-    const result = await t.runs.dispatch(t.request(nodeId));
+    const result = await t.runs.dispatch(t.request(nodeId), credential());
     expect(result.admitted).toBe(false);
     if (result.admitted || result.reason !== "no_route")
       throw new Error("expected no_route");
@@ -506,20 +575,20 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
       },
     };
     await t.setting("model_routing_policy", sonnetQa);
-    expect(await t.runs.dispatch(t.request(nodeId, "qa"))).toMatchObject({
+    expect(await t.runs.dispatch(t.request(nodeId, "qa"), credential())).toMatchObject({
       admitted: false,
       reason: "no_route",
       noRoute: { rejected: [{ failed: [{ rule: "qa_independence" }] }] },
     });
     await t.setting("model_routing_policy", FIRST_ROUTING_POLICY);
-    const result = await t.runs.dispatch(t.request(nodeId, "qa"));
+    const result = await t.runs.dispatch(t.request(nodeId, "qa"), credential());
     expect(result.admitted && result.run.model).toBe("claude-opus-5-5");
   });
 
   it("checks the other admission rules before the route", async () => {
     const t = await setup(null);
     await t.setting("model_routing_policy", null);
-    expect(await t.runs.dispatch(t.request(await t.item()))).toEqual({
+    expect(await t.runs.dispatch(t.request(await t.item()), credential())).toEqual({
       admitted: false,
       reason: "cluster_limit_unset",
     });
@@ -660,13 +729,15 @@ describe("usage exhausted queue (ADR 0106 section 6)", () => {
       ready: false,
     });
     t.advanceMinutes(29);
-    expect(await t.runs.dispatch(t.request(t.nodeId))).toEqual({
+    expect(await t.runs.dispatch(t.request(t.nodeId), credential())).toEqual({
       admitted: false,
       reason: "usage_exhausted_wait",
     });
     t.advanceMinutes(1);
     expect((await t.runs.queuedDispatch(t.nodeId))?.ready).toBe(true);
-    expect((await t.runs.dispatch(t.request(t.nodeId))).admitted).toBe(true);
+    expect((await t.runs.dispatch(t.request(t.nodeId), credential())).admitted).toBe(
+      true,
+    );
     expect(await t.runs.queuedDispatch(t.nodeId)).toBeNull();
   });
 

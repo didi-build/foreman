@@ -54,6 +54,19 @@ These three are proposals that need Didi's confirmation with the rest of the sch
 
 Index: (project_id, state), (state, state_since).
 
+### Work item body
+
+Decided in M3.2 (D-213); no earlier document gave `body` a shape. The dispatch reads these fields from a work item's `body` to build the run's input (`src/core/task-input.ts`). Each is optional, and other fields are kept and ignored.
+
+| Field                | Type         | Notes                                                                                  |
+| -------------------- | ------------ | -------------------------------------------------------------------------------------- |
+| `description`        | text         | What the item is about                                                                 |
+| `acceptanceCriteria` | list of text | What must be true when the item is done. An item without any still dispatches (D-213)  |
+| `pathsInScope`       | list of text | The repository paths the work should stay within                                       |
+| `checks`             | list of text | The repository checks that must pass before a push, for example `npm run check` (N-33) |
+
+A field of the wrong type refuses the dispatch before anything is written, and the error names the field, never its value. A missing field is stated as missing in the input. Who fills these fields is settled with Triage (M3.6); until then they are written when the item is created.
+
 ## edges
 
 | Column     | Type        | Notes                                                                                                     |
@@ -188,10 +201,15 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 | capacity_wait_seconds  | integer null | Time spent waiting on those retries, at least 0 (migration 0005)                                                                 |
 | first_token_ms         | integer null | Time to the first output token of the first request, where the runtime reports it (migration 0005)                               |
 | reported_cost_usd      | numeric null | The runtime's own cost figure, kept to compare with `cost_usd` (migration 0005)                                                  |
+| handle                 | jsonb null   | What the runtime's `start` returned, to poll or cancel the run. An object, never a credential (migration 0006)                   |
 
 A run is active while `ended_at` is null. Dispatch admission reads the active runs (index `runs_active`) under one advisory lock, in the transaction that inserts the run (ADR 0106 section 7, `src/core/runs.ts`).
 
 The route (`model` and the columns from `task_type` to `model_catalog_version`) is chosen by `src/core/routing.ts` when the run is admitted and written in the same transaction, with a `decision_point_records` row (decision point `model_route`, decider `model_route_rule_v1`, confidence 1). The route columns are not null with no default: migration 0005 stops if `runs` already holds a row, because a run recorded before routing has no route to fill in.
+
+The run's state API token is stored in `run_tokens` (one row per run, only the token's SHA-256 hash) in the transaction that inserts the run. It expires at the run's start plus its `maxMinutes` plus 15 minutes, and ending the run revokes it in the transaction that records the end (ADR 0102, `src/core/run-tokens.ts`).
+
+`handle` is written once, after the runtime started the run, in one transaction with the run's `dispatch_record` evidence and its dispatch move (`src/core/run-start.ts`), and only while the run has not ended. It is jsonb because a handle is a small structured value: the Kubernetes runtime's is the run id, namespace, run spec and limits, the runtime interface keeps it generic, and Postgres checks it is valid JSON. Null means the run never started, or is still starting.
 
 ## counters
 

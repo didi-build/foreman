@@ -71,6 +71,10 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       expect(await deps.executionsThisMonth()).toBe(42);
       // Two ids from the real source differ; the clock is the real clock.
       expect(deps.ids.next()).not.toBe(deps.ids.next());
+      // Run tokens are long random values in the API's token pattern, never the same twice.
+      const [one, two] = [deps.newRunToken(), deps.newRunToken()];
+      expect(one).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(one === two).toBe(false);
     } finally {
       await deps.close();
     }
@@ -84,9 +88,6 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         GitHubNotConfiguredError,
       );
       await expect(deps.tasks.taskFor({} as never)).rejects.toThrow(NotBuiltError);
-      await expect(
-        deps.approvals.answerFor({} as never, readApprovalReply({ reply: "yes" }, [])),
-      ).rejects.toThrow(/not decided/);
     } finally {
       await deps.close();
     }
@@ -129,23 +130,39 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
   });
 });
 
-describe("approval page reply (unit: flow layer, M0.4)", () => {
-  it("reads an approval, a disapproval and a reply-less resume as Windmill sends them", () => {
-    expect(readApprovalReply({ reply: " as typed " }, ["anonymous", 3])).toEqual({
-      outcome: "approved",
-      approved: true,
-      replyVerbatim: " as typed ",
+describe("approval page reply (unit: flow layer, M0.4, D-200)", () => {
+  it.each([
+    ["Approve", "approve"],
+    ["Reject", "reject"],
+    ["Changes requested", "changes_requested"],
+  ] as const)("reads %s with Didi's words exactly as typed", (label, choice) => {
+    expect(
+      readApprovalReply({ answer: label, reply: " as typed " }, ["anonymous", 3]),
+    ).toEqual({
+      answered: true,
+      choice,
+      words: " as typed ",
       approvers: ["anonymous"],
     });
-    expect(readApprovalReply({ error: { name: "disapproved" } }, null)).toEqual({
-      outcome: "disapproved",
-      approved: false,
+  });
+
+  it("reads a timeout, and a form with no known answer, as no answer, keeping any words", () => {
+    expect(readApprovalReply({ error: { name: "timeout" } }, null)).toEqual({
+      answered: false,
+      reason: "timeout",
       replyVerbatim: null,
       approvers: [],
     });
-    expect(readApprovalReply(null, [])).toMatchObject({
-      approved: true,
-      replyVerbatim: null,
+    expect(readApprovalReply({ reply: "yes" }, [])).toEqual({
+      answered: false,
+      reason: "no_choice",
+      replyVerbatim: "yes",
+      approvers: [],
     });
+    expect(readApprovalReply({ answer: "toString", reply: "x" }, [])).toMatchObject({
+      answered: false,
+      reason: "no_choice",
+    });
+    expect(readApprovalReply(null, [])).toMatchObject({ answered: false });
   });
 });

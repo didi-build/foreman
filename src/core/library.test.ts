@@ -678,3 +678,77 @@ describe("a trigger with its own id is taken once (unit, build plan M3.1)", () =
     expect(await store.listTransitions(node.id)).toHaveLength(0);
   });
 });
+
+describe("a move with writes that go with it (unit, build plan M3.2)", () => {
+  const counted = (store: Store, nodeId: string) => async () =>
+    (await store.listEvidence({ nodeId })).length;
+
+  /** Writes one evidence row in the move's transaction, then refuses if told to. */
+  const evidenceWrite =
+    (nodeId: string, refuse: string | null = null) =>
+    async (tx: Parameters<Parameters<Store["transaction"]>[0]>[0]) => {
+      await tx.insertEvidence({
+        id: "00000000-0000-4000-8000-0000000000e1",
+        nodeId,
+        runId: null,
+        kind: "dispatch_record",
+        ref: "dispatch:test",
+        commitSha: null,
+        payload: { repo: "didi-build/rehearsal", branch: "foreman/test" },
+        recordedBy: "runner",
+        recordedAt: new Date(Date.UTC(2026, 9, 31)),
+        supersedesId: null,
+      });
+      return refuse;
+    };
+
+  it("commits the move and the writes together", async () => {
+    const { store, library, item } = await setup();
+    const node = await item();
+    const result = await library.requestTransitionWith(
+      move(node.id, "ready"),
+      evidenceWrite(node.id),
+    );
+    expect(result.outcome).toBe("applied");
+    expect(await stateOf(store, node.id)).toBe("ready");
+    expect(await counted(store, node.id)()).toBe(1);
+  });
+
+  it("rolls back the move with the writes when the writes refuse", async () => {
+    const { store, library, item } = await setup();
+    const node = await item();
+    expect(
+      await library.requestTransitionWith(
+        move(node.id, "ready"),
+        evidenceWrite(node.id, "run_ended"),
+      ),
+    ).toMatchObject({ outcome: "refused", reason: "run_ended" });
+    expect(await stateOf(store, node.id)).toBe("triage");
+    expect(await store.listTransitions(node.id)).toEqual([]);
+    expect(await counted(store, node.id)()).toBe(0);
+  });
+
+  it("writes nothing when a guard fails, in dry run, or under the kill switch", async () => {
+    for (const [settings, agentReady, reason] of [
+      [{}, false, "guard_failed"],
+      [{ dry_run: true }, true, "dry_run"],
+      [{ kill_switch: true }, true, "kill_switch"],
+    ] as const) {
+      const { store, library, item } = await setup(settings);
+      const node = await item(agentReady);
+      // triage to ready has no guard; ready to in_progress needs the node agent-ready.
+      if (reason === "guard_failed")
+        await library.requestTransition(move(node.id, "ready"));
+      const to = reason === "guard_failed" ? "in_progress" : "ready";
+      const result = await library.requestTransitionWith(
+        move(node.id, to),
+        evidenceWrite(node.id),
+      );
+      expect(result.reason).toBe(reason);
+      expect(await counted(store, node.id)()).toBe(0);
+      expect(
+        (await store.listTransitions(node.id)).filter((t) => t.toState === to),
+      ).toEqual([]);
+    }
+  });
+});

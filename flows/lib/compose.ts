@@ -3,7 +3,7 @@
 // bundle's spec version, the guards, a clock and an id source, the GitHub reader and the agent
 // runtime. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
 // 2.4); tests build `FlowDeps` from fakes.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createKubernetesClient } from "../../src/adapters/agent-runtime/kubernetes/client.ts";
@@ -22,8 +22,7 @@ import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { BotProfile, ReconcileDeps } from "../../src/core/reconcile.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
-import type { AgentRole, Decision, GateRequest, Run } from "../../src/core/store.ts";
-import type { ApprovalReply } from "./approval.ts";
+import type { AgentRole, Node, Project, Run } from "../../src/core/store.ts";
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
 
 /** An agent runtime as flows see it. `cleanup` runs after a run's end is recorded (ADR 0107). */
@@ -31,22 +30,38 @@ export interface FlowRuntime extends AgentRuntime<unknown, unknown> {
   cleanup?(handle: unknown): Promise<void>;
 }
 
-/** The task and credentials a run is started with (ADR 0102, ADR 0106 section 5, ADR 0107). */
-export interface TaskSource {
-  taskFor(run: Run): Promise<unknown>;
+/**
+ * What the runner knows about a run when it builds the task to start it with: the admitted run
+ * and its route, the item, the run's input (src/core/task-input.ts), its branch and its state API
+ * token. The token is passed on to `start` and never kept or logged.
+ */
+export interface RunToStart {
+  run: Run;
+  node: Node;
+  project: Project;
+  input: string;
+  /** Developer and Designer: the branch the run pushes to. */
+  branch: string | null;
+  /** QA: the runner's evidence ids the verdict may cite (ADR 0107). */
+  evidenceIds: string[];
+  stateApiToken: string;
 }
 
-export type ApprovalAnswer = Omit<Decision, "id" | "recordedAt" | "projectId">;
-
-/** How an approval page reply becomes a decision on its gate request. */
-export interface ApprovalAnswers {
-  answerFor(gate: GateRequest, reply: ApprovalReply): Promise<ApprovalAnswer>;
+/**
+ * The task a run is started with (ADR 0102, ADR 0106 section 5, ADR 0107): the bot file's
+ * instructions and settings, the run's route as its proxy's provider list, and the credentials
+ * (the state API token from the runner, the GitHub installation token and the model credential
+ * through their adapters). For the Kubernetes runtime, `buildKubernetesTask` builds it.
+ */
+export interface TaskSource {
+  taskFor(start: RunToStart): Promise<unknown>;
 }
 
 export interface FlowDeps extends ReconcileDeps {
   runtime: FlowRuntime;
   tasks: TaskSource;
-  approvals: ApprovalAnswers;
+  /** A new opaque state API token for one run (ADR 0102). Never logged. */
+  newRunToken(): string;
   executionsThisMonth(): Promise<number>;
   /** Releases what the flow opened, such as the database pool. */
   close(): Promise<void>;
@@ -169,17 +184,12 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     tasks: {
       taskFor: async () => {
         throw new NotBuiltError(
-          "A run's task file and credentials need the bot files and per-run token issuance (ADR 0102, M3.2)",
+          "A run's task needs the bot files, the provider settings and the GitHub App's installation tokens (ADR 0107, D-178)",
         );
       },
     },
-    approvals: {
-      answerFor: async () => {
-        throw new NotBuiltError(
-          "How an approval page reply becomes a decision is not decided yet (M3.1 report)",
-        );
-      },
-    },
+    // 32 random bytes: far beyond guessing, and inside the API's token pattern (src/api/auth.ts).
+    newRunToken: () => randomBytes(32).toString("base64url"),
     executionsThisMonth: () => env.executionsThisMonth(),
     close: () => pool.end(),
   };

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
+import { APPROVAL_CHOICE_LABELS } from "../../src/core/approvals.ts";
 import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
 
@@ -21,6 +22,10 @@ interface Description {
     entry: string;
     trigger: string;
     schedule?: { every_minutes: number; cron: string };
+    suspend?: {
+      hide_cancel?: boolean;
+      resume_form: Record<string, { type: string; required: boolean; enum?: string[] }>;
+    };
   }[];
   resources: { secrets: { path: string }[]; values: { name: string }[] };
 }
@@ -60,6 +65,17 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       cron: `0 0 */${minutes / 60} * * *`,
       timezone: "UTC",
     });
+  });
+
+  it("offers the approval page's three answers, exactly the labels the core reads (D-200)", () => {
+    const approval = description.flows.find((f) => f.name === "approval");
+    expect(approval?.suspend?.hide_cancel).toBe(true);
+    expect(approval?.suspend?.resume_form.answer).toEqual({
+      type: "string",
+      required: true,
+      enum: Object.keys(APPROVAL_CHOICE_LABELS),
+    });
+    expect(approval?.suspend?.resume_form.reply).toMatchObject({ type: "string" });
   });
 
   it("lists exactly the secrets and values the composition module reads", () => {
