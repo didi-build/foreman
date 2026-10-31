@@ -1,0 +1,32 @@
+flowchart LR
+  subgraph Outside["Outside the cluster"]
+    WM["Windmill Cloud<br/>runner flows"]
+    GH["GitHub"]
+    DI["DeepInfra<br/>open models"]
+    AN["Anthropic API"]
+    MP["MagicPath MCP<br/>(Designer only)"]
+  end
+  subgraph Cluster["DigitalOcean Kubernetes: one cluster, two node pools"]
+    subgraph Platform["Platform pool"]
+      CORE["Core: dispatch,<br/>routing policy, model catalog"]
+      API["State API<br/>(internal only)"]
+      DB[("Supabase Postgres<br/>runs, evidence, settings")]
+      RX["GitHub receiver<br/>(Cloudflare Tunnel)"]
+    end
+    subgraph Agents["Agent pool: one Job per run, default deny"]
+      POD["Agent pod<br/>Claude Code: Developer, Designer<br/>Messages API: QA, Council, Triage<br/>holds no credentials"]
+      PX["Egress proxy pod, one per run<br/>adds provider credential<br/>request ceiling, service_tier<br/>host allow-list"]
+    end
+  end
+  WM -->|"dispatch"| CORE
+  CORE -->|"picks model, records run"| DB
+  CORE -->|"creates Job, proxy, policy,<br/>task file Secret"| POD
+  POD -->|"all traffic"| PX
+  PX -->|"/deepinfra"| DI
+  PX -->|"/anthropic"| AN
+  PX -->|"/magicpath"| MP
+  PX -->|"git, allowed hosts"| GH
+  PX -->|"/state-api"| API
+  API --> DB
+  GH -->|"webhooks"| RX
+  RX --> DB

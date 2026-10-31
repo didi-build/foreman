@@ -197,6 +197,8 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 ### M3.2 Dispatch adapters and runs
 
+- Routing and run records follow [ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) (accepted, D-211): every run records its task type, provider, model, family and the tier requested and served, and the model is chosen in the core from the routing policy. The dispatch step builds this.
+
 - What: adapters to start the Developer (Claude Code), QA (Claude for now, D-158; ADR 0112), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
 - How: per ADR 0106, 0107 and 0112. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), each run is a Kubernetes Job on the agents pool of a small DigitalOcean cluster. The pool is tainted so nothing else runs there; the state API and the GitHub receiver run on the cluster's platform pool (D-193). Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
@@ -207,7 +209,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 - What: the merge action and its guard.
 - Why: gates as code.
-- How: the guard from the contract: CI green on the head commit, no conflicts, not past the round cap, privileged paths approved, production environment protected where the deploy runs on push to main. Squash merge.
+- How: the guard from the contract: CI green on the head commit, no conflicts, not past the round cap, privileged paths approved, production environment protected where the deploy runs on push to main. Squash merge. Every merging transition carries this guard set, on the design track too (D-218).
 - Constraints: a privileged-path PR is never merged without a recorded approval.
 - Success: tests for each failure of the guard. A privileged-path PR creates a gate request and waits.
 
@@ -318,7 +320,6 @@ This is its own project, run through the factory starting with the Interview. It
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
 - A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.
-- A self-hosted model gateway (LiteLLM or Bifrost, chosen then; O-10) as a pod, with the agent runtime adapters pointed at it by changing the model endpoint setting in each bot file. OpenRouter is not chosen (D-142).
 - The state API, the GitHub receiver and agent runs are already on the cluster from the first release ([ADR 0106](./decisions/0106-agent-execution-environment.md), D-193). Move projects off Cloudflare one at a time.
 - First, import the existing Cloudflare resources of current projects into infrastructure as code, and add the proven `infra/` module to Launchpad (outside this repo; Launchpad is public, so no account ids or secrets), with a Kubernetes variant.
 - Revisit the managed Postgres (D-118) and whether to self-host Windmill because of token and cost burn.
@@ -327,15 +328,15 @@ This is its own project, run through the factory starting with the Interview. It
 
 The full intake agent for Machine 1 (the interview as a chat with the Council, Council planning), the viewer (read-only state machine with a live item overlay), the frontend (attention list and viewer), a role for Cursor agents, and the Recruiter flows on the runner.
 
-## Milestone 9: decision models (release 3 or 4, not scheduled, not detailed)
+## Milestone 9: decision models (release 3, after the Kubernetes platform, D-216; not detailed)
 
-Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of a rule or a Sonnet call, without changing flows, and only advise (P-12). Jev's System One is a pilot candidate; compare alternatives then (O-11). Use cases and the open items they would help:
+Small models that return typed choices, scores or probabilities (D-148). They fill the decision points from P-11 in place of the stand-in LLM, without changing flows, and only advise (P-12). Until then a decision point is filled by a rule, or by the cheapest catalog model with structured output, never Sonnet (D-214). The first decision model is Nace.AI Drex v2.0 on DeepInfra, with Cloudflare Clef-Flash as the alternative; both are compatible with Jev's System One, and the scorecard compares them (D-215). It comes before the Scanner (Milestone 10) and self-improvement (Milestone 11), which both build on it (D-216). Use cases and the open items they would help:
 
 | Use case                                                                     | Helps with                                                                                                  |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | Classification, spot decisions                                               | N-01 (small visual tweak), N-02 (Triage rubric), N-06 (severity), N-08 (PII flag), the Triage track in M3.6 |
 | Agent guardrails, LLM guardrails                                             | Screening untrusted PR text before QA                                                                       |
-| Model routing, LLM cascades                                                  | The self-hosted model gateway (O-10) and the spend alerts (M4.5)                                            |
+| Model routing, LLM cascades                                                  | Routing in the core (ADR 0114) and the spend alerts (M4.5)                                                  |
 | LLM-as-a-judge                                                               | Evidence for the QA guard (P-04), never a verdict the runner trusts on its own (P-12)                       |
 | Context compaction (with a classifier on what to compact), memory management | The deferred context graph (N-14)                                                                           |
 | Search and rerank, reranker in RAG                                           | The deferred context graph (N-14)                                                                           |

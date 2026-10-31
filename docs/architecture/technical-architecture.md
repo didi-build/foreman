@@ -16,20 +16,21 @@ flowchart LR
   Didi[Didi on phone] -->|answers| Approval[Windmill approval pages]
   Push[Push app and call service] --> Didi
   subgraph Runner[Windmill: the runner]
-    Reconcile[Reconcile loop, every 2 h until K8s]
+    Reconcile[Reconcile loop, every 2 h]
     Flows[Transition flows]
     Approval
     Daily[Daily check]
   end
-  Flows --> Lib[State library: transitions, guards, contracts]
+  Flows --> Lib[State library: transitions, guards, contracts, routing]
   Reconcile --> Lib
-  Lib --> Store[(Managed Postgres: state store)]
-  Flows --> Agents[Agents: Claude Code, Claude, Grok]
-  Agents -->|report done, evidence| Flows
-  GitHub[GitHub: PRs, CI, preview, staging] -->|webhooks and API| Flows
+  Lib --> Store[(Supabase Postgres: state store)]
+  Flows -->|dispatch a run| Agents[Agent runs on Kubernetes: Claude Code, Messages API]
+  Agents -->|via the run's egress proxy| Models[Hosted models: DeepInfra, Anthropic]
+  Agents -->|report done, evidence| API[State API]
+  API --> Lib
+  GitHub[GitHub: PRs, CI, preview, staging] -->|webhooks| Receiver[GitHub receiver]
+  Receiver --> Lib
   Flows -->|merge, read CI| GitHub
-  Lib --> LinearAdapter[Linear adapter]
-  LinearAdapter --> Linear[Linear: mirror]
   Flows --> Notify[Notification adapter]
   Notify --> Push
 ```
@@ -94,9 +95,15 @@ Each integration sits behind an interface so it can be replaced.
 | Notification  | Push alerts and incident calls                                                                                                                                                                     | Providers are chosen at build time after checking current pricing                                                                                                                                                                                                                                                 |
 | Approval      | Creates Windmill approval pages and reads answers                                                                                                                                                  | Answers are saved as verbatim decisions. Links go only to Didi privately, expire quickly and close after one answer; the runner never relies on a link alone (D-170)                                                                                                                                              |
 
-### 2.8 Agent execution environment (decide during build)
+### 2.8 Agent execution environment (decided: ADR 0106, ADR 0107, ADR 0114)
 
 Agents need somewhere to run. Options for the M3 ADR: a Windmill worker with the agent CLI, GitHub Actions, or a separate sandboxed runtime. Claude Code can be run non-interactively from a command line (check the current documentation for the headless mode or Agent SDK before depending on a specific flag). Requirements: one agent per item, scoped to one project's repo and credentials, no production access, budgets enforced from outside the agent (turn, minute and dollar limits), and a clean report-back path that records a run and evidence.
+
+Decided: each run is a Kubernetes Job in the agent pool with its own egress proxy pod ([ADR 0106](../decisions/0106-agent-execution-environment.md)). The core picks the model at dispatch from the routing policy and the model catalog ([ADR 0114](../decisions/0114-model-evaluation-routing-and-tiers.md)). The agent holds no credentials: the proxy adds each provider's credential and is the only way out. There is no model gateway (D-217).
+
+![How an agent run works](./agent-run.png)
+
+The diagram's source is [`agent-run.mmd`](./agent-run.mmd) (Mermaid). After changing it, render it again to `agent-run.png`.
 
 ### 2.9 Infrastructure as code (Proposed, D-133)
 
@@ -118,7 +125,7 @@ The second release moves to Kubernetes for a pod per project, per-project isolat
 - A target-agnostic deploy adapter: the operations are deploy, preview, health, logs and teardown, with a Cloudflare implementation first. Previews and staging are concepts in the adapter, not Cloudflare URLs in the code. A contract test runs against two targets (Cloudflare and a fake second one).
 - The isolation model is defined up front: each project has its own boundary of credentials, secrets path (`projects/<slug>/...`), network rules and resource limits. In the first release the boundary is enforced by credentials and the secrets path. In the second it maps to a namespace with network policies and quotas.
 - Secrets are referenced by path behind an interface: Windmill resources now, Vault later.
-- Agent runtime adapters take the model endpoint and API key from the bot file as settings (the key as a secret path, never its value), so a self-hosted model gateway (LiteLLM or Bifrost) can be inserted in the second release without code changes. The first release calls model providers directly, with no gateway (D-142).
+- Agent runtime adapters take the model endpoint and API key from the bot file as settings (the key as a secret path, never its value), so the model provider can change without code changes. Model providers are called directly, with no gateway; the self-hosted model gateway is dropped (D-217).
 - The IaC layout separates platform modules from project modules. A project module takes a target (Cloudflare now, Kubernetes later), so a project can move without a rewrite.
 - Monitoring hooks: structured logs, health endpoints, and the `runs` and `transitions` tables already provide the data. The monitoring stack (metrics, logs, dashboards, alerts wired into the existing alert and call tiers) arrives in the second release.
 - The second release is its own project, run through the factory with the Interview first. It is outlined in Milestone 7 of the build plan and not detailed here.
@@ -129,7 +136,7 @@ The second release moves to Kubernetes for a pod per project, per-project isolat
 - A rule or a Claude Sonnet call fills it now. The interface lives in the core and the implementations live in an adapter, so the core stays free of model calls (essentials 4 and 5).
 - Each decision is recorded with the decider id, a hash of the input, the output, the confidence and, later, the outcome. The record never holds personal data or secrets. This builds a labelled history and lets a decision model replace the rule or the Sonnet call without changing flows.
 - A model only advises. It never authorizes a transition (essential 1). A low confidence result falls back to the Council. LLM-as-a-judge output is evidence for a guard, never a verdict on its own, and workflow branching by a model is a recommendation the guard and the runner decide on (P-12).
-- A later release (3 or 4, D-148) adds decision models for: model routing and cascades (fits the self-hosted gateway and spend alerts), classification, guardrails, LLM-as-a-judge, context compaction and memory management (with the deferred context graph, N-14), search and rerank, and tool selection inside a role's allowed toolbox.
+- Release 3 (D-216) adds decision models for: model routing and cascades (with routing in the core, ADR 0114, and the spend alerts), classification, guardrails, LLM-as-a-judge, context compaction and memory management (with the deferred context graph, N-14), search and rerank, and tool selection inside a role's allowed toolbox.
 
 ### 2.12 Machine 3: the Scanner (Proposed, D-150, P-13 to P-16)
 
@@ -267,3 +274,4 @@ Rules:
 | 0111 | Conventions that make the move to Kubernetes cheap                                         | M0 (M0.8)         |
 | 0112 | QA runtime, GitHub access and independence                                                 | M0, built in M3.2 |
 | 0113 | GitHub evidence ingestion                                                                  | M2 (M2.3)         |
+| 0114 | Model evaluation, routing and service tiers                                                | M3.2, M4.5        |
