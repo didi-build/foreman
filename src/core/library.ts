@@ -63,6 +63,15 @@ export interface TransitionResult {
   transitionId?: string;
 }
 
+/** A transition checked without writing (`checkTransition`). */
+export interface TransitionCheck {
+  outcome: "allowed" | "noop" | "rejected";
+  reason?: string;
+  guardReport: GuardCheck[];
+  /** The evidence ids the transition row would carry, in the same order. */
+  evidenceIds: string[];
+}
+
 /** A request the library refused before writing anything (a broken invariant, not a race). */
 export class LibraryError extends Error {
   constructor(message: string) {
@@ -256,9 +265,13 @@ export function createLibrary({
     return created;
   }
 
-  async function attemptTransition(
+  /**
+   * Everything a transition checks before it writes: the node, the legal move, the blocked
+   * reason and every guard. Reads only.
+   */
+  async function checkMove(
     request: TransitionRequest,
-  ): Promise<TransitionResult | LostRace> {
+  ): Promise<{ node: Node; guardReport: GuardCheck[] } | TransitionResult> {
     const node = await store.getNode(request.nodeId);
     if (!node) throw new LibraryError(`No node ${request.nodeId}`);
     if (node.state === request.toState) return { outcome: "noop", guardReport: [] };
@@ -268,8 +281,7 @@ export function createLibrary({
       return { outcome: "rejected", reason: "illegal_move", guardReport: [] };
     }
     const target = stateOf(request.toState);
-    const blockedReason = request.blockedReason ?? null;
-    if (target?.requiresBlockedReason && !blockedReason) {
+    if (target?.requiresBlockedReason && !request.blockedReason) {
       return {
         outcome: "rejected",
         reason: "blocked_reason_required",
@@ -280,6 +292,16 @@ export function createLibrary({
     if (guardReport.some((check) => !check.pass)) {
       return { outcome: "rejected", reason: "guard_failed", guardReport };
     }
+    return { node, guardReport };
+  }
+
+  async function attemptTransition(
+    request: TransitionRequest,
+  ): Promise<TransitionResult | LostRace> {
+    const checked = await checkMove(request);
+    if ("outcome" in checked) return checked;
+    const { node, guardReport } = checked;
+    const blockedReason = request.blockedReason ?? null;
 
     const dryRun = await dryRunIsOn();
     const at = clock.now();
@@ -521,6 +543,32 @@ export function createLibrary({
     /** Nothing in an escalated state, on hold, or not agent-ready is dispatched (invariant 6). */
     canDispatch(node: Node): boolean {
       return !stateOf(node.state)?.escalated && !node.hold && node.agentReady;
+    },
+
+    /**
+     * What `requestTransition` would decide now, writing nothing: `allowed` with the guard
+     * report and the evidence ids the transition row would carry, or the same `noop` or
+     * `rejected` result. The kill switch is not read here; `requestTransition` still refuses.
+     * The reconcile pass uses it to skip a dry-run row it already wrote (M2.4).
+     */
+    async checkTransition(request: TransitionRequest): Promise<TransitionCheck> {
+      const checked = await checkMove(request);
+      if ("outcome" in checked) {
+        return {
+          outcome: checked.outcome === "noop" ? "noop" : "rejected",
+          reason: checked.reason,
+          guardReport: checked.guardReport,
+          evidenceIds: [],
+        };
+      }
+      return {
+        outcome: "allowed",
+        guardReport: checked.guardReport,
+        evidenceIds: [
+          ...(request.evidenceIds ?? []),
+          ...checked.guardReport.flatMap((c) => c.evidenceIds),
+        ],
+      };
     },
 
     /**

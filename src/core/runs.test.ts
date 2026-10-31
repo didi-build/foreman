@@ -7,6 +7,7 @@ import { LibraryError } from "./library.ts";
 import { createMemoryStore } from "./memory-store.ts";
 import {
   createRuns,
+  plannedRunId,
   REHEARSAL_RUN_LIMITS,
   type DispatchRequest,
   type RunReport,
@@ -267,6 +268,59 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     const t = await setup();
     await t.setting("kill_switch", true);
     expect(await t.runs.dispatch(t.request(await t.item()))).toEqual({
+      admitted: false,
+      reason: "kill_switch",
+    });
+  });
+});
+
+describe("dry-run dispatch evaluation (build plan M2.4)", () => {
+  it("applies the same admission rules as dispatch and inserts no run", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    const plan = await t.runs.planDispatch(t.request(nodeId));
+    expect(plan.admitted).toBe(true);
+    if (!plan.admitted) return;
+    expect(plan.run).toMatchObject({
+      id: plannedRunId(nodeId, "developer"),
+      nodeId,
+      bot: "developer",
+      budget: { maxTurns: 100, maxMinutes: 50, maxUsd: 5 },
+    });
+    expect(await t.store.listActiveRuns()).toEqual([]);
+    expect(await t.store.getRun(plan.run.id)).toBeNull();
+  });
+
+  it("counts the runs already planned in the pass toward the Developer limit", async () => {
+    const t = await setup();
+    await t.started(t.request(await t.item()));
+    const planned = [];
+    for (let i = 0; i < 2; i++) {
+      const plan = await t.runs.planDispatch(t.request(await t.item()), planned);
+      if (!plan.admitted) throw new Error(plan.reason);
+      planned.push(plan.run);
+    }
+    expect(await t.runs.planDispatch(t.request(await t.item()), planned)).toEqual({
+      admitted: false,
+      reason: "developer_limit",
+    });
+    expect(await t.store.listActiveRuns()).toHaveLength(1);
+  });
+
+  it("refuses while the kill switch is on or the usage-exhausted wait runs", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    const runId = await t.started(t.request(nodeId));
+    await t.runs.recordEnd(
+      runId,
+      t.report({ outcome: "usage_exhausted", usageExhaustedCause: "capacity" }),
+    );
+    expect(await t.runs.planDispatch(t.request(nodeId))).toEqual({
+      admitted: false,
+      reason: "usage_exhausted_wait",
+    });
+    await t.setting("kill_switch", true);
+    expect(await t.runs.planDispatch(t.request(await t.item()))).toEqual({
       admitted: false,
       reason: "kill_switch",
     });

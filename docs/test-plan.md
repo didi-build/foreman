@@ -99,7 +99,7 @@ Tests sit next to the code in `src/agent-images/`. None of them calls a model or
 
 ### Runner behaviour
 
-1. Reconcile pass: releases blocked items whose blockers are Done, dispatches ready items with no active run, flags stalls, advances from evidence, closes stale gate requests, mirrors state, and rolls up spend.
+1. Reconcile pass: releases blocked items whose blockers are Done, dispatches ready items with no active run, flags stalls, advances from evidence, closes stale gate requests, and rolls up spend. The Linear mirror is dropped (D-192).
 2. Idempotency: a duplicate webhook or a retried flow run records one evidence row and one transition.
 3. Kill switch: when set, no transition is taken and nothing is dispatched within one cycle. When cleared, the runner resumes cleanly.
 4. Dry run: with `dry_run` true, the pass writes `dry_run` transitions and changes nothing outside the store.
@@ -156,6 +156,23 @@ Against the fake GitHub only (D-178): `test/github-ingest.test.ts` (core functio
 6. Failure, success, failure on one commit records three results and the newest fails `ci_green_on_head`; one attempt seen by a webhook and a poll is recorded once.
 7. A fork PR, a PR from an undispatched branch, and a PR by another author link to no node.
 8. `factory_ingest` writes only deliveries and `ci_run` or `merge_commit` under a key, and cannot update, delete, move a node or write decisions.
+
+### Reconcile pass in dry run (build plan M2.4)
+
+Unit tests on the memory store with the real machine-2 contracts and guards and the fake GitHub: `test/reconcile.test.ts`, with its fixture in `test/reconcile-fixture.ts`. The dry-run dispatch path is in `src/core/runs.test.ts` and `checkTransition` in `src/core/library.test.ts`. On Postgres as `factory_runner`: `test/db/reconcile.test.ts`.
+
+1. Kill switch: the pass stops before anything, the polling backstop included. With `dry_run` false it also stops, since live mode is not built.
+2. Release: a Blocked item whose blockers are Done gets one `dry_run` transition to Ready for dev and its node is unchanged. A blocker not Done, or a Done design blocker without a merged spec, writes nothing.
+3. Dispatch: ready items get planned dispatches within the Developer limit, counting active runs and the runs planned earlier in the pass. An item with an active run is skipped. A pending gate, hold or not agent-ready blocks the plan. No run is inserted.
+4. Attention list: a ready item still not running one `reconcile_interval_minutes` later is listed.
+5. Usage exhausted: a queued node waits for `usage_exhausted_wait_minutes`, then its dispatch is planned.
+6. Advance from evidence: CI green on the head and a docs note plan the move to In QA review and a QA dispatch for that PR and head. CI not green writes nothing.
+7. Stall check: an active run with no activity within its `budget.maxMinutes` is flagged; a recent run, or one with recent evidence under it, is not.
+8. Gate cleanup: an open gate request on a Done node is reported and stays open.
+9. Polling: each repository with dispatched work is polled through the GitHub reader and its evidence recorded; a repository with none is not read.
+10. Idempotency: a second pass on the same state writes no new row and returns the same plan; new evidence behind a plan writes a new row.
+11. Execution count: the alert is raised at 80% of the monthly limit, from settings, with the D-167 values when a setting is missing.
+12. Mutation checks, run by hand for M2.4: dispatching for real in dry run, dropping the kill-switch check, and dropping the duplicate-row check each fail these tests.
 
 ### Infrastructure as code
 

@@ -173,6 +173,7 @@ Goal: the runner can say what it would do, and be right.
 - Why: it is how the cutover is rehearsed.
 - How: a function in the library plus a Windmill schedule every 2 hours until Kubernetes exists (D-164; setting `reconcile_interval_minutes`), with the execution count alert (P-21). It respects the kill switch and `dry_run`.
 - Success: against the imported state it releases the right blocked items, flags the right stalls, and plans the right dispatches. Nothing outside the store changes.
+- Built: `reconcile()` in `src/core/reconcile.ts`, dry run only, with the dry-run dispatch path `planDispatch` in `src/core/runs.ts`, `checkTransition` in `src/core/library.ts` and the execution count alert `executionAlert`. Tests: `test/reconcile.test.ts` and `test/db/reconcile.test.ts`. The Windmill schedule is M3.1.
 
 ### M2.5 Dry-run report
 
