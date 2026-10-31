@@ -198,19 +198,21 @@ Rules (Proposed interpretation, to confirm in the M1 ADR):
 
 ## settings
 
-| Key                               | Default            | Notes                                                                                                                             |
-| --------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `kill_switch`                     | false              | When true, the runner takes no transitions and dispatches nothing                                                                 |
-| `dry_run`                         | true until cutover | When true, the runner records planned actions (transitions with mode `dry_run`) and acts on nothing                               |
-| `reconcile_interval_minutes`      | 5                  |                                                                                                                                   |
-| `failure_threshold`               | 3                  |                                                                                                                                   |
-| `qa_round_cap`                    | 3                  |                                                                                                                                   |
-| `pii_credential_ttl_minutes`      | 60                 | Enforced by the runner                                                                                                            |
-| `stall_phone_alert_after_minutes` | 60                 | After this a stalled item raises a push alert                                                                                     |
-| `daily_spend_call_usd`            | 25                 | A phone call fires when daily spend passes this                                                                                   |
-| `spend_alert_usd`                 | to set             | Alert threshold. Work continues                                                                                                   |
-| `usage_exhausted_wait_minutes`    | 30                 | Wait before a dispatch queued by a `usage_exhausted` end is tried again, or the provider's retry-after if longer (migration 0003) |
-| `agent_cluster_max_active_runs`   | not seeded         | Active runs allowed across the cluster's agents pool. Sized to that pool at first hosting. While unset, every dispatch is refused |
+| Key                                | Default            | Notes                                                                                                                             |
+| ---------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `kill_switch`                      | false              | When true, the runner takes no transitions and dispatches nothing                                                                 |
+| `dry_run`                          | true until cutover | When true, the runner records planned actions (transitions with mode `dry_run`) and acts on nothing                               |
+| `reconcile_interval_minutes`       | 120                | Every 2 hours until Kubernetes hosts Windmill, then 5 (D-164)                                                                     |
+| `windmill_monthly_execution_limit` | 1000               | Windmill Cloud free tier (D-163)                                                                                                  |
+| `windmill_alert_percent`           | 80                 | Alert Didi at this share of the monthly limit (D-167)                                                                             |
+| `failure_threshold`                | 3                  |                                                                                                                                   |
+| `qa_round_cap`                     | 3                  |                                                                                                                                   |
+| `pii_credential_ttl_minutes`       | 60                 | Enforced by the runner                                                                                                            |
+| `stall_phone_alert_after_minutes`  | 60                 | After this a stalled item raises a push alert                                                                                     |
+| `daily_spend_call_usd`             | 25                 | A phone call fires when daily spend passes this                                                                                   |
+| `spend_alert_usd`                  | to set             | Alert threshold. Work continues                                                                                                   |
+| `usage_exhausted_wait_minutes`     | 30                 | Wait before a dispatch queued by a `usage_exhausted` end is tried again, or the provider's retry-after if longer (migration 0003) |
+| `agent_cluster_max_active_runs`    | not seeded         | Active runs allowed across the cluster's agents pool. Sized to that pool at first hosting. While unset, every dispatch is refused |
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
 
