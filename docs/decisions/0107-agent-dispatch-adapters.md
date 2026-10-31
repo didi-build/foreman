@@ -83,6 +83,8 @@ The QA model reads; plain code checks. Preview and staging checks (D-103, the Do
 
 The in-container side is in `src/agent-images/`: one image for Claude Code (Developer, Designer) and one for the Messages API (QA, Council, Triage), each printing the result line that `src/adapters/agent-runtime/kubernetes/result.ts` reads. The runner hands each run a task file (`src/adapters/agent-runtime/kubernetes/task.ts`), mounted from a per-run Secret into the agent pod only. Tests are listed in `docs/test-plan.md` under "Agent images".
 
+Starting tool list for the Developer and Designer bot files (D-196): `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(git *)` and `Bash(npm *)`, with `--permission-mode dontAsk`. No other shell command is allowed. Tools are added later only by a change to the bot file that Didi approves.
+
 ## Depends on
 
 [ADR 0106](./0106-agent-execution-environment.md) (agent execution environment and budget enforcement, M3) is accepted (D-191). It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.
