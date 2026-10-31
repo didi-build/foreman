@@ -752,3 +752,51 @@ describe("a move with writes that go with it (unit, build plan M3.2)", () => {
     }
   });
 });
+
+describe("a trigger taken once with writes that go with it (unit, build plan M3.4)", () => {
+  const event = (ref: string) => ({ trigger: { kind: "event" as const, ref } });
+  const bump =
+    (nodeId: string) =>
+    async (tx: Parameters<Parameters<Store["transaction"]>[0]>[0]) => {
+      await tx.setCounter(
+        nodeId,
+        "failure",
+        (await tx.getCounter(nodeId, "failure")) + 1,
+        new Date(0),
+      );
+      return null;
+    };
+
+  it("commits the writes with the move once, and a repeated trigger writes neither", async () => {
+    const { store, library, item } = await setup();
+    const node = await item();
+    const first = await library.requestTransitionOnce(
+      move(node.id, "ready", event("e1")),
+      bump(node.id),
+    );
+    expect(first.outcome).toBe("applied");
+    expect(
+      (
+        await library.requestTransitionOnce(
+          move(node.id, "ready", event("e1")),
+          bump(node.id),
+        )
+      ).reason,
+    ).toBe("duplicate_trigger");
+    expect(await store.getCounter(node.id, "failure")).toBe(1);
+    expect(await store.listTransitions(node.id)).toHaveLength(1);
+  });
+
+  it("refuses the writes in dry run, as requestTransitionWith does", async () => {
+    const { store, library, item } = await setup({ dry_run: true });
+    const node = await item();
+    expect(
+      await library.requestTransitionOnce(
+        move(node.id, "ready", event("e1")),
+        bump(node.id),
+      ),
+    ).toMatchObject({ outcome: "refused", reason: "dry_run" });
+    expect(await store.getCounter(node.id, "failure")).toBe(0);
+    expect(await store.listTransitions(node.id)).toHaveLength(0);
+  });
+});

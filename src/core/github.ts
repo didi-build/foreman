@@ -80,5 +80,31 @@ export interface GitHubMerger {
   ): Promise<SquashMergeResult>;
 }
 
+/** GitHub's state for a deployment: its latest deployment status, or `pending` with none yet. */
+export type DeploymentState =
+  "success" | "failure" | "error" | "inactive" | "in_progress" | "queued" | "pending";
+
+/** A GitHub deployment of one commit to one environment, as GitHub reports it now. */
+export interface Deployment {
+  id: number;
+  /** The commit deployed. */
+  sha: string;
+  environment: string;
+  state: DeploymentState;
+}
+
+/**
+ * What the runner reads about staging deploys (build plan M3.4). A project's deploy on push to
+ * main reports to GitHub as a deployment to the `staging` environment (O-34).
+ */
+export interface GitHubDeploymentReader {
+  /** The deployments of `sha` to `environment`, newest first. */
+  listDeployments(
+    repo: string,
+    environment: string,
+    sha: string,
+  ): Promise<Deployment[]>;
+}
+
 /** Everything the runner reads from and does on GitHub. */
-export type GitHub = GitHubReader & GitHubMerger;
+export type GitHub = GitHubReader & GitHubMerger & GitHubDeploymentReader;

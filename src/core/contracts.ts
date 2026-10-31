@@ -95,6 +95,8 @@ const EVIDENCE_KINDS: EvidenceKind[] = [
   "test_report",
   "preview_check",
   "staging_check",
+  "staging_deploy",
+  "staging_no_result",
   "qa_verdict",
   "visual_comparison",
   "merge_check",

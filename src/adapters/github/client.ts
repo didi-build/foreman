@@ -27,5 +27,6 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
     listOpenPullRequests: refuse,
     getMergeability: refuse,
     squashMerge: refuse,
+    listDeployments: refuse,
   };
 }

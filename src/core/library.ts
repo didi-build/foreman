@@ -634,9 +634,14 @@ export function createLibrary({
      * is returned with `noop` and `duplicate_trigger`. A repeated event or a retried flow run
      * therefore writes one row in either mode (architecture section 2.4). In applied mode a
      * duplicate is also a `noop` without this check, because the node is already in the target
-     * state; in dry run the node never moves, so only this check holds it to one row.
+     * state; in dry run the node never moves, so only this check holds it to one row. With
+     * `alsoWrite`, those writes commit with the move as in `requestTransitionWith` (and so refuse
+     * in dry run); a duplicate trigger writes neither.
      */
-    async requestTransitionOnce(request: TransitionRequest): Promise<TransitionResult> {
+    async requestTransitionOnce(
+      request: TransitionRequest,
+      alsoWrite?: AlsoWrite,
+    ): Promise<TransitionResult> {
       if (!request.trigger.ref) {
         throw new LibraryError("A trigger needs its id to be taken only once");
       }
@@ -657,7 +662,7 @@ export function createLibrary({
           transitionId: earlier.id,
         };
       }
-      return requestTransition(request);
+      return requestTransition(request, alsoWrite);
     },
   };
 }

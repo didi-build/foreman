@@ -296,6 +296,43 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("allows the staging kinds only with their commit, keyed by the runner and never by ingestion (migration 0011)", () => {
+      for (const kind of ["staging_deploy", "staging_no_result"]) {
+        const insert = (sha: string, key: string) =>
+          sql(
+            `insert into factory.evidence (id, node_id, kind, ref, commit_sha, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', '${kind}', 's', ${sha}, 'runner', ${AT}, ${key});`,
+            "factory_runner",
+          );
+        expectRejected(insert("null", "null"), /evidence_staging_commit/);
+        const ok = insert(`'${SHA}'`, `'runner:${kind}:1'`);
+        expect(ok.ok, ok.err).toBe(true);
+        expectRejected(insert(`'${SHA}'`, `'runner:${kind}:1'`), /unique/);
+        expectRejected(
+          sql(
+            `insert into factory.evidence (id, node_id, kind, ref, commit_sha, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', '${kind}', 's', '${SHA}', 'github', ${AT}, 'github:${kind}:2');`,
+            "factory_ingest",
+          ),
+          /row-level security/,
+        );
+      }
+      const keyedCheck = sql(
+        `insert into factory.evidence (id, node_id, kind, ref, commit_sha, payload, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', 'staging_check', 's', '${SHA}', '{"pass": true}', 'runner', ${AT}, 'runner:staging_check:1');`,
+        "factory_runner",
+      );
+      expect(keyedCheck.ok, keyedCheck.err).toBe(true);
+      expectRejected(
+        sql(
+          `insert into factory.evidence (id, node_id, kind, ref, commit_sha, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', 'preview_check', 's', '${SHA}', 'runner', ${AT}, 'runner:preview_check:1');`,
+          "factory_runner",
+        ),
+        /evidence_ingest_key_kinds/,
+      );
+    });
+
     it("allows one QA verdict per run, and only with a run", () => {
       const verdict = (id: string) =>
         `insert into factory.evidence (id, node_id, run_id, kind, ref, commit_sha, recorded_by, recorded_at)

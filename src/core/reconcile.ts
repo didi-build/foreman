@@ -6,10 +6,11 @@
 // What a dry-run pass writes, and what it never writes:
 // - It writes dry-run transition rows (mode `dry_run`) through the library, which writes that mode
 //   whenever the `dry_run` setting is on or missing. The node itself never changes.
-// - It writes the evidence the GitHub polling backstop records (`ci_run`, `merge_commit`), and the
-//   `merge_check` the merge step reads from GitHub (M3.3). That is real evidence of what GitHub
-//   reports, recorded the same way as a webhook, and webhooks record it in dry run too (ADR 0113
-//   sections 5 and 6). Recording a fact is not acting on it.
+// - It writes the evidence the GitHub polling backstop records (`ci_run`, `merge_commit`), the
+//   `merge_check` the merge step reads from GitHub (M3.3), and the `staging_deploy` the staging
+//   step reads from GitHub (M3.4). That is real evidence of what GitHub reports, recorded the same
+//   way as a webhook, and webhooks record it in dry run too (ADR 0113 sections 5 and 6).
+//   Recording a fact is not acting on it. It runs no staging check.
 // - It never inserts a run, starts an agent, records a dispatch, closes or opens a gate request,
 //   changes a counter or a setting, or sends anything. Dispatch admission is evaluated with
 //   `runs.planDispatch`, which reads only.
@@ -21,9 +22,12 @@
 // ready for an agent; advance from evidence takes the moves guarded by `ci_green_on_head`, the
 // evidence section 2.5 step 4 names, except the moves on which the runner merges (guard
 // `qa_verdict_independent_on_head`): those need the merge, so the merge step plans them through
-// src/core/merge.ts, which also records GitHub's mergeable state as a fact. The bot to dispatch
-// is the owner of the state, from the contracts. The merge itself is never done here: in live
-// mode the reconcile flow runs the merge pass (flows/reconcile.ts, O-31).
+// src/core/merge.ts, which also records GitHub's mergeable state as a fact. The moves a staging
+// check takes (guards `staging_check_on_merge_commit` and `staging_check_failed`) go through
+// src/core/staging.ts, which records the staging deploy of the merge commit as a fact. The bot to
+// dispatch is the owner of the state, from the contracts. The merge and the staging check are
+// never done here: in live mode the reconcile flow runs the merge pass and the staging pass
+// (flows/reconcile.ts, O-31, O-37).
 import type {
   Contracts,
   GuardCheck,
@@ -49,6 +53,7 @@ import {
   type RoleRunLimits,
 } from "./runs.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
+import { createStaging, type StagingResult } from "./staging.ts";
 import type { AgentRole, GateRequest, Node, Run, Store, StoreOps } from "./store.ts";
 import type { TaskTypes } from "./task-types.ts";
 
@@ -213,6 +218,11 @@ export interface ReconcileReport {
   advances: AdvancePlan[];
   /** The merge moves (In QA review to Verifying on staging) the pass planned or found blocked. */
   merges: MovePlan[];
+  /**
+   * The items in Verifying on staging: the staging deploy of each merge commit, recorded when
+   * GitHub reports it, and the dry-run row of the move a recorded staging check calls for.
+   */
+  staging: StagingResult[];
   stalls: Stall[];
   gateCleanup: GateCleanupCandidate[];
   executions: ExecutionAlert | null;
@@ -303,6 +313,7 @@ export async function reconcile(
     attention: [],
     advances: [],
     merges: [],
+    staging: [],
     stalls: [],
     gateCleanup: [],
     executions: null,
@@ -594,9 +605,15 @@ export async function reconcile(
     report.merges.push(await requestMove(node, move.to));
   }
 
-  // Step 4 also says to dispatch the staging check once main has deployed to staging. No
-  // evidence records a staging deploy yet (ADR 0113 records `deployment_status` as a delivery
-  // only), so that half is not built here.
+  // Step 4 also says to dispatch the staging check once main has deployed to staging (M3.4). The
+  // polling backstop for the deploy: the staging step reads GitHub's deployments of each merge
+  // commit and records a successful one as `staging_deploy`. It runs no check (no checker in dry
+  // run); a check already recorded gets the dry-run row of its move.
+  const staging = createStaging({ ...deps, checker: null });
+  for (const node of nodes) {
+    if (stateOf(node.state)?.escalated || !staging.stagingMovesFor(node)) continue;
+    report.staging.push(await staging.verify(node.id));
+  }
 
   // Step 5. Stall check: active runs with no activity within their budget window. Activity is
   // the run's start and any evidence recorded under the run.

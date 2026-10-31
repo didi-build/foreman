@@ -1,7 +1,7 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
 // needs from its environment: the store from the runner's database secret, the contracts at the
-// bundle's spec version, the guards, a clock and an id source, the GitHub reader and the agent
-// runtime. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
+// bundle's spec version, the guards, a clock and an id source, the GitHub reader, the agent
+// runtime and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
 // 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
@@ -20,6 +20,7 @@ import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { BotProfile, ReconcileDeps } from "../../src/core/reconcile.ts";
+import type { StagingChecker } from "../../src/core/staging.ts";
 import { REHEARSAL_RUN_LIMITS, type RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { AgentRole, Node, Project, Run } from "../../src/core/store.ts";
@@ -61,6 +62,8 @@ export interface TaskSource {
 
 export interface FlowDeps extends ReconcileDeps {
   runtime: FlowRuntime;
+  /** The runner's staging smoke check (ADR 0107), from the deploy adapter (M3.7). */
+  stagingChecker: StagingChecker;
   tasks: TaskSource;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
@@ -100,6 +103,21 @@ function unregisteredGitHub(): GitHub {
     listOpenPullRequests: refuse,
     getMergeability: refuse,
     squashMerge: refuse,
+    listDeployments: refuse,
+  };
+}
+
+/**
+ * The staging check needs the deploy adapter, which knows each project's staging target (ADR
+ * 0111, build plan M3.7, N-29). Until it exists every check refuses, so nothing is recorded.
+ */
+function unbuiltStagingChecker(): StagingChecker {
+  return {
+    check: async () => {
+      throw new NotBuiltError(
+        "The staging check needs the deploy adapter's staging target (build plan M3.7, N-29)",
+      );
+    },
   };
 }
 
@@ -188,6 +206,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
         ) as KubernetesRunSettings,
       }),
     ),
+    stagingChecker: unbuiltStagingChecker(),
     tasks: {
       taskFor: async () => {
         throw new NotBuiltError(

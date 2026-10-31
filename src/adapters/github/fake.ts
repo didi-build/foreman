@@ -1,9 +1,9 @@
 // A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs, changed
-// files and mergeability held in memory, a squash merge that behaves like GitHub's (it refuses a
+// files, mergeability and deployments held in memory, a squash merge that behaves like GitHub's (it refuses a
 // head that moved, a PR GitHub cannot merge and a PR that is not open), plus builders for webhook
 // payloads in GitHub's shape (only the fields ingestion reads). Signatures use the real HMAC
 // check, so tests sign deliveries for real.
-import type { CheckRun, PullRequest } from "../../core/github.ts";
+import type { CheckRun, Deployment, PullRequest } from "../../core/github.ts";
 import type { GitHubAdapter } from "./adapter.ts";
 import { signWebhook, verifyWebhookSignature } from "./signature.ts";
 
@@ -17,6 +17,8 @@ export interface FakeGitHub extends GitHubAdapter {
   setChangedPaths(repo: string, number: number, paths: string[]): void;
   /** What GitHub reports as the PR's mergeable state. A PR starts as `true` (no conflict). */
   setMergeable(repo: string, number: number, mergeable: boolean | null): void;
+  /** Adds a deployment, or replaces the one with the same id (a new deployment status). */
+  putDeployment(repo: string, deployment: Deployment): void;
   /** Squash merges the fake performed, in order. A refused merge is not listed. */
   readonly merges: readonly { repo: string; number: number; headSha: string }[];
   /** Signs a body with the fake's webhook secret, as GitHub would. */
@@ -33,6 +35,7 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const paths = new Map<string, string[]>();
   const mergeable = new Map<string, boolean | null>();
   const merges: { repo: string; number: number; headSha: string }[] = [];
+  const deployments = new Map<string, Deployment[]>();
   let reads = 0;
 
   const pull = (repo: string, number: number): PullRequest => {
@@ -70,6 +73,14 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
       return [...pulls.values()]
         .filter((pr) => pr.repo === repo && pr.state === "open")
         .map((pr) => structuredClone(pr));
+    },
+
+    async listDeployments(repo, environment, sha) {
+      reads++;
+      return (deployments.get(repo) ?? [])
+        .filter((d) => d.environment === environment && d.sha === sha)
+        .sort((a, b) => b.id - a.id)
+        .map((d) => ({ ...d }));
     },
 
     async getMergeability(repo, number) {
@@ -120,6 +131,10 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     setMergeable(repo, number, value) {
       mergeable.set(prKey(repo, number), value);
+    },
+    putDeployment(repo, deployment) {
+      const list = (deployments.get(repo) ?? []).filter((d) => d.id !== deployment.id);
+      deployments.set(repo, [...list, { ...deployment }]);
     },
   };
 }

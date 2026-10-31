@@ -3,6 +3,7 @@
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { CurrentDecision, Json } from "../store.ts";
 import { latest, readAgentReport, result } from "./evidence.ts";
+import { STAGING_CHECK_ATTEMPTS, stagingNoResults } from "./staging.ts";
 
 export const escalationTopic = (nodeId: string): string => `escalation:${nodeId}`;
 
@@ -24,7 +25,9 @@ async function numberSetting(ctx: GuardContext, key: string): Promise<number | n
 
 /**
  * The failure counter or the QA round count reached its limit, a run went over budget in the
- * current state, or a bot asked to escalate with a written reason in the current state.
+ * current state, the staging check ended without a result on its first try and its one
+ * re-dispatch in the current state (M3.4), or a bot asked to escalate with a written reason in
+ * the current state.
  */
 export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardCheck> {
   const reasons: string[] = [];
@@ -42,6 +45,13 @@ export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardChec
     (r) => r.outcome === "budget_exceeded" && sinceState(ctx, r.startedAt),
   );
   if (overBudget.length > 0) reasons.push("a run went over budget");
+  const noResults = await stagingNoResults(ctx);
+  if (noResults.rows.length >= STAGING_CHECK_ATTEMPTS) {
+    reasons.push(
+      `the staging check ended without a result ${noResults.rows.length} times for merge ${noResults.mergeSha}`,
+    );
+    ids.push(...noResults.rows.map((e) => e.id));
+  }
   for (const report of await ctx.store.listEvidence({
     nodeId: ctx.node.id,
     kind: "agent_report",

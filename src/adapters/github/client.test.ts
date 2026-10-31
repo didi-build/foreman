@@ -19,6 +19,9 @@ describe("real GitHub client before M3 (unit: D-178)", () => {
     await expect(
       client.squashMerge("didi-build/rehearsal", 1, "b".repeat(40)),
     ).rejects.toThrow(GitHubNotConfiguredError);
+    await expect(
+      client.listDeployments("didi-build/rehearsal", "staging", "b".repeat(40)),
+    ).rejects.toThrow(GitHubNotConfiguredError);
   });
 
   it("still checks signatures, which need no network", () => {

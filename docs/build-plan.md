@@ -220,6 +220,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - Why: Done requires it.
 - How: trigger on the deploy event with a polling backstop. On pass the item is Done and dependents are released. On fail the item returns to In development (or Building components) and `failure` increases.
 - Success: a rehearsal run passes, and a deliberately broken change reopens the item.
+- Built: `src/core/staging.ts`. The runner reads GitHub's successful deployment of the merge commit to `staging` and records it as `staging_deploy` (O-34), runs its own staging check behind the `StagingChecker` port and records `staging_check` (O-35), re-dispatches a check without a result once and then goes to the Council (O-36), and takes the pass or fail move with its counter write in one transaction, then the release or the escalation (O-37). The `verify_staging` flow is the event path and the reconcile flow's staging pass the backstop. Migration 0011 adds the two kinds. The check itself needs the deploy adapter's staging target (M3.7), so until then it refuses and nothing is recorded. Tests: `test/staging.test.ts`, `test/db/staging.test.ts`. Open: N-36.
 
 ### M3.5 Escalation and stale marking
 
