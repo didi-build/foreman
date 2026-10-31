@@ -88,6 +88,15 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         GitHubNotConfiguredError,
       );
       await expect(deps.tasks.taskFor({} as never)).rejects.toThrow(NotBuiltError);
+      await expect(
+        deps.github.listDeployments("didi-build/x", "staging", "b".repeat(40)),
+      ).rejects.toThrow(GitHubNotConfiguredError);
+      await expect(
+        deps.github.compareCommits("didi-build/x", "b".repeat(40), "c".repeat(40)),
+      ).rejects.toThrow(GitHubNotConfiguredError);
+      await expect(deps.stagingChecker.check({} as never)).rejects.toThrow(
+        /deploy adapter's staging target/,
+      );
     } finally {
       await deps.close();
     }

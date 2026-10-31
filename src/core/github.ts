@@ -80,5 +80,60 @@ export interface GitHubMerger {
   ): Promise<SquashMergeResult>;
 }
 
+/** GitHub's state for a deployment: its latest deployment status, or `pending` with none yet. */
+export type DeploymentState =
+  "success" | "failure" | "error" | "inactive" | "in_progress" | "queued" | "pending";
+
+/** A GitHub deployment of one commit to one environment, as GitHub reports it now. */
+export interface Deployment {
+  id: number;
+  /** The commit deployed. */
+  sha: string;
+  environment: string;
+  state: DeploymentState;
+}
+
+/**
+ * What the runner reads about staging deploys (build plan M3.4). A project's deploy on push to
+ * main reports to GitHub as a deployment to the `staging` environment (O-34).
+ */
+export interface GitHubDeploymentReader {
+  /** The deployments of `sha` to `environment`, newest first. */
+  listDeployments(
+    repo: string,
+    environment: string,
+    sha: string,
+  ): Promise<Deployment[]>;
+  /**
+   * The latest `limit` deployments to `environment`, of any commit, newest first (GitHub's
+   * deployments list filtered by environment, one page). D-225, O-38.
+   */
+  listRecentDeployments(
+    repo: string,
+    environment: string,
+    limit: number,
+  ): Promise<Deployment[]>;
+}
+
+/**
+ * How `head` relates to `base` in the history, as GitHub's compare (`base...head`) reports it:
+ * `ahead` when `base` is an ancestor of `head`, `identical` when they are the same commit,
+ * `behind` when `head` is an ancestor of `base`, `diverged` otherwise.
+ */
+export type CommitRelation = "ahead" | "identical" | "behind" | "diverged";
+
+/**
+ * What the runner reads about commits (D-225): whether one commit contains another, and the
+ * commit a branch points at now.
+ */
+export interface GitHubCommitReader {
+  compareCommits(repo: string, base: string, head: string): Promise<CommitRelation>;
+  /** The commit `branch` points at now, or null when GitHub has no such branch. */
+  getBranchHead(repo: string, branch: string): Promise<string | null>;
+}
+
 /** Everything the runner reads from and does on GitHub. */
-export type GitHub = GitHubReader & GitHubMerger;
+export type GitHub = GitHubReader &
+  GitHubMerger &
+  GitHubDeploymentReader &
+  GitHubCommitReader;

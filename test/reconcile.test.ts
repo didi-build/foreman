@@ -223,6 +223,7 @@ describe("reconcile pass, dispatch (unit: section 2.5 step 3)", () => {
 
     expect(second.attention).toEqual([
       {
+        kind: "not_running",
         nodeId: ready.id,
         state: "ready_for_dev",
         readySince: new Date(START),

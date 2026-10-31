@@ -22,7 +22,8 @@ flows:
     # Every `reconcile_interval_minutes` (setting, 120 until Kubernetes, D-164). Windmill reads
     # the schedule from here, not from the setting; changing one means changing both. With
     # `dry_run` off it runs the merge pass (M3.3, O-31), which merges through the runner App's
-    # GitHub credential (D-127) once that App exists (D-178).
+    # GitHub credential (D-127) once that App exists (D-178), then the staging pass (M3.4, O-37),
+    # whose check needs the deploy adapter's staging target (M3.7).
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
@@ -42,6 +43,17 @@ flows:
     # is read from the store. Once the end is recorded it asks for the move the run's report
     # triggers, and the guards decide (O-23); a QA pass goes through the merge (O-31). Who calls
     # it in live mode is open, as for dispatch.
+    trigger: called
+
+  - name: verify_staging
+    path: f/foreman/verify_staging
+    entry: flows/verify-staging.ts
+    # Called with a repository and a commit when GitHub reports a staging deploy (a
+    # `deployment_status` event, O-34). It verifies each item of the repository in Verifying on
+    # staging, since a later commit's deploy may cover its merge commit (D-225), reading the deploy
+    # from GitHub itself. Who calls it on the event is open, as for
+    # dispatch: the receiver records the delivery and holds no Windmill credential. The reconcile
+    # flow's staging pass is the backstop.
     trigger: called
 
   - name: cancel_runs

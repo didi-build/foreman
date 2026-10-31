@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { escalationTopic } from "./escalation.ts";
-import { NODE, fixture } from "./testing.ts";
+import { MERGE, NODE, OLD, fixture } from "./testing.ts";
 
 const topic = escalationTopic(NODE);
 
@@ -42,6 +42,38 @@ describe("escalation guards (unit: guards on the memory store, ADR 0105, D-177)"
       await f.evidence("agent_report", null, { escalate: true, reason: "old problem" });
       await f.run("developer", "model-a", { outcome: "budget_exceeded" });
       await f.enterState("in_development");
+      expect((await f.check("escalation_trigger_met")).pass).toBe(false);
+    });
+    it("passes after two staging checks without a result for the merge commit (M3.4)", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      await f.evidence("staging_no_result", MERGE, {
+        reason: "unreachable",
+        attempt: 1,
+      });
+      expect((await f.check("escalation_trigger_met")).pass).toBe(false);
+      await f.evidence("staging_no_result", MERGE, { reason: "timed_out", attempt: 2 });
+      const check = await f.check("escalation_trigger_met");
+      expect(check.detail).toMatch(/without a result 2 times/);
+      expect(check.evidenceIds).toHaveLength(2);
+    });
+    it("counts no checks without a result for another commit, or from before the current state", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      await f.evidence("staging_no_result", OLD, { reason: "unreachable", attempt: 1 });
+      await f.evidence("staging_no_result", MERGE, {
+        reason: "unreachable",
+        attempt: 1,
+      });
+      await f.evidence("staging_no_result", MERGE, {
+        reason: "unreachable",
+        attempt: 2,
+      });
+      await f.enterState("verifying_on_staging");
+      await f.evidence("staging_no_result", MERGE, {
+        reason: "unreachable",
+        attempt: 1,
+      });
       expect((await f.check("escalation_trigger_met")).pass).toBe(false);
     });
     it("ignores other evidence kinds and malformed reports", async () => {

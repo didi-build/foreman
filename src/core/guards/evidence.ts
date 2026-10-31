@@ -33,6 +33,20 @@ export interface CheckPayload {
   pass: boolean;
 }
 
+/**
+ * A staging check (M3.4, D-225). `servedCommitSha` is the commit staging served, and
+ * `containment` how it relates to the merge commit by GitHub's compare (`identical` or `ahead`,
+ * so the served commit contains the merge commit). A check recorded before D-225 has neither and
+ * was recorded only when staging served the merge commit itself.
+ */
+export interface StagingCheckPayload extends CheckPayload {
+  servedCommitSha?: string;
+  containment?: "identical" | "ahead";
+  /** With `containment` `ahead`: the served commit is on main, whose head was `mainHeadSha`. */
+  onMain?: true;
+  mainHeadSha?: string;
+}
+
 export interface MergeCheckPayload {
   pr: number;
   /** GitHub's answer for the head: true, false (a conflict), or null (not worked out yet). */
@@ -122,6 +136,61 @@ export function readMergeCheck(payload: Json): MergeCheckPayload | null {
 export function readCheck(payload: Json): CheckPayload | null {
   if (!isRecord(payload) || typeof payload.pass !== "boolean") return null;
   return { pass: payload.pass };
+}
+
+/**
+ * Why a deploy or a check's served commit counts for the merge commit `mergeSha` (D-225, O-38):
+ * `identical` when the commit is the merge commit, or `ahead` with `onMain: true` and main's head
+ * when it contains the merge commit and is on main. A row with neither field is the M3.4 shape,
+ * about the merge commit itself. Anything else proves nothing.
+ */
+export function readCoverProof(
+  payload: Json,
+  mergeSha: string,
+  commitKey = "deployedSha",
+):
+  | { containment: "identical" }
+  | { containment: "ahead"; onMain: true; mainHeadSha: string }
+  | null {
+  if (!isRecord(payload)) return null;
+  const commit = payload[commitKey];
+  const { containment, onMain, mainHeadSha } = payload;
+  if (containment === undefined) {
+    return commit === undefined || commit === mergeSha
+      ? { containment: "identical" }
+      : null;
+  }
+  if (typeof commit !== "string") return null;
+  if (containment === "identical") {
+    return commit === mergeSha ? { containment: "identical" } : null;
+  }
+  if (
+    containment === "ahead" &&
+    commit !== mergeSha &&
+    onMain === true &&
+    typeof mainHeadSha === "string" &&
+    mainHeadSha !== ""
+  ) {
+    return { containment: "ahead", onMain: true, mainHeadSha };
+  }
+  return null;
+}
+
+export function readStagingCheck(payload: Json): StagingCheckPayload | null {
+  const check = readCheck(payload);
+  if (!check || !isRecord(payload)) return null;
+  const { servedCommitSha, containment } = payload;
+  if (servedCommitSha === undefined && containment === undefined) return check;
+  if (typeof servedCommitSha !== "string" || servedCommitSha === "") return null;
+  if (containment !== "identical" && containment !== "ahead") return null;
+  const { onMain, mainHeadSha } = payload;
+  return {
+    ...check,
+    servedCommitSha,
+    containment,
+    ...(onMain === true ? { onMain } : {}),
+    ...(typeof mainHeadSha === "string" ? { mainHeadSha } : {}),
+  };
 }
 
 export function readDocsNote(payload: Json): DocsNotePayload | null {

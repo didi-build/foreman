@@ -10,6 +10,7 @@ import type {
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
+import { createFakeStagingChecker } from "../staging-fixture.ts";
 
 export { HEAD };
 
@@ -69,9 +70,11 @@ export async function createFlowFixture() {
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
+  const stagingChecker = createFakeStagingChecker();
   const deps: FlowDeps = {
     ...f.deps,
     runtime,
+    stagingChecker,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -114,6 +117,7 @@ export async function createFlowFixture() {
     ...f,
     deps,
     runtime,
+    stagingChecker,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {

@@ -105,5 +105,6 @@ export async function setupMerge(
   const kinds = async (kind: "merge_commit" | "merge_check") =>
     f.store.listEvidence({ nodeId: node.id, kind });
   const trigger = { kind: "bot_report" as const, ref: "run:test" };
-  return { ...f, node, passedOn, merges, state, kinds, trigger };
+  // `node` is the item under merge; `addNode` is the fixture's builder for other items.
+  return { ...f, addNode: f.node, node, passedOn, merges, state, kinds, trigger };
 }

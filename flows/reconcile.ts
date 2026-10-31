@@ -2,24 +2,24 @@
 // flows/windmill.yaml (`reconcile_interval_minutes`, D-164). It reads this month's Windmill
 // execution count and runs one reconcile pass in dry run, which checks the kill switch and
 // `dry_run` itself and computes the execution alert (D-167). On the kill switch it runs the cancel
-// pass (D-202); with `dry_run` off it runs the merge pass, which also recovers a merge (O-31).
-import { createMerges, type MergeResult } from "../src/core/merge.ts";
+// pass (D-202); with `dry_run` off, the merge and staging passes (./lib/live-passes.ts), whose
+// results it carries, with their staging deploy waits on the attention count (D-225).
 import { reconcile, type ExecutionAlert } from "../src/core/reconcile.ts";
 import { cancelActiveRuns, type CancelRunsReport } from "./lib/cancel-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
+import { runLivePasses, type LivePasses } from "./lib/live-passes.ts";
 import { windmillEnvironment } from "./lib/windmill.ts";
 
-export interface ReconcileFlowResult {
+type Planned = "releases" | "dispatches" | "advances" | "merges" | "staging";
+export interface ReconcileFlowResult extends Omit<LivePasses, "problems"> {
   stopped: "kill_switch" | "live_mode_not_built" | null;
-  planned: { releases: number; dispatches: number; advances: number; merges: number };
+  planned: Record<Planned, number>;
   attention: number;
   stalls: number;
   gateCleanup: number;
   failedPolls: number;
   executions: ExecutionAlert | null; // null when the count could not be read
-  /** The cancel pass under the kill switch; the merge pass with `dry_run` off. */
-  cancelled: CancelRunsReport | null;
-  merged: { nodeId: string; result: MergeResult }[] | null;
+  cancelled: CancelRunsReport | null; // the cancel pass, under the kill switch
   problems: string[];
 }
 
@@ -34,24 +34,24 @@ export async function run(deps: FlowDeps): Promise<ReconcileFlowResult> {
   const report = await reconcile(deps, { windmillExecutionsThisMonth: count });
   const cancelled =
     report.stopped === "kill_switch" ? await cancelActiveRuns(deps) : null;
-  const live = report.stopped === "live_mode_not_built";
-  const merged = live ? await createMerges(deps).mergeReady() : null;
+  const live = await runLivePasses(deps, report.stopped);
   return {
+    ...live,
     stopped: report.stopped,
     planned: {
       releases: report.releases.length,
       dispatches: report.dispatches.length,
       advances: report.advances.length,
       merges: report.merges.length,
+      staging: report.staging.length,
     },
-    merged,
-    attention: report.attention.length,
+    attention: report.attention.length + (live.stagingWaits?.length ?? 0),
     stalls: report.stalls.length,
     gateCleanup: report.gateCleanup.length,
     failedPolls: report.polls.filter((p) => p.error).length,
     executions: report.executions,
     cancelled,
-    problems: [...problems, ...report.problems],
+    problems: [...problems, ...report.problems, ...live.problems],
   };
 }
 

@@ -1,9 +1,15 @@
 // A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs, changed
-// files and mergeability held in memory, a squash merge that behaves like GitHub's (it refuses a
-// head that moved, a PR GitHub cannot merge and a PR that is not open), plus builders for webhook
+// files, mergeability, deployments and a commit history held in memory, a squash merge that behaves like
+// GitHub's (it refuses a head that moved, a PR GitHub cannot merge and a PR that is not open), a
+// compare that walks the history it was given (D-225), plus builders for webhook
 // payloads in GitHub's shape (only the fields ingestion reads). Signatures use the real HMAC
 // check, so tests sign deliveries for real.
-import type { CheckRun, PullRequest } from "../../core/github.ts";
+import type {
+  CheckRun,
+  CommitRelation,
+  Deployment,
+  PullRequest,
+} from "../../core/github.ts";
 import type { GitHubAdapter } from "./adapter.ts";
 import { signWebhook, verifyWebhookSignature } from "./signature.ts";
 
@@ -17,6 +23,15 @@ export interface FakeGitHub extends GitHubAdapter {
   setChangedPaths(repo: string, number: number, paths: string[]): void;
   /** What GitHub reports as the PR's mergeable state. A PR starts as `true` (no conflict). */
   setMergeable(repo: string, number: number, mergeable: boolean | null): void;
+  /** Adds a deployment, or replaces the one with the same id (a new deployment status). */
+  putDeployment(repo: string, deployment: Deployment): void;
+  /**
+   * Adds a commit with its parents, for the compare. A commit never added has no history, so it
+   * is `diverged` from every other commit.
+   */
+  putCommit(repo: string, sha: string, parents: string[]): void;
+  /** Points a branch at a commit. A branch never set does not exist. */
+  setBranchHead(repo: string, branch: string, sha: string): void;
   /** Squash merges the fake performed, in order. A refused merge is not listed. */
   readonly merges: readonly { repo: string; number: number; headSha: string }[];
   /** Signs a body with the fake's webhook secret, as GitHub would. */
@@ -33,7 +48,24 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const paths = new Map<string, string[]>();
   const mergeable = new Map<string, boolean | null>();
   const merges: { repo: string; number: number; headSha: string }[] = [];
+  const deployments = new Map<string, Deployment[]>();
+  const parentsOf = new Map<string, string[]>();
+  const branchHeads = new Map<string, string>();
   let reads = 0;
+
+  /** Whether `ancestor` is reachable from `sha` through the parents the fake was given. */
+  function reaches(repo: string, sha: string, ancestor: string): boolean {
+    const seen = new Set<string>();
+    const stack = [sha];
+    while (stack.length > 0) {
+      const next = stack.pop() ?? "";
+      if (next === ancestor) return true;
+      if (seen.has(next)) continue;
+      seen.add(next);
+      stack.push(...(parentsOf.get(`${repo}@${next}`) ?? []));
+    }
+    return false;
+  }
 
   const pull = (repo: string, number: number): PullRequest => {
     const pr = pulls.get(prKey(repo, number));
@@ -70,6 +102,33 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
       return [...pulls.values()]
         .filter((pr) => pr.repo === repo && pr.state === "open")
         .map((pr) => structuredClone(pr));
+    },
+
+    async listDeployments(repo, environment, sha) {
+      reads++;
+      return (deployments.get(repo) ?? [])
+        .filter((d) => d.environment === environment && d.sha === sha)
+        .sort((a, b) => b.id - a.id)
+        .map((d) => ({ ...d }));
+    },
+    async listRecentDeployments(repo, environment, limit) {
+      reads++;
+      return (deployments.get(repo) ?? [])
+        .filter((d) => d.environment === environment)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, limit)
+        .map((d) => ({ ...d }));
+    },
+    async getBranchHead(repo, branch) {
+      reads++;
+      return branchHeads.get(`${repo}#${branch}`) ?? null;
+    },
+    async compareCommits(repo, base, head): Promise<CommitRelation> {
+      reads++;
+      if (base === head) return "identical";
+      if (reaches(repo, head, base)) return "ahead";
+      if (reaches(repo, base, head)) return "behind";
+      return "diverged";
     },
 
     async getMergeability(repo, number) {
@@ -120,6 +179,16 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     setMergeable(repo, number, value) {
       mergeable.set(prKey(repo, number), value);
+    },
+    putDeployment(repo, deployment) {
+      const list = (deployments.get(repo) ?? []).filter((d) => d.id !== deployment.id);
+      deployments.set(repo, [...list, { ...deployment }]);
+    },
+    putCommit(repo, sha, parents) {
+      parentsOf.set(`${repo}@${sha}`, [...parents]);
+    },
+    setBranchHead(repo, branch, sha) {
+      branchHeads.set(`${repo}#${branch}`, sha);
     },
   };
 }
