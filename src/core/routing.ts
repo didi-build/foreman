@@ -41,6 +41,12 @@ export interface CatalogModel {
   pricePerMTok: Partial<Record<ServiceTier, TierPrice>>;
   /** The provider's output cap per response; null when it sets none below any need. */
   maxOutputTokens: number | null;
+  /**
+   * True when the provider resells another company's model instead of hosting it itself, as
+   * DeepInfra does for Anthropic and Google models. A provider approved only for the models it
+   * hosts (`covers: "self_hosted"`) cannot route to a resold model.
+   */
+  resold: boolean;
   priceSource: string;
   priceReadOn: string;
 }
@@ -81,6 +87,11 @@ export interface RoutingPolicy {
 export interface ApprovedProvider {
   /** The decision log id that approved the provider under D-154, for example `D-171`. */
   decision: string;
+  /**
+   * What the approval covers. `all`: every model the provider serves. `self_hosted`: only models
+   * the provider hosts itself, so a resold model fails hard rule 3 (D-208 for DeepInfra).
+   */
+  covers: "all" | "self_hosted";
   note?: string;
 }
 
@@ -222,6 +233,7 @@ function parseCatalogModel(
       "tiers",
       "pricePerMTok",
       "maxOutputTokens",
+      "resold",
       "priceSource",
       "priceReadOn",
     ],
@@ -257,6 +269,9 @@ function parseCatalogModel(
   if (value.maxOutputTokens !== null && !isPositiveInteger(value.maxOutputTokens)) {
     problems.push(`${where}.maxOutputTokens must be null or a whole number above 0`);
   }
+  if (typeof value.resold !== "boolean") {
+    problems.push(`${where}.resold must be true or false`);
+  }
   if (!isText(value.priceSource)) {
     problems.push(`${where}.priceSource must be a non-empty string`);
   }
@@ -270,6 +285,7 @@ function parseCatalogModel(
     tiers: [...(tiers as ServiceTier[])],
     pricePerMTok: prices,
     maxOutputTokens: value.maxOutputTokens as number | null,
+    resold: value.resold as boolean,
     priceSource: value.priceSource as string,
     priceReadOn: value.priceReadOn as string,
   };
@@ -408,18 +424,23 @@ export function parseApprovedProviders(
       problems.push(`${at} must be an object`);
       continue;
     }
-    checkKeys(at, entry, ["decision", "note"], problems);
+    checkKeys(at, entry, ["decision", "covers", "note"], problems);
     if (!(typeof entry.decision === "string" && DECISION_ID.test(entry.decision))) {
       problems.push(`${at}.decision must be a decision id such as D-171`);
+      continue;
+    }
+    if (entry.covers !== "all" && entry.covers !== "self_hosted") {
+      problems.push(`${at}.covers must be all or self_hosted`);
       continue;
     }
     if (entry.note !== undefined && !isText(entry.note)) {
       problems.push(`${at}.note must be a non-empty string`);
       continue;
     }
+    const covers = entry.covers;
     providers[name] = entry.note
-      ? { decision: entry.decision, note: entry.note as string }
-      : { decision: entry.decision };
+      ? { decision: entry.decision, covers, note: entry.note as string }
+      : { decision: entry.decision, covers };
   }
   if (problems.length > before) return null;
   return providers;
@@ -542,12 +563,7 @@ export function chooseRoute(input: RouteInput): RouteChoice {
       );
     }
     check("known_price", priceProblem(candidate, model));
-    check(
-      "approved_provider",
-      Object.hasOwn(providers, candidate.provider)
-        ? null
-        : "the provider is not on the approved list",
-    );
+    check("approved_provider", providerProblem(providers, candidate, model));
     check("output_cap", outputCapProblem(model, need));
     if (failed.length === 0 && model) {
       return {
@@ -569,6 +585,21 @@ export function chooseRoute(input: RouteInput): RouteChoice {
     rejected.push({ index, provider, model: id, tier, failed });
   }
   return { routed: false, noRoute: { settingsProblems: [], rejected } };
+}
+
+/** Hard rule 3: an approved provider, and a model its approval covers. */
+function providerProblem(
+  providers: Record<string, ApprovedProvider>,
+  candidate: RouteCandidate,
+  model: CatalogModel | undefined,
+): string | null {
+  if (!Object.hasOwn(providers, candidate.provider)) {
+    return "the provider is not on the approved list";
+  }
+  if (providers[candidate.provider].covers === "self_hosted" && model?.resold) {
+    return "the provider is approved only for models it hosts itself, and this model is resold";
+  }
+  return null;
 }
 
 // ---- The decision record (P-11) ---------------------------------------------------------------

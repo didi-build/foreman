@@ -454,7 +454,9 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
 
   it("refuses with no_route and writes nothing when no candidate passes the hard rules", async () => {
     const t = await setup();
-    await t.setting("model_providers_approved", { deepinfra: { decision: "D-208" } });
+    await t.setting("model_providers_approved", {
+      deepinfra: { decision: "D-208", covers: "self_hosted" },
+    });
     const nodeId = await t.item();
     const result = await t.runs.dispatch(t.request(nodeId));
     expect(result).toMatchObject({

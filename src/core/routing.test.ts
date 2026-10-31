@@ -28,6 +28,7 @@ const QWEN = {
     flex: { input: 0.24, cachedInput: 0.08, output: 0.8 },
   },
   maxOutputTokens: 16384,
+  resold: false,
   priceSource: "test",
   priceReadOn: "2026-10-31",
 };
@@ -150,7 +151,7 @@ describe("candidate order", () => {
       input({
         settings: {
           policy: policy("developer:code", both),
-          providers: { anthropic: { decision: "D-171" } },
+          providers: { anthropic: { decision: "D-171", covers: "all" } },
         },
       }),
     );
@@ -165,7 +166,7 @@ describe("candidate order", () => {
             candidate("not-in-catalog"),
             candidate("test/qwen-coder", "deepinfra"),
           ]),
-          providers: { anthropic: { decision: "D-171" } },
+          providers: { anthropic: { decision: "D-171", covers: "all" } },
         },
       }),
     );
@@ -337,11 +338,71 @@ describe("hard rule 2: known price (fails closed)", () => {
 describe("hard rule 3: approved provider", () => {
   it("refuses a provider that is not on model_providers_approved", () => {
     const choice = chooseRoute(
-      input({ settings: { providers: { deepinfra: { decision: "D-208" } } } }),
+      input({
+        settings: {
+          providers: { deepinfra: { decision: "D-208", covers: "self_hosted" } },
+        },
+      }),
     );
     expect(refused(choice).rejected[0]?.failed).toEqual([
       { rule: "approved_provider", detail: "the provider is not on the approved list" },
     ]);
+  });
+
+  it("refuses a resold model from a provider approved only for the models it hosts", () => {
+    const resold = { ...QWEN, family: "claude", resold: true };
+    const choice = chooseRoute(
+      input({
+        settings: {
+          policy: policy("developer:code", [candidate("test/resold", "deepinfra")]),
+          catalog: { version: "test.1", models: { "test/resold": resold } },
+        },
+      }),
+    );
+    expect(refused(choice).rejected[0]?.failed).toEqual([
+      {
+        rule: "approved_provider",
+        detail:
+          "the provider is approved only for models it hosts itself, and this model is resold",
+      },
+    ]);
+  });
+
+  it("admits a model the provider hosts itself under a self_hosted approval", () => {
+    const choice = chooseRoute(
+      input({
+        settings: {
+          policy: policy("developer:code", [candidate("test/qwen-coder", "deepinfra")]),
+        },
+      }),
+    );
+    expect(choice.routed).toBe(true);
+  });
+
+  it("admits a resold model when the approval covers all models", () => {
+    const choice = chooseRoute(
+      input({
+        settings: {
+          policy: policy("developer:code", [candidate("test/resold", "deepinfra")]),
+          catalog: {
+            version: "test.1",
+            models: { "test/resold": { ...QWEN, resold: true } },
+          },
+          providers: { deepinfra: { decision: "D-208", covers: "all" } },
+        },
+      }),
+    );
+    expect(choice.routed).toBe(true);
+  });
+
+  it("refuses an approval with no covers value", () => {
+    const choice = chooseRoute(
+      input({ settings: { providers: { anthropic: { decision: "D-171" } } } }),
+    );
+    expect(choice.routed).toBe(false);
+    expect(refused(choice).settingsProblems).toContain(
+      "model_providers_approved.anthropic.covers must be all or self_hosted",
+    );
   });
 
   it("does not take a prototype name as an approved provider", () => {

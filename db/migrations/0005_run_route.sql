@@ -81,6 +81,7 @@ insert into factory.settings (key, value, updated_by, updated_at) values
         "tiers": ["standard"],
         "pricePerMTok": { "standard": { "input": 2, "cachedInput": 0.2, "cacheWrite": 2.5, "output": 10 } },
         "maxOutputTokens": null,
+        "resold": false,
         "priceSource": "Anthropic list price (docs/costs.md section 2, claude-api/pricing.ts)",
         "priceReadOn": "2026-10-31"
       },
@@ -90,15 +91,17 @@ insert into factory.settings (key, value, updated_by, updated_at) values
         "tiers": ["standard"],
         "pricePerMTok": { "standard": { "input": 4, "cachedInput": 0.2, "cacheWrite": 5, "output": 20 } },
         "maxOutputTokens": null,
+        "resold": false,
         "priceSource": "Anthropic list price (docs/costs.md section 2, claude-api/pricing.ts)",
         "priceReadOn": "2026-10-31"
       }
     }
   }', 'migration', now()),
   ('model_providers_approved', '{
-    "anthropic": { "decision": "D-171" },
+    "anthropic": { "decision": "D-171", "covers": "all" },
     "deepinfra": {
       "decision": "D-208",
+      "covers": "self_hosted",
       "note": "Only models DeepInfra hosts itself. Anthropic and Google models resold through DeepInfra are not covered"
     }
   }', 'migration', now()),
