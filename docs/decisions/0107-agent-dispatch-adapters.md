@@ -83,7 +83,7 @@ The QA model reads; plain code checks. Preview and staging checks (D-103, the Do
 
 The in-container side is in `src/agent-images/`: one image for Claude Code (Developer, Designer) and one for the Messages API (QA, Council, Triage), each printing the result line that `src/adapters/agent-runtime/kubernetes/result.ts` reads. The runner hands each run a task file (`src/adapters/agent-runtime/kubernetes/task.ts`), mounted from a per-run Secret into the agent pod only. Tests are listed in `docs/test-plan.md` under "Agent images".
 
-Starting tool list for the Developer and Designer bot files (D-196): `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(git *)` and `Bash(npm *)`, with `--permission-mode dontAsk`. No other shell command is allowed. Tools are added later only by a change to the bot file that Didi approves.
+Starting tool list for the Developer and Designer bot files (D-196): `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(git *)` and `Bash(npm *)`, with `--permission-mode dontAsk`. No other shell command is allowed. Tools are added later only by a change to the bot file that Didi approves. The Designer also gets the MagicPath MCP tools (`mcp__magicpath`) and egress to the MagicPath host, switched on at D-190's gate.
 
 ## Depends on
 
