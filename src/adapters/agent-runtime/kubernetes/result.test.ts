@@ -4,14 +4,9 @@ import {
   CEILING_MESSAGE,
   REJECTED_CEILING_MESSAGE,
 } from "../../../egress-proxy/proxy.ts";
+import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-error.ts";
 import type { JobStatus } from "./objects.ts";
-import {
-  isFlexCapacityRejection,
-  jobMinutes,
-  jobState,
-  mapRunEnd,
-  parseAgentResult,
-} from "./result.ts";
+import { jobMinutes, jobState, mapRunEnd, parseAgentResult } from "./result.ts";
 
 // Unit: the agent's result line and the outcome mapping (ADR 0106 section 6, ADR 0107).
 

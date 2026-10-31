@@ -20,10 +20,12 @@
 // `capacity` instead of a deadline.
 import Anthropic from "@anthropic-ai/sdk";
 
-import { isFlexCapacityRejection } from "../../adapters/agent-runtime/kubernetes/result.ts";
 import type { RunTokens } from "../../core/runs.ts";
 import type { ServiceTier } from "../../core/store.ts";
-import { providerErrorFromHttp } from "../shared/provider-error.ts";
+import {
+  isFlexCapacityRejection,
+  providerErrorFromHttp,
+} from "../shared/provider-error.ts";
 import type { AgentResult } from "../shared/result.ts";
 import { reportedTier, servedTier } from "../shared/tiers.ts";
 import { NO_TOKENS, addTokens, tokensFromUsage } from "../shared/tokens.ts";

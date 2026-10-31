@@ -2,6 +2,7 @@
 // The Kubernetes runtime turns a rate limit (429), a capacity error (529, 503) or an out-of-credit
 // error (402) into `usage_exhausted` with its cause and retry-after, and the proxy's request
 // ceiling (403 with its fixed message) into `budget_exceeded`.
+import type { ServiceTier } from "../../core/store.ts";
 import type { ProviderError } from "./result.ts";
 
 const MAX_MESSAGE = 2000;
@@ -76,4 +77,30 @@ export function providerErrorFromClaudeCode(
     message: text.slice(0, MAX_MESSAGE),
     retryAfterSeconds: null,
   };
+}
+
+/**
+ * The overload errors a provider answers a busy Flex request with (ADR 0114 section 9):
+ * DeepInfra's `engine_overloaded`, and the overload type of the Anthropic-style API. DeepInfra's
+ * queue-timeout form is read in the rehearsal and added here then.
+ */
+export const FLEX_CAPACITY_ERROR_TYPES: readonly string[] = [
+  "engine_overloaded",
+  "overloaded_error",
+];
+
+/**
+ * A Flex capacity rejection: a 429 with an overload error, on a run whose route asked for Flex.
+ * Any other 429 is a rate limit. The runtimes that build their own requests retry this one error
+ * inside the run (ADR 0114 section 9); the runner maps it to cause `capacity`.
+ */
+export function isFlexCapacityRejection(
+  tier: ServiceTier,
+  error: ProviderError | null,
+): boolean {
+  if (tier !== "flex" || error === null || error.status !== 429) return false;
+  return (
+    FLEX_CAPACITY_ERROR_TYPES.includes(error.type) ||
+    FLEX_CAPACITY_ERROR_TYPES.some((type) => error.message.includes(type))
+  );
 }

@@ -11,6 +11,7 @@ import {
   CEILING_MESSAGE,
   REJECTED_CEILING_MESSAGE,
 } from "../../../egress-proxy/proxy.ts";
+import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-error.ts";
 import type { AgentRunResult } from "../runtime.ts";
 import type { JobStatus } from "./objects.ts";
 
@@ -160,32 +161,6 @@ export function jobMinutes(job: JobStatus | null): number | null {
   const end = Date.parse(job?.status?.completionTime ?? "");
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
   return Math.round(((end - start) / 60_000) * 100) / 100;
-}
-
-/**
- * The overload errors a provider answers a busy Flex request with (ADR 0114 section 9):
- * DeepInfra's `engine_overloaded`, and the overload type of the Anthropic-style API. DeepInfra's
- * queue-timeout form is read in the rehearsal and added here then.
- */
-export const FLEX_CAPACITY_ERROR_TYPES: readonly string[] = [
-  "engine_overloaded",
-  "overloaded_error",
-];
-
-/**
- * A Flex capacity rejection: a 429 with an overload error, on a run whose route asked for Flex.
- * Any other 429 is a rate limit. The runtimes that build their own requests retry this one error
- * inside the run (ADR 0114 section 9); the runner maps it to cause `capacity`.
- */
-export function isFlexCapacityRejection(
-  tier: ServiceTier,
-  error: ProviderError | null,
-): boolean {
-  if (tier !== "flex" || error === null || error.status !== 429) return false;
-  return (
-    FLEX_CAPACITY_ERROR_TYPES.includes(error.type) ||
-    FLEX_CAPACITY_ERROR_TYPES.some((type) => error.message.includes(type))
-  );
 }
 
 /**
