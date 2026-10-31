@@ -2,6 +2,8 @@
 // Postgres store, as the factory_runner role: the staging deploy, check and no-result rows that
 // migration 0011 allows, each under its key, the Done move with the counters reset and the move back
 // with `failure` up by one in the same transaction, and a repeated call that writes nothing more.
+// Migration 0012 (D-225): a later deploy covering two merge commits is keyed once for each, and a
+// failed deploy is recorded once and takes the fail path once.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -10,7 +12,11 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
-import { stagingCheckKey } from "../../src/core/staging.ts";
+import {
+  stagingCheckKey,
+  stagingDeployFailedKey,
+  stagingDeployKey,
+} from "../../src/core/staging.ts";
 import type { Store } from "../../src/core/store.ts";
 import { REPO } from "../reconcile-fixture.ts";
 import { setupStaging } from "../staging-fixture.ts";
@@ -94,6 +100,82 @@ describe.skipIf(!adminUrl)(
       expect(await store.getCounter(t.node.id, "failure")).toBe(1);
       await t.staging().verifyReady();
       expect(await store.getCounter(t.node.id, "failure")).toBe(1);
+    });
+
+    it("records one later deploy that covers two merge commits under a key for each (D-225)", async () => {
+      const first = await setupStaging({
+        store,
+        idPrefix: "73000000-0000-4000-8000",
+        slug: "c",
+        pr: 13,
+        mergeSha: "3".repeat(40),
+      });
+      const second = await setupStaging({
+        store,
+        idPrefix: "74000000-0000-4000-8000",
+        slug: "d",
+        pr: 14,
+        mergeSha: "4".repeat(40),
+      });
+      // Main: the first merge, then the second, then a later commit; only that one is deployed.
+      const later = "5".repeat(40);
+      const deployment = {
+        id: 7300,
+        sha: later,
+        environment: "staging",
+        state: "success" as const,
+      };
+      for (const t of [first, second]) {
+        t.github.putCommit(REPO, second.mergeSha, [first.mergeSha]);
+        t.github.putCommit(REPO, later, [second.mergeSha]);
+        t.github.putDeployment(REPO, deployment);
+      }
+
+      for (const t of [first, second]) {
+        expect((await t.staging().verify(t.node.id)).move).toMatchObject({
+          toState: "done",
+          outcome: "applied",
+        });
+        const keyed = await pool.query(
+          "select payload from factory.evidence where ingest_key = $1",
+          [stagingDeployKey(REPO, deployment.id, t.mergeSha)],
+        );
+        expect(keyed.rows.map((r) => r.payload)).toEqual([
+          {
+            environment: "staging",
+            deploymentId: deployment.id,
+            deployedSha: later,
+            containment: "ahead",
+          },
+        ]);
+      }
+    });
+
+    it("takes the fail path once for a failed staging deploy of the merge commit (D-225)", async () => {
+      const t = await setupStaging({
+        store,
+        idPrefix: "75000000-0000-4000-8000",
+        slug: "e",
+        pr: 15,
+        mergeSha: "6".repeat(40),
+      });
+      const deployment = t.deploy(t.mergeSha, "failure");
+
+      const result = await t.staging().verify(t.node.id);
+      await t.staging().verify(t.node.id);
+      await t.staging().verifyReady();
+
+      expect(result).toMatchObject({
+        step: "deploy_failed",
+        move: { toState: "in_development", outcome: "applied" },
+      });
+      const keyed = await pool.query(
+        "select id from factory.evidence where ingest_key = $1",
+        [stagingDeployFailedKey(REPO, deployment.id, t.mergeSha)],
+      );
+      expect(keyed.rows.map((r) => r.id)).toEqual([result.deployFailedEvidenceId]);
+      expect(await store.getCounter(t.node.id, "failure")).toBe(1);
+      expect(t.checker.calls).toEqual([]);
     });
   },
 );

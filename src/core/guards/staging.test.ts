@@ -53,6 +53,81 @@ describe("staging guards (unit: guards on the memory store, ADR 0105)", () => {
     });
   }
 
+  describe("a check on a served commit that contains the merge commit (D-225, O-39)", () => {
+    const LATER = "d".repeat(40);
+    for (const [name, pass] of [
+      ["staging_check_on_merge_commit", true],
+      ["staging_check_failed", false],
+    ] as const) {
+      it(`${name} passes on a later served commit the compare showed contains the merge commit`, async () => {
+        const f = await fixture();
+        await f.evidence("merge_commit", MERGE, { pr: 7 });
+        await f.evidence("staging_check", MERGE, {
+          pass,
+          servedCommitSha: LATER,
+          containment: "ahead",
+        });
+        const check = await f.check(name);
+        expect(check.pass).toBe(true);
+        expect(check.detail).toMatch(/which contains it/);
+      });
+      it(`${name} fails when the served commit is not shown to contain the merge commit`, async () => {
+        const f = await fixture();
+        await f.evidence("merge_commit", MERGE, { pr: 7 });
+        await f.evidence("staging_check", MERGE, {
+          pass,
+          servedCommitSha: LATER,
+          containment: "identical",
+        });
+        const check = await f.check(name);
+        expect(check.pass).toBe(false);
+        expect(check.detail).toMatch(/not shown to contain merge/);
+      });
+      it(`${name} fails on a served commit without a containment (malformed)`, async () => {
+        const f = await fixture();
+        await f.evidence("merge_commit", MERGE, { pr: 7 });
+        await f.evidence("staging_check", MERGE, { pass, servedCommitSha: LATER });
+        expect((await f.check(name)).detail).toBe("malformed staging_check payload");
+      });
+    }
+    it("accepts the merge commit itself as identical", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      await f.evidence("staging_check", MERGE, {
+        pass: true,
+        servedCommitSha: MERGE,
+        containment: "identical",
+      });
+      expect((await f.check("staging_check_on_merge_commit")).pass).toBe(true);
+    });
+  });
+
+  describe("a failed staging deploy covering the merge commit (D-225)", () => {
+    const failed = { environment: "staging", deploymentId: 9, deployedSha: MERGE };
+    it("passes staging_check_failed with no check recorded", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      const deploy = await f.evidence("staging_deploy_failed", MERGE, failed);
+      const check = await f.check("staging_check_failed");
+      expect(check.pass).toBe(true);
+      expect(check.evidenceIds).toContain(deploy);
+      expect(check.detail).toMatch(/staging deploy of .* failed for merge/);
+    });
+    it("fails staging_check_on_merge_commit, even with a passed check", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      await f.evidence("staging_check", MERGE, { pass: true });
+      await f.evidence("staging_deploy_failed", MERGE, failed);
+      expect((await f.check("staging_check_on_merge_commit")).pass).toBe(false);
+    });
+    it("ignores a failed deploy recorded for another merge commit", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      await f.evidence("staging_deploy_failed", OLD, failed);
+      expect((await f.check("staging_check_failed")).pass).toBe(false);
+    });
+  });
+
   it("does not treat the head commit as the merge commit", async () => {
     const f = await fixture();
     await f.ci(HEAD);

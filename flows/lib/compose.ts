@@ -104,6 +104,8 @@ function unregisteredGitHub(): GitHub {
     getMergeability: refuse,
     squashMerge: refuse,
     listDeployments: refuse,
+    listRecentDeployments: refuse,
+    compareCommits: refuse,
   };
 }
 

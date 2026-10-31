@@ -4,7 +4,10 @@
 // `staging_check` on that commit, a pass moves the item to Done and releases what it blocked, a
 // fail sends it back with `failure` up by one and the third failure to the Council, a check
 // without a result is re-dispatched once and then goes to the Council, and every step is taken
-// once however often it is asked for.
+// once however often it is asked for. D-225: a finished deploy of a later commit that contains the
+// merge commit (GitHub's compare) counts for it, a failed one takes the fail path once, and an
+// item waiting past `staging_deploy_attention_after_minutes` with no deploy goes on the attention
+// list.
 import { describe, expect, it } from "vitest";
 
 import { reconcile } from "../src/core/reconcile.ts";
@@ -12,8 +15,11 @@ import { createRunReports } from "../src/core/run-reports.ts";
 import {
   createStaging,
   releaseTrigger,
+  STAGING_DEPLOY_SCAN_LIMIT,
   stagingCheckKey,
   stagingCheckTrigger,
+  stagingDeployFailedKey,
+  stagingDeployFailedTrigger,
   stagingDeployKey,
 } from "../src/core/staging.ts";
 import type { Store } from "../src/core/store.ts";
@@ -37,13 +43,18 @@ describe("the staging deploy of the merge commit (unit: M3.4, O-34)", () => {
     expect(await t.kind("staging_deploy")).toEqual([]);
   });
 
-  it("does nothing for a deploy of another commit: the PR's head or any other commit on main", async () => {
+  it("does nothing for a deploy of a commit without the merge commit: the PR's head or an unrelated commit", async () => {
     const t = await setup();
     t.deploy(HEAD);
     t.deploy(OTHER);
     expect((await t.staging().verify(t.node.id)).step).toBe("waiting_for_deploy");
-    expect(await t.staging().verifyCommit(REPO, OTHER)).toEqual([]);
-    expect(await t.staging().verifyCommit(REPO, HEAD)).toEqual([]);
+    // The event path asks again for the item (a later deploy may cover it, D-225), and it waits.
+    expect(await t.staging().verifyCommit(REPO, OTHER)).toMatchObject([
+      { nodeId: t.node.id, step: "waiting_for_deploy" },
+    ]);
+    expect(await t.staging().verifyCommit(REPO, HEAD)).toMatchObject([
+      { nodeId: t.node.id, step: "waiting_for_deploy" },
+    ]);
     expect(t.checker.calls).toEqual([]);
     expect(await t.kind("staging_deploy")).toEqual([]);
     expect(await t.state()).toBe("verifying_on_staging");
@@ -211,7 +222,11 @@ describe("a failed staging check (unit: M3.4, D-104, P-03, O-37)", () => {
 
     const result = await t.staging().verify(t.node.id);
 
-    expect((await t.kind("staging_check"))[0]?.payload).toEqual({ pass: false });
+    expect((await t.kind("staging_check"))[0]?.payload).toEqual({
+      pass: false,
+      servedCommitSha: t.mergeSha,
+      containment: "identical",
+    });
     expect(result).toMatchObject({
       move: { toState: "in_development", outcome: "applied" },
       escalation: { outcome: "rejected", failedGuards: ["escalation_trigger_met"] },
@@ -481,5 +496,403 @@ describe("recovery of the release (unit: M3.4, O-37)", () => {
       { nodeId: t.node.id, released: [{ nodeId: dependent.id }] },
     ]);
     expect((await t.store.getNode(dependent.id))?.state).toBe("ready_for_dev");
+  });
+});
+
+const LATER = "b".repeat(40);
+const LATEST = "c".repeat(40);
+const BEFORE = "e".repeat(40);
+
+describe("a deploy of a later commit that contains the merge commit (unit: D-225 rule 1, O-38, O-39)", () => {
+  it("counts for the merge commit, records the compare, and a check on the served commit moves to Done", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    const deployment = t.deploy(LATER);
+    t.checker.answers.push({ result: "pass", servedCommitSha: LATER });
+
+    const result = await t.staging().verify(t.node.id);
+
+    const [deploy] = await t.kind("staging_deploy");
+    expect(deploy).toMatchObject({
+      commitSha: t.mergeSha,
+      payload: {
+        environment: "staging",
+        deploymentId: deployment.id,
+        deployedSha: LATER,
+        containment: "ahead",
+      },
+      ref: stagingDeployKey(REPO, deployment.id, t.mergeSha),
+      recordedBy: "runner",
+    });
+    // The check is still asked about, and recorded on, the merge commit.
+    expect(t.checker.calls).toMatchObject([{ commitSha: t.mergeSha }]);
+    const [check] = await t.kind("staging_check");
+    expect(check).toMatchObject({
+      commitSha: t.mergeSha,
+      payload: { pass: true, servedCommitSha: LATER, containment: "ahead" },
+      ref: stagingCheckKey(REPO, t.mergeSha),
+    });
+    expect(result).toMatchObject({
+      step: "checked",
+      deployEvidenceId: deploy?.id,
+      move: { toState: "done", outcome: "applied", failedGuards: [] },
+    });
+    expect(await t.state()).toBe("done");
+  });
+
+  it("records the deploy of the merge commit itself as identical", async () => {
+    const t = await setup();
+    t.deploy();
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_deploy"))[0]?.payload).toMatchObject({
+      deployedSha: t.mergeSha,
+      containment: "identical",
+    });
+    expect((await t.kind("staging_check"))[0]?.payload).toEqual({
+      pass: true,
+      servedCommitSha: t.mergeSha,
+      containment: "identical",
+    });
+  });
+
+  it("does not count a deploy of a commit behind the merge commit, or diverged from it", async () => {
+    const t = await setup();
+    t.github.putCommit(REPO, t.mergeSha, [BEFORE]);
+    t.deploy(BEFORE);
+    t.deploy(OTHER);
+    expect(await t.staging().verify(t.node.id)).toMatchObject({
+      step: "waiting_for_deploy",
+    });
+    expect(await t.github.compareCommits(REPO, t.mergeSha, BEFORE)).toBe("behind");
+    expect(await t.github.compareCommits(REPO, t.mergeSha, OTHER)).toBe("diverged");
+    expect(await t.kind("staging_deploy")).toEqual([]);
+    expect(t.checker.calls).toEqual([]);
+  });
+
+  it("takes the newest finished deploy that covers the merge commit, skipping one still running", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.commitOnMain(LATEST, LATER);
+    t.deploy(t.mergeSha);
+    const newest = t.deploy(LATER);
+    t.deploy(LATEST, "in_progress");
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_deploy"))[0]?.payload).toMatchObject({
+      deploymentId: newest.id,
+      deployedSha: LATER,
+    });
+  });
+
+  it("reads one page of the latest staging deployments, not the whole history", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    for (let i = 0; i < STAGING_DEPLOY_SCAN_LIMIT; i++) t.deploy(OTHER, "in_progress");
+    expect((await t.staging().verify(t.node.id)).step).toBe("waiting_for_deploy");
+    expect(await t.kind("staging_deploy")).toEqual([]);
+  });
+
+  it("always reads the merge commit's own deployments, also when they are older than the page", async () => {
+    const t = await setup();
+    const own = t.deploy(t.mergeSha);
+    for (let i = 0; i < STAGING_DEPLOY_SCAN_LIMIT; i++) t.deploy(OTHER, "in_progress");
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_deploy"))[0]?.payload).toMatchObject({
+      deploymentId: own.id,
+      deployedSha: t.mergeSha,
+    });
+  });
+
+  it("one later deploy covers two items merged close together, each under its own key", async () => {
+    const t = await setup();
+    const second = await setup({
+      store: t.store,
+      idPrefix: "51000000-0000-4000-8000",
+      slug: "second",
+      pr: 8,
+      mergeSha: "9".repeat(40),
+    });
+    second.github.putCommit(REPO, second.mergeSha, [t.mergeSha]);
+    second.github.putCommit(REPO, LATER, [second.mergeSha]);
+    const deployment = {
+      id: 5000,
+      sha: LATER,
+      environment: "staging",
+      state: "success" as const,
+    };
+    t.github.putCommit(REPO, LATER, [second.mergeSha]);
+    t.github.putCommit(REPO, second.mergeSha, [t.mergeSha]);
+    t.github.putDeployment(REPO, deployment);
+    second.github.putDeployment(REPO, deployment);
+
+    await t.staging().verify(t.node.id);
+    await second.staging().verify(second.node.id);
+
+    expect((await t.kind("staging_deploy"))[0]?.ref).toBe(
+      stagingDeployKey(REPO, deployment.id, t.mergeSha),
+    );
+    expect((await second.kind("staging_deploy", second.node))[0]?.ref).toBe(
+      stagingDeployKey(REPO, deployment.id, second.mergeSha),
+    );
+    expect(await t.state()).toBe("done");
+    expect((await second.store.getNode(second.node.id))?.state).toBe("done");
+  });
+
+  it("compares a served commit newer than the deployed one, and counts it when it contains the merge commit", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.commitOnMain(LATEST, LATER);
+    t.deploy(LATER);
+    t.checker.answers.push({ result: "fail", servedCommitSha: LATEST });
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_check"))[0]?.payload).toEqual({
+      pass: false,
+      servedCommitSha: LATEST,
+      containment: "ahead",
+    });
+    expect(await t.state()).toBe("in_development");
+  });
+
+  it("counts a served commit without the merge commit as no result, and records no check", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    t.checker.answers.push({ result: "pass", servedCommitSha: BEFORE });
+    expect((await t.staging().verify(t.node.id)).step).toBe("no_result");
+    expect((await t.kind("staging_no_result"))[0]?.payload).toMatchObject({
+      reason: "another_commit",
+    });
+    expect(await t.kind("staging_check")).toEqual([]);
+  });
+
+  it("records nothing when GitHub's compare fails", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    const broken = {
+      ...t.deps,
+      github: {
+        ...t.github,
+        compareCommits: async (): Promise<never> => {
+          throw new Error("GitHub is down");
+        },
+      },
+    };
+    const staging = createStaging({ ...broken, checker: t.checker });
+    expect((await staging.verify(t.node.id)).step).toBe("github_read_failed");
+    expect(await t.kind("staging_deploy")).toEqual([]);
+  });
+
+  it("the event path verifies an item whose merge commit a deploy of a later commit covers", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    expect(await t.staging().verifyCommit(REPO, LATER)).toMatchObject([
+      { nodeId: t.node.id, move: { toState: "done", outcome: "applied" } },
+    ]);
+  });
+});
+
+describe("a failed staging deploy (unit: D-225 rule 2)", () => {
+  for (const [label, deployed, state] of [
+    ["of the merge commit", "merge", "failure"],
+    ["of a later commit that contains it", "later", "error"],
+  ] as const) {
+    it(`${label} takes the fail path once, with the failure counter up by one`, async () => {
+      const t = await setup();
+      const sha = deployed === "merge" ? t.mergeSha : t.commitOnMain(LATER);
+      const deployment = t.deploy(sha, state);
+
+      const result = await t.staging().verify(t.node.id);
+
+      const [failed] = await t.kind("staging_deploy_failed");
+      expect(failed).toMatchObject({
+        commitSha: t.mergeSha,
+        payload: {
+          environment: "staging",
+          deploymentId: deployment.id,
+          deployedSha: sha,
+          containment: deployed === "merge" ? "identical" : "ahead",
+          state,
+        },
+        ref: stagingDeployFailedKey(REPO, deployment.id, t.mergeSha),
+        recordedBy: "runner",
+      });
+      expect(result).toMatchObject({
+        step: "deploy_failed",
+        deployFailedEvidenceId: failed?.id,
+        move: { toState: "in_development", outcome: "applied", failedGuards: [] },
+      });
+      expect(t.checker.calls).toEqual([]);
+      expect(await t.state()).toBe("in_development");
+      expect(await t.counter("failure")).toBe(1);
+      const move = (await t.transitions(t.node.id)).at(-1);
+      expect(move).toMatchObject({
+        triggerKind: "event",
+        triggerRef: stagingDeployFailedTrigger(failed?.id ?? "").ref,
+      });
+      expect(move?.evidenceIds).toContain(failed?.id);
+
+      // Asked again, by the event, in turn or by the live pass: one fact, one move, one count.
+      await t.staging().verifyCommit(REPO, sha);
+      await t.staging().verify(t.node.id);
+      await t.staging().verifyReady();
+      expect(await t.kind("staging_deploy_failed")).toHaveLength(1);
+      expect(await t.counter("failure")).toBe(1);
+      expect(
+        (await t.transitions(t.node.id)).filter((m) => m.toState === "in_development"),
+      ).toHaveLength(1);
+    });
+  }
+
+  it("sends a design item back to Building components", async () => {
+    const t = await setup({ track: "design" });
+    t.deploy(t.mergeSha, "failure");
+    await t.staging().verify(t.node.id);
+    expect(await t.state()).toBe("building_components");
+    expect(await t.counter("failure")).toBe(1);
+  });
+
+  it("is decided by the newest finished covering deploy: a later success wins over an earlier failure", async () => {
+    const t = await setup();
+    t.deploy(t.mergeSha, "failure");
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    await t.staging().verify(t.node.id);
+    expect(await t.kind("staging_deploy_failed")).toEqual([]);
+    expect(await t.state()).toBe("done");
+  });
+
+  it("does nothing for a failed deploy of a commit without the merge commit", async () => {
+    const t = await setup();
+    t.deploy(OTHER, "failure");
+    expect((await t.staging().verify(t.node.id)).step).toBe("waiting_for_deploy");
+    expect(await t.kind("staging_deploy_failed")).toEqual([]);
+    expect(await t.counter("failure")).toBe(0);
+  });
+
+  it("sends the third failure on to Escalated to Council, and recovers an escalation cut short", async () => {
+    const t = await setup();
+    await t.store.setCounter(t.node.id, "failure", 2, t.clock.now());
+    await t.setting("failure_threshold", 4);
+    t.deploy(t.mergeSha, "failure");
+    expect(await t.staging().verify(t.node.id)).toMatchObject({
+      escalation: { outcome: "rejected" },
+    });
+    expect(await t.state()).toBe("in_development");
+
+    await t.setting("failure_threshold", 3);
+    expect(await t.staging().verifyReady()).toMatchObject([
+      { nodeId: t.node.id, escalation: { outcome: "applied" } },
+    ]);
+    const node = await t.store.getNode(t.node.id);
+    expect(node?.state).toBe("escalated_to_council");
+    expect(node?.blockedReason).toMatch(/staging deploy failed/);
+    expect(await t.counter("failure")).toBe(3);
+  });
+
+  it("in dry run records the failed deploy and writes one dry-run row, and no counter", async () => {
+    const t = await setup({ dryRun: true });
+    t.deploy(t.mergeSha, "failure");
+    await reconcile(t.deps);
+    await reconcile(t.deps);
+    expect(await t.kind("staging_deploy_failed")).toHaveLength(1);
+    expect(
+      (await t.transitions(t.node.id)).filter((m) => m.toState === "in_development"),
+    ).toMatchObject([{ mode: "dry_run" }]);
+    expect(await t.state()).toBe("verifying_on_staging");
+    expect(await t.counter("failure")).toBe(0);
+  });
+
+  it("under the kill switch reads and records nothing", async () => {
+    const t = await setup();
+    t.deploy(t.mergeSha, "failure");
+    await t.setting("kill_switch", true);
+    const reads = t.github.reads;
+    expect((await t.staging().verify(t.node.id)).step).toBe("refused");
+    expect(t.github.reads).toBe(reads);
+    expect(await t.kind("staging_deploy_failed")).toEqual([]);
+    expect(await t.counter("failure")).toBe(0);
+  });
+});
+
+describe("a long wait for a staging deploy (unit: D-225 rule 3, O-40)", () => {
+  const waits = (report: Awaited<ReturnType<typeof reconcile>>) =>
+    report.attention.filter((a) => a.kind === "staging_deploy_wait");
+
+  it("goes on the attention list after the setting, and not before", async () => {
+    const t = await setup({ dryRun: true });
+    expect(waits(await reconcile(t.deps))).toEqual([]);
+    t.advanceMinutes(60);
+    expect(waits(await reconcile(t.deps))).toEqual([]);
+    t.advanceMinutes(1);
+    const node = await t.store.getNode(t.node.id);
+    expect(waits(await reconcile(t.deps))).toEqual([
+      {
+        kind: "staging_deploy_wait",
+        nodeId: t.node.id,
+        state: "verifying_on_staging",
+        waitingSince: node?.stateSince,
+        waitedMinutes: 61,
+        limitMinutes: 60,
+      },
+    ]);
+  });
+
+  it("follows the setting", async () => {
+    const t = await setup({ dryRun: true });
+    await t.setting("staging_deploy_attention_after_minutes", 180);
+    t.advanceMinutes(120);
+    expect(waits(await reconcile(t.deps))).toEqual([]);
+    t.advanceMinutes(61);
+    expect(waits(await reconcile(t.deps))).toHaveLength(1);
+  });
+
+  it("is not reported once a deploy is recorded", async () => {
+    const t = await setup({ dryRun: true });
+    t.advanceMinutes(90);
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    const report = await reconcile(t.deps);
+    expect(report.staging).toMatchObject([{ step: "would_check" }]);
+    expect(waits(report)).toEqual([]);
+  });
+
+  it("is reported when GitHub cannot be read, since no deploy is recorded", async () => {
+    const t = await setup();
+    t.advanceMinutes(90);
+    const broken = {
+      ...t.deps,
+      github: {
+        ...t.github,
+        listRecentDeployments: async (): Promise<never> => {
+          throw new Error("GitHub is down");
+        },
+      },
+    };
+    const staging = createStaging({ ...broken, checker: t.checker });
+    const result = await staging.verify(t.node.id);
+    expect(result.step).toBe("github_read_failed");
+    expect((await staging.deployWaits([result])).waits).toMatchObject([
+      { nodeId: t.node.id, waitedMinutes: 90 },
+    ]);
+  });
+
+  it("reports a missing setting as a problem and lists nothing", async () => {
+    const t = await setup({ dryRun: true });
+    await t.setting("staging_deploy_attention_after_minutes", null);
+    t.advanceMinutes(90);
+    const report = await reconcile(t.deps);
+    expect(waits(report)).toEqual([]);
+    expect(report.problems).toContain(
+      "staging_deploy_attention_after_minutes is missing or invalid: no staging deploy wait on the attention list",
+    );
+  });
+
+  it("under the kill switch reports nothing", async () => {
+    const t = await setup({ dryRun: true });
+    t.advanceMinutes(90);
+    await t.setting("kill_switch", true);
+    expect((await reconcile(t.deps)).attention).toEqual([]);
   });
 });

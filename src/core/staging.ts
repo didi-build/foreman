@@ -10,23 +10,35 @@
 // The order, for one item:
 // 1. The merge commit: the node's latest `merge_commit`. Only that commit counts; the PR's head
 //    and any other commit on main do nothing (docs/guards.md, "The merge commit").
-// 2. The deploy (O-34): GitHub's deployments of exactly that commit to the `staging` environment.
-//    One whose latest status is `success` is recorded as `staging_deploy` evidence, a fact the
-//    runner read itself, also in dry run (like the polling backstop and `merge_check`).
-// 3. The check (O-35): in live mode only. A check that names the merge commit as what staging
-//    serves gives `staging_check {pass}`, once per merge commit under its key. A check that ends
-//    without a result, or finds staging serving another commit, gives `staging_no_result`: the
-//    first is re-dispatched on the next call, the second sends the item to the Council (O-36).
+// 2. The deploy (O-34, D-225, O-38): GitHub's `staging` deployments of that commit and the latest
+//    ones of any commit. The newest finished one (latest status `success`, `failure` or `error`)
+//    whose commit contains the merge commit, by GitHub's compare (`identical` or `ahead`), decides.
+//    A success is recorded as `staging_deploy` evidence, a failure as `staging_deploy_failed`; both
+//    are facts the runner read itself, also in dry run (like the polling backstop and
+//    `merge_check`). A failed deploy takes the fail path of step 4, once per deployment.
+// 3. The check (O-35, O-39): in live mode only. A check that finds staging serving the merge
+//    commit, or a commit that contains it, gives `staging_check {pass, servedCommitSha,
+//    containment}`, once per merge commit under its key. A check that ends without a result, or
+//    finds staging serving a commit without it, gives `staging_no_result`: the first is
+//    re-dispatched on the next call, the second sends the item to the Council (O-36).
 // 4. The move (O-37): a pass moves to Done and resets the counters in the same transaction, then
 //    releases the items it blocked. A fail takes the fallback move back to the building state and
 //    adds one to `failure` in the same transaction, then asks for the escalation, which the
 //    guards allow once `failure` reaches `failure_threshold` (P-03). Each move's trigger id names
-//    the check (`staging_check:<evidence id>`), so a repeated call writes one row.
+//    the check (`staging_check:<evidence id>`) or the failed deploy
+//    (`staging_deploy_failed:<evidence id>`), so a repeated call writes one row.
+// An item that waits in Verifying on staging with no deploy recorded for longer than
+// `staging_deploy_attention_after_minutes` is reported for the attention list (D-225, O-40).
 // A failure part way is recovered by the next call: the facts are keyed, the moves are taken once
 // per trigger, and the live pass (`verifyReady`) asks again for an escalation or a release that a
 // failure left behind.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
-import type { GitHubDeploymentReader } from "./github.ts";
+import type {
+  CommitRelation,
+  Deployment,
+  GitHubCommitReader,
+  GitHubDeploymentReader,
+} from "./github.ts";
 import { latest } from "./guards/evidence.ts";
 import { STAGING_CHECK_ATTEMPTS } from "./guards/staging.ts";
 import {
@@ -49,6 +61,26 @@ export const STAGING_PASS_GUARD = "staging_check_on_merge_commit";
 export const STAGING_FAIL_GUARD = "staging_check_failed";
 /** The guard of the escalation into the Council (escalation.yaml). */
 export const ESCALATION_GUARD = "escalation_trigger_met";
+/**
+ * How many of the latest `staging` deployments of any commit the runner reads for one item (one
+ * GitHub page, O-38). The newest finished deploy of main contains every earlier merge commit, so
+ * a short window is enough; a deploy older than it is either covered by a newer one or replaced.
+ */
+export const STAGING_DEPLOY_SCAN_LIMIT = 20;
+/** The setting: minutes in Verifying on staging with no deploy before the attention list (D-225). */
+export const STAGING_DEPLOY_WAIT_SETTING = "staging_deploy_attention_after_minutes";
+
+/** Deployment states that end a deployment: a success, or a failure (D-225). */
+const FINISHED: ReadonlySet<Deployment["state"]> = new Set([
+  "success",
+  "failure",
+  "error",
+]);
+/** A commit that contains the merge commit, by GitHub's compare from the merge commit to it. */
+export type Containment = "identical" | "ahead";
+const containmentOf = (relation: CommitRelation): Containment | null =>
+  relation === "identical" || relation === "ahead" ? relation : null;
+const MINUTE = 60_000;
 
 const ACTOR = { kind: "runner" as const, id: "staging" };
 
@@ -83,7 +115,7 @@ export interface StagingDeps {
   guards: GuardRegistry;
   clock: Clock;
   ids: IdSource;
-  github: GitHubDeploymentReader;
+  github: GitHubDeploymentReader & GitHubCommitReader;
   /** Null where no check is run: the reconcile pass in dry run. */
   checker: StagingChecker | null;
 }
@@ -104,8 +136,10 @@ export type StagingStep =
   | "not_verifying"
   | "no_merge_commit"
   | "no_dispatch"
-  /** GitHub has not reported a successful staging deploy of the merge commit. */
+  /** GitHub has not reported a finished staging deploy of a commit that contains the merge commit. */
   | "waiting_for_deploy"
+  /** A staging deploy covering the merge commit failed, and led to the fail move (D-225). */
+  | "deploy_failed"
   | "github_read_failed"
   /** Dry run: the deploy is there, and the live pass would run the check. */
   | "would_check"
@@ -125,17 +159,45 @@ export interface StagingResult {
   step: StagingStep;
   mergeCommitSha?: string;
   deployEvidenceId?: string;
+  deployFailedEvidenceId?: string;
   checkEvidenceId?: string;
   noResultEvidenceId?: string;
   move?: StagingMove;
   escalation?: StagingMove;
   /** The blocked items asked for after Done. */
   released?: { nodeId: string; move: StagingMove }[];
+  /** Set when no deploy is recorded for the item: when it entered Verifying on staging. */
+  waitingSince?: Date;
 }
 
-/** The key of a staging deploy: one per GitHub deployment. */
-export const stagingDeployKey = (repo: string, deploymentId: number): string =>
-  `github:staging_deploy:${repo}:deployment-${deploymentId}`;
+/** An item in Verifying on staging with no deploy recorded past the setting (D-225, O-40). */
+export interface StagingDeployWait {
+  nodeId: string;
+  waitingSince: Date;
+  waitedMinutes: number;
+  limitMinutes: number;
+}
+
+/**
+ * The key of a staging deploy: one per GitHub deployment of the merge commit itself, and one per
+ * deployment and merge commit it covers for a deployment of a later commit (`coveredSha`), which
+ * may cover several items (D-225).
+ */
+export const stagingDeployKey = (
+  repo: string,
+  deploymentId: number,
+  coveredSha?: string,
+): string =>
+  `github:staging_deploy:${repo}:deployment-${deploymentId}` +
+  (coveredSha ? `:covers-${coveredSha}` : "");
+
+/** The key of a failed staging deploy: one per GitHub deployment and merge commit it covers. */
+export const stagingDeployFailedKey = (
+  repo: string,
+  deploymentId: number,
+  coveredSha: string,
+): string =>
+  `github:staging_deploy_failed:${repo}:deployment-${deploymentId}:covers-${coveredSha}`;
 
 /** The key of a staging check result: one per merge commit. */
 export const stagingCheckKey = (repo: string, sha: string): string =>
@@ -158,6 +220,17 @@ export const stagingCheckTrigger = (checkEvidenceId: string): Trigger => ({
   kind: "event",
   ref: `staging_check:${checkEvidenceId}`,
 });
+
+/** The trigger of the moves a recorded failed staging deploy leads to (D-225). */
+export const stagingDeployFailedTrigger = (
+  failedDeployEvidenceId: string,
+): Trigger => ({
+  kind: "event",
+  ref: `staging_deploy_failed:${failedDeployEvidenceId}`,
+});
+
+/** The trigger refs of the fail moves, for the recovery of an escalation cut short. */
+const FAIL_TRIGGER_PREFIXES = ["staging_check:", "staging_deploy_failed:"];
 
 /** The trigger of the escalation after the last check without a result. */
 export const stagingTimeoutTrigger = (noResultEvidenceId: string): Trigger => ({
@@ -322,21 +395,51 @@ export function createStaging(deps: StagingDeps) {
     return released;
   }
 
-  /** Step 4: the move a recorded check calls for, with its counter write, then what follows. */
+  /**
+   * What a recorded result calls for: a staging check (pass or fail), or a failed staging deploy
+   * that covers the merge commit (a fail, D-225). `what` says it in the move's reason.
+   */
+  interface Outcome {
+    evidence: Evidence;
+    passed: boolean;
+    trigger: Trigger;
+    what: string;
+  }
+
+  const checkOutcome = (check: Evidence): Outcome => {
+    const passed = field(check.payload, "pass") === true;
+    return {
+      evidence: check,
+      passed,
+      trigger: stagingCheckTrigger(check.id),
+      what: `the staging check ${passed ? "passed" : "failed"} for merge ${check.commitSha}`,
+    };
+  };
+
+  const deployFailedOutcome = (failed: Evidence): Outcome => {
+    const deployed = field(failed.payload, "deployedSha");
+    return {
+      evidence: failed,
+      passed: false,
+      trigger: stagingDeployFailedTrigger(failed.id),
+      what: `the staging deploy of ${typeof deployed === "string" ? deployed : failed.commitSha} failed for merge ${failed.commitSha}`,
+    };
+  };
+
+  /** Step 4: the move a recorded result calls for, with its counter write, then what follows. */
   async function decide(
     node: Node,
     moves: { pass: TransitionContract; fail: TransitionContract | undefined },
-    check: Evidence,
+    outcome: Outcome,
     base: StagingResult,
   ): Promise<StagingResult> {
-    const passed = field(check.payload, "pass") === true;
+    const { passed, trigger } = outcome;
     const move = passed ? moves.pass : moves.fail;
-    if (!move) return { ...base, step: "checked" };
-    const trigger = stagingCheckTrigger(check.id);
+    if (!move) return base;
     const dryRun = await dryRunOn();
     const at = clock.now();
-    // P-03: Done resets both counters; a failed staging check adds one to `failure`. Each commits
-    // with its move, so a move taken once counts once. Dry run writes neither.
+    // P-03: Done resets both counters; a failed staging check or deploy adds one to `failure`.
+    // Each commits with its move, so a move taken once counts once. Dry run writes neither.
     const counters: AlsoWrite = passed
       ? async (tx) => {
           await tx.setCounter(node.id, "failure", 0, at);
@@ -354,18 +457,12 @@ export function createStaging(deps: StagingDeps) {
         toState: move.to,
         trigger,
         actor: ACTOR,
-        evidenceIds: [check.id],
-        reason: passed
-          ? `the staging check passed for merge ${check.commitSha}`
-          : `the staging check failed for merge ${check.commitSha}`,
+        evidenceIds: [outcome.evidence.id],
+        reason: outcome.what,
       },
       dryRun ? undefined : counters,
     );
-    const checked: StagingResult = {
-      ...base,
-      step: "checked",
-      move: asMove(move.to, result),
-    };
+    const checked: StagingResult = { ...base, move: asMove(move.to, result) };
     if (dryRun || result.outcome === "rejected" || result.outcome === "refused") {
       return checked;
     }
@@ -373,9 +470,48 @@ export function createStaging(deps: StagingDeps) {
     const escalation = await escalate(
       node.id,
       trigger,
-      `the staging check failed for merge ${check.commitSha}, and the failure counter reached its limit`,
+      `${outcome.what}, and the failure counter reached its limit`,
     );
     return escalation ? { ...checked, escalation } : checked;
+  }
+
+  /**
+   * Step 2's read (D-225, O-38): the newest finished `staging` deployment whose commit contains
+   * the merge commit, from GitHub's deployments of the merge commit and its latest deployments of
+   * any commit, by deployment id (GitHub's ids grow with time). Each other commit is compared
+   * once. A deployment of a commit that is `behind` or `diverged` from the merge commit is
+   * skipped. GitHub's errors are thrown.
+   */
+  async function coveringDeploy(
+    repo: string,
+    sha: string,
+  ): Promise<{ deployment: Deployment; containment: Containment } | null> {
+    const byId = new Map<number, Deployment>();
+    for (const d of [
+      ...(await github.listDeployments(repo, STAGING_ENVIRONMENT, sha)).filter(
+        (d) => d.sha === sha,
+      ),
+      ...(await github.listRecentDeployments(
+        repo,
+        STAGING_ENVIRONMENT,
+        STAGING_DEPLOY_SCAN_LIMIT,
+      )),
+    ]) {
+      if (d.environment === STAGING_ENVIRONMENT && FINISHED.has(d.state))
+        byId.set(d.id, d);
+    }
+    const relations = new Map<string, CommitRelation>();
+    for (const deployment of [...byId.values()].sort((a, b) => b.id - a.id)) {
+      let relation =
+        deployment.sha === sha ? "identical" : relations.get(deployment.sha);
+      if (relation === undefined) {
+        relation = await github.compareCommits(repo, sha, deployment.sha);
+        relations.set(deployment.sha, relation);
+      }
+      const containment = containmentOf(relation);
+      if (containment) return { deployment, containment };
+    }
+    return null;
   }
 
   /** Steps 1 to 4 for one node. `null` checker: no check is run, as in dry run. */
@@ -387,18 +523,38 @@ export function createStaging(deps: StagingDeps) {
     if (!node) return { nodeId, step: "no_node" };
     const moves = stagingMovesFor(node);
     if (!moves) return { nodeId, step: "not_verifying" };
+    // Until a deploy is recorded, the result says how long the item has waited (D-225, O-40).
+    const waiting = { waitingSince: node.stateSince };
 
     // Step 1.
     const merge = latest(await store.listEvidence({ nodeId, kind: "merge_commit" }));
     const sha = merge?.commitSha;
-    if (!sha) return { nodeId, step: "no_merge_commit" };
+    if (!sha) return { nodeId, step: "no_merge_commit", ...waiting };
     const base: StagingResult = { nodeId, step: "checked", mergeCommitSha: sha };
 
+    // A result already recorded: a failed deploy covering the merge commit, else a check.
+    const failed = latest(
+      await store.listEvidence({
+        nodeId,
+        kind: "staging_deploy_failed",
+        commitSha: sha,
+      }),
+    );
+    if (failed) {
+      return decide(node, moves, deployFailedOutcome(failed), {
+        ...base,
+        step: "deploy_failed",
+        deployFailedEvidenceId: failed.id,
+      });
+    }
     const check = latest(
       await store.listEvidence({ nodeId, kind: "staging_check", commitSha: sha }),
     );
     if (check) {
-      return decide(node, moves, check, { ...base, checkEvidenceId: check.id });
+      return decide(node, moves, checkOutcome(check), {
+        ...base,
+        checkEvidenceId: check.id,
+      });
     }
 
     // Step 2.
@@ -407,33 +563,50 @@ export function createStaging(deps: StagingDeps) {
     );
     const repo = field(dispatch?.payload, "repo");
     if (typeof repo !== "string" || repo === "")
-      return { ...base, step: "no_dispatch" };
+      return { ...base, step: "no_dispatch", ...waiting };
     let deploy = latest(
       await store.listEvidence({ nodeId, kind: "staging_deploy", commitSha: sha }),
     );
     if (!deploy) {
       let found;
       try {
-        found = (await github.listDeployments(repo, STAGING_ENVIRONMENT, sha)).find(
-          (d) => d.sha === sha && d.state === "success",
-        );
+        found = await coveringDeploy(repo, sha);
       } catch {
-        return { ...base, step: "github_read_failed" };
+        return { ...base, step: "github_read_failed", ...waiting };
       }
-      if (!found) return { ...base, step: "waiting_for_deploy" };
-      const key = stagingDeployKey(repo, found.id);
-      deploy =
-        (await recordOnce(
+      if (!found) return { ...base, step: "waiting_for_deploy", ...waiting };
+      const { deployment, containment } = found;
+      const covered = deployment.sha === sha ? undefined : sha;
+      const facts = {
+        environment: STAGING_ENVIRONMENT,
+        deploymentId: deployment.id,
+        deployedSha: deployment.sha,
+        containment,
+      };
+      if (deployment.state !== "success") {
+        const key = stagingDeployFailedKey(repo, deployment.id, sha);
+        const recorded = await recordOnce(
           fact(
             node,
-            "staging_deploy",
+            "staging_deploy_failed",
             sha,
-            { environment: STAGING_ENVIRONMENT, deploymentId: found.id },
+            { ...facts, state: deployment.state },
             key,
           ),
           key,
-        )) ?? undefined;
-      if (!deploy) return { ...base, step: "waiting_for_deploy" };
+        );
+        if (!recorded) return { ...base, step: "waiting_for_deploy", ...waiting };
+        return decide(node, moves, deployFailedOutcome(recorded), {
+          ...base,
+          step: "deploy_failed",
+          deployFailedEvidenceId: recorded.id,
+        });
+      }
+      const key = stagingDeployKey(repo, deployment.id, covered);
+      deploy =
+        (await recordOnce(fact(node, "staging_deploy", sha, facts, key), key)) ??
+        undefined;
+      if (!deploy) return { ...base, step: "waiting_for_deploy", ...waiting };
     }
     const withDeploy = { ...base, deployEvidenceId: deploy.id };
 
@@ -456,20 +629,49 @@ export function createStaging(deps: StagingDeps) {
     } catch {
       return { ...withDeploy, step: "check_error" };
     }
-    if (outcome.result !== "no_result" && outcome.servedCommitSha === sha) {
+    let containment: Containment | null = null;
+    if (outcome.result !== "no_result") {
+      // O-39: the served commit counts when it is the merge commit, or GitHub's compare shows it
+      // contains it: the compare recorded with the deploy when staging serves the deployed commit,
+      // else a new one.
+      const served = outcome.servedCommitSha;
+      if (served === sha) containment = "identical";
+      else if (served === field(deploy.payload, "deployedSha")) {
+        const recorded = field(deploy.payload, "containment");
+        containment =
+          recorded === "identical" || recorded === "ahead" ? recorded : null;
+      } else {
+        try {
+          containment = containmentOf(await github.compareCommits(repo, sha, served));
+        } catch {
+          return { ...withDeploy, step: "github_read_failed" };
+        }
+      }
+    }
+    if (outcome.result !== "no_result" && containment) {
       const key = stagingCheckKey(repo, sha);
       const recorded = await recordOnce(
-        fact(node, "staging_check", sha, { pass: outcome.result === "pass" }, key),
+        fact(
+          node,
+          "staging_check",
+          sha,
+          {
+            pass: outcome.result === "pass",
+            servedCommitSha: outcome.servedCommitSha,
+            containment,
+          },
+          key,
+        ),
         key,
       );
       if (!recorded) return { ...withDeploy, step: "check_error" };
-      return decide(node, moves, recorded, {
+      return decide(node, moves, checkOutcome(recorded), {
         ...withDeploy,
         checkEvidenceId: recorded.id,
       });
     }
 
-    // No result: staging did not answer, or serves another commit than the merge commit.
+    // No result: staging did not answer, or serves a commit without the merge commit.
     const attempt = noResults.length + 1;
     const key = stagingNoResultKey(repo, sha, node.stateSince, attempt);
     const reason = outcome.result === "no_result" ? outcome.reason : "another_commit";
@@ -509,25 +711,61 @@ export function createStaging(deps: StagingDeps) {
 
     /**
      * The event path: GitHub reported a deploy of `sha` in `repo` (a `deployment_status`
-     * event). Only the node whose latest merge commit is exactly `sha` is verified; a deploy of
-     * any other commit does nothing. The deploy itself is read from GitHub again, never taken
-     * from the event.
+     * event). Every item of the repository in Verifying on staging is verified, since a deploy of
+     * a later commit may cover its merge commit (D-225), and so is the item whose latest merge
+     * commit is exactly `sha`. Each reads the deploy from GitHub again, never from the event.
      */
     async verifyCommit(repo: string, sha: string): Promise<StagingResult[]> {
       const results: StagingResult[] = [];
       for (const dispatch of await store.listDispatches({ repo })) {
+        const node = await store.getNode(dispatch.nodeId);
+        if (!node) continue;
         const merge = latest(
-          await store.listEvidence({ nodeId: dispatch.nodeId, kind: "merge_commit" }),
+          await store.listEvidence({ nodeId: node.id, kind: "merge_commit" }),
         );
-        if (merge?.commitSha === sha) results.push(await verify(dispatch.nodeId));
+        if (merge?.commitSha === sha || stagingMovesFor(node)) {
+          results.push(await verify(node.id));
+        }
       }
       return results;
     },
 
     /**
+     * The items among `results` that have waited in Verifying on staging with no deploy recorded
+     * for longer than `staging_deploy_attention_after_minutes` (D-225, O-40), for the attention
+     * list. A missing or invalid setting reports nothing and says so in `problem`.
+     */
+    async deployWaits(
+      results: readonly StagingResult[],
+    ): Promise<{ waits: StagingDeployWait[]; problem: string | null }> {
+      const value = (await store.getSetting(STAGING_DEPLOY_WAIT_SETTING))?.value;
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        return {
+          waits: [],
+          problem: `${STAGING_DEPLOY_WAIT_SETTING} is missing or invalid: no staging deploy wait on the attention list`,
+        };
+      }
+      const now = clock.now().getTime();
+      const waits: StagingDeployWait[] = [];
+      for (const r of results) {
+        if (!r.waitingSince) continue;
+        const waitedMinutes = (now - r.waitingSince.getTime()) / MINUTE;
+        if (waitedMinutes > value) {
+          waits.push({
+            nodeId: r.nodeId,
+            waitingSince: r.waitingSince,
+            waitedMinutes,
+            limitMinutes: value,
+          });
+        }
+      }
+      return { waits, problem: null };
+    },
+
+    /**
      * The live pass, run by the reconcile flow with `dry_run` off: every node in Verifying on
      * staging, then the recovery of what a failure part way left behind. A node whose latest move
-     * was a failed staging check is asked for its escalation again, and every Done node for the
+     * was a failed staging check or deploy is asked for its escalation again, and every Done node for the
      * release of the items it blocked. Both are taken once per trigger, and the guards decide.
      */
     async verifyReady(): Promise<StagingResult[]> {
@@ -550,15 +788,19 @@ export function createStaging(deps: StagingDeps) {
         const lastMove = (await store.listTransitions(node.id))
           .filter((t) => t.mode === "applied")
           .at(-1);
+        const ref = lastMove?.triggerRef;
         if (
           lastMove?.toState === node.state &&
           lastMove.triggerKind === "event" &&
-          lastMove.triggerRef?.startsWith("staging_check:")
+          ref &&
+          FAIL_TRIGGER_PREFIXES.some((prefix) => ref.startsWith(prefix))
         ) {
           const escalation = await escalate(
             node.id,
-            { kind: "event", ref: lastMove.triggerRef },
-            "the staging check failed, and the failure counter reached its limit",
+            { kind: "event", ref },
+            ref.startsWith("staging_check:")
+              ? "the staging check failed, and the failure counter reached its limit"
+              : "the staging deploy failed, and the failure counter reached its limit",
           );
           if (escalation && escalation.outcome !== "rejected") {
             results.push({ nodeId: node.id, step: "checked", escalation });

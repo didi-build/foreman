@@ -49,8 +49,9 @@ flows:
     path: f/foreman/verify_staging
     entry: flows/verify-staging.ts
     # Called with a repository and a commit when GitHub reports a staging deploy (a
-    # `deployment_status` event, O-34). It verifies only the item whose latest merge commit is that
-    # commit, reading the deploy from GitHub itself. Who calls it on the event is open, as for
+    # `deployment_status` event, O-34). It verifies each item of the repository in Verifying on
+    # staging, since a later commit's deploy may cover its merge commit (D-225), reading the deploy
+    # from GitHub itself. Who calls it on the event is open, as for
     # dispatch: the receiver records the delivery and holds no Windmill credential. The reconcile
     # flow's staging pass is the backstop.
     trigger: called

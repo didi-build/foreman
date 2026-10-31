@@ -28,5 +28,7 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
     getMergeability: refuse,
     squashMerge: refuse,
     listDeployments: refuse,
+    listRecentDeployments: refuse,
+    compareCommits: refuse,
   };
 }

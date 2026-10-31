@@ -33,6 +33,17 @@ export interface CheckPayload {
   pass: boolean;
 }
 
+/**
+ * A staging check (M3.4, D-225). `servedCommitSha` is the commit staging served, and
+ * `containment` how it relates to the merge commit by GitHub's compare (`identical` or `ahead`,
+ * so the served commit contains the merge commit). A check recorded before D-225 has neither and
+ * was recorded only when staging served the merge commit itself.
+ */
+export interface StagingCheckPayload extends CheckPayload {
+  servedCommitSha?: string;
+  containment?: "identical" | "ahead";
+}
+
 export interface MergeCheckPayload {
   pr: number;
   /** GitHub's answer for the head: true, false (a conflict), or null (not worked out yet). */
@@ -122,6 +133,16 @@ export function readMergeCheck(payload: Json): MergeCheckPayload | null {
 export function readCheck(payload: Json): CheckPayload | null {
   if (!isRecord(payload) || typeof payload.pass !== "boolean") return null;
   return { pass: payload.pass };
+}
+
+export function readStagingCheck(payload: Json): StagingCheckPayload | null {
+  const check = readCheck(payload);
+  if (!check || !isRecord(payload)) return null;
+  const { servedCommitSha, containment } = payload;
+  if (servedCommitSha === undefined && containment === undefined) return check;
+  if (typeof servedCommitSha !== "string" || servedCommitSha === "") return null;
+  if (containment !== "identical" && containment !== "ahead") return null;
+  return { ...check, servedCommitSha, containment };
 }
 
 export function readDocsNote(payload: Json): DocsNotePayload | null {

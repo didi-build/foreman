@@ -2,7 +2,7 @@
 
 - **Status:** accepted at the M2.3 review point (D-180, 2026-10-29).
 - **Amended by D-193** (2026-10-30): the receiver shares the cluster's platform pool with the state API, instead of one droplet or App Platform host.
-- **Note from M3.4** (O-34, 2026-10-31): the staging check of section 5's last row is built. The receiver still records `deployment_status` as a delivery only, and `factory_ingest` gains no kind. The runner reads the deployment of the merge commit from GitHub itself and records it as `staging_deploy`, then its check as `staging_check`.
+- **Note from M3.4** (O-34, 2026-10-31): the staging check of section 5's last row is built. The receiver still records `deployment_status` as a delivery only, and `factory_ingest` gains no kind. The runner reads the deployment of the merge commit from GitHub itself and records it as `staging_deploy`, then its check as `staging_check`. D-225 (O-38): the runner also counts a deploy of a later commit that contains the merge commit, through GitHub's compare, and records a failed covering deploy as `staging_deploy_failed`. Neither is taken from the event.
 - **Date:** 2026-10-29
 - **Related:** build plan M2.3 and M2.4, D-156, D-160, D-164, D-178, D-193, essentials 1 and 6, `docs/guards.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0104](./0104-state-store-schema.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 

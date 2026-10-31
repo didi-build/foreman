@@ -1,7 +1,13 @@
-// Guards on staging: the check for the merge commit passed, or failed (ADR 0105).
+// Guards on staging: the check for the merge commit passed, or failed, or a staging deploy covering
+// the merge commit failed (ADR 0105, D-225).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
-import type { Evidence } from "../store.ts";
-import { latest, onCommit, readCheck, result } from "./evidence.ts";
+import type { Evidence, Json } from "../store.ts";
+import { latest, onCommit, readStagingCheck, result } from "./evidence.ts";
+
+const field = (value: Json, key: string): Json | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value[key]
+    : undefined;
 
 /**
  * Staging checks that may end without a result for one merge commit before the item goes to the
@@ -27,56 +33,118 @@ export async function stagingNoResults(
   return { mergeSha: merge.commitSha, rows };
 }
 
-/** The latest staging check for the latest merge commit, with its parsed result. */
-async function stagingCheck(ctx: GuardContext, name: string) {
+/**
+ * What the staging guards read for the latest merge commit: a recorded failed staging deploy that
+ * covers it (D-225), else the latest staging check with its parsed result. A check counts only
+ * when staging served the merge commit, or a commit GitHub's compare showed contains it
+ * (`containment` `ahead`), as the check itself records (D-225, O-39).
+ */
+async function stagingCheck(
+  ctx: GuardContext,
+  name: string,
+): Promise<
+  | { fail: GuardCheck }
+  | { deployFailed: true; ids: string[]; sha: string; deployedSha: string }
+  | { deployFailed: false; pass: boolean; ids: string[]; sha: string; on: string }
+> {
   const merge = latest(
     await ctx.store.listEvidence({ nodeId: ctx.node.id, kind: "merge_commit" }),
   );
   if (!merge?.commitSha)
     return { fail: result(name, false, [], "no merge commit recorded") };
-  const check = latest(await onCommit(ctx, "staging_check", merge.commitSha));
+  const sha = merge.commitSha;
+  const failedDeploy = latest(await onCommit(ctx, "staging_deploy_failed", sha));
+  if (failedDeploy) {
+    const deployed = field(failedDeploy.payload, "deployedSha");
+    return {
+      deployFailed: true,
+      ids: [merge.id, failedDeploy.id],
+      sha,
+      deployedSha: typeof deployed === "string" ? deployed : sha,
+    };
+  }
+  const check = latest(await onCommit(ctx, "staging_check", sha));
   if (!check) {
     return {
-      fail: result(
-        name,
-        false,
-        [merge.id],
-        `no staging check for merge ${merge.commitSha}`,
-      ),
+      fail: result(name, false, [merge.id], `no staging check for merge ${sha}`),
     };
   }
-  const payload = readCheck(check.payload);
+  const ids = [merge.id, check.id];
+  const payload = readStagingCheck(check.payload);
   if (!payload) {
+    return { fail: result(name, false, ids, "malformed staging_check payload") };
+  }
+  const served = payload.servedCommitSha ?? sha;
+  const contains =
+    served === sha
+      ? (payload.containment ?? "identical") === "identical"
+      : payload.containment === "ahead";
+  if (!contains) {
     return {
       fail: result(
         name,
         false,
-        [merge.id, check.id],
-        "malformed staging_check payload",
+        ids,
+        `the staging check ran on ${served}, which is not shown to contain merge ${sha}`,
       ),
     };
   }
-  return { pass: payload.pass, ids: [merge.id, check.id], sha: merge.commitSha };
+  return { deployFailed: false, pass: payload.pass, ids, sha, on: served };
 }
 
-/** A staging check passed for the merge commit. */
+const onServed = (found: { sha: string; on: string }): string =>
+  found.on === found.sha ? "" : ` (staging served ${found.on}, which contains it)`;
+
+/**
+ * A staging check passed for the merge commit, on staging serving it or a commit that contains
+ * it, and no failed staging deploy covering it is recorded.
+ */
 export async function stagingCheckOnMergeCommit(
   ctx: GuardContext,
 ): Promise<GuardCheck> {
   const name = "staging_check_on_merge_commit";
   const found = await stagingCheck(ctx, name);
-  if ("fail" in found) return found.fail as GuardCheck;
+  if ("fail" in found) return found.fail;
+  if (found.deployFailed) {
+    return result(
+      name,
+      false,
+      found.ids,
+      `the staging deploy of ${found.deployedSha} failed for merge ${found.sha}`,
+    );
+  }
   return found.pass
-    ? result(name, true, found.ids, `staging check passed for merge ${found.sha}`)
+    ? result(
+        name,
+        true,
+        found.ids,
+        `staging check passed for merge ${found.sha}${onServed(found)}`,
+      )
     : result(name, false, found.ids, `staging check failed for merge ${found.sha}`);
 }
 
-/** A staging check failed for the merge commit. */
+/**
+ * A staging check failed for the merge commit, or a staging deploy of the merge commit or of a
+ * commit that contains it failed (D-225).
+ */
 export async function stagingCheckFailed(ctx: GuardContext): Promise<GuardCheck> {
   const name = "staging_check_failed";
   const found = await stagingCheck(ctx, name);
-  if ("fail" in found) return found.fail as GuardCheck;
+  if ("fail" in found) return found.fail;
+  if (found.deployFailed) {
+    return result(
+      name,
+      true,
+      found.ids,
+      `the staging deploy of ${found.deployedSha} failed for merge ${found.sha}`,
+    );
+  }
   return found.pass
     ? result(name, false, found.ids, `staging check passed for merge ${found.sha}`)
-    : result(name, true, found.ids, `staging check failed for merge ${found.sha}`);
+    : result(
+        name,
+        true,
+        found.ids,
+        `staging check failed for merge ${found.sha}${onServed(found)}`,
+      );
 }

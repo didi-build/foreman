@@ -1,6 +1,7 @@
 // Seam: the reconcile flow (build plan M3.1, architecture section 2.5) with fake adapters on the
 // memory store. The pass itself is tested in test/reconcile.test.ts; this covers what the flow
-// adds: the execution count from the composition layer and one result per run.
+// adds: the execution count from the composition layer and one result per run, and the live
+// staging pass's deploy waits on the attention count (D-225).
 import { describe, expect, it } from "vitest";
 
 import { run } from "../../flows/reconcile.ts";
@@ -134,6 +135,19 @@ describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
     ]);
     expect((await run(deps)).verified).toEqual([]);
     expect(t.checker.calls).toHaveLength(1);
+  });
+
+  it("the reconcile flow in live mode counts an item past the staging deploy wait on the attention list (D-225)", async () => {
+    const t = await setupStaging();
+    const deps = stagingFlowDeps(t);
+    t.advanceMinutes(60);
+    expect(await run(deps)).toMatchObject({ attention: 0, stagingWaits: [] });
+    t.advanceMinutes(1);
+    expect(await run(deps)).toMatchObject({
+      attention: 1,
+      stagingWaits: [{ nodeId: t.node.id, waitedMinutes: 61, limitMinutes: 60 }],
+      problems: [],
+    });
   });
 
   it("the reconcile flow runs no staging check in dry run, and the pass records the deploy", async () => {

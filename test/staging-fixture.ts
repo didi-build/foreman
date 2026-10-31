@@ -1,6 +1,7 @@
 // Test support for staging verification (build plan M3.4): a fake staging check, and one item in
 // Verifying on staging on the merge fixture, merged by the runner's own merge, with builders for
-// GitHub's staging deploy of a commit. Fake data only; nothing reaches staging or GitHub.
+// GitHub's staging deploy of a commit and for the commits on main after the merge commit (D-225).
+// Fake data only; nothing reaches staging or GitHub.
 import type { Deployment } from "../src/core/github.ts";
 import type { Node, Store, Track } from "../src/core/store.ts";
 import {
@@ -93,10 +94,20 @@ export async function setupStaging(
     createStaging({ ...t.deps, store, checker });
   const counter = (kind: "failure" | "qa_round" = "failure", node: Node = t.node) =>
     t.store.getCounter(node.id, kind);
+  /** Main gains `sha` on top of `parent` (the merge commit unless given), for GitHub's compare. */
+  function commitOnMain(sha: string, parent = mergeSha): string {
+    t.github.putCommit(REPO, sha, [parent]);
+    return sha;
+  }
+
   const kind = (
-    name: "staging_deploy" | "staging_check" | "staging_no_result",
+    name:
+      | "staging_deploy"
+      | "staging_deploy_failed"
+      | "staging_check"
+      | "staging_no_result",
     node: Node = t.node,
   ) => t.store.listEvidence({ nodeId: node.id, kind: name });
 
-  return { ...t, mergeSha, checker, deploy, staging, counter, kind };
+  return { ...t, mergeSha, checker, deploy, commitOnMain, staging, counter, kind };
 }

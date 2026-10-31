@@ -119,6 +119,8 @@ export async function createReconcileFixture(
     ["max_rejected_model_requests", 6],
     ["windmill_monthly_execution_limit", 1000],
     ["windmill_alert_percent", 80],
+    // Migration 0012 (D-225).
+    ["staging_deploy_attention_after_minutes", 60],
   ] as const) {
     await setting(key, value);
   }

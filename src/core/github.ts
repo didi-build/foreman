@@ -104,7 +104,31 @@ export interface GitHubDeploymentReader {
     environment: string,
     sha: string,
   ): Promise<Deployment[]>;
+  /**
+   * The latest `limit` deployments to `environment`, of any commit, newest first (GitHub's
+   * deployments list filtered by environment, one page). D-225, O-38.
+   */
+  listRecentDeployments(
+    repo: string,
+    environment: string,
+    limit: number,
+  ): Promise<Deployment[]>;
+}
+
+/**
+ * How `head` relates to `base` in the history, as GitHub's compare (`base...head`) reports it:
+ * `ahead` when `base` is an ancestor of `head`, `identical` when they are the same commit,
+ * `behind` when `head` is an ancestor of `base`, `diverged` otherwise.
+ */
+export type CommitRelation = "ahead" | "identical" | "behind" | "diverged";
+
+/** What the runner reads about commits (D-225): whether one commit contains another. */
+export interface GitHubCommitReader {
+  compareCommits(repo: string, base: string, head: string): Promise<CommitRelation>;
 }
 
 /** Everything the runner reads from and does on GitHub. */
-export type GitHub = GitHubReader & GitHubMerger & GitHubDeploymentReader;
+export type GitHub = GitHubReader &
+  GitHubMerger &
+  GitHubDeploymentReader &
+  GitHubCommitReader;
