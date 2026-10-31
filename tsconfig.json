@@ -20,6 +20,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "infra/**/*.ts",
     "spikes/**/*.ts",
     "gallery/**/*.ts",
     "gallery/**/*.tsx",

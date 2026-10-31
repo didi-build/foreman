@@ -5,7 +5,7 @@ import { findInfraBoundaryViolations } from "../scripts/lib/infra-boundaries.mjs
 const at = (path: string, text: string) =>
   findInfraBoundaryViolations([{ path, text }]);
 
-describe("infrastructure boundary (unit: IaC guard, D-146)", () => {
+describe("infrastructure boundary (unit: IaC guard, D-146, ADR 0110)", () => {
   it("allows Cloudflare declarations inside the platform module", () => {
     expect(
       at(
@@ -20,34 +20,81 @@ describe("infrastructure boundary (unit: IaC guard, D-146)", () => {
       "a resource in a stack",
       "infra/stacks/x/main.tf",
       'resource "cloudflare_dns_record" "x" {}',
+      ["a Cloudflare resource or data source"],
     ],
     [
       "a data source in the project module",
       "infra/modules/project/main.tf",
       'data "cloudflare_zone" "z" {}',
+      ["a Cloudflare resource or data source"],
     ],
     [
       "a provider block in a stack",
       "infra/stacks/x/main.tf",
       'provider "cloudflare" {}',
+      ["a provider block"],
+    ],
+    [
+      "a provider block even inside its platform module",
+      "infra/modules/platform/digitalocean/main.tf",
+      'provider "digitalocean" {}',
+      ["a provider block"],
     ],
     [
       "the provider source in a stack",
       "infra/stacks/x/versions.tf",
       'terraform {\n  required_providers {\n    cloudflare = { source = "cloudflare/cloudflare" }\n  }\n}',
+      ["the Cloudflare provider source", "a required_providers block"],
     ],
     [
       "an ephemeral resource",
       "infra/stacks/x/main.tf",
       'ephemeral "cloudflare_api_token" "t" {}',
+      ["a Cloudflare resource or data source"],
     ],
     [
       "a resource in another platform module",
       "infra/modules/platform/kubernetes/main.tf",
       'resource "cloudflare_r2_bucket" "b" {}',
+      ["a Cloudflare resource or data source"],
     ],
-  ])("rejects %s", (_label, path, text) => {
-    expect(at(path, text)).toHaveLength(1);
+    [
+      "a DigitalOcean resource in a stack",
+      "infra/stacks/factory/main.tf",
+      'resource "digitalocean_kubernetes_cluster" "c" {}',
+      ["a DigitalOcean resource or data source"],
+    ],
+    [
+      "a DigitalOcean data source in the Cloudflare module",
+      "infra/modules/platform/cloudflare/main.tf",
+      'data "digitalocean_kubernetes_versions" "v" {}',
+      ["a DigitalOcean resource or data source"],
+    ],
+    [
+      "the DigitalOcean provider source in the project module",
+      "infra/modules/project/versions.tf",
+      'terraform {\n  required_providers {\n    digitalocean = { source = "digitalocean/digitalocean" }\n  }\n}',
+      ["the DigitalOcean provider source", "a required_providers block"],
+    ],
+    [
+      "any other provider named in a stack",
+      "infra/stacks/factory/versions.tf",
+      'terraform {\n  required_providers {\n    kubernetes = { source = "hashicorp/kubernetes" }\n  }\n}',
+      ["a required_providers block"],
+    ],
+  ])("rejects %s", (_label, path, text, whats) => {
+    expect(at(path, text).map((v) => v.what)).toEqual(whats);
+  });
+
+  it("allows each provider and its resources inside its own platform module", () => {
+    const declare = (name: string) =>
+      `terraform {\n  required_providers {\n    ${name} = { source = "${name}/${name}", version = "1.0.0" }\n  }\n}\nresource "${name}_thing" "x" {}`;
+    expect(
+      at("infra/modules/platform/cloudflare/versions.tf", declare("cloudflare")),
+    ).toEqual([]);
+    expect(
+      at("infra/modules/platform/digitalocean/versions.tf", declare("digitalocean")),
+    ).toEqual([]);
   });
 
   it("allows naming the target and mentions in comments", () => {
@@ -68,13 +115,19 @@ describe("infrastructure boundary (unit: IaC guard, D-146)", () => {
       "a provider block in list form",
       '{"provider": [{"aws": {}}, {"cloudflare": {}}]}',
     ],
-    [
-      "the provider source",
-      '{"terraform": {"required_providers": {"cloudflare": {"source": "cloudflare/cloudflare"}}}}',
-    ],
+    ["a DigitalOcean resource", '{"resource": {"digitalocean_firewall": {"f": {}}}}'],
     ["a file that is not valid JSON", '{"resource": '],
   ])("rejects %s in a .tf.json stack file", (_label, text) => {
     expect(at("infra/stacks/x/main.tf.json", text)).toHaveLength(1);
+  });
+
+  it("rejects the provider source in a .tf.json stack file, and the required_providers block", () => {
+    const text =
+      '{"terraform": {"required_providers": {"cloudflare": {"source": "cloudflare/cloudflare"}}}}';
+    expect(at("infra/stacks/x/main.tf.json", text).map((v) => v.what)).toEqual([
+      "the Cloudflare provider source",
+      "a required_providers block",
+    ]);
   });
 
   it("allows naming the target in a .tf.json file, and Cloudflare in its platform module", () => {
