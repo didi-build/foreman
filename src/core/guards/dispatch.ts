@@ -82,9 +82,20 @@ export async function noPendingGate(ctx: GuardContext): Promise<GuardCheck> {
   return result("no_pending_gate", true, [], "no open gate request");
 }
 
-/** The node is agent-ready and not on hold. */
+/**
+ * The node is agent-ready and not on hold, and not stale: a decision it relied on was reversed,
+ * and no work starts on that basis until the Council decides what to redo (M3.5, O-45).
+ */
 export async function agentReadyNotOnHold(ctx: GuardContext): Promise<GuardCheck> {
   if (ctx.node.hold) return result("agent_ready_not_on_hold", false, [], "on hold");
+  if (ctx.node.stale) {
+    return result(
+      "agent_ready_not_on_hold",
+      false,
+      [],
+      "stale: a decision it relied on was reversed",
+    );
+  }
   if (!ctx.node.agentReady) {
     return result("agent_ready_not_on_hold", false, [], "not marked agent-ready");
   }

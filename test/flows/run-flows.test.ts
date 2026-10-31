@@ -562,7 +562,11 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
         requested: true,
         outcome: "rejected",
         toState: "in_qa_review",
-        failedGuards: ["ci_green_on_head", "docs_updated_or_none"],
+        failedGuards: [
+          "ci_green_on_head",
+          "docs_updated_or_none",
+          "no_failed_qa_verdict_on_head",
+        ],
       },
     });
     expect((await f.store.getNode(node.id))?.state).toBe("in_development");

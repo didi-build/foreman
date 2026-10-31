@@ -107,6 +107,7 @@ const EVIDENCE_KINDS: EvidenceKind[] = [
   "docs_note",
   "screenshot",
   "agent_report",
+  "failure_count",
 ];
 
 const STATE_ID = /^[a-z][a-z0-9_]*$/;

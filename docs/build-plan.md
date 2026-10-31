@@ -227,6 +227,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - What: counters, the Escalated to Council and Escalated to Didi states, and marking dependents stale when a decision is reversed.
 - Why: a failing item must stop and move up, and a reversed approval must not leave work running on a stale basis.
 - Success: three deliberate failures reach Escalated to Council. A Council "cannot resolve" reaches Didi as a gate request. A reversed decision marks dependents stale and opens a Council question.
+- Built: `src/core/failures.ts`, `src/core/escalations.ts`, the guard `no_failed_qa_verdict_on_head` and migration 0013. A done report on a head QA already failed goes back to QA no more (O-42). A Developer's or Designer's done report refused on its guards, and each failed start after the first in a row, add one to `failure` once with a `failure_count` row, then ask for the escalation (O-43, O-44). The reconcile flow's escalation pass, and the approval resume step after an answer, take an escalated item back with both counters reset once the Council or Didi has answered, or on to Didi with one `escalation` gate request when the Council cannot resolve it (O-46). A reversal marks dependents stale once, opens one Council question, and a stale item is not dispatched (O-45). Not built: starting a Council run and recording its answer (N-37), and clearing a stale flag (N-39).
 
 ### M3.6 Minimum Machine 1 (Proposed scope, P-05)
 

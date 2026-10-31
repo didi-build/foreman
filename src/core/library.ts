@@ -23,6 +23,7 @@ import type {
   StoreOps,
   Transition,
 } from "./store.ts";
+import { StoreConflictError } from "./store.ts";
 
 export interface Clock {
   now(): Date;
@@ -119,6 +120,10 @@ export type NewGateRequest = Pick<
   "projectId" | "topicKey" | "kind" | "owner" | "blocking"
 > &
   Partial<Pick<GateRequest, "nodeId" | "payload" | "approvalUrl">>;
+
+/** The topic of the Council question a decision's reversal opens (ADR 0104, M3.5). */
+export const reversalTopic = (decisionId: string): string =>
+  `decision-reversed:${decisionId}`;
 
 export function createLibrary({
   store,
@@ -492,43 +497,63 @@ export function createLibrary({
 
     /**
      * Reverses a decision without editing it: an event row, every dependent node marked stale,
-     * and one Council question (test plan, state library item 5).
+     * and one Council question on the topic `decision-reversed:<decision id>` (test plan, state
+     * library item 5; ADR 0104), in one transaction. A decision already reversed writes nothing
+     * again: the result is its question while that is still open, or null once the Council has
+     * answered it (M3.5). A superseded decision cannot be reversed.
      */
     async reverseDecision(
       decisionId: string,
       by: string,
       reason: string,
-    ): Promise<GateRequest> {
+    ): Promise<GateRequest | null> {
       const decision = await store.getDecision(decisionId);
       if (!decision) throw new LibraryError(`No decision ${decisionId}`);
+      const topicKey = reversalTopic(decisionId);
+      const repeated = () => store.findOpenGateRequest(decision.projectId, topicKey);
+      if (decision.status === "reversed") return repeated();
+      if (decision.status !== "active") {
+        throw new LibraryError(`Decision ${decisionId} is ${decision.status}`);
+      }
       const at = clock.now();
-      return store.transaction(async (tx) => {
-        await tx.insertDecisionEvent({
-          id: ids.next(),
-          decisionId,
-          kind: "reversed",
-          byDecisionId: null,
-          reason,
-          recordedBy: by,
-          recordedAt: at,
+      return store
+        .transaction(async (tx) => {
+          await tx.insertDecisionEvent({
+            id: ids.next(),
+            decisionId,
+            kind: "reversed",
+            byDecisionId: null,
+            reason,
+            recordedBy: by,
+            recordedAt: at,
+          });
+          const nodeIds = await tx.listNodesForDecision(decisionId);
+          for (const nodeId of nodeIds)
+            await tx.setNodeFlags(nodeId, { stale: true }, at);
+          return insertGateRequest(
+            tx,
+            {
+              projectId: decision.projectId,
+              nodeId: decision.nodeId,
+              topicKey,
+              kind: "council_question",
+              owner: "council",
+              blocking: true,
+              payload: { decisionId, reason, staleNodeIds: nodeIds },
+            },
+            at,
+          );
+        })
+        .catch(async (error: unknown) => {
+          // Another reversal of the same decision committed first (one event per decision).
+          if (
+            error instanceof StoreConflictError &&
+            error.constraint === "decision_events_decision_id_key"
+          ) {
+            return repeated();
+          }
+          throw error;
         });
-        const nodeIds = await tx.listNodesForDecision(decisionId);
-        for (const nodeId of nodeIds)
-          await tx.setNodeFlags(nodeId, { stale: true }, at);
-        return insertGateRequest(
-          tx,
-          {
-            projectId: decision.projectId,
-            nodeId: decision.nodeId,
-            topicKey: `decision-reversed:${decisionId}`,
-            kind: "council_question",
-            owner: "council",
-            blocking: true,
-            payload: { decisionId, reason, staleNodeIds: nodeIds },
-          },
-          at,
-        );
-      });
     },
 
     /** Opens a gate request; an open one on the same topic is superseded (schema invariant 5). */
@@ -584,10 +609,22 @@ export function createLibrary({
       return typeof value === "number" ? value : null;
     },
 
-    /** Nothing in an escalated state, on hold, or not agent-ready is dispatched (invariant 6). */
+    /**
+     * Nothing in an escalated state, on hold, or not agent-ready is dispatched (invariant 6), and
+     * nothing stale: a reversed decision it relied on leaves no work running on that basis until
+     * the Council decides what to redo (M3.5, O-45).
+     */
     canDispatch(node: Node): boolean {
-      return !stateOf(node.state)?.escalated && !node.hold && node.agentReady;
+      return (
+        !stateOf(node.state)?.escalated && !node.hold && node.agentReady && !node.stale
+      );
     },
+
+    /**
+     * The state an escalated node returns to (ADR 0105 `return`): the state it was in when it
+     * entered the escalation. Null when it never entered one.
+     */
+    returnState: (nodeId: string): Promise<string | null> => resolveReturnState(nodeId),
 
     /**
      * What `requestTransition` would decide now, writing nothing: `allowed` with the guard

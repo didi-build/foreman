@@ -99,7 +99,8 @@ export type EvidenceKind =
   | "dispatch_record"
   | "docs_note"
   | "screenshot"
-  | "agent_report";
+  | "agent_report"
+  | "failure_count";
 
 export interface Evidence {
   id: string;

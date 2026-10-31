@@ -22,8 +22,16 @@
 // Escalated to Council instead, counted in the escalation's own transaction (the guard
 // `escalation_trigger_met` names that round). Both take the run's trigger id, so a repeated report
 // counts once; a repeated report after the fail move asks again for an escalation it left behind.
-// Dry run writes the rows as dry run and no counter. The other P-03 counts (a failed guard after a
-// done report, repeated dispatch failure) and the Council's reset are M3.5.
+// Dry run writes the rows as dry run and no counter.
+//
+// A refused done report (P-03, M3.5, O-43): when the report of a role that pushes a branch
+// (Developer, Designer) finds every move it triggers refused by the guards, `failure` goes up by
+// one, once per report (src/core/failures.ts), and the escalation is asked for. That includes a
+// done report on a head QA already failed, which `no_failed_qa_verdict_on_head` refuses (O-42).
+// Two refusals do not count: CI still `pending` on the head (no result yet, not a failure; the
+// report counts if it is asked for again once CI is red), and a refusal by `scope_matches_plan`
+// alone (a scope change, which the contract sends to the Council, not to the counter). A QA run's
+// report never counts: a merge waiting on a condition is not a failure.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import type { GitHub } from "./github.ts";
 import {
@@ -33,12 +41,14 @@ import {
   type IdSource,
   type Trigger,
   type TransitionOutcome,
-  type TransitionResult,
 } from "./library.ts";
+import { createEscalations, type EscalationMove } from "./escalations.ts";
+import { createFailures, type FailureCount } from "./failures.ts";
+import { headCommit, readCiRun } from "./guards/evidence.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
-import { ESCALATION_GUARD } from "./staging.ts";
-import type { CounterKind, Node, Store } from "./store.ts";
+import type { AgentRole, CounterKind, Node, Run, Store } from "./store.ts";
+import { PUSHING_ROLES } from "./task-input.ts";
 
 export { MERGE_MOVE_GUARD };
 
@@ -47,14 +57,13 @@ export const QA_FAIL_GUARD = "qa_failed_with_findings";
 /** The guard on QA's fail move that refuses the round that reaches the cap. */
 export const ROUND_CAP_GUARD = "not_third_failed_round";
 
+/** The guard whose refusal alone is a scope change for the Council, not a failure (O-43). */
+export const SCOPE_GUARD = "scope_matches_plan";
+/** The guard that reads CI on the head: a `pending` head is not yet a failure (O-43). */
+const CI_GUARD = "ci_green_on_head";
+
 /** The escalation a QA fail asked for, as the library decided it. */
-export interface ReportedEscalation {
-  outcome: TransitionOutcome;
-  toState: string;
-  reason?: string;
-  transitionId?: string;
-  failedGuards: string[];
-}
+export type ReportedEscalation = EscalationMove;
 
 const ACTOR = { kind: "runner" as const, id: "run_end" };
 
@@ -95,6 +104,8 @@ export type ReportedMove =
       gateRequestId?: string;
       /** After QA's fail: the escalation asked for (O-41). */
       escalation?: ReportedEscalation;
+      /** A refused done report, counted toward `failure` (P-03, O-43). */
+      failureCount?: FailureCount;
     };
 
 const FAILURE_LIMIT_REASON =
@@ -110,12 +121,11 @@ export function createRunReports(options: RunReportsOptions) {
   const { store, contracts, clock } = options;
   const library = createLibrary(options);
   const merges = createMerges(options);
+  const escalations = createEscalations(options);
+  const failures = createFailures(options);
 
   const stateOf = (name: string) =>
     Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
-  const escalationMove = contracts.transitions.find(
-    (m) => m.escalation && m.from === "any" && m.guards.includes(ESCALATION_GUARD),
-  );
   const dryRunOn = async () => (await store.getSetting("dry_run"))?.value !== false;
 
   /** P-03: a failed QA round adds one to `qa_round` and to `failure`, with its move. */
@@ -130,31 +140,38 @@ export function createRunReports(options: RunReportsOptions) {
     };
 
   /** Asks for the Council with the report's trigger. The guards decide. */
-  async function escalate(
+  const escalate = (
     nodeId: string,
     trigger: Trigger,
     reason: string,
     alsoWrite?: AlsoWrite,
-  ): Promise<ReportedEscalation | undefined> {
-    if (!escalationMove) return undefined;
-    const result: TransitionResult = await library.requestTransitionOnce(
-      {
-        nodeId,
-        toState: escalationMove.to,
-        blockedReason: reason,
-        trigger,
-        actor: ACTOR,
-        reason,
-      },
-      alsoWrite,
-    );
-    return {
-      outcome: result.outcome,
-      toState: escalationMove.to,
-      ...(result.reason ? { reason: result.reason } : {}),
-      ...(result.transitionId ? { transitionId: result.transitionId } : {}),
-      failedGuards: result.guardReport.filter((c) => !c.pass).map((c) => c.name),
-    };
+  ): Promise<ReportedEscalation | undefined> =>
+    escalations.escalate(nodeId, trigger, reason, alsoWrite);
+
+  /**
+   * Whether a report whose moves the guards all refused counts toward `failure` (O-43): the run's
+   * role pushes a branch, and the refusal is not CI still pending on the head, nor a scope change
+   * alone. Reads only.
+   */
+  async function refusalCounts(
+    node: Node,
+    run: Run,
+    failed: string[],
+  ): Promise<{ counts: boolean; headSha: string | null }> {
+    const head = await headCommit({ node, store });
+    const headSha = head?.sha ?? null;
+    if (!PUSHING_ROLES.includes(run.bot as AgentRole) || failed.length === 0) {
+      return { counts: false, headSha };
+    }
+    if (failed.every((name) => name === SCOPE_GUARD)) return { counts: false, headSha };
+    if (
+      failed.includes(CI_GUARD) &&
+      head &&
+      readCiRun(head.ciRun.payload)?.conclusion === "pending"
+    ) {
+      return { counts: false, headSha };
+    }
+    return { counts: true, headSha };
   }
 
   const isQaFailMove = (from: string, to: string): boolean =>
@@ -303,6 +320,24 @@ export function createRunReports(options: RunReportsOptions) {
         };
         // Only a move the guards refused leaves room for the next one.
         if (result.outcome !== "rejected") break;
+      }
+      // Every move the report triggers was refused by its guards: the done report failed (P-03).
+      if (
+        last?.requested &&
+        last.outcome === "rejected" &&
+        last.reason === "guard_failed" &&
+        !last.escalation
+      ) {
+        const refusal = await refusalCounts(node, run, failedGuards);
+        if (refusal.counts) {
+          const failureCount = await failures.reportRefused(
+            run.id,
+            trigger,
+            [...new Set(failedGuards)],
+            refusal.headSha,
+          );
+          last = { ...last, failureCount };
+        }
       }
       return last as ReportedMove;
     },

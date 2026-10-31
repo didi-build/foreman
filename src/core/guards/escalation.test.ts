@@ -128,6 +128,8 @@ describe("escalation guards (unit: guards on the memory store, ADR 0105, D-177)"
         { ...keeps, changesProductDirection: true },
         { ...keeps, passesGate: true },
         {},
+        // The Council says it cannot resolve the item (M3.5).
+        { ...keeps, outcome: "cannot_resolve" },
       ]) {
         const f = await fixture();
         await f.enterState("escalated_to_council");

@@ -40,8 +40,9 @@ export async function startBuilderRuns(
     try {
       result = await startRun(deps, { nodeId, role });
     } catch {
-      // A start that threw has already ended its run `fail` (./start-run.ts). That run never
-      // started, so the item stays due and the next trigger tries again.
+      // A start that threw has already ended its run `fail` and counted a repeated failure
+      // (./start-run.ts). That run never started, so the item stays due and the next trigger
+      // tries again, until the escalation is due.
       result = { outcome: "start_failed" };
     }
     started.push({ nodeId, role, cause, result });
@@ -57,8 +58,9 @@ export interface AfterReport {
 
 /**
  * Asks for the move the run's report triggers (src/core/run-reports.ts). When that move was
- * applied (QA's fail sends the item back), it starts the item's fix round, if one is due. Any
- * other move, or none, starts nothing.
+ * applied (QA's fail sends the item back), or the builder's done report was refused and counted
+ * toward `failure` (P-03, O-43), it starts the item's fix round, if one is due; the escalation
+ * check in src/core/builder-runs.ts bounds it. Any other move, or none, starts nothing.
  */
 export async function reportedMoveAndFixRound(
   deps: FlowDeps,
@@ -67,8 +69,13 @@ export async function reportedMoveAndFixRound(
   const move = await createRunReports(deps).requestReportedMove(runId);
   const nodeId = (await deps.store.getRun(runId))?.nodeId;
   const applied = move.requested && move.outcome === "applied";
+  const refused =
+    move.requested &&
+    move.failureCount !== undefined &&
+    move.failureCount.counted !== false;
   return {
     move,
-    builderRuns: applied && nodeId ? await startBuilderRuns(deps, [nodeId]) : [],
+    builderRuns:
+      (applied || refused) && nodeId ? await startBuilderRuns(deps, [nodeId]) : [],
   };
 }

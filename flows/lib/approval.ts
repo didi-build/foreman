@@ -8,6 +8,10 @@ import {
   APPROVAL_CHOICE_LABELS,
   type ApprovalPageAnswer,
 } from "../../src/core/approvals.ts";
+import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
+import type { GateRequest } from "../../src/core/store.ts";
+import type { FlowDeps } from "./compose.ts";
+import { heldBy } from "./switches.ts";
 
 /**
  * An answer, or why there is none: Windmill's error name for a timeout or a cancel, or
@@ -55,4 +59,29 @@ export function readApprovalReply(resume: unknown, approvers: unknown): Approval
     };
   }
   return { answered: true, choice, words, approvers: names };
+}
+
+/** What the step reports after an answer is recorded. */
+export interface AfterAnswer {
+  /** Why nothing acts on the answer yet, if anything holds it (D-201). */
+  heldBy: "kill_switch" | "dry_run" | null;
+  /** For an escalation question: what the move out of Escalated to Didi did. */
+  escalation?: EscalationStep;
+}
+
+/**
+ * After an answer is recorded: what holds it, and for an escalation question the item's move back
+ * out of Escalated to Didi (M3.5, src/core/escalations.ts). The guards decide that move, and the
+ * kill switch and dry run hold it as for every move; the reconcile flow's escalation pass asks
+ * again if this step is cut short. Any other gate kind asks for nothing.
+ */
+export async function afterAnswer(
+  deps: FlowDeps,
+  gate: GateRequest,
+): Promise<AfterAnswer> {
+  const escalation =
+    gate.kind === "escalation" && gate.nodeId
+      ? await createEscalations(deps).resolve(gate.nodeId)
+      : undefined;
+  return { heldBy: await heldBy(deps.store), ...(escalation ? { escalation } : {}) };
 }

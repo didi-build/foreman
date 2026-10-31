@@ -1,5 +1,5 @@
-// The guard registry: exactly the guards of ADR 0105's guard list (24 from M2.2, and the two
-// merge guard checks D-218 and M3.3 add), by name. Contracts name guards; the
+// The guard registry: exactly the guards of ADR 0105's guard list (24 from M2.2, the two merge
+// guard checks D-218 and M3.3 add, and the same-head check M3.5 adds), by name. Contracts name guards; the
 // library looks them up here. See docs/guards.md for the evidence each one reads.
 import type { GuardRegistry } from "../contracts.ts";
 import {
@@ -26,6 +26,7 @@ import {
 import {
   ciGreenOnHead,
   docsUpdatedOrNone,
+  noFailedQaVerdictOnHead,
   noMergeConflictOnHead,
   notThirdFailedRound,
   privilegedPathsApproved,
@@ -48,6 +49,7 @@ export const GUARDS: GuardRegistry = {
   prod_env_protected: prodEnvProtected,
   no_merge_conflict_on_head: noMergeConflictOnHead,
   qa_rounds_below_cap: qaRoundsBelowCap,
+  no_failed_qa_verdict_on_head: noFailedQaVerdictOnHead,
   qa_failed_with_findings: qaFailedWithFindings,
   not_third_failed_round: notThirdFailedRound,
   staging_check_on_merge_commit: stagingCheckOnMergeCommit,

@@ -50,7 +50,11 @@ describe("transition flow (flow: fake adapters, build plan M3.1)", () => {
     expect(await requestTransition(f.deps, doneReport(node.id))).toMatchObject({
       outcome: "rejected",
       reason: "guard_failed",
-      failedGuards: ["ci_green_on_head", "docs_updated_or_none"],
+      failedGuards: [
+        "ci_green_on_head",
+        "docs_updated_or_none",
+        "no_failed_qa_verdict_on_head",
+      ],
     });
     expect(await f.footprint(node.id)).toBe(before);
   });
