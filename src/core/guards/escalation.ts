@@ -2,7 +2,14 @@
 // Topic key convention: the question for Didi about a node is `escalation:<node id>`.
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { CurrentDecision, Json } from "../store.ts";
-import { latest, readAgentReport, result } from "./evidence.ts";
+import {
+  headCommit,
+  latest,
+  onCommit,
+  readAgentReport,
+  readQaVerdict,
+  result,
+} from "./evidence.ts";
 import { STAGING_CHECK_ATTEMPTS, stagingNoResults } from "./staging.ts";
 
 export const escalationTopic = (nodeId: string): string => `escalation:${nodeId}`;
@@ -24,8 +31,30 @@ async function numberSetting(ctx: GuardContext, key: string): Promise<number | n
 }
 
 /**
- * The failure counter or the QA round count reached its limit, a run went over budget in the
- * current state, the staging check ended without a result on its first try and its one
+ * The failed QA verdict on the head, recorded in the current state, when its round is the one
+ * that reaches the cap: this round is `qa_round + 1`, as for `not_third_failed_round`, which
+ * refuses the fail move for the same round. Null otherwise. The runner counts that round with the
+ * escalation (src/core/run-reports.ts).
+ */
+async function cappedFailedRound(
+  ctx: GuardContext,
+  roundCap: number | null,
+): Promise<{ id: string; round: number } | null> {
+  if (roundCap === null) return null;
+  const round = (await ctx.store.getCounter(ctx.node.id, "qa_round")) + 1;
+  if (round < roundCap) return null;
+  const head = await headCommit(ctx);
+  if (!head) return null;
+  const verdict = latest(await onCommit(ctx, "qa_verdict", head.sha));
+  if (!verdict || !sinceState(ctx, verdict.recordedAt)) return null;
+  const payload = readQaVerdict(verdict.payload);
+  if (payload?.verdict !== "fail" || payload.findings.length === 0) return null;
+  return { id: verdict.id, round };
+}
+
+/**
+ * The failure counter or the QA round count reached its limit, QA failed the round that reaches
+ * the cap in the current state, a run went over budget in the current state, the staging check ended without a result on its first try and its one
  * re-dispatch in the current state (M3.4), or a bot asked to escalate with a written reason in
  * the current state.
  */
@@ -41,6 +70,13 @@ export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardChec
   const rounds = await ctx.store.getCounter(ctx.node.id, "qa_round");
   if (roundCap !== null && rounds >= roundCap)
     reasons.push(`${rounds} failed QA rounds`);
+  const capped = await cappedFailedRound(ctx, roundCap);
+  if (capped) {
+    reasons.push(
+      `QA failed round ${capped.round}, which reaches the cap of ${roundCap}`,
+    );
+    ids.push(capped.id);
+  }
   const overBudget = (await ctx.store.listRuns({ nodeId: ctx.node.id })).filter(
     (r) => r.outcome === "budget_exceeded" && sinceState(ctx, r.startedAt),
   );

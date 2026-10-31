@@ -203,37 +203,70 @@ describe("a builder run due after QA's fail (unit, O-41)", () => {
     });
   });
 
-  it("at the third failed round QA's fail move is refused, so the item stays in review and gets no run", async () => {
-    const f = await createReconcileFixture();
-    await f.setting("dry_run", false);
-    const node = await f.node("in_qa_review", { ownerRole: "qa" });
-    await f.store.setCounter(node.id, "qa_round", 2, f.clock.now());
-    const ciId = await f.evidence(
-      node.id,
-      "ci_run",
-      { conclusion: "success", pr: 7 },
-      { commitSha: HEAD },
-    );
-    const qa = await f.run(node.id, "qa");
-    await end(f, qa);
-    await f.evidence(
-      node.id,
-      "qa_verdict",
-      {
-        verdict: "fail",
-        findings: [{ path: "a", startLine: 1, endLine: 1, note: "n" }],
-        evidenceIds: [ciId],
-      },
-      { commitSha: HEAD, runId: qa.id },
-    );
-    expect(await createRunReports(f.deps).requestReportedMove(qa.id)).toMatchObject({
-      outcome: "rejected",
-      failedGuards: ["not_third_failed_round"],
-    });
-    expect(await createBuilderRuns(f.deps).check(node.id)).toMatchObject({
+  it("at the third failed round QA's fail move is refused and the item goes to the Council, with no run", async () => {
+    const t = await qaFailed();
+    const reports = createRunReports(t.f.deps);
+    for (const [round, sha] of ["1", "2"].map(
+      (c, i) => [i + 2, c.repeat(40)] as const,
+    )) {
+      // The fix round runs and reports done, and the item is back in review.
+      t.f.advanceMinutes(5);
+      const fix = await startedBuilderRun(t.f, t.node.id, "developer");
+      const ciId = await t.f.evidence(
+        t.node.id,
+        "ci_run",
+        { conclusion: "success", pr: 7, changedPaths: ["src/a.ts"] },
+        { commitSha: sha },
+      );
+      await t.f.evidence(
+        t.node.id,
+        "docs_note",
+        { impact: "none" },
+        { commitSha: sha },
+      );
+      await end(t.f, fix);
+      t.f.advanceMinutes(1);
+      expect(await reports.requestReportedMove(fix.id)).toMatchObject({
+        outcome: "applied",
+        toState: "in_qa_review",
+      });
+      // QA fails this head too.
+      t.f.advanceMinutes(5);
+      const qa = await t.f.run(t.node.id, "qa");
+      await end(t.f, qa);
+      await t.f.evidence(
+        t.node.id,
+        "qa_verdict",
+        {
+          verdict: "fail",
+          findings: [{ path: "a", startLine: 1, endLine: 1, note: "n" }],
+          evidenceIds: [ciId],
+        },
+        { commitSha: sha, runId: qa.id },
+      );
+      t.f.advanceMinutes(1);
+      const reported = await reports.requestReportedMove(qa.id);
+      if (round === 2) {
+        expect(reported).toMatchObject({
+          outcome: "applied",
+          toState: "in_development",
+        });
+        expect(await t.builderRuns.check(t.node.id)).toMatchObject({ due: true });
+      } else {
+        expect(reported).toMatchObject({
+          outcome: "rejected",
+          // The merge guards fail too, since the verdict is a fail; the fail move only on the cap.
+          failedGuards: expect.arrayContaining(["not_third_failed_round"]),
+          escalation: { outcome: "applied", toState: "escalated_to_council" },
+        });
+      }
+      expect(await t.f.store.getCounter(t.node.id, "qa_round")).toBe(round);
+    }
+    expect(await t.builderRuns.check(t.node.id)).toMatchObject({
       due: false,
       reason: "not_building",
     });
+    expect(await t.builderRuns.listDue()).toEqual([]);
   });
 });
 

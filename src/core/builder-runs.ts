@@ -17,13 +17,12 @@
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { readQaVerdict } from "./guards/evidence.ts";
 import { createLibrary, type Clock, type IdSource } from "./library.ts";
+import { QA_FAIL_GUARD } from "./run-reports.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import { ESCALATION_GUARD, STAGING_FAIL_GUARD } from "./staging.ts";
 import type { AgentRole, Evidence, Json, Node, Store, Transition } from "./store.ts";
 import { PUSHING_ROLES, type ReturnReason } from "./task-input.ts";
 
-/** The guard of QA's fail move (contracts/machine-2): the verdict lists findings. */
-export const QA_FAIL_GUARD = "qa_failed_with_findings";
 /** The guards that mark a move as one that sends the item back to be fixed. */
 export const RETURN_GUARDS: readonly string[] = [QA_FAIL_GUARD, STAGING_FAIL_GUARD];
 

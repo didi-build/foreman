@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { escalationTopic } from "./escalation.ts";
-import { MERGE, NODE, OLD, fixture } from "./testing.ts";
+import { HEAD, MERGE, NODE, OLD, fixture } from "./testing.ts";
 
 const topic = escalationTopic(NODE);
 
@@ -21,6 +21,37 @@ describe("escalation guards (unit: guards on the memory store, ADR 0105, D-177)"
       const g = await fixture();
       await g.counter("qa_round", 3);
       expect((await g.check("escalation_trigger_met")).pass).toBe(true);
+    });
+    it("passes on QA's failed verdict on the head for the round that reaches the cap, in the current state only (O-41)", async () => {
+      const f = await fixture();
+      const ci = await f.ci(HEAD);
+      const failed = {
+        verdict: "fail",
+        findings: [{ path: "src/a.ts", startLine: 1, endLine: 1, note: "wrong" }],
+        evidenceIds: [ci],
+      };
+      const verdict = await f.evidence("qa_verdict", HEAD, failed);
+      // Round 2 of 3: not the cap.
+      await f.counter("qa_round", 1);
+      expect((await f.check("escalation_trigger_met")).pass).toBe(false);
+      // Round 3 of 3: the round `not_third_failed_round` refuses.
+      await f.counter("qa_round", 2);
+      const check = await f.check("escalation_trigger_met");
+      expect(check).toMatchObject({ pass: true, evidenceIds: [verdict] });
+      expect(check.detail).toMatch(/QA failed round 3, which reaches the cap of 3/);
+      // A verdict from before the current state, a pass, or a fail with no findings: no.
+      await f.enterState("in_development");
+      expect((await f.check("escalation_trigger_met")).pass).toBe(false);
+      for (const payload of [
+        { ...failed, verdict: "pass", findings: [] },
+        { ...failed, findings: [] },
+      ]) {
+        const g = await fixture();
+        await g.ci(HEAD);
+        await g.evidence("qa_verdict", HEAD, payload);
+        await g.counter("qa_round", 2);
+        expect((await g.check("escalation_trigger_met")).pass).toBe(false);
+      }
     });
     it("passes when a run went over budget in the current state", async () => {
       const f = await fixture();
