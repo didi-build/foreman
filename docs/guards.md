@@ -21,7 +21,7 @@ A `docs_note` written by an agent through the state API carries no commit. It co
 
 ## The merge guard (M3.3, D-218)
 
-Every move on which the runner merges a PR (In QA review to Verifying on staging, on every track) carries the same checks: `qa_verdict_independent_on_head`, `docs_updated_or_none`, `ci_green_on_head`, `no_merge_conflict_on_head`, `qa_rounds_below_cap` and `privileged_paths_approved`. The code, infrastructure and docs tracks also carry `prod_env_protected`. `test/contracts-consistency.test.ts` holds both files to this set.
+Every move on which the runner merges a PR (In QA review to Verifying on staging, on every track) carries the same checks: `qa_verdict_independent_on_head`, `docs_updated_or_none`, `ci_green_on_head`, `no_merge_conflict_on_head`, `qa_rounds_below_cap`, `privileged_paths_approved` and `prod_env_protected` (on the design track too, D-224). `test/contracts-consistency.test.ts` holds both files to this set.
 
 `no_merge_conflict_on_head` reads the newest `merge_check` on the head commit. The runner records it itself, right before it merges (`src/core/merge.ts`): it reads the PR's `mergeable` from GitHub for the head GitHub reports, and records nothing when that head is not the node's head. The guard passes only on `true`. `false` (a conflict), `null` (GitHub has not worked it out yet) and a check for any other commit fail. A base branch that moves after the check is caught by GitHub, which refuses a merge it cannot make, and by the fresh check on the next attempt.
 

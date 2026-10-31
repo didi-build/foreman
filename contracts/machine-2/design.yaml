@@ -124,8 +124,8 @@ transitions:
     to: verifying_on_staging
     tracks: [design]
     trigger: QA reports a pass on the preview branch. The runner then merges the PR.
-    # The merge guard (build plan M3.3, D-218), as on the code track. prod_env_protected is the
-    # code track's only (D-218 names the CI, no-conflict and privileged-path checks for this move).
+    # The merge guard (build plan M3.3, D-218), as on the code track, with production protection
+    # too: a design PR merges into the same repo and main (D-224).
     guards:
       [
         qa_verdict_independent_on_head,
@@ -134,6 +134,7 @@ transitions:
         no_merge_conflict_on_head,
         qa_rounds_below_cap,
         privileged_paths_approved,
+        prod_env_protected,
       ]
     evidence:
       [visual_comparison, ci_run, preview_check, qa_verdict, merge_check, merge_commit]

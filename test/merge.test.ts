@@ -358,6 +358,20 @@ describe("a privileged-path PR (unit: M3.3, D-102)", () => {
     expect(t.github.merges).toEqual([]);
   });
 
+  it("refuses a design PR when production is not protected (D-224)", async () => {
+    const t = await setup({
+      track: "design",
+      paths: ["components/Button.tsx"],
+      prodRequiresApproval: false,
+    });
+    await t.passedOn(HEAD);
+    expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
+      outcome: "rejected",
+      reason: "guard_failed",
+    });
+    expect(t.github.merges).toEqual([]);
+  });
+
   it("merges a design PR with no privileged path", async () => {
     const t = await setup({ track: "design", paths: ["components/Button.tsx"] });
     await t.passedOn(HEAD);

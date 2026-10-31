@@ -174,6 +174,7 @@ const MERGE_GUARD = [
   "no_merge_conflict_on_head",
   "qa_rounds_below_cap",
   "privileged_paths_approved",
+  "prod_env_protected",
 ];
 
 describe("every merging move carries the merge guard (contract consistency, D-218)", () => {
@@ -198,11 +199,6 @@ describe("every merging move carries the merge guard (contract consistency, D-21
     expect(move.evidence).toEqual(
       expect.arrayContaining(["merge_check", "merge_commit"]),
     );
-  });
-
-  it("checks production protection where the code track deploys on push to main", () => {
-    const code = merging.find(({ file }) => file === "code.yaml");
-    expect(code?.move.guards).toContain("prod_env_protected");
   });
 
   it("the spec names the merge guard's checks in both merging rows", () => {

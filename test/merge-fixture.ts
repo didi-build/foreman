@@ -26,10 +26,12 @@ export async function setupMerge(
     slug?: string;
     /** The PR number; the merge commit's ingest key names it, so it is unique per database. */
     pr?: number;
+    /** The project's `prodRequiresApproval`; true unless a test turns it off. */
+    prodRequiresApproval?: boolean;
   } = {},
 ) {
   const f = await createReconcileFixture({
-    prodRequiresApproval: true,
+    prodRequiresApproval: options.prodRequiresApproval ?? true,
     ...(options.store ? { store: options.store } : {}),
     ...(options.idPrefix ? { idPrefix: options.idPrefix } : {}),
     ...(options.slug ? { slug: options.slug } : {}),
