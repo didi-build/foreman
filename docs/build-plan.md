@@ -168,7 +168,7 @@ Goal: the runner can say what it would do, and be right.
 
 ### M2.4 Reconcile pass in dry-run mode
 
-- Held until real data exists (D-181).
+- Built during M3, after M3.2, and tested against the rehearsal project's own data (D-197, revising D-181). It must exist before the rehearsal can run.
 - What: the reconcile pass of `docs/architecture/technical-architecture.md` section 2.5, writing `dry_run` transitions and acting on nothing.
 - Why: it is how the cutover is rehearsed.
 - How: a function in the library plus a Windmill schedule every 2 hours until Kubernetes exists (D-164; setting `reconcile_interval_minutes`), with the execution count alert (P-21). It respects the kill switch and `dry_run`.
@@ -176,7 +176,7 @@ Goal: the runner can say what it would do, and be right.
 
 ### M2.5 Dry-run report
 
-- Held with M2.4 (D-181).
+- Still held (D-181). Its comparison with Linear is gone with D-192; what it compares against is part of N-32.
 - What: a report that compares what the runner would do with what is true today.
 - Why: it is the main input to the go or no-go decision (O-07).
 - How: for each node, show the mapped state, the planned transition, and the guard result. List differences from Linear and from recent history.
