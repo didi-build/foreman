@@ -14,6 +14,7 @@ import { ENTRY_CONTRACTS } from "../../src/api/entry.ts";
 import { createApiHandler } from "../../src/api/routes.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import type { AgentRole, Store } from "../../src/core/store.ts";
+import { testRouteColumns } from "../../src/core/routing-testing.ts";
 import { createLogger } from "../../src/service-kit/logger.ts";
 import { startService, type RunningService } from "../../src/service-kit/server.ts";
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
@@ -69,6 +70,7 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        ...testRouteColumns(role),
       });
       await runner.insertRunToken({
         tokenHash: hashToken(token),

@@ -1,11 +1,20 @@
-// Seam: database integration (docs/test-plan.md, build plan M3.2). Dispatch admission, run ends
-// and the usage-exhausted wait on the real Postgres store, as the factory_runner role. The
-// concurrency tests start several dispatches at once on separate connections and check that the
-// admission lock lets only the allowed number through.
+// Seam: database integration (docs/test-plan.md, build plan M3.2). Dispatch admission, the model
+// route recorded with its decision record (ADR 0114), run ends and the usage-exhausted wait on the
+// real Postgres store, as the factory_runner role. The concurrency tests start several dispatches
+// at once on separate connections and check that the admission lock lets only the allowed number
+// through.
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { Clock, IdSource } from "../../src/core/library.ts";
+import { ROUTING_SETTINGS } from "../../src/core/routing.ts";
+import {
+  FIRST_APPROVED_PROVIDERS,
+  FIRST_MODEL_CATALOG,
+  FIRST_OUTPUT_TOKEN_NEEDS,
+  FIRST_ROUTING_POLICY,
+  TEST_TASK_TYPES,
+} from "../../src/core/routing-testing.ts";
 import {
   createRuns,
   REHEARSAL_RUN_LIMITS,
@@ -13,7 +22,7 @@ import {
   type DispatchResult,
   type Runs,
 } from "../../src/core/runs.ts";
-import type { AgentRole, Store } from "../../src/core/store.ts";
+import type { AgentRole, Json, Store } from "../../src/core/store.ts";
 import {
   applyMigrations,
   readMigrations,
@@ -42,7 +51,7 @@ describe.skipIf(!adminUrl)(
     let store: Store;
     let runs: Runs;
 
-    const setting = (key: string, value: number) =>
+    const setting = (key: string, value: Json) =>
       store.setSetting({ key, value, updatedBy: "test", updatedAt: clock.now() });
 
     async function project(): Promise<string> {
@@ -96,7 +105,6 @@ describe.skipIf(!adminUrl)(
       nodeId,
       role,
       runtime: "claude_code",
-      model: "claude-sonnet-5-5",
       botVersion: "v1",
       ...(role === "qa" ? { prNumber: 7, headSha: HEAD } : {}),
     });
@@ -112,7 +120,13 @@ describe.skipIf(!adminUrl)(
         options: "-c role=factory_runner",
       });
       store = createPostgresStore(pool);
-      runs = createRuns({ store, clock, ids, limits: REHEARSAL_RUN_LIMITS });
+      runs = createRuns({
+        store,
+        clock,
+        ids,
+        limits: REHEARSAL_RUN_LIMITS,
+        taskTypes: TEST_TASK_TYPES,
+      });
       await setting("agent_cluster_max_active_runs", 100);
     });
 
@@ -227,6 +241,95 @@ describe.skipIf(!adminUrl)(
       });
       now += 60_000;
       expect((await runs.dispatch(request(nodeId))).admitted).toBe(true);
+    });
+
+    it("seeds the first routing policy, catalog, approved providers and output needs (migration 0005)", async () => {
+      const value = async (key: string) => (await store.getSetting(key))?.value;
+      expect(await value(ROUTING_SETTINGS.policy)).toEqual(FIRST_ROUTING_POLICY);
+      expect(await value(ROUTING_SETTINGS.catalog)).toEqual(FIRST_MODEL_CATALOG);
+      expect(await value(ROUTING_SETTINGS.providers)).toEqual(FIRST_APPROVED_PROVIDERS);
+      expect(await value(ROUTING_SETTINGS.outputNeeds)).toEqual(
+        FIRST_OUTPUT_TOKEN_NEEDS,
+      );
+    });
+
+    it("records the route on the run and its decision record in the admitting transaction", async () => {
+      const nodeId = await item(await project());
+      const result = await runs.dispatch(request(nodeId, "qa"));
+      if (!result.admitted) throw new Error(result.reason);
+      expect(await store.getRun(result.run.id)).toMatchObject({
+        model: "claude-opus-5-5",
+        taskType: "qa:review",
+        provider: "anthropic",
+        modelFamily: "claude",
+        serviceTierRequested: "standard",
+        serviceTierServed: null,
+        routingPolicyVersion: "2026-10-31.1",
+        modelCatalogVersion: "2026-10-31.1",
+        capacityRetries: null,
+        reportedCostUsd: null,
+      });
+      const records = await pool.query(
+        `select decider_id, confidence, output, input_hash from factory.decision_point_records
+         where node_id = $1 and decision_point = 'model_route'`,
+        [nodeId],
+      );
+      expect(records.rows).toHaveLength(1);
+      expect(records.rows[0]).toMatchObject({
+        decider_id: "model_route_rule_v1",
+        confidence: "1",
+        output: { runId: result.run.id, model: "claude-opus-5-5", tier: "standard" },
+      });
+      expect(records.rows[0].input_hash).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it("writes neither the run nor the record when the record cannot be written", async () => {
+      const nodeId = await item(await project());
+      const first = await runs.dispatch(request(nodeId, "triage"));
+      if (!first.admitted) throw new Error(first.reason);
+      await runs.recordEnd(first.run.id, {
+        outcome: "success",
+        turns: 1,
+        minutes: 1,
+        costUsd: 0,
+        tokens: null,
+      });
+      const existing = await pool.query(
+        "select id from factory.decision_point_records where node_id = $1",
+        [nodeId],
+      );
+      // The second dispatch gets a fresh run id, then the existing record's id for its record.
+      const runId = ids.next();
+      const reused = [runId, existing.rows[0].id as string];
+      const clashing = createRuns({
+        store,
+        clock,
+        ids: { next: () => reused.shift() ?? ids.next() },
+        limits: REHEARSAL_RUN_LIMITS,
+        taskTypes: TEST_TASK_TYPES,
+      });
+      await expect(clashing.dispatch(request(nodeId, "triage"))).rejects.toThrow();
+      expect(await store.getRun(runId)).toBeNull();
+      expect(await store.listRuns({ nodeId })).toHaveLength(1);
+    });
+
+    it("refuses with no_route and writes nothing when no candidate passes", async () => {
+      const nodeId = await item(await project());
+      await setting(ROUTING_SETTINGS.providers, { deepinfra: { decision: "D-208" } });
+      try {
+        expect(await runs.dispatch(request(nodeId))).toMatchObject({
+          admitted: false,
+          reason: "no_route",
+        });
+      } finally {
+        await setting(ROUTING_SETTINGS.providers, FIRST_APPROVED_PROVIDERS);
+      }
+      expect(await store.listRuns({ nodeId })).toEqual([]);
+      const records = await pool.query(
+        "select count(*)::int as n from factory.decision_point_records where node_id = $1",
+        [nodeId],
+      );
+      expect(records.rows[0].n).toBe(0);
     });
   },
 );

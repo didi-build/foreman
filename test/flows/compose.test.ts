@@ -17,11 +17,11 @@ import {
   WindmillNotConfiguredError,
 } from "../../flows/lib/windmill.ts";
 
-const PROFILE = { runtime: "kubernetes", model: "claude-sonnet-5-5", botVersion: "v1" };
+const PROFILE = { runtime: "kubernetes", botVersion: "v1" };
 const BOTS = JSON.stringify({
   developer: PROFILE,
   designer: PROFILE,
-  qa: { ...PROFILE, model: "claude-opus-5-5" },
+  qa: { ...PROFILE, botVersion: "v2" },
   council: PROFILE,
   triage: PROFILE,
 });
@@ -65,7 +65,9 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         "foreman-designer[bot]",
       ]);
       expect(deps.runnerAppSlug).toBe("foreman-runner");
-      expect(deps.bots.qa.model).toBe("claude-opus-5-5");
+      expect(deps.bots.qa.botVersion).toBe("v2");
+      expect(deps.taskTypes.version).toBe("e".repeat(40));
+      expect(deps.taskTypes.roles.developer.default).toBe("developer:code");
       expect(await deps.executionsThisMonth()).toBe(42);
       // Two ids from the real source differ; the clock is the real clock.
       expect(deps.ids.next()).not.toBe(deps.ids.next());

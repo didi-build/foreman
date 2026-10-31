@@ -173,6 +173,17 @@ export const toRun = (r: Row): Run => ({
   transcriptRef: r.transcript_ref as string | null,
   usageExhaustedCause: r.usage_exhausted_cause as Run["usageExhaustedCause"],
   retryAfterSeconds: r.retry_after_seconds as number | null,
+  taskType: r.task_type as string,
+  provider: r.provider as string,
+  modelFamily: r.model_family as string,
+  serviceTierRequested: r.service_tier_requested as Run["serviceTierRequested"],
+  serviceTierServed: r.service_tier_served as Run["serviceTierServed"],
+  routingPolicyVersion: r.routing_policy_version as string,
+  modelCatalogVersion: r.model_catalog_version as string,
+  capacityRetries: r.capacity_retries as number | null,
+  capacityWaitSeconds: r.capacity_wait_seconds as number | null,
+  firstTokenMs: r.first_token_ms as number | null,
+  reportedCostUsd: num(r.reported_cost_usd),
 });
 
 export const toRunToken = (r: Row): RunToken => ({

@@ -54,3 +54,16 @@ export function loadContractFiles(
   const contentHash = hash.digest("hex");
   return { raw: { version, contentHash, files }, contentHash, files: names };
 }
+
+/** The task types file (ADR 0114 section 1). The core's validateTaskTypes checks its shape. */
+export const TASK_TYPES_FILE = "contracts/task-types.yaml";
+
+/** Parses the task types file. A YAML syntax error throws, naming the file. */
+export function loadTaskTypesFile(path: string = TASK_TYPES_FILE): unknown {
+  const text = readFileSync(path, "utf8");
+  try {
+    return parse(text) as unknown;
+  } catch (error) {
+    throw new Error(`${path} is not valid YAML: ${(error as Error).message}`);
+  }
+}

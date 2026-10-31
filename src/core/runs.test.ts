@@ -1,10 +1,20 @@
-// Seam: unit, on the in-memory store. Dispatch admission, run budgets, run ends and the
-// usage-exhausted wait (ADR 0106 sections 6 and 7, build plan M3.2). The same rules under real
-// concurrency on Postgres are in test/db/runs.test.ts.
+// Seam: unit, on the in-memory store. Dispatch admission, run budgets, the model route recorded at
+// admission, run ends and the usage-exhausted wait (ADR 0106 sections 6 and 7, ADR 0114 sections 2
+// and 5, build plan M3.2). The same rules under real concurrency on Postgres are in
+// test/db/runs.test.ts; the route choice itself is in routing.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { LibraryError } from "./library.ts";
 import { createMemoryStore } from "./memory-store.ts";
+import { routeInputHash } from "./routing.ts";
+import {
+  FIRST_APPROVED_PROVIDERS,
+  FIRST_MODEL_CATALOG,
+  FIRST_OUTPUT_TOKEN_NEEDS,
+  FIRST_ROUTING_POLICY,
+  seedRoutingSettings,
+  TEST_TASK_TYPES,
+} from "./routing-testing.ts";
 import {
   createRuns,
   plannedRunId,
@@ -12,7 +22,14 @@ import {
   type DispatchRequest,
   type RunReport,
 } from "./runs.ts";
-import type { AgentRole, Node, Store } from "./store.ts";
+import type {
+  AgentRole,
+  DecisionPointRecord,
+  Json,
+  Node,
+  Store,
+  StoreOps,
+} from "./store.ts";
 
 const PROJECT = "30000000-0000-4000-8000-000000000001";
 const OTHER_PROJECT = "30000000-0000-4000-8000-000000000002";
@@ -20,8 +37,35 @@ const HEAD = "b".repeat(40);
 const NEWER = "c".repeat(40);
 const START = Date.UTC(2026, 9, 30, 9, 0, 0);
 
+/**
+ * A memory store that also keeps every decision-point record a committed transaction wrote. The
+ * store has no read for them, since only the daily jobs read them.
+ */
+function recordingStore(): { store: Store; records: DecisionPointRecord[] } {
+  const base = createMemoryStore();
+  const records: DecisionPointRecord[] = [];
+  const store: Store = {
+    ...base,
+    async transaction(work) {
+      const staged: DecisionPointRecord[] = [];
+      const result = await base.transaction((tx) =>
+        work({
+          ...tx,
+          async insertDecisionPointRecord(record) {
+            await tx.insertDecisionPointRecord(record);
+            staged.push(record);
+          },
+        } satisfies StoreOps),
+      );
+      records.push(...staged);
+      return result;
+    },
+  };
+  return { store, records };
+}
+
 async function setup(clusterLimit: number | null = 10) {
-  const store: Store = createMemoryStore();
+  const { store, records } = recordingStore();
   let now = START;
   const clock = { now: () => new Date(now) };
   let counter = 100;
@@ -31,6 +75,7 @@ async function setup(clusterLimit: number | null = 10) {
     clock,
     ids: { next: nextId },
     limits: REHEARSAL_RUN_LIMITS,
+    taskTypes: TEST_TASK_TYPES,
   });
 
   for (const [id, slug] of [
@@ -50,11 +95,12 @@ async function setup(clusterLimit: number | null = 10) {
       createdAt: clock.now(),
     });
   }
-  const setting = (key: string, value: number | boolean) =>
+  const setting = (key: string, value: Json) =>
     store.setSetting({ key, value, updatedBy: "test", updatedAt: clock.now() });
   if (clusterLimit !== null)
     await setting("agent_cluster_max_active_runs", clusterLimit);
   await setting("usage_exhausted_wait_minutes", 30);
+  await seedRoutingSettings(store, clock.now());
 
   async function item(projectId = PROJECT): Promise<string> {
     const at = clock.now();
@@ -91,7 +137,6 @@ async function setup(clusterLimit: number | null = 10) {
     nodeId,
     role,
     runtime: "claude_code",
-    model: role === "qa" ? "claude-opus-5-5" : "claude-sonnet-5-5",
     botVersion: "v1",
     ...(role === "qa" ? { prNumber: 7, headSha: HEAD } : {}),
     ...extra,
@@ -122,7 +167,17 @@ async function setup(clusterLimit: number | null = 10) {
     now += minutes * 60_000;
   };
 
-  return { store, runs, item, request, started, report, setting, advanceMinutes };
+  return {
+    store,
+    records,
+    runs,
+    item,
+    request,
+    started,
+    report,
+    setting,
+    advanceMinutes,
+  };
 }
 
 describe("dispatch admission (ADR 0106 section 7)", () => {
@@ -166,6 +221,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
       clock: { now: () => new Date(START) },
       ids: { next: () => "30000000-0000-4000-8000-000000000999" },
       limits,
+      taskTypes: TEST_TASK_TYPES,
     });
     const result = await runs.dispatch(t.request(nodeId));
     expect(result.admitted && result.run.budget).toEqual({
@@ -324,6 +380,169 @@ describe("dry-run dispatch evaluation (build plan M2.4)", () => {
       admitted: false,
       reason: "kill_switch",
     });
+  });
+});
+
+describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
+  it.each([
+    ["developer", "developer:code", "claude-sonnet-5-5"],
+    ["designer", "designer", "claude-sonnet-5-5"],
+    ["qa", "qa:review", "claude-opus-5-5"],
+    ["council", "council", "claude-sonnet-5-5"],
+    ["triage", "triage", "claude-sonnet-5-5"],
+  ] as const)(
+    "records the first policy's route on a %s run: today's model (D-185, D-186)",
+    async (role, taskType, model) => {
+      const t = await setup();
+      const runId = await t.started(t.request(await t.item(), role));
+      expect(await t.store.getRun(runId)).toMatchObject({
+        model,
+        taskType,
+        provider: "anthropic",
+        modelFamily: "claude",
+        serviceTierRequested: "standard",
+        serviceTierServed: null,
+        routingPolicyVersion: FIRST_ROUTING_POLICY.version,
+        modelCatalogVersion: FIRST_MODEL_CATALOG.version,
+        capacityRetries: null,
+        capacityWaitSeconds: null,
+        firstTokenMs: null,
+        reportedCostUsd: null,
+      });
+    },
+  );
+
+  it("records the route as a decision-point record in the same transaction (P-11)", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    const runId = await t.started(t.request(nodeId));
+    expect(t.records).toHaveLength(1);
+    const [record] = t.records;
+    expect(record).toMatchObject({
+      projectId: PROJECT,
+      nodeId,
+      decisionPoint: "model_route",
+      deciderId: "model_route_rule_v1",
+      confidence: 1,
+      recordedAt: new Date(START),
+      output: {
+        runId,
+        taskType: "developer:code",
+        provider: "anthropic",
+        model: "claude-sonnet-5-5",
+        family: "claude",
+        tier: "standard",
+        policyVersion: FIRST_ROUTING_POLICY.version,
+        catalogVersion: FIRST_MODEL_CATALOG.version,
+      },
+    });
+    // The hash covers what the rule read: the role, the task type and the settings.
+    expect(record?.inputHash).toBe(
+      routeInputHash({
+        role: "developer",
+        taskType: "developer:code",
+        earlierRuns: [],
+        settings: {
+          policy: FIRST_ROUTING_POLICY,
+          catalog: FIRST_MODEL_CATALOG,
+          providers: FIRST_APPROVED_PROVIDERS,
+          outputNeeds: FIRST_OUTPUT_TOKEN_NEEDS,
+        },
+      }),
+    );
+  });
+
+  it("refuses with no_route and writes nothing when no candidate passes the hard rules", async () => {
+    const t = await setup();
+    await t.setting("model_providers_approved", {
+      deepinfra: { decision: "D-208", covers: "self_hosted" },
+    });
+    const nodeId = await t.item();
+    const result = await t.runs.dispatch(t.request(nodeId));
+    expect(result).toMatchObject({
+      admitted: false,
+      reason: "no_route",
+      noRoute: {
+        settingsProblems: [],
+        rejected: [
+          {
+            index: 0,
+            provider: "anthropic",
+            model: "claude-sonnet-5-5",
+            failed: [{ rule: "approved_provider" }],
+          },
+        ],
+      },
+    });
+    expect(await t.store.listRuns({ nodeId })).toEqual([]);
+    expect(t.records).toEqual([]);
+  });
+
+  it("refuses with no_route while a routing setting is missing or malformed", async () => {
+    const t = await setup();
+    await t.setting("model_catalog", { version: "x", models: { m: { provider: 7 } } });
+    const nodeId = await t.item();
+    const result = await t.runs.dispatch(t.request(nodeId));
+    expect(result.admitted).toBe(false);
+    if (result.admitted || result.reason !== "no_route")
+      throw new Error("expected no_route");
+    expect(result.noRoute.settingsProblems).toContain(
+      "model_catalog.models.m.provider must be a provider name",
+    );
+    expect(await t.store.listRuns({ nodeId })).toEqual([]);
+    expect(t.records).toEqual([]);
+  });
+
+  it("refuses a QA run whose only candidate is a Developer run's model id, and admits another", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    // The Developer ran on Sonnet; a policy that puts QA on Sonnet too has no route.
+    await t.runs.recordEnd(await t.started(t.request(nodeId)), t.report());
+    const sonnetQa = {
+      ...FIRST_ROUTING_POLICY,
+      taskTypes: {
+        ...FIRST_ROUTING_POLICY.taskTypes,
+        "qa:review": FIRST_ROUTING_POLICY.taskTypes["developer:code"],
+      },
+    };
+    await t.setting("model_routing_policy", sonnetQa);
+    expect(await t.runs.dispatch(t.request(nodeId, "qa"))).toMatchObject({
+      admitted: false,
+      reason: "no_route",
+      noRoute: { rejected: [{ failed: [{ rule: "qa_independence" }] }] },
+    });
+    await t.setting("model_routing_policy", FIRST_ROUTING_POLICY);
+    const result = await t.runs.dispatch(t.request(nodeId, "qa"));
+    expect(result.admitted && result.run.model).toBe("claude-opus-5-5");
+  });
+
+  it("checks the other admission rules before the route", async () => {
+    const t = await setup(null);
+    await t.setting("model_routing_policy", null);
+    expect(await t.runs.dispatch(t.request(await t.item()))).toEqual({
+      admitted: false,
+      reason: "cluster_limit_unset",
+    });
+  });
+
+  it("plans the same route in a dry run and writes no run and no record", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    const plan = await t.runs.planDispatch(t.request(nodeId, "qa"));
+    expect(plan.admitted && plan.run).toMatchObject({
+      id: plannedRunId(nodeId, "qa"),
+      model: "claude-opus-5-5",
+      taskType: "qa:review",
+      provider: "anthropic",
+      serviceTierRequested: "standard",
+    });
+    await t.setting("model_providers_approved", {});
+    expect(await t.runs.planDispatch(t.request(nodeId))).toMatchObject({
+      admitted: false,
+      reason: "no_route",
+    });
+    expect(await t.store.listRuns({ nodeId })).toEqual([]);
+    expect(t.records).toEqual([]);
   });
 });
 

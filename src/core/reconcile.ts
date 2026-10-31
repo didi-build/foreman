@@ -44,6 +44,7 @@ import {
   type RoleRunLimits,
 } from "./runs.ts";
 import type { AgentRole, GateRequest, Node, Run, Store, StoreOps } from "./store.ts";
+import type { TaskTypes } from "./task-types.ts";
 
 /** The guard that marks a move as the dispatch of a ready node (contracts/machine-2). */
 export const DISPATCH_GUARD = "agent_ready_not_on_hold";
@@ -62,10 +63,12 @@ const AGENT_ROLES: readonly AgentRole[] = [
 const ACTOR = { kind: "runner" as const, id: "reconcile" };
 const TRIGGER = { kind: "reconcile" as const, ref: null };
 
-/** What the runner starts a role with. From each bot file once bot files are loaded. */
+/**
+ * What the runner starts a role with. From each bot file once bot files are loaded. The model is
+ * not here: each run's route names it (ADR 0114 section 5).
+ */
 export interface BotProfile {
   runtime: string;
-  model: string;
   botVersion: string;
 }
 
@@ -82,6 +85,8 @@ export interface ReconcileDeps {
   runnerAppSlug: string;
   limits: RoleRunLimits;
   bots: Record<AgentRole, BotProfile>;
+  /** The task types at the spec version (contracts/task-types.yaml, ADR 0114 section 1). */
+  taskTypes: TaskTypes;
 }
 
 export interface ReconcileInput {

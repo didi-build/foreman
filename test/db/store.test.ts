@@ -14,6 +14,7 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { testRouteColumns } from "../../src/core/routing-testing.ts";
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 
 const DB = `foreman_store_test_${process.pid}`;
@@ -385,6 +386,14 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        ...testRouteColumns("developer", {
+          serviceTierRequested: "flex" as const,
+          serviceTierServed: "mixed" as const,
+          capacityRetries: 2,
+          capacityWaitSeconds: 90,
+          firstTokenMs: 1200,
+          reportedCostUsd: 0.25,
+        }),
       };
       await store.insertRun(run);
       const end = {
@@ -549,6 +558,7 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        ...testRouteColumns("developer"),
       };
       const later = { ...run, id: id(), nodeId: n.id, startedAt: T1 };
       const earlier = { ...run, id: id(), nodeId: n.id, startedAt: T0 };

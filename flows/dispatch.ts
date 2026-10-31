@@ -3,6 +3,7 @@
 // one transaction under the admission lock, so a duplicate trigger finds the first run active
 // and is refused: one trigger or ten, one run. In dry run it only plans the dispatch and writes
 // nothing. The caller names the role, and for QA the pull request and head commit.
+import type { NoRoute } from "../src/core/routing.ts";
 import type { DispatchRefusal } from "../src/core/runs.ts";
 import { createRuns } from "../src/core/runs.ts";
 import type { AgentRole, Run } from "../src/core/store.ts";
@@ -24,6 +25,8 @@ export type DispatchFlowResult =
       outcome: "not_admitted";
       reason: DispatchRefusal | "qa_newer_head";
       cancelRunIds?: string[];
+      /** With `no_route`: why no candidate passed, for the runner's alert (ADR 0114 section 5). */
+      noRoute?: NoRoute;
     }
   | { outcome: "started"; runId: string; handle: unknown };
 

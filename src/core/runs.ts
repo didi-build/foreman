@@ -2,7 +2,21 @@
 // build plan M3.2). Plain rules over the store, with the clock and ids injected (D-162). The core
 // decides; it never starts, stops or cancels a run itself. The runner does that through the agent
 // runtime adapter and reports back here.
+//
+// Admission also chooses the run's model route (ADR 0114 sections 2 and 5): the route is recorded
+// on the run, with its P-11 decision record, in the same transaction that inserts the run.
 import { LibraryError, type Clock, type IdSource } from "./library.ts";
+import {
+  chooseRoute,
+  MODEL_ROUTE_DECIDER,
+  MODEL_ROUTE_DECISION_POINT,
+  routeInputHash,
+  routeOutput,
+  ROUTING_SETTINGS,
+  type NoRoute,
+  type Route,
+  type RouteInput,
+} from "./routing.ts";
 import type {
   AgentRole,
   Json,
@@ -13,6 +27,7 @@ import type {
   StoreOps,
   UsageExhaustedCause,
 } from "./store.ts";
+import { taskTypeFor, type TaskTypes } from "./task-types.ts";
 
 /** The limits a run is started with (ADR 0107). Recorded in `runs.budget`. */
 export interface RunLimits {
@@ -38,12 +53,12 @@ export const REHEARSAL_RUN_LIMITS: RoleRunLimits = {
 /** Up to 3 Developer agents at once per project (spec section 2). */
 export const DEVELOPER_RUNS_PER_PROJECT = 3;
 
+/** What a dispatch asks for. It names no model: the run's route does (ADR 0114 section 2). */
 export interface DispatchRequest {
   nodeId: string;
   /** Stored as the run's `bot`. */
   role: AgentRole;
   runtime: string;
-  model: string;
   botVersion: string;
   agentId?: string | null;
   /** The pull request's current head commit. Required for QA. */
@@ -60,15 +75,19 @@ export type DispatchRefusal =
   | "item_has_active_run"
   | "developer_limit"
   | "cluster_limit_unset"
-  | "cluster_full";
+  | "cluster_full"
+  | "no_route";
 
 /**
  * A refused dispatch wrote nothing. `qa_newer_head`: the pull request has an active QA run on an
- * older head. The runner cancels those runs, records their end, and dispatches again.
+ * older head. The runner cancels those runs, records their end, and dispatches again. `no_route`:
+ * no policy candidate passed the hard rules, or the routing settings are malformed; `noRoute`
+ * says why, for the runner's alert.
  */
 export type DispatchResult =
   | { admitted: true; run: Run }
-  | { admitted: false; reason: DispatchRefusal }
+  | { admitted: false; reason: Exclude<DispatchRefusal, "no_route"> }
+  | { admitted: false; reason: "no_route"; noRoute: NoRoute }
   | { admitted: false; reason: "qa_newer_head"; cancelRunIds: string[] };
 
 /** Token counts as the runtime reports them. Cached input is kept apart from uncached (D-185). */
@@ -109,6 +128,8 @@ export interface RunsOptions {
   clock: Clock;
   ids: IdSource;
   limits: RoleRunLimits;
+  /** The task types at the spec version (contracts/task-types.yaml). */
+  taskTypes: TaskTypes;
 }
 
 const isCount = (value: unknown): value is number =>
@@ -164,7 +185,7 @@ export function admissionRefusal(
   node: Node,
   active: Run[],
   clusterLimit: number | null,
-): Exclude<DispatchResult, { admitted: true }> | null {
+): Exclude<DispatchResult, { admitted: true } | { reason: "no_route" }> | null {
   if (request.role === "qa") {
     const samePullRequest = active.filter(
       (r) =>
@@ -261,6 +282,7 @@ function newRun(
   id: string,
   node: Node,
   request: DispatchRequest,
+  route: Route,
   budget: RunLimits,
   now: Date,
 ): Run {
@@ -271,7 +293,7 @@ function newRun(
     bot: request.role,
     agentId: request.agentId ?? null,
     runtime: request.runtime,
-    model: request.model,
+    model: route.model,
     headSha: request.headSha ?? null,
     prNumber: request.prNumber ?? null,
     botVersion: request.botVersion,
@@ -287,21 +309,56 @@ function newRun(
     transcriptRef: null,
     usageExhaustedCause: null,
     retryAfterSeconds: null,
+    taskType: route.taskType,
+    provider: route.provider,
+    modelFamily: route.family,
+    serviceTierRequested: route.tier,
+    serviceTierServed: null,
+    routingPolicyVersion: route.policyVersion,
+    modelCatalogVersion: route.catalogVersion,
+    capacityRetries: null,
+    capacityWaitSeconds: null,
+    firstTokenMs: null,
+    reportedCostUsd: null,
   };
 }
 
+/** What the route choice reads: the role's task type, the item's runs and the routing settings. */
+async function routeInput(
+  store: StoreOps,
+  role: AgentRole,
+  node: Node,
+  taskTypes: TaskTypes,
+): Promise<RouteInput> {
+  const value = async (key: string): Promise<Json> =>
+    (await store.getSetting(key))?.value ?? null;
+  return {
+    role,
+    taskType: taskTypeFor(taskTypes, role),
+    earlierRuns: await store.listRuns({ nodeId: node.id }),
+    settings: {
+      policy: await value(ROUTING_SETTINGS.policy),
+      catalog: await value(ROUTING_SETTINGS.catalog),
+      providers: await value(ROUTING_SETTINGS.providers),
+      outputNeeds: await value(ROUTING_SETTINGS.outputNeeds),
+    },
+  };
+}
+
+type Admitted = { admitted: true; node: Node; route: Route; routeInput: RouteInput };
+
 /**
- * Every admission rule, read-only: the kill switch, the usage-exhausted wait and the capacity
- * rules over the active runs plus `alsoActive`. Returns the node when admitted.
+ * Every admission rule, read-only: the kill switch, the usage-exhausted wait, the capacity rules
+ * over the active runs plus `alsoActive`, and then the route choice (ADR 0114 section 5). Returns
+ * the node and its route when admitted.
  */
 async function admission(
   store: StoreOps,
   request: DispatchRequest,
+  taskTypes: TaskTypes,
   now: Date,
   alsoActive: readonly Run[],
-): Promise<
-  Exclude<DispatchResult, { admitted: true }> | { admitted: true; node: Node }
-> {
+): Promise<Exclude<DispatchResult, { admitted: true }> | Admitted> {
   if ((await store.getSetting("kill_switch"))?.value === true) {
     return { admitted: false, reason: "kill_switch" };
   }
@@ -317,19 +374,26 @@ async function admission(
     [...(await store.listActiveRuns()), ...alsoActive],
     await positiveIntegerSetting(store, "agent_cluster_max_active_runs"),
   );
-  return refusal ?? { admitted: true, node };
+  if (refusal) return refusal;
+  const input = await routeInput(store, request.role, node, taskTypes);
+  const choice = chooseRoute(input);
+  if (!choice.routed) {
+    return { admitted: false, reason: "no_route", noRoute: choice.noRoute };
+  }
+  return { admitted: true, node, route: choice.route, routeInput: input };
 }
 
 /** The id a planned run carries. It is never stored, so it cannot collide with a real run. */
 export const plannedRunId = (nodeId: string, role: AgentRole): string =>
   `planned:${role}:${nodeId}`;
 
-export function createRuns({ store, clock, ids, limits }: RunsOptions) {
+export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions) {
   return {
     /**
-     * Decides whether a run may start now and, if so, records it with its role's limits. The
-     * check and the insert are one transaction under the admission lock, so two dispatches can
-     * never both pass. A refusal writes nothing.
+     * Decides whether a run may start now and, if so, records it with its role's limits and
+     * its route, and records the route as a P-11 decision (confidence 1: a rule decided). The
+     * check and the inserts are one transaction under the admission lock, so two dispatches can
+     * never both pass, and a run never exists without its route. A refusal writes nothing.
      */
     async dispatch(request: DispatchRequest): Promise<DispatchResult> {
       checkDispatchRequest(request);
@@ -337,10 +401,22 @@ export function createRuns({ store, clock, ids, limits }: RunsOptions) {
       return store.transaction(async (tx) => {
         await tx.lockRunAdmission();
         const now = clock.now();
-        const admitted = await admission(tx, request, now, []);
+        const admitted = await admission(tx, request, taskTypes, now, []);
         if (!admitted.admitted) return admitted;
-        const run = newRun(ids.next(), admitted.node, request, budget, now);
+        const { node, route } = admitted;
+        const run = newRun(ids.next(), node, request, route, budget, now);
         await tx.insertRun(run);
+        await tx.insertDecisionPointRecord({
+          id: ids.next(),
+          projectId: node.projectId,
+          nodeId: node.id,
+          decisionPoint: MODEL_ROUTE_DECISION_POINT,
+          deciderId: MODEL_ROUTE_DECIDER,
+          inputHash: routeInputHash(admitted.routeInput),
+          output: routeOutput(route, run.id),
+          confidence: 1,
+          recordedAt: now,
+        });
         return { admitted: true, run };
       });
     },
@@ -349,7 +425,8 @@ export function createRuns({ store, clock, ids, limits }: RunsOptions) {
      * The dry-run path (M2.4): the same admission rules as `dispatch`, and it writes nothing.
      * `planned` are runs this caller has already planned in the same pass; they count as
      * active, so a pass never plans past the Developer or cluster limit. An admitted plan
-     * returns the run `dispatch` would record, with a planned id (`plannedRunId`), unsaved.
+     * returns the run `dispatch` would record, route included, with a planned id
+     * (`plannedRunId`), unsaved. No decision record is written.
      */
     async planDispatch(
       request: DispatchRequest,
@@ -357,12 +434,13 @@ export function createRuns({ store, clock, ids, limits }: RunsOptions) {
     ): Promise<DispatchResult> {
       checkDispatchRequest(request);
       const now = clock.now();
-      const admitted = await admission(store, request, now, planned);
+      const admitted = await admission(store, request, taskTypes, now, planned);
       if (!admitted.admitted) return admitted;
-      const id = plannedRunId(admitted.node.id, request.role);
+      const { node, route } = admitted;
+      const id = plannedRunId(node.id, request.role);
       return {
         admitted: true,
-        run: newRun(id, admitted.node, request, limits[request.role], now),
+        run: newRun(id, node, request, route, limits[request.role], now),
       };
     },
 

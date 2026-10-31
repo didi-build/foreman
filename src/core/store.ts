@@ -211,7 +211,33 @@ export interface Run {
   transcriptRef: string | null;
   usageExhaustedCause: UsageExhaustedCause | null;
   retryAfterSeconds: number | null;
+  // The route the core chose at admission (ADR 0114 section 2, migration 0005). `model` above is
+  // the route's model.
+  /** From contracts/task-types.yaml, for example `developer:code`. */
+  taskType: string;
+  /** The provider entry name, as in the egress proxy's provider list. */
+  provider: string;
+  /** From the model catalog. Kept on the run so the QA independence rule reads the store. */
+  modelFamily: string;
+  serviceTierRequested: ServiceTier;
+  /** The tier the provider's responses reported; null when none reported it. */
+  serviceTierServed: ServedTier | null;
+  routingPolicyVersion: string;
+  modelCatalogVersion: string;
+  /** Flex capacity rejections retried inside the run (ADR 0114 section 9). */
+  capacityRetries: number | null;
+  capacityWaitSeconds: number | null;
+  /** Time to the first output token of the first request, where the runtime reports it. */
+  firstTokenMs: number | null;
+  /** The runtime's own cost figure, kept for comparison with `costUsd`. */
+  reportedCostUsd: number | null;
 }
+
+/** A provider service tier (ADR 0114 section 8). */
+export type ServiceTier = "standard" | "flex" | "priority";
+
+/** The tier a run was served at: one tier, or `mixed` when its responses differed. */
+export type ServedTier = ServiceTier | "mixed";
 
 export interface RunEnd {
   endedAt: Date;

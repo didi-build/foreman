@@ -56,6 +56,7 @@ Unit tests on the memory store: `src/core/runs.test.ts`. On Postgres: `test/db/r
 3. Budgets: each role's limits are recorded in `runs.budget`.
 4. Run ends: turns, minutes, cost, cached and uncached tokens and the outcome are recorded once; a second end changes nothing.
 5. Usage exhausted: the failure counter does not move, the dispatch waits for `usage_exhausted_wait_minutes` or a longer retry-after, and an out-of-credit end is recorded apart.
+6. Model route (ADR 0114 sections 2 and 5): unit tests of the route choice in `src/core/routing.test.ts` cover each hard rule passing and failing (QA independence by model id and by family, known price for the requested tier and at Standard, approved provider, output cap), candidate order, and malformed settings failing closed with problems that name the field and never the value. In `runs.test.ts` and on Postgres: an admitted run carries the first policy's route and one `model_route` decision record written in the same transaction; `no_route` writes neither; migration 0005 seeds the settings the tests use and refuses a `runs` table that already holds rows. `test/contracts-task-types.test.ts` checks `contracts/task-types.yaml`.
 
 ### Egress proxy (ADR 0106 sections 2, 5 and 6, D-195, build plan M3.2)
 

@@ -86,7 +86,7 @@ resources:
     - name: agent_run_settings
       holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106)
     - name: bot_profiles
-      holds: Runtime, model and bot version per role as JSON, until bot files are loaded
+      holds: Runtime and bot version per role as JSON, until bot files are loaded. The model comes from each run's route (ADR 0114)
   # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is
   # a new credential at first hosting; until then the count is not read and the pass says so.
   windmill_token: needed for the execution count (D-167)
