@@ -3,8 +3,13 @@
 // `error_during_execution`, ...), `is_error`, `num_turns`, `total_cost_usd`, `usage`, `result`
 // (the final text), `errors`, and `api_error_status` when a turn ended on a provider error.
 // Checked against Claude Code 2.1.312, the version the image pins.
+//
+// Claude Code builds its own requests, so the image cannot set the tier or retry a Flex capacity
+// rejection itself (ADR 0114 sections 8 and 9): the proxy's bounds hold for it. It reports one
+// `usage.service_tier` for the run, which is read as the served tier when it names one.
 import { providerErrorFromClaudeCode } from "../shared/provider-error.ts";
 import { errorResult, type AgentResult } from "../shared/result.ts";
+import { reportedTier } from "../shared/tiers.ts";
 import { tokensFromUsage, type ProviderUsage } from "../shared/tokens.ts";
 
 const MAX_TEXT = 64 * 1024;
@@ -70,6 +75,7 @@ export function parseClaudeCodeResult(
           `Claude Code ended with ${subtype || "no subtype"}`
         ).slice(0, 4096);
   const cost = parsed.total_cost_usd;
+  const tier = reportedTier(parsed);
   return {
     status,
     finalText,
@@ -84,5 +90,6 @@ export function parseClaudeCodeResult(
       status === "error"
         ? providerErrorFromClaudeCode(count(parsed.api_error_status), errorText)
         : null,
+    ...(tier === null ? {} : { serviceTierServed: tier }),
   };
 }

@@ -6,7 +6,10 @@
 //    forwarded over TLS to its upstream, at an address checked the same way as a tunnel's. The
 //    body passes byte for byte; only the credential header changes. Requests past the run's
 //    ceiling get 403, not 429: model clients retry a 429 as a rate limit, and the runner must
-//    record this run as budget_exceeded, not usage_exhausted.
+//    record this run as budget_exceeded, not usage_exhausted. A request the upstream answered
+//    with 429 was not served and is not billed, so it does not count against that ceiling; it
+//    counts against a small ceiling of its own instead, so a runtime that retries without end is
+//    stopped with 403 too (ADR 0114 section 9).
 // 3. The state API route (D-195): `/state-api/...` goes over plain HTTP to the one in-cluster
 //    address in its settings, the only private address the proxy ever reaches. The agent's own
 //    Authorization header (its per-run state API token) passes through unchanged.
@@ -35,6 +38,11 @@ import { routeToProvider, type Provider, type ProviderRoute } from "./providers.
 import { stateApiPath, type StateApiUpstream } from "./state-api.ts";
 
 export const CEILING_MESSAGE = "This run has reached its model request ceiling.";
+/** The 403 past the ceiling on requests the upstream rejected with 429 (ADR 0114 section 9). */
+export const REJECTED_CEILING_MESSAGE =
+  "This run has reached its ceiling on rejected model requests.";
+/** The status a provider rejects a request with when it is busy or rate limited. */
+const REJECTED_STATUS = 429;
 const CONNECT_TIMEOUT_MS = 10_000;
 
 export interface EgressProxyOptions {
@@ -44,6 +52,8 @@ export interface EgressProxyOptions {
   /** Credential values by provider name. */
   credentials: ReadonlyMap<string, string>;
   maxModelRequests: number;
+  /** The most model requests the upstream may answer with 429 in this run (ADR 0114 section 9). */
+  maxRejectedModelRequests: number;
   /** The state API route's one upstream (D-195). Undefined turns the route off. */
   stateApi?: StateApiUpstream;
   logger: Logger;
@@ -85,14 +95,23 @@ function errorType(error: unknown): string {
 }
 
 export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
-  const { runId, allowedHosts, providers, credentials, maxModelRequests, logger } =
-    options;
+  const {
+    runId,
+    allowedHosts,
+    providers,
+    credentials,
+    maxModelRequests,
+    maxRejectedModelRequests,
+    logger,
+  } = options;
   const resolve = options.resolve ?? systemResolve;
   const connect =
     options.connect ??
     ((address: string, port: number) => netConnect({ host: address, port }));
   const tunnels = new Set<Duplex>();
+  // Requests sent upstream and not rejected, those still waiting for an answer included.
   let modelRequests = 0;
+  let rejectedRequests = 0;
 
   const info = (message: string, fields: LogFields): void =>
     logger.info(message, { runId, ...fields });
@@ -220,6 +239,15 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
       sendJson(response, 404, { error: "not found" });
       return true;
     }
+    if (rejectedRequests >= maxRejectedModelRequests) {
+      warn("model request refused", {
+        provider: route.provider.name,
+        reason: "rejected request ceiling",
+        maxRejectedModelRequests,
+      });
+      sendJson(response, 403, { error: REJECTED_CEILING_MESSAGE });
+      return true;
+    }
     if (modelRequests >= maxModelRequests) {
       warn("model request refused", {
         provider: route.provider.name,
@@ -230,11 +258,19 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
       return true;
     }
     modelRequests += 1;
-    forward(request, response, route, modelRequests).catch((error: unknown) => {
-      warn("model request failed", { errorType: errorType(error) });
-      if (!response.headersSent) sendJson(response, 500, { error: "internal error" });
-      else response.destroy();
-    });
+    const answered = (status: number): void => {
+      if (status !== REJECTED_STATUS) return;
+      // Not served, not billed: it moves from the request ceiling to the rejected one.
+      modelRequests -= 1;
+      rejectedRequests += 1;
+    };
+    forward(request, response, route, modelRequests, answered).catch(
+      (error: unknown) => {
+        warn("model request failed", { errorType: errorType(error) });
+        if (!response.headersSent) sendJson(response, 500, { error: "internal error" });
+        else response.destroy();
+      },
+    );
     return true;
   }
 
@@ -273,6 +309,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
     response: ServerResponse,
     { provider, upstreamPath }: ProviderRoute,
     count: number,
+    answered: (status: number) => void,
   ): Promise<void> {
     const started = Date.now();
     const host = provider.upstream.hostname.replace(/^\[|\]$/g, "");
@@ -287,6 +324,7 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
         status,
         outcome,
         modelRequests: count,
+        rejectedRequests,
         durationMs: Date.now() - started,
       });
     };
@@ -323,7 +361,14 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
           ALPNProtocols: ["http/1.1"],
         }),
     });
-    relay(request, response, upstreamRequest, done, "model provider unreachable");
+    relay(
+      request,
+      response,
+      upstreamRequest,
+      done,
+      "model provider unreachable",
+      answered,
+    );
   }
 
   /** Streams the request to the upstream and the answer back, both unchanged. */
@@ -333,9 +378,11 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
     upstreamRequest: ReturnType<typeof httpRequest>,
     done: (outcome: string, status?: number) => void,
     unreachable: string,
+    answered?: (status: number) => void,
   ): void {
     upstreamRequest.on("response", (upstreamResponse) => {
       const status = upstreamResponse.statusCode ?? 502;
+      answered?.(status);
       response.writeHead(status, downstreamResponseHeaders(upstreamResponse.headers));
       response.flushHeaders();
       pipeline(upstreamResponse, response, (error) =>

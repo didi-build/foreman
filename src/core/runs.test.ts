@@ -20,6 +20,7 @@ import {
   createRuns,
   plannedRunId,
   REHEARSAL_RUN_LIMITS,
+  runCapacityLimits,
   type DispatchRequest,
   type RunReport,
 } from "./runs.ts";
@@ -727,6 +728,7 @@ describe("usage exhausted queue (ADR 0106 section 6)", () => {
       cause: "rate_limit",
       resumeAt,
       ready: false,
+      nextCandidate: false,
     });
     t.advanceMinutes(29);
     expect(await t.runs.dispatch(t.request(t.nodeId), credential())).toEqual({
@@ -769,5 +771,210 @@ describe("usage exhausted queue (ADR 0106 section 6)", () => {
       resumeAt: null,
       ready: false,
     });
+  });
+});
+
+describe("onCapacity after a capacity end (ADR 0114 section 5, D-221)", () => {
+  const SONNET = "claude-sonnet-5-5";
+  const OPUS = "claude-opus-5-5";
+  const candidate = (model: string, provider = "anthropic") => ({
+    provider,
+    model,
+    tier: "standard",
+  });
+
+  /** A Developer item whose run on the first candidate ended with a capacity end. */
+  async function capacityEnded(
+    onCapacity: "wait" | "next_candidate",
+    candidates: Json[],
+    cause: "capacity" | "rate_limit" = "capacity",
+  ) {
+    const t = await setup();
+    await t.setting("model_routing_policy", {
+      ...FIRST_ROUTING_POLICY,
+      taskTypes: {
+        ...FIRST_ROUTING_POLICY.taskTypes,
+        "developer:code": { candidates, onCapacity },
+      },
+    });
+    const nodeId = await t.item();
+    const runId = await t.started(t.request(nodeId));
+    await t.runs.recordEnd(
+      runId,
+      t.report({ outcome: "usage_exhausted", usageExhaustedCause: cause }),
+    );
+    return { ...t, nodeId, runId };
+  }
+
+  it("takes the next candidate at once with next_candidate, and records why", async () => {
+    const t = await capacityEnded("next_candidate", [
+      candidate(SONNET),
+      candidate(OPUS),
+    ]);
+    expect(await t.runs.queuedDispatch(t.nodeId)).toMatchObject({
+      cause: "capacity",
+      ready: true,
+      nextCandidate: true,
+    });
+    const result = await t.runs.dispatch(t.request(t.nodeId), credential());
+    if (!result.admitted) throw new Error(result.reason);
+    expect(result.run.model).toBe(OPUS);
+    const record = t.records.at(-1);
+    expect(record?.output).toMatchObject({
+      model: OPUS,
+      afterCapacity: "next_candidate",
+    });
+  });
+
+  it("goes on from the candidate that ran, not from the first", async () => {
+    const t = await capacityEnded("next_candidate", [
+      candidate(SONNET),
+      candidate(OPUS),
+      candidate("claude-haiku-5-5"),
+    ]);
+    // The second run, on Opus, also ends with a capacity end: the third candidate is next, but
+    // it has no catalog price, so no later candidate passes and the dispatch waits (D-221).
+    const second = await t.started(t.request(t.nodeId));
+    expect((await t.store.getRun(second))?.model).toBe(OPUS);
+    await t.runs.recordEnd(
+      second,
+      t.report({ outcome: "usage_exhausted", usageExhaustedCause: "capacity" }),
+    );
+    expect(await t.runs.dispatch(t.request(t.nodeId), credential())).toEqual({
+      admitted: false,
+      reason: "usage_exhausted_wait",
+    });
+  });
+
+  it("waits as for wait when no later candidate passes, then takes the first candidate (D-221)", async () => {
+    const t = await capacityEnded("next_candidate", [
+      candidate(SONNET),
+      // Not on the approved list, and not in the catalog: it fails the hard rules.
+      candidate("qwen3-coder", "together"),
+    ]);
+    expect(await t.runs.queuedDispatch(t.nodeId)).toMatchObject({
+      ready: false,
+      nextCandidate: false,
+    });
+    t.advanceMinutes(29);
+    expect(await t.runs.dispatch(t.request(t.nodeId), credential())).toEqual({
+      admitted: false,
+      reason: "usage_exhausted_wait",
+    });
+    t.advanceMinutes(1);
+    const result = await t.runs.dispatch(t.request(t.nodeId), credential());
+    if (!result.admitted) throw new Error(result.reason);
+    expect(result.run.model).toBe(SONNET);
+    expect(t.records.at(-1)?.output).toMatchObject({
+      model: SONNET,
+      afterCapacity: "no_later_candidate",
+    });
+  });
+
+  it("keeps today's wait with onCapacity wait, even when a later candidate would pass", async () => {
+    const t = await capacityEnded("wait", [candidate(SONNET), candidate(OPUS)]);
+    expect(await t.runs.dispatch(t.request(t.nodeId), credential())).toEqual({
+      admitted: false,
+      reason: "usage_exhausted_wait",
+    });
+    t.advanceMinutes(30);
+    const result = await t.runs.dispatch(t.request(t.nodeId), credential());
+    if (!result.admitted) throw new Error(result.reason);
+    expect(result.run.model).toBe(SONNET);
+    expect(t.records.at(-1)?.output).toMatchObject({ afterCapacity: "wait" });
+  });
+
+  it("does not take the next candidate after a rate limit, which is not a capacity end", async () => {
+    const t = await capacityEnded(
+      "next_candidate",
+      [candidate(SONNET), candidate(OPUS)],
+      "rate_limit",
+    );
+    expect(await t.runs.dispatch(t.request(t.nodeId), credential())).toEqual({
+      admitted: false,
+      reason: "usage_exhausted_wait",
+    });
+    t.advanceMinutes(30);
+    const result = await t.runs.dispatch(t.request(t.nodeId), credential());
+    expect(result.admitted && result.run.model).toBe(SONNET);
+    expect(t.records.at(-1)?.output).not.toHaveProperty("afterCapacity");
+  });
+});
+
+describe("what the runtime measured about the route (ADR 0114 sections 2, 8 and 9)", () => {
+  it("records the served tier, capacity retries and wait, first token time and reported cost", async () => {
+    const t = await setup();
+    const runId = await t.started(t.request(await t.item()));
+    await t.runs.recordEnd(
+      runId,
+      t.report({
+        outcome: "usage_exhausted",
+        usageExhaustedCause: "capacity",
+        serviceTierServed: "flex",
+        capacityRetries: 3,
+        capacityWaitSeconds: 210,
+        firstTokenMs: 850,
+        reportedCostUsd: 0.42,
+      }),
+    );
+    expect(await t.store.getRun(runId)).toMatchObject({
+      serviceTierServed: "flex",
+      capacityRetries: 3,
+      capacityWaitSeconds: 210,
+      firstTokenMs: 850,
+      reportedCostUsd: 0.42,
+    });
+  });
+
+  it("leaves each one null when the runtime did not report it", async () => {
+    const t = await setup();
+    const runId = await t.started(t.request(await t.item()));
+    await t.runs.recordEnd(runId, t.report());
+    expect(await t.store.getRun(runId)).toMatchObject({
+      serviceTierServed: null,
+      capacityRetries: null,
+      capacityWaitSeconds: null,
+      firstTokenMs: null,
+      reportedCostUsd: null,
+    });
+  });
+
+  it("refuses a bad value, naming the field", async () => {
+    const t = await setup();
+    const runId = await t.started(t.request(await t.item()));
+    for (const [bad, field] of [
+      [{ capacityRetries: -1 }, "capacityRetries"],
+      [{ capacityWaitSeconds: 1.5 }, "capacityWaitSeconds"],
+      [{ firstTokenMs: -3 }, "firstTokenMs"],
+      [{ reportedCostUsd: Number.NaN }, "reportedCostUsd"],
+      [{ serviceTierServed: "batch" as never }, "serviceTierServed"],
+    ] as const) {
+      await expect(t.runs.recordEnd(runId, t.report(bad))).rejects.toThrow(field);
+    }
+    expect((await t.store.getRun(runId))?.endedAt).toBeNull();
+  });
+});
+
+describe("run capacity limits (ADR 0114 section 9, migration 0007)", () => {
+  it("reads flex_capacity_retries and max_rejected_model_requests", async () => {
+    const t = await setup();
+    await t.setting("flex_capacity_retries", 3);
+    await t.setting("max_rejected_model_requests", 5);
+    expect(await runCapacityLimits(t.store)).toEqual({
+      flexCapacityRetries: 3,
+      maxRejectedModelRequests: 5,
+    });
+    await t.setting("flex_capacity_retries", 0);
+    expect((await runCapacityLimits(t.store)).flexCapacityRetries).toBe(0);
+  });
+
+  it("refuses a missing or bad setting, naming the setting and never its value", async () => {
+    const t = await setup();
+    await expect(runCapacityLimits(t.store)).rejects.toThrow("flex_capacity_retries");
+    await t.setting("flex_capacity_retries", 3);
+    await t.setting("max_rejected_model_requests", 0);
+    await expect(runCapacityLimits(t.store)).rejects.toThrow(
+      /^max_rejected_model_requests must be a whole number above 0$/,
+    );
   });
 });

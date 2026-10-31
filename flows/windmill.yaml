@@ -37,7 +37,8 @@ flows:
     path: f/foreman/record_run_end
     entry: flows/record-run-end.ts
     # Called with a run id. The handle the dispatch kept on the run (runs.handle, migration 0006)
-    # is read from the store. Who calls it in live mode is open, as for dispatch.
+    # is read from the store. Once the end is recorded it asks for the move the run's report
+    # triggers, and the guards decide (O-23). Who calls it in live mode is open, as for dispatch.
     trigger: called
 
   - name: cancel_runs

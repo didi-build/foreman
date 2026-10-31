@@ -2,7 +2,12 @@
 // this. `start` returns at once, `poll` reports, `cancel` stops. Kubernetes reports and the runner
 // decides (ADR 0106, essential 1): nothing here records a run or writes to the store.
 import type { RunLimits, RunTokens } from "../../core/runs.ts";
-import type { AgentRole, RunOutcome, UsageExhaustedCause } from "../../core/store.ts";
+import type {
+  AgentRole,
+  RunOutcome,
+  ServedTier,
+  UsageExhaustedCause,
+} from "../../core/store.ts";
 
 export interface AgentRuntime<Task, Handle> {
   /** Start a run and return at once. Long runs are never awaited in one call. */
@@ -38,6 +43,11 @@ export interface AgentRunResult {
   usageExhaustedCause?: UsageExhaustedCause;
   /** Only with `usage_exhausted`, when the provider gave one. */
   retryAfterSeconds?: number;
+  // What the runtime measured about the route (ADR 0114 sections 2, 8 and 9), where it could.
+  serviceTierServed?: ServedTier;
+  capacityRetries?: number;
+  capacityWaitSeconds?: number;
+  firstTokenMs?: number;
 }
 
 export type { AgentRole, RunLimits };

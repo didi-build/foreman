@@ -22,6 +22,7 @@ const baseEnv = {
     },
   ]),
   MAX_MODEL_REQUESTS: "200",
+  MAX_REJECTED_MODEL_REQUESTS: "5",
   [secretEnvName(SECRET_PATH)]: KEY_VALUE,
 };
 

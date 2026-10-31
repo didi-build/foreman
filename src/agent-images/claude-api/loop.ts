@@ -8,11 +8,24 @@
 // fixed order; the system text carries a cache breakpoint, so tools and system are the cached
 // prefix. The request also asks for automatic caching, which moves a second breakpoint to the
 // end of the conversation each turn. The history is only ever appended to.
+//
+// Service tiers (ADR 0114 sections 8 and 9). The request carries `service_tier` only for a route
+// that asked for Flex or Priority; a Standard request is sent as before, byte for byte. The tier
+// each response reports is read, and the run reports one served tier. Every provider error ends
+// the run at once (the SDK's own retries are off), with one exception: a Flex capacity rejection
+// (a 429 with an overload error on a Flex route) is retried inside the run, at most
+// `flexCapacityRetries` times, after a wait of 30 seconds that doubles each time, at most 5
+// minutes. The waits count against the run's minute limit: a wait that would reach it is not
+// started, and the run ends on the rejection, so the runner records `usage_exhausted` with cause
+// `capacity` instead of a deadline.
 import Anthropic from "@anthropic-ai/sdk";
 
+import { isFlexCapacityRejection } from "../../adapters/agent-runtime/kubernetes/result.ts";
 import type { RunTokens } from "../../core/runs.ts";
+import type { ServiceTier } from "../../core/store.ts";
 import { providerErrorFromHttp } from "../shared/provider-error.ts";
 import type { AgentResult } from "../shared/result.ts";
+import { reportedTier, servedTier } from "../shared/tiers.ts";
 import { NO_TOKENS, addTokens, tokensFromUsage } from "../shared/tokens.ts";
 import type { ToolOutput } from "./files.ts";
 import { requestCostUsd } from "./pricing.ts";
@@ -26,11 +39,39 @@ export interface MessagesClient {
   };
 }
 
+/** The loop's view of time, so tests can run the waits on a fake clock. */
+export interface LoopClock {
+  /** Milliseconds, from any fixed start. */
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+const realClock: LoopClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** The first wait after a Flex capacity rejection; each later one doubles, up to the cap. */
+export const CAPACITY_FIRST_WAIT_MS = 30_000;
+export const CAPACITY_MAX_WAIT_MS = 5 * 60_000;
+
+/** The wait before retry number `retry` (from 0). */
+export const capacityWaitMs = (retry: number): number =>
+  Math.min(CAPACITY_FIRST_WAIT_MS * 2 ** retry, CAPACITY_MAX_WAIT_MS);
+
 export interface LoopOptions {
   client: MessagesClient;
   model: string;
   maxTurns: number;
   maxUsd: number;
+  /** The run's minute limit, which capacity waits count against. */
+  maxMinutes: number;
+  /** The tier the run's route asked for. */
+  serviceTier: ServiceTier;
+  /** How many Flex capacity rejections this run retries (`flex_capacity_retries`). */
+  flexCapacityRetries: number;
+  /** Real time unless a test passes a fake one. */
+  clock?: LoopClock;
   maxOutputTokens: number;
   effort?: Anthropic.OutputConfig["effort"];
   /** Stable for the whole run: the cached prefix. */
@@ -63,8 +104,18 @@ export function buildRequest(
       ? { format: { type: "json_schema", schema: options.outputSchema } }
       : {}),
   };
+  // The SDK's type knows only Anthropic's own values; a Flex route goes to a provider whose
+  // Anthropic-compatible endpoint takes `flex` (ADR 0114 section 8).
+  const tier =
+    options.serviceTier === "standard"
+      ? {}
+      : ({ service_tier: options.serviceTier } as unknown as Pick<
+          Anthropic.MessageCreateParamsNonStreaming,
+          "service_tier"
+        >);
   return {
     model: options.model,
+    ...tier,
     max_tokens: options.maxOutputTokens,
     system: [
       { type: "text", text: options.system, cache_control: { type: "ephemeral" } },
@@ -77,16 +128,23 @@ export function buildRequest(
 }
 
 export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
+  const clock = options.clock ?? realClock;
+  const startedAt = clock.now();
+  const minuteLimitMs = options.maxMinutes * 60_000;
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: options.input }];
   let turns = 0;
   let costUsd = 0;
   let tokens: RunTokens = { ...NO_TOKENS };
   let lastText = "";
+  const tiers: (ServiceTier | null)[] = [];
+  let capacityRetries = 0;
+  let capacityWaitedMs = 0;
 
   const end = (
     status: AgentResult["status"],
     errorText = "",
     providerError: AgentResult["providerError"] = null,
+    served = servedTier(tiers),
   ): LoopEnd => ({
     result: {
       status,
@@ -96,8 +154,26 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
       tokens,
       errorText,
       providerError,
+      ...(served === null ? {} : { serviceTierServed: served }),
+      capacityRetries,
+      capacityWaitSeconds: Math.round(capacityWaitedMs / 1000),
     },
   });
+
+  /** Waits before a retry if this rejection may be retried, and says whether it did. */
+  async function waitedForCapacity(
+    error: AgentResult["providerError"],
+  ): Promise<boolean> {
+    if (!isFlexCapacityRejection(options.serviceTier, error)) return false;
+    if (capacityRetries >= options.flexCapacityRetries) return false;
+    const wait = capacityWaitMs(capacityRetries);
+    if (clock.now() - startedAt + wait >= minuteLimitMs) return false;
+    const before = clock.now();
+    await clock.sleep(wait);
+    capacityWaitedMs += clock.now() - before;
+    capacityRetries += 1;
+    return true;
+  }
 
   for (;;) {
     if (turns >= options.maxTurns)
@@ -109,10 +185,16 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
       response = await options.client.messages.create(buildRequest(options, messages));
     } catch (error) {
       if (error instanceof Anthropic.APIError && typeof error.status === "number") {
+        const providerError = providerErrorFromHttp(
+          error.status,
+          error.headers,
+          error.error,
+        );
+        if (await waitedForCapacity(providerError)) continue;
         return end(
           "error",
           `the model provider answered ${error.status}`,
-          providerErrorFromHttp(error.status, error.headers, error.error),
+          providerError,
         );
       }
       if (error instanceof Anthropic.APIError) {
@@ -121,6 +203,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
       throw error;
     }
     turns += 1;
+    tiers.push(reportedTier(response));
     const used = tokensFromUsage(response.usage);
     tokens = addTokens(tokens, used);
     costUsd += requestCostUsd(options.model, used);

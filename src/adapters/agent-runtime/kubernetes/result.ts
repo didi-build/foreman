@@ -2,8 +2,15 @@
 // object as its last line of output: its result. This file defines that shape, parses it
 // without ever throwing, and maps the Job's state and the result to a `runs.outcome`.
 import type { RunTokens } from "../../../core/runs.ts";
-import type { UsageExhaustedCause } from "../../../core/store.ts";
-import { CEILING_MESSAGE } from "../../../egress-proxy/proxy.ts";
+import type {
+  ServedTier,
+  ServiceTier,
+  UsageExhaustedCause,
+} from "../../../core/store.ts";
+import {
+  CEILING_MESSAGE,
+  REJECTED_CEILING_MESSAGE,
+} from "../../../egress-proxy/proxy.ts";
 import type { AgentRunResult } from "../runtime.ts";
 import type { JobStatus } from "./objects.ts";
 
@@ -16,12 +23,17 @@ import type { JobStatus } from "./objects.ts";
  *   "tokens": { "uncachedInput": 10, "cachedInput": 900, "cacheWriteInput": 50, "output": 120 },
  *   "structured": { "verdict": "pass" },
  *   "errorText": "...", "providerError": { "status": 429, "type": "rate_limit_error",
- *   "message": "...", "retryAfterSeconds": 30 } }
+ *   "message": "...", "retryAfterSeconds": 30 },
+ *   "serviceTierServed": "flex", "capacityRetries": 1, "capacityWaitSeconds": 30,
+ *   "firstTokenMs": 900 }
  * ```
  *
  * `status` is `success`, `error`, `max_turns` (the runtime's turn cap) or `max_budget` (its
  * dollar cap). `providerError` is the model provider's last error response, if the run ended on
- * one. Every field but `foremanResult` and `status` may be missing.
+ * one. Every field but `foremanResult` and `status` may be missing. The last four are what the
+ * runtime measured about the route (ADR 0114 sections 2, 8 and 9), each only where it can: the
+ * tier the provider's responses reported (one tier, or `mixed`), the Flex capacity rejections it
+ * retried and the whole seconds it waited on them, and the time to the first output token.
  */
 export interface AgentResult {
   status: "success" | "error" | "max_turns" | "max_budget";
@@ -32,6 +44,10 @@ export interface AgentResult {
   tokens: RunTokens | null;
   errorText: string;
   providerError: ProviderError | null;
+  serviceTierServed?: ServedTier;
+  capacityRetries?: number;
+  capacityWaitSeconds?: number;
+  firstTokenMs?: number;
 }
 
 export interface ProviderError {
@@ -42,6 +58,7 @@ export interface ProviderError {
 }
 
 const STATUSES = new Set(["success", "error", "max_turns", "max_budget"]);
+const SERVED_TIERS: readonly ServedTier[] = ["standard", "flex", "priority", "mixed"];
 const MAX_FINAL_TEXT = 64 * 1024;
 const MAX_ERROR_TEXT = 4 * 1024;
 
@@ -106,6 +123,16 @@ export function parseAgentResult(log: string | null): AgentResult | null {
       tokens: tokens(value.tokens),
       errorText: text(value.errorText, MAX_ERROR_TEXT),
       providerError: providerError(value.providerError),
+      ...(SERVED_TIERS.includes(value.serviceTierServed as ServedTier)
+        ? { serviceTierServed: value.serviceTierServed as ServedTier }
+        : {}),
+      ...(isCount(value.capacityRetries)
+        ? { capacityRetries: value.capacityRetries }
+        : {}),
+      ...(isCount(value.capacityWaitSeconds)
+        ? { capacityWaitSeconds: value.capacityWaitSeconds }
+        : {}),
+      ...(isCount(value.firstTokenMs) ? { firstTokenMs: value.firstTokenMs } : {}),
     };
   }
   return null;
@@ -136,11 +163,42 @@ export function jobMinutes(job: JobStatus | null): number | null {
 }
 
 /**
- * A provider rate-limit, capacity or out-of-credit error, as Anthropic and OpenAI-style APIs
- * report them. Anything else is not `usage_exhausted`.
+ * The overload errors a provider answers a busy Flex request with (ADR 0114 section 9):
+ * DeepInfra's `engine_overloaded`, and the overload type of the Anthropic-style API. DeepInfra's
+ * queue-timeout form is read in the rehearsal and added here then.
  */
-export function usageCause(error: ProviderError | null): UsageExhaustedCause | null {
+export const FLEX_CAPACITY_ERROR_TYPES: readonly string[] = [
+  "engine_overloaded",
+  "overloaded_error",
+];
+
+/**
+ * A Flex capacity rejection: a 429 with an overload error, on a run whose route asked for Flex.
+ * Any other 429 is a rate limit. The runtimes that build their own requests retry this one error
+ * inside the run (ADR 0114 section 9); the runner maps it to cause `capacity`.
+ */
+export function isFlexCapacityRejection(
+  tier: ServiceTier,
+  error: ProviderError | null,
+): boolean {
+  if (tier !== "flex" || error === null || error.status !== 429) return false;
+  return (
+    FLEX_CAPACITY_ERROR_TYPES.includes(error.type) ||
+    FLEX_CAPACITY_ERROR_TYPES.some((type) => error.message.includes(type))
+  );
+}
+
+/**
+ * A provider rate-limit, capacity or out-of-credit error, as Anthropic and OpenAI-style APIs
+ * report them. A 429 is a rate limit unless the route asked for Flex and the error is an
+ * overload, which is capacity (ADR 0114 section 9). Anything else is not `usage_exhausted`.
+ */
+export function usageCause(
+  error: ProviderError | null,
+  tier: ServiceTier = "standard",
+): UsageExhaustedCause | null {
   if (error === null) return null;
+  if (isFlexCapacityRejection(tier, error)) return "capacity";
   if (error.status === 429 || error.type === "rate_limit_error") return "rate_limit";
   if (
     error.status === 529 ||
@@ -155,16 +213,18 @@ export function usageCause(error: ProviderError | null): UsageExhaustedCause | n
 
 /**
  * The run's end from its Job and its result (ADR 0106 section 6):
- * the deadline is `timeout` whatever the output says; the runtime's turn or dollar cap, or the
- * proxy's ceiling message, is `budget_exceeded`; a provider rate-limit, capacity or credit error
- * is `usage_exhausted`; success needs both a Complete Job and a `success` result; anything
- * else, bad output included, is `fail`.
+ * the deadline is `timeout` whatever the output says; the runtime's turn or dollar cap, or either
+ * of the proxy's ceiling messages, is `budget_exceeded`; a provider rate-limit, capacity or
+ * credit error is `usage_exhausted`, with the route's requested tier telling a Flex capacity
+ * rejection from a rate limit; success needs both a Complete Job and a `success` result; anything
+ * else, bad output included, is `fail`. What the runtime measured about the route is passed on.
  */
 export function mapRunEnd(
   state: "complete" | "deadline" | "failed",
   job: JobStatus | null,
   result: AgentResult | null,
   model: string,
+  tier: ServiceTier = "standard",
 ): AgentRunResult {
   const base = {
     finalText: result?.finalText ?? "",
@@ -174,6 +234,7 @@ export function mapRunEnd(
     minutes: jobMinutes(job),
     tokens: result?.tokens ?? null,
     model,
+    ...measured(result),
   };
   if (state === "deadline")
     return { ...base, outcome: "timeout", detail: "deadline_exceeded" };
@@ -184,13 +245,16 @@ export function mapRunEnd(
   if (result.status === "max_turns" || result.status === "max_budget") {
     return { ...base, outcome: "budget_exceeded", detail: result.status };
   }
-  if (
-    result.errorText.includes(CEILING_MESSAGE) ||
-    (result.providerError?.message ?? "").includes(CEILING_MESSAGE)
-  ) {
+  const said = (message: string) =>
+    result.errorText.includes(message) ||
+    (result.providerError?.message ?? "").includes(message);
+  if (said(CEILING_MESSAGE)) {
     return { ...base, outcome: "budget_exceeded", detail: "proxy_ceiling" };
   }
-  const cause = usageCause(result.providerError);
+  if (said(REJECTED_CEILING_MESSAGE)) {
+    return { ...base, outcome: "budget_exceeded", detail: "proxy_rejected_ceiling" };
+  }
+  const cause = usageCause(result.providerError, tier);
   if (cause !== null) {
     const retryAfter = result.providerError?.retryAfterSeconds;
     return {
@@ -208,4 +272,18 @@ export function mapRunEnd(
     outcome: "fail",
     detail: state === "complete" ? "agent_error" : "job_failed",
   };
+}
+
+/** The route measurements of a result, only those it has. */
+function measured(result: AgentResult | null): Partial<AgentRunResult> {
+  if (result === null) return {};
+  const fields: Partial<AgentRunResult> = {};
+  if (result.serviceTierServed !== undefined)
+    fields.serviceTierServed = result.serviceTierServed;
+  if (result.capacityRetries !== undefined)
+    fields.capacityRetries = result.capacityRetries;
+  if (result.capacityWaitSeconds !== undefined)
+    fields.capacityWaitSeconds = result.capacityWaitSeconds;
+  if (result.firstTokenMs !== undefined) fields.firstTokenMs = result.firstTokenMs;
+  return fields;
 }

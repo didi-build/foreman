@@ -150,6 +150,23 @@ describe("run Jobs (unit: budgets enforced by Kubernetes, ADR 0106 section 6)", 
     expect(value(proxyJob, "MAX_MODEL_REQUESTS")).toBe("100");
   });
 
+  it("gives the agent its tier, minute limit and Flex retries, and the proxy its rejected-request ceiling (ADR 0114 section 9)", () => {
+    const spec = { ...QA, serviceTier: "flex" as const, flexCapacityRetries: 2 };
+    const stage = agentStage(
+      { ...spec, maxRejectedModelRequests: 4 },
+      QA_LIMITS,
+      SETTINGS,
+    );
+    const agent = stage.clientJob(PROXY_IP);
+    expect(value(agent, "FOREMAN_SERVICE_TIER")).toBe("flex");
+    expect(value(agent, "FOREMAN_MAX_MINUTES")).toBe("20");
+    expect(value(agent, "FOREMAN_FLEX_CAPACITY_RETRIES")).toBe("2");
+    expect(value(stage.proxyJob, "MAX_REJECTED_MODEL_REQUESTS")).toBe("4");
+    expect(
+      value(fetchStage(QA, SETTINGS).proxyJob, "MAX_REJECTED_MODEL_REQUESTS"),
+    ).toBe("1");
+  });
+
   it("gives the fetch step its own deadline", () => {
     const fetch = fetchStage(QA, SETTINGS);
     expect(fetch.clientJob(PROXY_IP).spec.activeDeadlineSeconds).toBe(600);
@@ -474,6 +491,21 @@ describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
         providers: [{ ...DEVELOPER.providers[0]!, baseUrlEnv: "HTTPS_PROXY" }],
       },
       /base URL variable/,
+    ],
+    [
+      "an unknown service tier",
+      { ...DEVELOPER, serviceTier: "batch" as never },
+      /serviceTier/,
+    ],
+    [
+      "a negative Flex capacity retry count",
+      { ...DEVELOPER, flexCapacityRetries: -1 },
+      /flexCapacityRetries/,
+    ],
+    [
+      "no rejected-request ceiling",
+      { ...DEVELOPER, maxRejectedModelRequests: 0 },
+      /maxRejectedModelRequests/,
     ],
     [
       "a provider named state-api",

@@ -245,6 +245,11 @@ describe("reconcile pass, dispatch (unit: section 2.5 step 3)", () => {
       transcriptRef: null,
       usageExhaustedCause: "rate_limit",
       retryAfterSeconds: null,
+      serviceTierServed: null,
+      capacityRetries: null,
+      capacityWaitSeconds: null,
+      firstTokenMs: null,
+      reportedCostUsd: null,
     });
 
     f.advanceMinutes(10);

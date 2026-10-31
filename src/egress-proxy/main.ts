@@ -1,7 +1,7 @@
 // The per-run egress proxy service (ADR 0106 section 2, ADR 0111, D-195). Configuration only from
 // the environment: PORT, RUN_ID, ALLOWED_HOSTS, MODEL_PROVIDERS, MAX_MODEL_REQUESTS,
-// STATE_API_UPSTREAM, and each provider's credential by its secret path. One port serves CONNECT
-// tunnels, model traffic at `/<provider>`, the state API route at `/state-api` and `GET /health`.
+// MAX_REJECTED_MODEL_REQUESTS, STATE_API_UPSTREAM, and each provider's credential by its secret
+// path. One port serves CONNECT tunnels, model traffic at `/<provider>`, the state API route at `/state-api` and `GET /health`.
 import { ConfigError } from "../service-kit/config.ts";
 import { createLogger } from "../service-kit/logger.ts";
 import { exitOnSignals, startService } from "../service-kit/server.ts";

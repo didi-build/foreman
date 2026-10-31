@@ -533,7 +533,9 @@ function ops(db: Queryable): StoreOps {
       const changed = await exec(
         `update factory.runs
          set ended_at = $2, outcome = $3, turns = $4, minutes = $5, cost_usd = $6, tokens = $7,
-             transcript_ref = $8, usage_exhausted_cause = $9, retry_after_seconds = $10
+             transcript_ref = $8, usage_exhausted_cause = $9, retry_after_seconds = $10,
+             service_tier_served = $11, capacity_retries = $12, capacity_wait_seconds = $13,
+             first_token_ms = $14, reported_cost_usd = $15
          where id = $1 and ended_at is null`,
         [
           id,
@@ -546,6 +548,11 @@ function ops(db: Queryable): StoreOps {
           end.transcriptRef,
           end.usageExhaustedCause,
           end.retryAfterSeconds,
+          end.serviceTierServed,
+          end.capacityRetries,
+          end.capacityWaitSeconds,
+          end.firstTokenMs,
+          end.reportedCostUsd,
         ],
       );
       return changed === 1;

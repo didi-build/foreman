@@ -108,6 +108,9 @@ export async function createReconcileFixture(
     ["qa_round_cap", 3],
     ["usage_exhausted_wait_minutes", 30],
     ["agent_cluster_max_active_runs", 10],
+    // Migration 0007.
+    ["flex_capacity_retries", 3],
+    ["max_rejected_model_requests", 5],
     ["windmill_monthly_execution_limit", 1000],
     ["windmill_alert_percent", 80],
   ] as const) {

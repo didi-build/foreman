@@ -29,7 +29,8 @@ export function retryAfterSeconds(
 /**
  * From an HTTP error: its status, its headers and its JSON body. Anthropic's body is
  * `{"type":"error","error":{"type":"rate_limit_error","message":"..."}}`; the egress proxy's is
- * `{"error":"..."}`.
+ * `{"error":"..."}`. An OpenAI-style body names its error in `code` when it has no `type`, so
+ * that is read as the type then.
  */
 export function providerErrorFromHttp(
   status: number | null,
@@ -47,6 +48,7 @@ export function providerErrorFromHttp(
   } else if (typeof inner === "object" && inner !== null) {
     const fields = inner as Record<string, unknown>;
     if (typeof fields.type === "string") type = fields.type;
+    else if (typeof fields.code === "string") type = fields.code;
     if (typeof fields.message === "string") message = fields.message;
   }
   return {

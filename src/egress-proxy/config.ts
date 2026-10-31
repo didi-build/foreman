@@ -11,6 +11,8 @@ export interface ProxyConfig {
   allowedHosts: ReadonlySet<string>;
   providers: Provider[];
   maxModelRequests: number;
+  /** The most requests the upstream may answer with 429 in this run (ADR 0114 section 9). */
+  maxRejectedModelRequests: number;
   /** The state API route's one upstream (D-195), or undefined when the route is off. */
   stateApi: StateApiUpstream | undefined;
   /** Credential values by provider name. Never logged. */
@@ -18,6 +20,19 @@ export interface ProxyConfig {
 }
 
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+function positiveWholeNumber(env: string): Setting<number> {
+  return {
+    env,
+    parse: (raw: string) => {
+      const value = Number(raw);
+      if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) {
+        throw new Error("must be a positive whole number");
+      }
+      return value;
+    },
+  };
+}
 
 const settings = {
   port: port("PORT", "8080"),
@@ -34,16 +49,12 @@ const settings = {
   /** JSON list of providers: name, upstream, credential (x-api-key, bearer or none), secretPath. */
   providers: { env: "MODEL_PROVIDERS", parse: parseProviders },
   /** The most model requests this run may make: twice the run's turn limit (ADR 0106 section 6). */
-  maxModelRequests: {
-    env: "MAX_MODEL_REQUESTS",
-    parse: (raw: string) => {
-      const value = Number(raw);
-      if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) {
-        throw new Error("must be a positive whole number");
-      }
-      return value;
-    },
-  } satisfies Setting<number>,
+  maxModelRequests: positiveWholeNumber("MAX_MODEL_REQUESTS"),
+  /**
+   * The most requests the upstream may answer with 429, which do not count against the model
+   * request ceiling: the `max_rejected_model_requests` setting (ADR 0114 section 9).
+   */
+  maxRejectedModelRequests: positiveWholeNumber("MAX_REJECTED_MODEL_REQUESTS"),
   /**
    * The in-cluster state API address for the `/state-api` route (D-195), as `http://host:port`.
    * Unset or empty turns the route off, as for the QA fetch step's proxy.

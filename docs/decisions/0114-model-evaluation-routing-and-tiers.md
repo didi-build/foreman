@@ -246,6 +246,8 @@ Which works is measured in the rehearsal, not assumed. Choosing a new runtime pr
 | Proposals from the scorecard                                                                      | After cutover                                                                          |
 | The evaluation set, if open question 2 is yes                                                     | After the rehearsal comparison                                                         |
 
+**Built in M3.2 slice 3.** The Flex retry is in the Messages API loop (`src/agent-images/claude-api/loop.ts`), which also sets `service_tier` on a Flex or Priority request and reads the served tier from each response (O-21). The Claude Code image reads the one served tier Claude Code reports and cannot retry by itself, so for it only the proxy's bounds apply. The run records the served tier, its capacity retries and wait, and the runtime's own cost when its end is recorded. The proxy's 429 counting and its rejected-request ceiling are in `src/egress-proxy/proxy.ts` (O-24). `usageCause` maps a Flex capacity 429 to `capacity` from the route's requested tier. `next_candidate` is in `src/core/routing.ts` and `src/core/runs.ts` (O-22, D-221). The settings `flex_capacity_retries` and `max_rejected_model_requests` are seeded by migration 0007. The proxy adding `service_tier` (D-203) is not built: it waits for the rehearsal to show caching holds.
+
 **Prerequisite.** DeepInfra passes the D-154 provider check (no training on our data, a data processing agreement) before any project code reaches it, including the rehearsal comparison. Until then it is not on `model_providers_approved`, and the core cannot route to it.
 
 ## Constraints

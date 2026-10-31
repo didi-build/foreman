@@ -14,6 +14,7 @@ import {
 import { errorResult, redact, resultLine, type AgentResult } from "./result.ts";
 import { PLACEHOLDER_CREDENTIAL, readImageSettings, secretValues } from "./settings.ts";
 import { parseTask } from "./task.ts";
+import { reportedTier, servedTier } from "./tiers.ts";
 import { addTokens, tokensFromUsage } from "./tokens.ts";
 
 // Unit: the helpers every agent image shares (ADR 0106 sections 4 to 6). No network.
@@ -142,6 +143,18 @@ describe("result line (unit: round trip through the runtime's parser, ADR 0106 s
     expect(parseAgentResult(resultLine(failed, []))).toEqual(failed);
   });
 
+  it("round-trips what the runtime measured about the route (ADR 0114)", () => {
+    const measured: AgentResult = {
+      ...sample,
+      serviceTierServed: "mixed",
+      capacityRetries: 2,
+      capacityWaitSeconds: 90,
+      firstTokenMs: 700,
+    };
+    expect(parseAgentResult(resultLine(measured, []))).toEqual(measured);
+    expect(resultLine(sample, [])).not.toContain("capacityRetries");
+  });
+
   it("removes every credential value, at any depth", () => {
     const leaky: AgentResult = {
       ...sample,
@@ -243,6 +256,14 @@ describe("provider errors (unit: 429, 529, 402 and the proxy's ceiling)", () => 
     ).toMatchObject({ status: 402, type: "billing_error" });
   });
 
+  it("reads an OpenAI-style error code as the type when there is no type", () => {
+    expect(
+      providerErrorFromHttp(429, null, {
+        error: { code: "engine_overloaded", message: "busy" },
+      }),
+    ).toMatchObject({ status: 429, type: "engine_overloaded", message: "busy" });
+  });
+
   it("reads the proxy's own error body", () => {
     expect(providerErrorFromHttp(403, null, { error: CEILING_MESSAGE })).toMatchObject({
       status: 403,
@@ -267,6 +288,25 @@ describe("provider errors (unit: 429, 529, 402 and the proxy's ceiling)", () => 
       ),
     ).toMatchObject({ status: 429, type: "rate_limit_error", retryAfterSeconds: null });
     expect(providerErrorFromClaudeCode(null, "something else")).toBeNull();
+  });
+});
+
+describe("served tier (unit: ADR 0114 section 8)", () => {
+  it("reads the tier a response reports, in usage or at the top level", () => {
+    expect(reportedTier({ usage: { service_tier: "flex" } })).toBe("flex");
+    expect(reportedTier({ service_tier: "priority" })).toBe("priority");
+    expect(reportedTier({ usage: { service_tier: "batch" } })).toBeNull();
+    expect(reportedTier({ usage: {} })).toBeNull();
+    expect(reportedTier(null)).toBeNull();
+  });
+
+  it("is one tier when every response reported it, mixed otherwise, null when none did", () => {
+    expect(servedTier(["flex", "flex"])).toBe("flex");
+    expect(servedTier(["standard"])).toBe("standard");
+    expect(servedTier(["flex", "standard"])).toBe("mixed");
+    expect(servedTier(["flex", null])).toBe("mixed");
+    expect(servedTier([null, null])).toBeNull();
+    expect(servedTier([])).toBeNull();
   });
 });
 

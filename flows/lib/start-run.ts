@@ -5,7 +5,8 @@
 // 1. Read the item and build the run's input (D-213). A malformed item refuses here, before
 //    anything is written.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
-//    to be refused.
+//    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
+//    refuses before anything is written.
 // 3. Mint the state API token and admit the run (`runs.dispatch`): the run, its route and the
 //    token's hash commit together.
 // 4. Build the task and `start` it. If either fails, nothing runs: the run ends `fail` and its
@@ -22,7 +23,12 @@
 // written.
 import { createRunStart } from "../../src/core/run-start.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
-import { createRuns, type DispatchRefusal, type Runs } from "../../src/core/runs.ts";
+import {
+  createRuns,
+  runCapacityLimits,
+  type DispatchRefusal,
+  type Runs,
+} from "../../src/core/runs.ts";
 import type { NoRoute } from "../../src/core/routing.ts";
 import type { AgentRole, Json, Run } from "../../src/core/store.ts";
 import {
@@ -96,6 +102,7 @@ export async function startRun(
   const starts = createRunStart(deps);
   const check = await starts.checkStart(node.id, input.role);
   if (!check.allowed) return { outcome: "not_started", ...check };
+  const capacity = await runCapacityLimits(deps.store);
 
   const stateApiToken = deps.newRunToken();
   const admitted = await runs.dispatch(request, {
@@ -117,6 +124,7 @@ export async function startRun(
       input: text,
       branch,
       evidenceIds,
+      capacity,
       stateApiToken,
     });
     handle = await deps.runtime.start(task, deps.limits[input.role]);

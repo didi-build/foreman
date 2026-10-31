@@ -28,6 +28,7 @@ function parts(extra: Partial<KubernetesTaskParts> = {}): KubernetesTaskParts {
       bot: "developer",
       model: "claude-sonnet-5-5",
       provider: "anthropic",
+      serviceTierRequested: "standard",
       nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
       headSha: null,
       prNumber: null,
@@ -50,6 +51,7 @@ function parts(extra: Partial<KubernetesTaskParts> = {}): KubernetesTaskParts {
       },
     ],
     input: "Fixture input.",
+    capacity: { flexCapacityRetries: 3, maxRejectedModelRequests: 5 },
     stateApiToken: STATE_TOKEN,
     githubToken: GITHUB_TOKEN,
     modelCredentials: { [MODEL_SECRET_PATH]: MODEL_KEY, [OTHER_PATH]: OTHER_KEY },
@@ -76,6 +78,18 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     });
   });
 
+  it("carries the route's tier and the Flex capacity bounds into the run (ADR 0114 sections 8 and 9)", () => {
+    const run = { ...parts().run, serviceTierRequested: "flex" as const };
+    const task = buildKubernetesTask(
+      parts({ run, capacity: { flexCapacityRetries: 2, maxRejectedModelRequests: 4 } }),
+    );
+    expect(task).toMatchObject({
+      serviceTier: "flex",
+      flexCapacityRetries: 2,
+      maxRejectedModelRequests: 4,
+    });
+  });
+
   it("refuses a run whose provider has no provider setting", () => {
     const others = parts().providers.filter((p) => p.name !== "anthropic");
     expect(() => buildKubernetesTask(parts({ providers: others }))).toThrow(
@@ -91,6 +105,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
           bot: "qa",
           model: "claude-opus-5-5",
           provider: "anthropic",
+          serviceTierRequested: "standard",
           nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
           headSha: QA.headSha ?? null,
           prNumber: QA.prNumber ?? null,
@@ -129,6 +144,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
           bot: "qa",
           model: "claude-opus-5-5",
           provider: "anthropic",
+          serviceTierRequested: "standard",
           nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
           headSha: QA.headSha ?? null,
           prNumber: QA.prNumber ?? null,

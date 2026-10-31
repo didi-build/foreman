@@ -4,6 +4,7 @@
 // verdict through the state API; Council and Triage return structured output only.
 import Anthropic from "@anthropic-ai/sdk";
 
+import type { ServiceTier } from "../../core/store.ts";
 import { readConfig, type Setting } from "../../service-kit/config.ts";
 import { createLogger } from "../../service-kit/logger.ts";
 import {
@@ -20,13 +21,26 @@ import {
 } from "../shared/settings.ts";
 import { readTask, type AgentTaskFile } from "../shared/task.ts";
 import { WORKSPACE_TOOLS, createWorkspace } from "./files.ts";
-import { runLoop, type MessagesClient } from "./loop.ts";
+import { runLoop, type LoopClock, type MessagesClient } from "./loop.ts";
 import { hasPrice } from "./pricing.ts";
 import { fencedInput, systemText } from "./prompts.ts";
 import { VERDICT_SCHEMA, parseVerdict, postVerdict } from "./verdict.ts";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 type Effort = (typeof EFFORTS)[number];
+
+const TIERS: readonly ServiceTier[] = ["standard", "flex", "priority"];
+
+const wholeNumber = (env: string, min: number): Setting<number> => ({
+  env,
+  parse: (raw) => {
+    const value = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < min) {
+      throw new Error(`is not a whole number of at least ${min}`);
+    }
+    return value;
+  },
+});
 
 const optional = <T>(setting: Setting<T>): Setting<T | undefined> => ({
   env: setting.env,
@@ -53,7 +67,20 @@ const apiSettings = {
       return raw as Effort;
     },
   }),
+  // The route's tier and the Flex capacity bounds (ADR 0114 sections 8 and 9).
+  serviceTier: {
+    env: "FOREMAN_SERVICE_TIER",
+    parse: (raw: string) => {
+      if (!TIERS.includes(raw as ServiceTier)) throw new Error("is not a service tier");
+      return raw as ServiceTier;
+    },
+  } satisfies Setting<ServiceTier>,
+  maxMinutes: wholeNumber("FOREMAN_MAX_MINUTES", 1),
+  flexCapacityRetries: wholeNumber("FOREMAN_FLEX_CAPACITY_RETRIES", 0),
 };
+
+type Common = ReturnType<typeof readCommon>;
+const readCommon = (env: NodeJS.ProcessEnv) => readConfig(apiSettings, env);
 
 const qaSettings = {
   workspace: {
@@ -77,6 +104,8 @@ export interface ApiImageDeps {
   client?: (settings: ImageSettings) => MessagesClient;
   fetchImpl?: typeof fetch;
   write?: (line: string) => void;
+  /** The capacity waits' clock. Tests pass a fake one. */
+  clock?: LoopClock;
 }
 
 function sdkClient(settings: ImageSettings): MessagesClient {
@@ -85,7 +114,9 @@ function sdkClient(settings: ImageSettings): MessagesClient {
     apiKey: PLACEHOLDER_CREDENTIAL,
     baseURL: settings.modelBaseUrl,
     // A rate limit or capacity error ends the run as usage_exhausted; the runner waits and
-    // dispatches again (FR-11). Retrying here would spend the proxy's request ceiling.
+    // dispatches again (FR-11). Retrying here would spend the proxy's request ceiling. The one
+    // exception, a Flex capacity rejection, is retried by the loop itself, bounded (ADR 0114
+    // section 9).
     maxRetries: 0,
   });
 }
@@ -96,7 +127,7 @@ async function qaRun(
   env: NodeJS.ProcessEnv,
   client: MessagesClient,
   deps: ApiImageDeps,
-  common: { maxOutputTokens: number; effort: Effort | undefined },
+  common: Common,
 ): Promise<AgentResult> {
   const qa = readConfig(qaSettings, env);
   const logger = createLogger("agent-qa", deps.write);
@@ -110,6 +141,7 @@ async function qaRun(
     maxTurns: settings.maxTurns,
     maxUsd: settings.maxUsd,
     ...common,
+    ...(deps.clock ? { clock: deps.clock } : {}),
     system: systemText("qa", task.instructions),
     tools: WORKSPACE_TOOLS,
     input: fencedInput(task.input, [
@@ -160,7 +192,8 @@ async function structuredRun(
   settings: ImageSettings,
   task: AgentTaskFile,
   client: MessagesClient,
-  common: { maxOutputTokens: number; effort: Effort | undefined },
+  common: Common,
+  deps: ApiImageDeps,
 ): Promise<AgentResult> {
   const { result } = await runLoop({
     client,
@@ -168,6 +201,7 @@ async function structuredRun(
     maxTurns: settings.maxTurns,
     maxUsd: settings.maxUsd,
     ...common,
+    ...(deps.clock ? { clock: deps.clock } : {}),
     system: systemText(settings.role, task.instructions),
     // ADR 0107 gives Council and Triage no tools.
     tools: [],
@@ -192,7 +226,7 @@ export async function runClaudeApiImage(
   try {
     const settings = readImageSettings("claude-api", env);
     secrets = secretValues(settings, env);
-    const common = readConfig(apiSettings, env);
+    const common = readCommon(env);
     if (!hasPrice(settings.model)) {
       throw new Error(
         "FOREMAN_MODEL has no price, so its dollar limit cannot be enforced",
@@ -203,7 +237,7 @@ export async function runClaudeApiImage(
     result =
       settings.role === "qa"
         ? await qaRun(settings, task, env, client, deps, common)
-        : await structuredRun(settings, task, client, common);
+        : await structuredRun(settings, task, client, common, deps);
   } catch (error) {
     // Setting and task errors name the problem, never a value.
     result = errorResult(error instanceof Error ? error.message : "the run failed");

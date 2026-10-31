@@ -58,6 +58,9 @@ function envFor(
     FOREMAN_MODEL: role === "qa" ? "claude-opus-5-5" : "claude-sonnet-5-5",
     FOREMAN_MAX_TURNS: "50",
     FOREMAN_MAX_BUDGET_USD: "2",
+    FOREMAN_MAX_MINUTES: "20",
+    FOREMAN_SERVICE_TIER: "standard",
+    FOREMAN_FLEX_CAPACITY_RETRIES: "3",
     FOREMAN_TASK_FILE: taskFile,
     ANTHROPIC_BASE_URL: proxy.modelBaseUrl,
     FOREMAN_STATE_API_URL: proxy.stateApiUrl,
@@ -77,9 +80,26 @@ const qaTask = {
   evidenceIds: [EVIDENCE_ID],
 };
 
-async function run(env: Record<string, string>) {
+/** A clock whose waits pass at once, recording each one. */
+function fakeClock() {
+  let now = 0;
+  const waits: number[] = [];
+  return {
+    waits,
+    now: () => now,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+      now += ms;
+    },
+  };
+}
+
+async function run(env: Record<string, string>, clock = fakeClock()) {
   lines = [];
-  const code = await runClaudeApiImage(env, { write: (line) => lines.push(line) });
+  const code = await runClaudeApiImage(env, {
+    write: (line) => lines.push(line),
+    clock,
+  });
   return { code, result: parseAgentResult(lines.join("\n")) };
 }
 
@@ -293,6 +313,143 @@ describe("limits and provider errors (integration: what the runtime records, ADR
     expect(result?.errorText).toMatch(/FOREMAN_MODEL has no price/);
     ({ result } = await run(envFor("qa", qaTask, { FOREMAN_HEAD_SHA: "" })));
     expect(result?.errorText).toMatch(/FOREMAN_HEAD_SHA is not a commit id/);
+    expect(proxy.modelRequests).toEqual([]);
+  });
+});
+
+describe("Flex capacity retry and the served tier (integration, ADR 0114 sections 8 and 9)", () => {
+  const councilTask = {
+    instructions: "Decide.",
+    input: "The question.",
+    outputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["answer"],
+      properties: { answer: { type: "string" } },
+    },
+  };
+  const flex = (extra: Record<string, string> = {}) =>
+    envFor("council", councilTask, { FOREMAN_SERVICE_TIER: "flex", ...extra });
+  const overloaded = () =>
+    reply.error(429, "engine_overloaded", "the model is busy, try again later");
+
+  it("retries a Flex capacity rejection after 30 seconds, then 60, and records the retries and the wait", async () => {
+    proxy.replies.push(overloaded(), overloaded(), reply.text('{"answer":"ok"}'));
+    const clock = fakeClock();
+    const { code, result } = await run(flex(), clock);
+    expect(code).toBe(0);
+    expect(clock.waits).toEqual([30_000, 60_000]);
+    expect(proxy.modelRequests).toHaveLength(3);
+    expect(result).toMatchObject({
+      status: "success",
+      turns: 1,
+      capacityRetries: 2,
+      capacityWaitSeconds: 90,
+    });
+  });
+
+  it("asks for the route's tier on every request, and sends no tier for Standard", async () => {
+    proxy.replies.push(overloaded(), reply.text('{"answer":"ok"}'));
+    await run(flex());
+    expect(proxy.modelRequests.map((r) => r.body.service_tier)).toEqual([
+      "flex",
+      "flex",
+    ]);
+    proxy.modelRequests.length = 0;
+    proxy.replies.push(reply.text('{"answer":"ok"}'));
+    await run(envFor("council", councilTask));
+    expect(proxy.modelRequests[0]?.body).not.toHaveProperty("service_tier");
+  });
+
+  it("ends usage_exhausted with cause capacity once flex_capacity_retries are spent", async () => {
+    for (let i = 0; i < 5; i += 1) proxy.replies.push(overloaded());
+    const clock = fakeClock();
+    const { code, result } = await run(flex(), clock);
+    expect(code).toBe(1);
+    expect(clock.waits).toEqual([30_000, 60_000, 120_000]);
+    expect(proxy.modelRequests).toHaveLength(4);
+    expect(result).toMatchObject({ capacityRetries: 3, capacityWaitSeconds: 210 });
+    expect(
+      mapRunEnd("failed", null, result, "claude-sonnet-5-5", "flex"),
+    ).toMatchObject({
+      outcome: "usage_exhausted",
+      usageExhaustedCause: "capacity",
+      capacityRetries: 3,
+      capacityWaitSeconds: 210,
+    });
+  });
+
+  it("doubles the wait up to 5 minutes", async () => {
+    for (let i = 0; i < 8; i += 1) proxy.replies.push(overloaded());
+    const clock = fakeClock();
+    await run(
+      flex({ FOREMAN_FLEX_CAPACITY_RETRIES: "7", FOREMAN_MAX_MINUTES: "50" }),
+      clock,
+    );
+    expect(clock.waits).toEqual([
+      30_000, 60_000, 120_000, 240_000, 300_000, 300_000, 300_000,
+    ]);
+  });
+
+  it("counts the waits against the minute limit and stops before a wait that would reach it", async () => {
+    for (let i = 0; i < 5; i += 1) proxy.replies.push(overloaded());
+    const clock = fakeClock();
+    const { result } = await run(flex({ FOREMAN_MAX_MINUTES: "2" }), clock);
+    // 30 s, then 60 s (90 s so far); a 120 s wait would reach the 2-minute limit.
+    expect(clock.waits).toEqual([30_000, 60_000]);
+    expect(proxy.modelRequests).toHaveLength(3);
+    expect(
+      mapRunEnd("failed", null, result, "claude-sonnet-5-5", "flex"),
+    ).toMatchObject({
+      usageExhaustedCause: "capacity",
+    });
+  });
+
+  it.each([
+    ["a rate limit on Flex", "flex", reply.error(429, "rate_limit_error", "slow down")],
+    ["an overload on Standard", "standard", overloaded()],
+    ["no retries allowed", "flex-0", overloaded()],
+  ])("does not retry %s", async (_label, tier, error) => {
+    proxy.replies.push(error, reply.text('{"answer":"ok"}'));
+    const clock = fakeClock();
+    const env =
+      tier === "flex-0"
+        ? flex({ FOREMAN_FLEX_CAPACITY_RETRIES: "0" })
+        : envFor("council", councilTask, { FOREMAN_SERVICE_TIER: tier });
+    const { code, result } = await run(env, clock);
+    expect(code).toBe(1);
+    expect(clock.waits).toEqual([]);
+    expect(proxy.modelRequests).toHaveLength(1);
+    expect(result).toMatchObject({ capacityRetries: 0, capacityWaitSeconds: 0 });
+  });
+
+  it.each([
+    ["standard", ["standard", "standard"], "standard"],
+    ["flex", ["flex", "flex"], "flex"],
+    ["mixed when responses differ", ["flex", "standard"], "mixed"],
+    ["mixed when only some report one", ["flex", undefined], "mixed"],
+    ["absent when none reports one", [undefined, undefined], undefined],
+  ])("records the served tier: %s", async (_label, tiers, served) => {
+    const [first, second] = tiers;
+    proxy.replies.push(
+      reply.toolUse("none", {}, "toolu_1", first ? { service_tier: first } : {}),
+      reply.text('{"answer":"ok"}', second ? { service_tier: second } : {}),
+    );
+    const { result } = await run(flex());
+    expect(result?.status).toBe("success");
+    expect(result?.serviceTierServed).toBe(served);
+  });
+
+  it("refuses a bad tier or capacity setting before any request, naming the setting", async () => {
+    for (const [name, value] of [
+      ["FOREMAN_SERVICE_TIER", "batch"],
+      ["FOREMAN_MAX_MINUTES", "0"],
+      ["FOREMAN_FLEX_CAPACITY_RETRIES", "-1"],
+    ]) {
+      const { result } = await run(flex({ [name]: value }));
+      expect(result?.errorText).toContain(name);
+      expect(result?.errorText).not.toContain(`${value} `);
+    }
     expect(proxy.modelRequests).toEqual([]);
   });
 });

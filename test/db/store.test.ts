@@ -406,6 +406,11 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        serviceTierServed: "mixed" as const,
+        capacityRetries: 2,
+        capacityWaitSeconds: 90,
+        firstTokenMs: null,
+        reportedCostUsd: 0.29,
       };
       expect(await store.endRun(run.id, end)).toBe(true);
       expect(await store.endRun(run.id, end)).toBe(false);
@@ -413,6 +418,14 @@ describe.skipIf(!adminUrl)(
       expect(saved?.minutes).toBe(2.5);
       expect(saved?.costUsd).toBe(0.31);
       expect(saved?.outcome).toBe("success");
+      // What the runtime measured about the route (ADR 0114 sections 2, 8 and 9).
+      expect(saved).toMatchObject({
+        serviceTierServed: "mixed",
+        capacityRetries: 2,
+        capacityWaitSeconds: 90,
+        firstTokenMs: null,
+        reportedCostUsd: 0.29,
+      });
     });
 
     it("starts counters at 0 and stores the count it is given", async () => {
