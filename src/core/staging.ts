@@ -12,14 +12,15 @@
 //    and any other commit on main do nothing (docs/guards.md, "The merge commit").
 // 2. The deploy (O-34, D-225, O-38): GitHub's `staging` deployments of that commit and the latest
 //    ones of any commit. The newest finished one (latest status `success`, `failure` or `error`)
-//    whose commit contains the merge commit, by GitHub's compare (`identical` or `ahead`), decides.
+//    whose commit counts decides: the merge commit itself, or a commit on main that contains it,
+//    by GitHub's compare against the merge commit and main's head (`CoverProof`).
 //    A success is recorded as `staging_deploy` evidence, a failure as `staging_deploy_failed`; both
 //    are facts the runner read itself, also in dry run (like the polling backstop and
 //    `merge_check`). A failed deploy takes the fail path of step 4, once per deployment.
 // 3. The check (O-35, O-39): in live mode only. A check that finds staging serving the merge
-//    commit, or a commit that contains it, gives `staging_check {pass, servedCommitSha,
-//    containment}`, once per merge commit under its key. A check that ends without a result, or
-//    finds staging serving a commit without it, gives `staging_no_result`: the first is
+//    commit, or a commit on main that contains it, gives `staging_check {pass, servedCommitSha}`
+//    with that proof, once per merge commit under its key. A check that ends without a result, or
+//    finds staging serving a commit that does not count, gives `staging_no_result`: the first is
 //    re-dispatched on the next call, the second sends the item to the Council (O-36).
 // 4. The move (O-37): a pass moves to Done and resets the counters in the same transaction, then
 //    releases the items it blocked. A fail takes the fallback move back to the building state and
@@ -39,7 +40,7 @@ import type {
   GitHubCommitReader,
   GitHubDeploymentReader,
 } from "./github.ts";
-import { latest } from "./guards/evidence.ts";
+import { latest, readCoverProof } from "./guards/evidence.ts";
 import { STAGING_CHECK_ATTEMPTS } from "./guards/staging.ts";
 import {
   createLibrary,
@@ -76,10 +77,26 @@ const FINISHED: ReadonlySet<Deployment["state"]> = new Set([
   "failure",
   "error",
 ]);
+/**
+ * The branch a project's deploy on push reports to `staging` from (O-34). Projects carry no
+ * default branch setting yet, so it is `main` for every project; a later commit counts only when
+ * it is on this branch (D-225, O-38).
+ */
+export const STAGING_MAIN_BRANCH = "main";
+
 /** A commit that contains the merge commit, by GitHub's compare from the merge commit to it. */
 export type Containment = "identical" | "ahead";
 const containmentOf = (relation: CommitRelation): Containment | null =>
   relation === "identical" || relation === "ahead" ? relation : null;
+
+/**
+ * Why a commit counts for the merge commit (D-225, O-38): it is the merge commit itself, which is
+ * on main by construction, or it contains the merge commit and is an ancestor of (or is) main's
+ * head, by GitHub's compare. Recorded with the deploy and the check, and read by the guards.
+ */
+export type CoverProof =
+  | { containment: "identical" }
+  | { containment: "ahead"; onMain: true; mainHeadSha: string };
 const MINUTE = 60_000;
 
 const ACTOR = { kind: "runner" as const, id: "staging" };
@@ -476,16 +493,44 @@ export function createStaging(deps: StagingDeps) {
   }
 
   /**
-   * Step 2's read (D-225, O-38): the newest finished `staging` deployment whose commit contains
+   * Whether `commit` counts for the merge commit `sha` (D-225, O-38): the merge commit itself, or
+   * a commit that contains it (compare `sha...commit` is `ahead`) and is on main (compare
+   * `commit...main head` is `identical` or `ahead`). Main's head is read once per call to
+   * `verify`; each compare is made once. GitHub's errors are thrown.
+   */
+  function coverReader(repo: string, sha: string) {
+    const relations = new Map<string, CommitRelation>();
+    let mainHead: Promise<string | null> | undefined;
+    const compare = async (base: string, head: string): Promise<CommitRelation> => {
+      const key = `${base}...${head}`;
+      let relation = relations.get(key);
+      if (relation === undefined) {
+        relation = await github.compareCommits(repo, base, head);
+        relations.set(key, relation);
+      }
+      return relation;
+    };
+    return async (commit: string): Promise<CoverProof | null> => {
+      if (commit === sha) return { containment: "identical" };
+      if ((await compare(sha, commit)) !== "ahead") return null;
+      mainHead ??= github.getBranchHead(repo, STAGING_MAIN_BRANCH);
+      const head = await mainHead;
+      if (!head || !containmentOf(await compare(commit, head))) return null;
+      return { containment: "ahead", onMain: true, mainHeadSha: head };
+    };
+  }
+
+  /**
+   * Step 2's read (D-225, O-38): the newest finished `staging` deployment whose commit counts for
    * the merge commit, from GitHub's deployments of the merge commit and its latest deployments of
-   * any commit, by deployment id (GitHub's ids grow with time). Each other commit is compared
-   * once. A deployment of a commit that is `behind` or `diverged` from the merge commit is
-   * skipped. GitHub's errors are thrown.
+   * any commit, by deployment id (GitHub's ids grow with time). A deployment of a commit that is
+   * `behind`, `diverged`, or not on main is skipped.
    */
   async function coveringDeploy(
     repo: string,
     sha: string,
-  ): Promise<{ deployment: Deployment; containment: Containment } | null> {
+    cover: (commit: string) => Promise<CoverProof | null>,
+  ): Promise<{ deployment: Deployment; proof: CoverProof } | null> {
     const byId = new Map<number, Deployment>();
     for (const d of [
       ...(await github.listDeployments(repo, STAGING_ENVIRONMENT, sha)).filter(
@@ -500,16 +545,9 @@ export function createStaging(deps: StagingDeps) {
       if (d.environment === STAGING_ENVIRONMENT && FINISHED.has(d.state))
         byId.set(d.id, d);
     }
-    const relations = new Map<string, CommitRelation>();
     for (const deployment of [...byId.values()].sort((a, b) => b.id - a.id)) {
-      let relation =
-        deployment.sha === sha ? "identical" : relations.get(deployment.sha);
-      if (relation === undefined) {
-        relation = await github.compareCommits(repo, sha, deployment.sha);
-        relations.set(deployment.sha, relation);
-      }
-      const containment = containmentOf(relation);
-      if (containment) return { deployment, containment };
+      const proof = await cover(deployment.sha);
+      if (proof) return { deployment, proof };
     }
     return null;
   }
@@ -564,24 +602,25 @@ export function createStaging(deps: StagingDeps) {
     const repo = field(dispatch?.payload, "repo");
     if (typeof repo !== "string" || repo === "")
       return { ...base, step: "no_dispatch", ...waiting };
+    const cover = coverReader(repo, sha);
     let deploy = latest(
       await store.listEvidence({ nodeId, kind: "staging_deploy", commitSha: sha }),
     );
     if (!deploy) {
       let found;
       try {
-        found = await coveringDeploy(repo, sha);
+        found = await coveringDeploy(repo, sha, cover);
       } catch {
         return { ...base, step: "github_read_failed", ...waiting };
       }
       if (!found) return { ...base, step: "waiting_for_deploy", ...waiting };
-      const { deployment, containment } = found;
+      const { deployment, proof } = found;
       const covered = deployment.sha === sha ? undefined : sha;
       const facts = {
         environment: STAGING_ENVIRONMENT,
         deploymentId: deployment.id,
         deployedSha: deployment.sha,
-        containment,
+        ...proof,
       };
       if (deployment.state !== "success") {
         const key = stagingDeployFailedKey(repo, deployment.id, sha);
@@ -629,26 +668,24 @@ export function createStaging(deps: StagingDeps) {
     } catch {
       return { ...withDeploy, step: "check_error" };
     }
-    let containment: Containment | null = null;
+    let proof: CoverProof | null = null;
     if (outcome.result !== "no_result") {
-      // O-39: the served commit counts when it is the merge commit, or GitHub's compare shows it
-      // contains it: the compare recorded with the deploy when staging serves the deployed commit,
+      // O-39: the served commit counts when it is the merge commit, or a commit on main that
+      // contains it: the proof recorded with the deploy when staging serves the deployed commit,
       // else a new one.
       const served = outcome.servedCommitSha;
-      if (served === sha) containment = "identical";
-      else if (served === field(deploy.payload, "deployedSha")) {
-        const recorded = field(deploy.payload, "containment");
-        containment =
-          recorded === "identical" || recorded === "ahead" ? recorded : null;
+      const recordedProof = readCoverProof(deploy.payload, sha);
+      if (served === field(deploy.payload, "deployedSha") && recordedProof) {
+        proof = recordedProof;
       } else {
         try {
-          containment = containmentOf(await github.compareCommits(repo, sha, served));
+          proof = await cover(served);
         } catch {
           return { ...withDeploy, step: "github_read_failed" };
         }
       }
     }
-    if (outcome.result !== "no_result" && containment) {
+    if (outcome.result !== "no_result" && proof) {
       const key = stagingCheckKey(repo, sha);
       const recorded = await recordOnce(
         fact(
@@ -658,7 +695,7 @@ export function createStaging(deps: StagingDeps) {
           {
             pass: outcome.result === "pass",
             servedCommitSha: outcome.servedCommitSha,
-            containment,
+            ...proof,
           },
           key,
         ),

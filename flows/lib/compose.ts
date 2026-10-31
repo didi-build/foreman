@@ -106,6 +106,7 @@ function unregisteredGitHub(): GitHub {
     listDeployments: refuse,
     listRecentDeployments: refuse,
     compareCommits: refuse,
+    getBranchHead: refuse,
   };
 }
 

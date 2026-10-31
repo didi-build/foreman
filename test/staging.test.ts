@@ -520,6 +520,8 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
         deploymentId: deployment.id,
         deployedSha: LATER,
         containment: "ahead",
+        onMain: true,
+        mainHeadSha: LATER,
       },
       ref: stagingDeployKey(REPO, deployment.id, t.mergeSha),
       recordedBy: "runner",
@@ -529,7 +531,13 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
     const [check] = await t.kind("staging_check");
     expect(check).toMatchObject({
       commitSha: t.mergeSha,
-      payload: { pass: true, servedCommitSha: LATER, containment: "ahead" },
+      payload: {
+        pass: true,
+        servedCommitSha: LATER,
+        containment: "ahead",
+        onMain: true,
+        mainHeadSha: LATER,
+      },
       ref: stagingCheckKey(REPO, t.mergeSha),
     });
     expect(result).toMatchObject({
@@ -567,6 +575,78 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
     expect(await t.github.compareCommits(REPO, t.mergeSha, OTHER)).toBe("diverged");
     expect(await t.kind("staging_deploy")).toEqual([]);
     expect(t.checker.calls).toEqual([]);
+  });
+
+  it("ignores a deploy of a branch that contains the merge commit but is not on main", async () => {
+    const t = await setup();
+    t.commitOnBranch(LATER);
+    t.deploy(LATER);
+    expect((await t.staging().verify(t.node.id)).step).toBe("waiting_for_deploy");
+    expect(await t.kind("staging_deploy")).toEqual([]);
+    expect(t.checker.calls).toEqual([]);
+    // Once main reaches that commit, the same deploy counts.
+    t.commitOnMain(LATEST, LATER);
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_deploy"))[0]?.payload).toMatchObject({
+      deployedSha: LATER,
+      onMain: true,
+      mainHeadSha: LATEST,
+    });
+    expect(await t.state()).toBe("done");
+  });
+
+  it("skips a branch deploy and takes an older deploy on main", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    const onMain = t.deploy(LATER);
+    t.commitOnBranch(LATEST, LATER);
+    t.deploy(LATEST);
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_deploy"))[0]?.payload).toMatchObject({
+      deploymentId: onMain.id,
+      deployedSha: LATER,
+    });
+  });
+
+  it("counts staging serving a branch commit as no result, even when it contains the merge commit", async () => {
+    const t = await setup();
+    t.deploy();
+    t.commitOnBranch(LATER);
+    t.checker.answers.push({ result: "pass", servedCommitSha: LATER });
+    expect((await t.staging().verify(t.node.id)).step).toBe("no_result");
+    expect(await t.kind("staging_check")).toEqual([]);
+  });
+
+  it("records nothing when main's head cannot be read", async () => {
+    const t = await setup();
+    t.commitOnMain(LATER);
+    t.deploy(LATER);
+    const broken = {
+      ...t.deps,
+      github: {
+        ...t.github,
+        getBranchHead: async (): Promise<never> => {
+          throw new Error("GitHub is down");
+        },
+      },
+    };
+    const staging = createStaging({ ...broken, checker: t.checker });
+    expect((await staging.verify(t.node.id)).step).toBe("github_read_failed");
+    expect(await t.kind("staging_deploy")).toEqual([]);
+  });
+
+  it("needs no main check for a deploy of the merge commit itself", async () => {
+    const t = await setup();
+    t.github.setBranchHead(REPO, "main", OTHER);
+    t.deploy();
+    await t.staging().verify(t.node.id);
+    expect((await t.kind("staging_deploy"))[0]?.payload).toEqual({
+      environment: "staging",
+      deploymentId: expect.any(Number),
+      deployedSha: t.mergeSha,
+      containment: "identical",
+    });
+    expect(await t.state()).toBe("done");
   });
 
   it("takes the newest finished deploy that covers the merge commit, skipping one still running", async () => {
@@ -614,6 +694,7 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
     });
     second.github.putCommit(REPO, second.mergeSha, [t.mergeSha]);
     second.github.putCommit(REPO, LATER, [second.mergeSha]);
+    second.github.setBranchHead(REPO, "main", LATER);
     const deployment = {
       id: 5000,
       sha: LATER,
@@ -622,6 +703,7 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
     };
     t.github.putCommit(REPO, LATER, [second.mergeSha]);
     t.github.putCommit(REPO, second.mergeSha, [t.mergeSha]);
+    t.github.setBranchHead(REPO, "main", LATER);
     t.github.putDeployment(REPO, deployment);
     second.github.putDeployment(REPO, deployment);
 
@@ -649,6 +731,8 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
       pass: false,
       servedCommitSha: LATEST,
       containment: "ahead",
+      onMain: true,
+      mainHeadSha: LATEST,
     });
     expect(await t.state()).toBe("in_development");
   });
@@ -761,6 +845,16 @@ describe("a failed staging deploy (unit: D-225 rule 2)", () => {
     await t.staging().verify(t.node.id);
     expect(await t.kind("staging_deploy_failed")).toEqual([]);
     expect(await t.state()).toBe("done");
+  });
+
+  it("takes no fail path for a failed deploy of a branch that contains the merge commit", async () => {
+    const t = await setup();
+    t.commitOnBranch(LATER);
+    t.deploy(LATER, "failure");
+    expect((await t.staging().verify(t.node.id)).step).toBe("waiting_for_deploy");
+    expect(await t.kind("staging_deploy_failed")).toEqual([]);
+    expect(await t.counter("failure")).toBe(0);
+    expect(await t.state()).toBe("verifying_on_staging");
   });
 
   it("does nothing for a failed deploy of a commit without the merge commit", async () => {

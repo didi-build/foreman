@@ -128,6 +128,7 @@ describe.skipIf(!adminUrl)(
       for (const t of [first, second]) {
         t.github.putCommit(REPO, second.mergeSha, [first.mergeSha]);
         t.github.putCommit(REPO, later, [second.mergeSha]);
+        t.github.setBranchHead(REPO, "main", later);
         t.github.putDeployment(REPO, deployment);
       }
 
@@ -146,6 +147,8 @@ describe.skipIf(!adminUrl)(
             deploymentId: deployment.id,
             deployedSha: later,
             containment: "ahead",
+            onMain: true,
+            mainHeadSha: later,
           },
         ]);
       }

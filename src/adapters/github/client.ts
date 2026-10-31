@@ -30,5 +30,6 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
     listDeployments: refuse,
     listRecentDeployments: refuse,
     compareCommits: refuse,
+    getBranchHead: refuse,
   };
 }

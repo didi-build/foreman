@@ -30,6 +30,8 @@ export interface FakeGitHub extends GitHubAdapter {
    * is `diverged` from every other commit.
    */
   putCommit(repo: string, sha: string, parents: string[]): void;
+  /** Points a branch at a commit. A branch never set does not exist. */
+  setBranchHead(repo: string, branch: string, sha: string): void;
   /** Squash merges the fake performed, in order. A refused merge is not listed. */
   readonly merges: readonly { repo: string; number: number; headSha: string }[];
   /** Signs a body with the fake's webhook secret, as GitHub would. */
@@ -48,6 +50,7 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const merges: { repo: string; number: number; headSha: string }[] = [];
   const deployments = new Map<string, Deployment[]>();
   const parentsOf = new Map<string, string[]>();
+  const branchHeads = new Map<string, string>();
   let reads = 0;
 
   /** Whether `ancestor` is reachable from `sha` through the parents the fake was given. */
@@ -116,6 +119,10 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
         .slice(0, limit)
         .map((d) => ({ ...d }));
     },
+    async getBranchHead(repo, branch) {
+      reads++;
+      return branchHeads.get(`${repo}#${branch}`) ?? null;
+    },
     async compareCommits(repo, base, head): Promise<CommitRelation> {
       reads++;
       if (base === head) return "identical";
@@ -179,6 +186,9 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     putCommit(repo, sha, parents) {
       parentsOf.set(`${repo}@${sha}`, [...parents]);
+    },
+    setBranchHead(repo, branch, sha) {
+      branchHeads.set(`${repo}#${branch}`, sha);
     },
   };
 }

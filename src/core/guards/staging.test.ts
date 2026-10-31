@@ -66,10 +66,24 @@ describe("staging guards (unit: guards on the memory store, ADR 0105)", () => {
           pass,
           servedCommitSha: LATER,
           containment: "ahead",
+          onMain: true,
+          mainHeadSha: LATER,
         });
         const check = await f.check(name);
         expect(check.pass).toBe(true);
-        expect(check.detail).toMatch(/which contains it/);
+        expect(check.detail).toMatch(/which contains it and is on main/);
+      });
+      it(`${name} fails on a later served commit with no proof it is on main`, async () => {
+        const f = await fixture();
+        await f.evidence("merge_commit", MERGE, { pr: 7 });
+        await f.evidence("staging_check", MERGE, {
+          pass,
+          servedCommitSha: LATER,
+          containment: "ahead",
+        });
+        const check = await f.check(name);
+        expect(check.pass).toBe(false);
+        expect(check.detail).toMatch(/not shown to contain merge .* and be on main/);
       });
       it(`${name} fails when the served commit is not shown to contain the merge commit`, async () => {
         const f = await fixture();
@@ -119,6 +133,19 @@ describe("staging guards (unit: guards on the memory store, ADR 0105)", () => {
       await f.evidence("staging_check", MERGE, { pass: true });
       await f.evidence("staging_deploy_failed", MERGE, failed);
       expect((await f.check("staging_check_on_merge_commit")).pass).toBe(false);
+    });
+    it("counts a failed later deploy only with its proof that it is on main", async () => {
+      const f = await fixture();
+      await f.evidence("merge_commit", MERGE, { pr: 7 });
+      const later = { ...failed, deployedSha: "d".repeat(40), containment: "ahead" };
+      await f.evidence("staging_deploy_failed", MERGE, later);
+      expect((await f.check("staging_check_failed")).pass).toBe(false);
+      await f.evidence("staging_deploy_failed", MERGE, {
+        ...later,
+        onMain: true,
+        mainHeadSha: "d".repeat(40),
+      });
+      expect((await f.check("staging_check_failed")).pass).toBe(true);
     });
     it("ignores a failed deploy recorded for another merge commit", async () => {
       const f = await fixture();

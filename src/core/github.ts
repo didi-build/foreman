@@ -122,9 +122,14 @@ export interface GitHubDeploymentReader {
  */
 export type CommitRelation = "ahead" | "identical" | "behind" | "diverged";
 
-/** What the runner reads about commits (D-225): whether one commit contains another. */
+/**
+ * What the runner reads about commits (D-225): whether one commit contains another, and the
+ * commit a branch points at now.
+ */
 export interface GitHubCommitReader {
   compareCommits(repo: string, base: string, head: string): Promise<CommitRelation>;
+  /** The commit `branch` points at now, or null when GitHub has no such branch. */
+  getBranchHead(repo: string, branch: string): Promise<string | null>;
 }
 
 /** Everything the runner reads from and does on GitHub. */

@@ -2,7 +2,13 @@
 // the merge commit failed (ADR 0105, D-225).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { Evidence, Json } from "../store.ts";
-import { latest, onCommit, readStagingCheck, result } from "./evidence.ts";
+import {
+  latest,
+  onCommit,
+  readCoverProof,
+  readStagingCheck,
+  result,
+} from "./evidence.ts";
 
 const field = (value: Json, key: string): Json | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -35,9 +41,9 @@ export async function stagingNoResults(
 
 /**
  * What the staging guards read for the latest merge commit: a recorded failed staging deploy that
- * covers it (D-225), else the latest staging check with its parsed result. A check counts only
- * when staging served the merge commit, or a commit GitHub's compare showed contains it
- * (`containment` `ahead`), as the check itself records (D-225, O-39).
+ * covers it (D-225), else the latest staging check with its parsed result. A failed deploy or a
+ * check counts only when its commit is the merge commit, or contains it (`containment` `ahead`)
+ * and is on main (`onMain` with main's head), as the row itself records (D-225, O-38, O-39).
  */
 async function stagingCheck(
   ctx: GuardContext,
@@ -53,7 +59,11 @@ async function stagingCheck(
   if (!merge?.commitSha)
     return { fail: result(name, false, [], "no merge commit recorded") };
   const sha = merge.commitSha;
-  const failedDeploy = latest(await onCommit(ctx, "staging_deploy_failed", sha));
+  const failedDeploy = latest(
+    (await onCommit(ctx, "staging_deploy_failed", sha)).filter(
+      (e) => readCoverProof(e.payload, sha) !== null,
+    ),
+  );
   if (failedDeploy) {
     const deployed = field(failedDeploy.payload, "deployedSha");
     return {
@@ -75,17 +85,13 @@ async function stagingCheck(
     return { fail: result(name, false, ids, "malformed staging_check payload") };
   }
   const served = payload.servedCommitSha ?? sha;
-  const contains =
-    served === sha
-      ? (payload.containment ?? "identical") === "identical"
-      : payload.containment === "ahead";
-  if (!contains) {
+  if (readCoverProof(check.payload, sha, "servedCommitSha") === null) {
     return {
       fail: result(
         name,
         false,
         ids,
-        `the staging check ran on ${served}, which is not shown to contain merge ${sha}`,
+        `the staging check ran on ${served}, which is not shown to contain merge ${sha} and be on main`,
       ),
     };
   }
@@ -93,7 +99,9 @@ async function stagingCheck(
 }
 
 const onServed = (found: { sha: string; on: string }): string =>
-  found.on === found.sha ? "" : ` (staging served ${found.on}, which contains it)`;
+  found.on === found.sha
+    ? ""
+    : ` (staging served ${found.on}, which contains it and is on main)`;
 
 /**
  * A staging check passed for the merge commit, on staging serving it or a commit that contains

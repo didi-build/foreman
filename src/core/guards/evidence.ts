@@ -42,6 +42,9 @@ export interface CheckPayload {
 export interface StagingCheckPayload extends CheckPayload {
   servedCommitSha?: string;
   containment?: "identical" | "ahead";
+  /** With `containment` `ahead`: the served commit is on main, whose head was `mainHeadSha`. */
+  onMain?: true;
+  mainHeadSha?: string;
 }
 
 export interface MergeCheckPayload {
@@ -135,6 +138,44 @@ export function readCheck(payload: Json): CheckPayload | null {
   return { pass: payload.pass };
 }
 
+/**
+ * Why a deploy or a check's served commit counts for the merge commit `mergeSha` (D-225, O-38):
+ * `identical` when the commit is the merge commit, or `ahead` with `onMain: true` and main's head
+ * when it contains the merge commit and is on main. A row with neither field is the M3.4 shape,
+ * about the merge commit itself. Anything else proves nothing.
+ */
+export function readCoverProof(
+  payload: Json,
+  mergeSha: string,
+  commitKey = "deployedSha",
+):
+  | { containment: "identical" }
+  | { containment: "ahead"; onMain: true; mainHeadSha: string }
+  | null {
+  if (!isRecord(payload)) return null;
+  const commit = payload[commitKey];
+  const { containment, onMain, mainHeadSha } = payload;
+  if (containment === undefined) {
+    return commit === undefined || commit === mergeSha
+      ? { containment: "identical" }
+      : null;
+  }
+  if (typeof commit !== "string") return null;
+  if (containment === "identical") {
+    return commit === mergeSha ? { containment: "identical" } : null;
+  }
+  if (
+    containment === "ahead" &&
+    commit !== mergeSha &&
+    onMain === true &&
+    typeof mainHeadSha === "string" &&
+    mainHeadSha !== ""
+  ) {
+    return { containment: "ahead", onMain: true, mainHeadSha };
+  }
+  return null;
+}
+
 export function readStagingCheck(payload: Json): StagingCheckPayload | null {
   const check = readCheck(payload);
   if (!check || !isRecord(payload)) return null;
@@ -142,7 +183,14 @@ export function readStagingCheck(payload: Json): StagingCheckPayload | null {
   if (servedCommitSha === undefined && containment === undefined) return check;
   if (typeof servedCommitSha !== "string" || servedCommitSha === "") return null;
   if (containment !== "identical" && containment !== "ahead") return null;
-  return { ...check, servedCommitSha, containment };
+  const { onMain, mainHeadSha } = payload;
+  return {
+    ...check,
+    servedCommitSha,
+    containment,
+    ...(onMain === true ? { onMain } : {}),
+    ...(typeof mainHeadSha === "string" ? { mainHeadSha } : {}),
+  };
 }
 
 export function readDocsNote(payload: Json): DocsNotePayload | null {

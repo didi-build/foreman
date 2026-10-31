@@ -28,6 +28,9 @@ describe("real GitHub client before M3 (unit: D-178)", () => {
     await expect(
       client.compareCommits("didi-build/rehearsal", "b".repeat(40), "c".repeat(40)),
     ).rejects.toThrow(GitHubNotConfiguredError);
+    await expect(client.getBranchHead("didi-build/rehearsal", "main")).rejects.toThrow(
+      GitHubNotConfiguredError,
+    );
   });
 
   it("still checks signatures, which need no network", () => {

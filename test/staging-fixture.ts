@@ -94,8 +94,21 @@ export async function setupStaging(
     createStaging({ ...t.deps, store, checker });
   const counter = (kind: "failure" | "qa_round" = "failure", node: Node = t.node) =>
     t.store.getCounter(node.id, kind);
-  /** Main gains `sha` on top of `parent` (the merge commit unless given), for GitHub's compare. */
+  // Main's head is the merge commit until a later commit lands on it.
+  t.github.setBranchHead(REPO, "main", mergeSha);
+
+  /**
+   * Main gains `sha` on top of `parent` (the merge commit unless given) and points at it, for
+   * GitHub's compare.
+   */
   function commitOnMain(sha: string, parent = mergeSha): string {
+    t.github.putCommit(REPO, sha, [parent]);
+    t.github.setBranchHead(REPO, "main", sha);
+    return sha;
+  }
+
+  /** A branch commit on top of `parent` (the merge commit unless given); main does not move. */
+  function commitOnBranch(sha: string, parent = mergeSha): string {
     t.github.putCommit(REPO, sha, [parent]);
     return sha;
   }
@@ -109,5 +122,15 @@ export async function setupStaging(
     node: Node = t.node,
   ) => t.store.listEvidence({ nodeId: node.id, kind: name });
 
-  return { ...t, mergeSha, checker, deploy, commitOnMain, staging, counter, kind };
+  return {
+    ...t,
+    mergeSha,
+    checker,
+    deploy,
+    commitOnMain,
+    commitOnBranch,
+    staging,
+    counter,
+    kind,
+  };
 }
