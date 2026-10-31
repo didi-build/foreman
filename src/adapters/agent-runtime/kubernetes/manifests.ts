@@ -9,6 +9,7 @@ import {
   STATE_API_PREFIX,
   parseStateApiUpstream,
 } from "../../../egress-proxy/state-api.ts";
+import { MODEL_APIS, type ModelApi } from "../../../agent-images/shared/settings.ts";
 import { parseRunPrice } from "../../../core/run-cost.ts";
 import type { RunPrice } from "../../../core/routing.ts";
 import type { ServiceTier } from "../../../core/store.ts";
@@ -88,6 +89,12 @@ export interface ModelProviderSetting {
   secretPath?: string;
   /** The agent's environment variable for this provider's base URL, e.g. ANTHROPIC_BASE_URL. */
   baseUrlEnv?: string;
+  /**
+   * The API this provider speaks and its path under the provider's route, e.g. `/v1` for
+   * Anthropic and `/v1/openai` for DeepInfra. The agent gets them as FOREMAN_MODEL_API and
+   * FOREMAN_MODEL_BASE_URL (the OpenCode image, D-222). At most one provider of a run has it.
+   */
+  api?: { kind: ModelApi; path: string };
 }
 
 /** Everything about a run except its credential values. Safe to keep in the run handle. */
@@ -113,8 +120,9 @@ export interface KubernetesRunSpec {
   serviceTier: ServiceTier;
   /**
    * The route's prices recorded on the run (`runs.model_price`), for the runtime's dollar limit.
-   * The Messages API image prices each request from it; the Claude Code CLI prices by its own
-   * table, so the Claude Code image does not read it.
+   * The Messages API image prices each request from it, and the OpenCode image each model step
+   * (D-223); the Claude Code CLI prices by its own table, so the Claude Code image does not read
+   * it.
    */
   price: RunPrice;
   /** How many Flex capacity rejections the agent retries (`flex_capacity_retries`, ADR 0114 section 9). */
@@ -136,6 +144,10 @@ const DIGEST_PINNED = /@sha256:[0-9a-f]{64}$/;
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+/** One or more plain path segments, e.g. `/v1/openai`. No `.` or `..`, no query. */
+const API_PATH = /^(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,64}){1,8}$/;
+/** The roles whose image is OpenCode (D-222), which reads the provider's API and address. */
+const OPENCODE_ROLES: readonly AgentRole[] = ["developer", "designer"];
 const RESERVED_ENV =
   /^(?:FOREMAN_|SECRET_)|^(?:HTTPS?_PROXY|NO_PROXY|HOME|TMPDIR|GITHUB_TOKEN)$/i;
 
@@ -223,6 +235,20 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
     ) {
       throw new Error(`provider ${provider.name} has an invalid base URL variable`);
     }
+    if (
+      provider.api !== undefined &&
+      (!MODEL_APIS.includes(provider.api.kind) || !API_PATH.test(provider.api.path))
+    ) {
+      throw new Error(`provider ${provider.name} has an invalid API`);
+    }
+  }
+  const withApi = spec.providers.filter((p) => p.api !== undefined);
+  if (withApi.length > 1) {
+    throw new Error("at most one provider of a run may set its API");
+  }
+  if (OPENCODE_ROLES.includes(spec.role) && withApi.length === 0) {
+    // The OpenCode image cannot reach its model without the provider's API and address.
+    throw new Error(`a ${spec.role} run needs its provider's API`);
   }
 }
 
@@ -598,6 +624,10 @@ function agentEnv(
   for (const provider of spec.providers) {
     if (provider.baseUrlEnv)
       plain[provider.baseUrlEnv] = `${proxyBase}/${provider.name}`;
+    if (provider.api) {
+      plain.FOREMAN_MODEL_API = provider.api.kind;
+      plain.FOREMAN_MODEL_BASE_URL = `${proxyBase}/${provider.name}${provider.api.path}`;
+    }
   }
   const env = [
     ...plainEnv(plain),

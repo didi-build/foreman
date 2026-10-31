@@ -8,6 +8,7 @@ import {
   LIMITS,
   MODEL_KEY,
   MODEL_SECRET_PATH,
+  OPENCODE_IMAGE,
   QA,
   QA_LIMITS,
   SETTINGS,
@@ -437,6 +438,55 @@ describe("run objects (unit: labels, names and determinism)", () => {
     }
   });
 
+  it("gives the OpenCode image its provider's API and the proxy's address for it (D-222)", () => {
+    const agent = agentStage(DEVELOPER, LIMITS, SETTINGS).clientJob(PROXY_IP);
+    expect(agent.spec.template.spec.containers[0]?.image).toBe(OPENCODE_IMAGE);
+    expect(value(agent, "FOREMAN_MODEL_API")).toBe("anthropic");
+    expect(value(agent, "FOREMAN_MODEL_BASE_URL")).toBe(
+      `http://${PROXY_IP}:8080/anthropic/v1`,
+    );
+    // The Claude Code fallback's variable stays beside it.
+    expect(value(agent, "ANTHROPIC_BASE_URL")).toBe(
+      `http://${PROXY_IP}:8080/anthropic`,
+    );
+    const deepInfra = agentStage(
+      {
+        ...DEVELOPER,
+        model: "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+        providers: [
+          {
+            name: "deepinfra",
+            upstream: "https://api.deepinfra.com",
+            credential: "bearer",
+            secretPath: MODEL_SECRET_PATH,
+            api: { kind: "openai-compatible", path: "/v1/openai" },
+          },
+        ],
+      },
+      LIMITS,
+      SETTINGS,
+    ).clientJob(PROXY_IP);
+    expect(value(deepInfra, "FOREMAN_MODEL_API")).toBe("openai-compatible");
+    expect(value(deepInfra, "FOREMAN_MODEL_BASE_URL")).toBe(
+      `http://${PROXY_IP}:8080/deepinfra/v1/openai`,
+    );
+    expect(value(deepInfra, "ANTHROPIC_BASE_URL")).toBeUndefined();
+    // The proxy's provider list is unchanged: the API is the agent's setting only.
+    expect(
+      JSON.parse(
+        value(agentStage(DEVELOPER, LIMITS, SETTINGS).proxyJob, "MODEL_PROVIDERS") ??
+          "",
+      ),
+    ).toEqual([
+      {
+        name: "anthropic",
+        upstream: "https://api.anthropic.com",
+        credential: "x-api-key",
+        secretPath: MODEL_SECRET_PATH,
+      },
+    ]);
+  });
+
   it("gives the same objects for the same input", () => {
     expect(everything()).toEqual(everything());
   });
@@ -492,6 +542,54 @@ describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
         providers: [{ ...DEVELOPER.providers[0]!, baseUrlEnv: "HTTPS_PROXY" }],
       },
       /base URL variable/,
+    ],
+    [
+      "a Developer whose provider has no API (D-222)",
+      {
+        ...DEVELOPER,
+        providers: [{ ...DEVELOPER.providers[0]!, api: undefined }],
+      },
+      /needs its provider's API/,
+    ],
+    [
+      "an unknown provider API",
+      {
+        ...DEVELOPER,
+        providers: [
+          {
+            ...DEVELOPER.providers[0]!,
+            api: { kind: "bedrock" as never, path: "/v1" },
+          },
+        ],
+      },
+      /invalid API/,
+    ],
+    ...["", "v1", "/v1/", "/../v1", "/v1/./x", "/v1?x=1", "/v 1"].map(
+      (path): [string, KubernetesRunSpec, RegExp] => [
+        `an API path of ${JSON.stringify(path)}`,
+        {
+          ...DEVELOPER,
+          providers: [{ ...DEVELOPER.providers[0]!, api: { kind: "anthropic", path } }],
+        },
+        /invalid API/,
+      ],
+    ),
+    [
+      "two providers that set their API",
+      {
+        ...DEVELOPER,
+        providers: [
+          DEVELOPER.providers[0]!,
+          {
+            name: "deepinfra",
+            upstream: "https://api.deepinfra.com",
+            credential: "bearer",
+            secretPath: "projects/rehearsal/models/deepinfra",
+            api: { kind: "openai-compatible", path: "/v1/openai" },
+          },
+        ],
+      },
+      /at most one provider/,
     ],
     [
       "an unknown service tier",

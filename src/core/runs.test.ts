@@ -1117,10 +1117,10 @@ describe("run capacity limits (ADR 0114 section 9, migration 0007)", () => {
   it("reads flex_capacity_retries and max_rejected_model_requests", async () => {
     const t = await setup();
     await t.setting("flex_capacity_retries", 3);
-    await t.setting("max_rejected_model_requests", 5);
+    await t.setting("max_rejected_model_requests", 6);
     expect(await runCapacityLimits(t.store)).toEqual({
       flexCapacityRetries: 3,
-      maxRejectedModelRequests: 5,
+      maxRejectedModelRequests: 6,
     });
     await t.setting("flex_capacity_retries", 0);
     expect((await runCapacityLimits(t.store)).flexCapacityRetries).toBe(0);

@@ -105,10 +105,34 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+  - package-ecosystem: docker
+    directory: /src/agent-images/opencode
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # The Claude Code CLI pinned for the Claude Code agent image only.
   - package-ecosystem: npm
     directory: /src/agent-images/claude-code/cli
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # The OpenCode CLI pinned for the OpenCode agent image only (D-222). A version bump also needs
+  # the binary's new sha256 in the Dockerfile, so the build fails until the spike's checks are
+  # rerun on that version.
+  - package-ecosystem: npm
+    directory: /src/agent-images/opencode/cli
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
