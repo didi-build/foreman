@@ -608,3 +608,73 @@ describe("escalation keywords never match as states (unit, ADR 0105)", () => {
     expect(await stateOf(store, node.id)).toBe("triage");
   });
 });
+
+describe("a trigger with its own id is taken once (unit, build plan M3.1)", () => {
+  const event = (ref: string) => ({ trigger: { kind: "event" as const, ref } });
+
+  it("writes one applied row for a repeated trigger, and a new trigger is judged afresh", async () => {
+    const { store, library, item } = await setup();
+    const node = await item();
+    const first = await library.requestTransitionOnce(
+      move(node.id, "ready", event("e1")),
+    );
+    expect(first.outcome).toBe("applied");
+    expect(
+      await library.requestTransitionOnce(move(node.id, "ready", event("e1"))),
+    ).toEqual({
+      outcome: "noop",
+      reason: "duplicate_trigger",
+      guardReport: [],
+      transitionId: first.transitionId,
+    });
+    expect(await store.listTransitions(node.id)).toHaveLength(1);
+    // Another trigger kind with the same id is another trigger.
+    expect(
+      (
+        await library.requestTransitionOnce(
+          move(node.id, "in_progress", { trigger: { kind: "bot_report", ref: "e1" } }),
+        )
+      ).outcome,
+    ).toBe("applied");
+  });
+
+  it("writes one dry-run row for a repeated trigger, where the node never moves", async () => {
+    const { store, library, item } = await setup({ dry_run: true });
+    const node = await item();
+    expect(
+      (await library.requestTransitionOnce(move(node.id, "ready", event("e1"))))
+        .outcome,
+    ).toBe("planned");
+    expect(
+      (await library.requestTransitionOnce(move(node.id, "ready", event("e1")))).reason,
+    ).toBe("duplicate_trigger");
+    expect(await store.listTransitions(node.id)).toHaveLength(1);
+    expect(
+      (await library.requestTransitionOnce(move(node.id, "ready", event("e2"))))
+        .outcome,
+    ).toBe("planned");
+  });
+
+  it("lets a rejected trigger be retried, since a rejection writes nothing", async () => {
+    const { store, library, item } = await setup();
+    const node = await item(false);
+    await library.requestTransition(move(node.id, "ready"));
+    const again = () =>
+      library.requestTransitionOnce(move(node.id, "in_progress", event("e1")));
+    expect((await again()).reason).toBe("guard_failed");
+    await store.setNodeFlags(node.id, { agentReady: true }, new Date(0));
+    expect((await again()).outcome).toBe("applied");
+  });
+
+  it("refuses under the kill switch and needs the trigger's id", async () => {
+    const { store, library, item } = await setup({ kill_switch: true });
+    const node = await item();
+    expect(
+      await library.requestTransitionOnce(move(node.id, "ready", event("e1"))),
+    ).toMatchObject({ outcome: "refused", reason: "kill_switch" });
+    await expect(library.requestTransitionOnce(move(node.id, "ready"))).rejects.toThrow(
+      LibraryError,
+    );
+    expect(await store.listTransitions(node.id)).toHaveLength(0);
+  });
+});

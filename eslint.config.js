@@ -3,11 +3,16 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 import foremanBoundaries, { CORE_ALLOWED_MODULES } from "./eslint/core-boundary.mjs";
+import layerBoundaries from "./eslint/layer-boundary.mjs";
 
 // Boundaries from docs/decisions/0101-repo-layout-and-tooling.md (essentials 5 and 9).
 const CODE_FILES = "**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
 const CORE_FILES = "src/core/**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
 const CORE_TEST_FILES = "src/core/**/*.test.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
+const FLOW_ENTRY_FILES = "flows/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
+const FLOW_LIB_FILES = "flows/lib/**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}";
+/** What the flow layer may import (build plan M3.1): itself, the core and the adapters. */
+const FLOW_DIRS = ["flows/lib", "src/core", "src/adapters"];
 
 const cloudflareImports = {
   group: [
@@ -113,6 +118,34 @@ export default tseslint.config(
         },
       ],
     },
+  },
+  {
+    // A flow entry calls the composition module, the core and the adapters, nothing else (M3.1).
+    files: [FLOW_ENTRY_FILES],
+    linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: "error" },
+    plugins: { layers: layerBoundaries },
+    rules: {
+      "layers/layer-imports": ["error", { allowedDirs: FLOW_DIRS, allowedModules: [] }],
+    },
+  },
+  {
+    // The composition module also builds the database pool and the id source.
+    files: [FLOW_LIB_FILES],
+    linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: "error" },
+    plugins: { layers: layerBoundaries },
+    rules: {
+      "layers/layer-imports": [
+        "error",
+        { allowedDirs: FLOW_DIRS, allowedModules: ["pg", "node:crypto"] },
+      ],
+    },
+  },
+  {
+    // Nothing outside the flow layer imports a flow: flows sit around the code, not inside it.
+    files: [CODE_FILES],
+    ignores: ["flows/**", "test/**"],
+    plugins: { layers: layerBoundaries },
+    rules: { "layers/layer-imports": ["error", { forbiddenDirs: ["flows"] }] },
   },
   {
     // Unit tests sit next to the code (ADR 0101), so a core test file may also import the test runner.

@@ -1,0 +1,92 @@
+# The runner's Windmill flows, schedules and resources, as data (build plan M3.1). Nothing here is
+# deployed. Deploying is mechanical once the Windmill workspace and token exist (first-hosting
+# runbook, step 15): bundle each entry with its imports and contracts/machine-2, push it as a
+# script at its path, create the schedule and the approval flow, and store each resource and
+# variable at the path below. test/flows/windmill-description.test.ts keeps this file in step
+# with the code.
+#
+# Why these flows, and not one per contract move: the architecture's reason for "one flow per
+# transition" is that Windmill flows are acyclic while the machine has cycles, so each flow run
+# handles exactly one transition and durable state lives in the store (section 2.4). The
+# transition flow keeps that: one run, one move. Copying each contract move into a flow of its own
+# would give every flow its own copy of a rule, which essential 7 forbids; the contracts and
+# guards already say which moves exist and what each needs.
+
+workspace_folder: f/foreman
+
+flows:
+  - name: reconcile
+    path: f/foreman/reconcile
+    entry: flows/reconcile.ts
+    trigger: schedule
+    # Every `reconcile_interval_minutes` (setting, 120 until Kubernetes, D-164). Windmill reads
+    # the schedule from here, not from the setting; changing one means changing both.
+    schedule:
+      every_minutes: 120
+      cron: "0 0 */2 * * *"
+      timezone: UTC
+
+  - name: dispatch
+    path: f/foreman/dispatch
+    entry: flows/dispatch.ts
+    # Who calls it in live mode is open: the live reconcile pass is not built (M2.4 stops on
+    # `dry_run` false). Until then, by hand from the Windmill page.
+    trigger: called
+
+  - name: record_run_end
+    path: f/foreman/record_run_end
+    entry: flows/record-run-end.ts
+    # Called with the handle the dispatch returned. Who keeps the handle between passes is open.
+    trigger: called
+
+  - name: request_transition
+    path: f/foreman/request_transition
+    entry: flows/request-transition.ts
+    # For an event, a bot report, a human or a timeout, with the trigger's own id. Which caller
+    # turns a bot report or a GitHub event into this call is open (M3.1 report).
+    trigger: called
+
+  - name: approval
+    path: f/foreman/approval
+    # A Windmill flow of two steps, like the M0.4 spike: `ask` suspends with the M0.4 reply form
+    # and sends the approval page to Didi only (D-170), `record` is this entry. `ask` needs the
+    # notification adapter and the gate lifecycle (M4.1), so only `record` is built.
+    entry: flows/approval-resume.ts
+    trigger: approval_resume
+    suspend:
+      required_events: 1
+      # D-170: every approval expires after a short time. One day, as in M0.4, until M4.1 sets it.
+      timeout_seconds: 86400
+      continue_on_disapprove_timeout: true
+      resume_form:
+        reply: { type: string, required: true }
+
+# GitHub webhooks go to the receiver service (ADR 0113), not to Windmill, so no flow ingests
+# them and none is listed here.
+
+resources:
+  secrets:
+    - path: platform/state-store/runner-database-url
+      holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
+    - path: platform/agent-cluster/runner-token
+      holds: The runner's cluster token (ADR 0106 section 1, first-hosting runbook step 8)
+  values:
+    - name: spec_version
+      holds: The git commit of docs/spec.md and contracts/ the bundle was built from
+    - name: github_developer_app_login
+      holds: The Developer App's login (D-156)
+    - name: github_designer_app_login
+      holds: The Designer App's login (D-156)
+    - name: github_runner_app_slug
+      holds: The runner App's slug (D-156)
+    - name: agent_cluster_endpoint
+      holds: The cluster's API address (first-hosting runbook step 8)
+    - name: agent_cluster_ca_certificate
+      holds: The cluster's CA certificate (first-hosting runbook step 8)
+    - name: agent_run_settings
+      holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106)
+    - name: bot_profiles
+      holds: Runtime, model and bot version per role as JSON, until bot files are loaded
+  # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is
+  # a new credential at first hosting; until then the count is not read and the pass says so.
+  windmill_token: needed for the execution count (D-167)

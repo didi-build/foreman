@@ -193,6 +193,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - Why: this is the runner.
 - How: flows call the library and adapters, check the kill switch and settings, and are idempotent. No business rules inside flows.
 - Success: flow tests with fake adapters pass. A duplicate trigger produces one transition.
+- Built: the flows in `flows/` (reconcile, dispatch, run end, one transition per run, and the approval resume step), composed in `flows/lib/compose.ts` and described as data in `flows/windmill.yaml`, with `requestTransitionOnce` in `src/core/library.ts` for triggers with their own id. Tests: `test/flows/` (see `docs/test-plan.md`, "Windmill flows"). Nothing is deployed: the Windmill binding refuses until the workspace and token exist (first-hosting runbook step 15).
 
 ### M3.2 Dispatch adapters and runs
 
