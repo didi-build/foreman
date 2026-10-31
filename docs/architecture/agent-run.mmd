@@ -14,8 +14,8 @@ flowchart LR
       RX["GitHub receiver<br/>(Cloudflare Tunnel)"]
     end
     subgraph Agents["Agent pool: one Job per run, default deny"]
-      POD["Agent pod<br/>Claude Code: Developer, Designer<br/>Messages API: QA, Council, Triage<br/>holds no credentials"]
-      PX["Egress proxy pod, one per run<br/>adds provider credential<br/>request ceiling, service_tier<br/>host allow-list"]
+      POD["Agent pod<br/>OpenCode: Developer, Designer<br/>Messages API: QA, Council, Triage<br/>holds no credentials"]
+      PX["Egress proxy pod, one per run<br/>adds provider credential<br/>request ceilings<br/>host allow-list"]
     end
   end
   WM -->|"dispatch"| CORE
