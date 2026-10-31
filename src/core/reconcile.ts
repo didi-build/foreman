@@ -156,13 +156,17 @@ export interface Stall {
   idleMinutes: number;
 }
 
-/** A gate request that may no longer be needed. Reported only: no rule defines closing it. */
+/**
+ * A gate request the pass would close (D-199): `cancelled` when its node is Done, `expired` when
+ * it has waited unanswered for `gate_request_expiry_days`. Dry run reports it and closes nothing.
+ */
 export interface GateCleanupCandidate {
   gateRequestId: string;
   projectId: string;
   topicKey: string;
   nodeId: string | null;
-  reason: "node_done";
+  reason: "node_done" | "expired";
+  closeAs: "cancelled" | "expired";
 }
 
 export interface PollReport {
@@ -571,23 +575,29 @@ export async function reconcile(
     }
   }
 
-  // Step 6. Clean up. A newer request on the same topic already supersedes the older one when it
-  // is opened (schema invariant 5), so nothing is left to absorb here. No rule defines when a
-  // request is "no longer needed", so a request on a node that reached Done is reported as a
-  // candidate and left open.
+  // Step 6. Clean up (D-199). A newer request on the same topic already supersedes the older one
+  // when it is opened (schema invariant 5). A request on a node that reached Done would be
+  // cancelled, and one left unanswered for `gate_request_expiry_days` would expire. Dry run only
+  // reports them; reopening a still-needed request after expiry is the gate lifecycle (M4.1).
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const expiryDays = await positiveNumberSetting(store, "gate_request_expiry_days");
   for (const projectId of projectIds) {
     const open: GateRequest[] = await store.listOpenGateRequests(projectId);
     for (const gate of open) {
       const node = gate.nodeId ? nodeById.get(gate.nodeId) : undefined;
+      const base = {
+        gateRequestId: gate.id,
+        projectId,
+        topicKey: gate.topicKey,
+        nodeId: gate.nodeId,
+      };
       if (node && isTerminal(node.state)) {
-        report.gateCleanup.push({
-          gateRequestId: gate.id,
-          projectId,
-          topicKey: gate.topicKey,
-          nodeId: gate.nodeId,
-          reason: "node_done",
-        });
+        report.gateCleanup.push({ ...base, reason: "node_done", closeAs: "cancelled" });
+      } else if (
+        expiryDays !== null &&
+        now.getTime() - gate.createdAt.getTime() >= expiryDays * 24 * 60 * MINUTE
+      ) {
+        report.gateCleanup.push({ ...base, reason: "expired", closeAs: "expired" });
       }
     }
   }

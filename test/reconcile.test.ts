@@ -360,10 +360,31 @@ describe("reconcile pass, gate cleanup (unit: section 2.5 step 6)", () => {
         topicKey: gate.topicKey,
         nodeId: done.id,
         reason: "node_done",
+        closeAs: "cancelled",
       },
     ]);
     expect((await f.store.getGateRequest(gate.id))?.status).toBe("open");
     await expectNothingActed(f, 0, 2);
+  });
+
+  it("plans to expire a request left unanswered for gate_request_expiry_days, and leaves it open", async () => {
+    const f = await createReconcileFixture();
+    await f.setting("gate_request_expiry_days", 7);
+    const waiting = await f.node("in_development");
+    const gate = await f.openGate(waiting.id, `escalation:${waiting.id}`);
+
+    f.advanceMinutes(7 * 24 * 60 - 1);
+    expect((await f.pass()).gateCleanup).toEqual([]);
+
+    f.advanceMinutes(1);
+    expect((await f.pass()).gateCleanup).toEqual([
+      expect.objectContaining({
+        gateRequestId: gate.id,
+        reason: "expired",
+        closeAs: "expired",
+      }),
+    ]);
+    expect((await f.store.getGateRequest(gate.id))?.status).toBe("open");
   });
 });
 
