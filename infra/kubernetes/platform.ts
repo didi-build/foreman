@@ -115,8 +115,12 @@ export interface PlatformSettings {
     designerAppLogin: string;
     runnerAppSlug: string;
   };
-  /** The database's TCP port (Supabase). The services may reach it on public addresses only. */
-  databasePort: number;
+  /**
+   * The database's TCP port. Default: Supabase's session pooler on 5432 (session mode, because the
+   * store uses transactions and advisory locks; reachable over IPv4, unlike the direct host). Only
+   * the state API and the receiver may reach it, on public addresses.
+   */
+  databasePort?: number;
   /** Cluster DNS, as for the agents' proxies. */
   clusterDns: { namespace: string; podLabels: Labels };
 }
@@ -166,6 +170,16 @@ export interface Deployment {
 
 export type PlatformObject = Namespace | NetworkPolicy | Service | Deployment;
 
+/** Supabase's session pooler (see PlatformSettings.databasePort). */
+export const DEFAULT_DATABASE_PORT = 5432;
+
+/** Cloudflare's tunnel edge port, for the cloudflared connector only (D-195). */
+export const TUNNEL_EDGE_PORT = 7844;
+
+export function databasePortOf(settings: PlatformSettings): number {
+  return settings.databasePort ?? DEFAULT_DATABASE_PORT;
+}
+
 const DIGEST_PINNED = /@sha256:[0-9a-f]{64}$/;
 
 export function checkPlatformSettings(settings: PlatformSettings): void {
@@ -176,7 +190,7 @@ export function checkPlatformSettings(settings: PlatformSettings): void {
   if (!Number.isInteger(settings.serviceUser) || settings.serviceUser < 1) {
     throw new Error("serviceUser must be a non-root user id");
   }
-  const port = settings.databasePort;
+  const port = databasePortOf(settings);
   if (
     !Number.isInteger(port) ||
     port < 1 ||
@@ -229,7 +243,7 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
   };
   const database: NetworkPolicy["spec"]["egress"][number] = {
     to: [PUBLIC_IPV4],
-    ports: [{ protocol: "TCP", port: settings.databasePort }],
+    ports: [{ protocol: "TCP", port: databasePortOf(settings) }],
   };
 
   const namespace: Namespace = {
@@ -289,7 +303,8 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
       ],
       [dns, database],
     ),
-    // The connector: no ingress; egress to DNS, the receiver, and Cloudflare on 443.
+    // The connector: no ingress; egress to DNS, the receiver, Cloudflare's API on 443 and
+    // Cloudflare's tunnel edge on 7844 (TCP and UDP). Only this pod gets 7844.
     policy(
       CLOUDFLARED.name,
       CLOUDFLARED.podLabels,
@@ -301,6 +316,13 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
           ports: [{ protocol: "TCP", port: RECEIVER.port }],
         },
         { to: [PUBLIC_IPV4], ports: [{ protocol: "TCP", port: 443 }] },
+        {
+          to: [PUBLIC_IPV4],
+          ports: [
+            { protocol: "TCP", port: TUNNEL_EDGE_PORT },
+            { protocol: "UDP", port: TUNNEL_EDGE_PORT },
+          ],
+        },
       ],
     ),
   ];

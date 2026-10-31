@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AGENTS_POOL } from "../src/adapters/agent-runtime/kubernetes/manifests.ts";
-import { PLATFORM_POOL, RECEIVER, serviceUrl } from "../infra/kubernetes/platform.ts";
+import {
+  DEFAULT_DATABASE_PORT,
+  PLATFORM_POOL,
+  RECEIVER,
+  TUNNEL_EDGE_PORT,
+  serviceUrl,
+} from "../infra/kubernetes/platform.ts";
 
 // Unit: static checks on the cluster's infrastructure code (ADR 0106, ADR 0110, D-188, D-193 to
 // D-195). OpenTofu is not run here; these read the .tf files as text, so they hold without
@@ -162,12 +168,19 @@ describe("cloud firewall (unit: ADR 0106 section 1, D-195)", () => {
     expect(allInfra).not.toMatch(/source_addresses/);
   });
 
-  it("allows outbound HTTPS and DNS only, plus ports Didi approves (empty by default)", () => {
+  it("allows outbound HTTPS, DNS, the database pooler and the tunnel edge only, plus ports Didi approves", () => {
     const fixed = blocks(firewall, /\boutbound_rule/).map((rule) => {
       const a = attrs(rule);
       return `${a.protocol}/${a.port_range}`;
     });
-    expect(fixed.sort()).toEqual(["tcp/443", "tcp/53", "udp/53"]);
+    expect(fixed.sort()).toEqual([
+      "tcp/443",
+      "tcp/53",
+      `tcp/${DEFAULT_DATABASE_PORT}`,
+      `tcp/${TUNNEL_EDGE_PORT}`,
+      "udp/53",
+      `udp/${TUNNEL_EDGE_PORT}`,
+    ]);
     const dynamic = only(firewall, /dynamic\s+"outbound_rule"/);
     expect(dynamic).toMatch(/for_each\s*=\s*toset\(var\.extra_outbound_tcp_ports\)/);
     expect(only(doCode, /variable\s+"extra_outbound_tcp_ports"/)).toMatch(

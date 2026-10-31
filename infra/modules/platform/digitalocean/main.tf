@@ -75,7 +75,9 @@ resource "digitalocean_kubernetes_node_pool" "agents" {
 
 # The cloud firewall on every worker node (ADR 0106 section 1, D-195). No inbound rule: nothing on
 # the cluster takes traffic from the internet, because the receiver is reached through an outbound
-# Cloudflare Tunnel. Outbound: HTTPS and DNS, plus any TCP port Didi approves.
+# Cloudflare Tunnel. Outbound: HTTPS, DNS, the database pooler (5432/tcp) and the tunnel edge
+# (7844 tcp and udp), plus any TCP port Didi approves. Which pod may use which port is limited by
+# the platform namespace's network policies, not here.
 resource "digitalocean_firewall" "workers" {
   name = "${var.name}-workers"
   tags = ["k8s:${digitalocean_kubernetes_cluster.this.id}"]
@@ -95,6 +97,26 @@ resource "digitalocean_firewall" "workers" {
   outbound_rule {
     protocol              = "tcp"
     port_range            = "53"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # Supabase's session pooler (the state API and the receiver's database).
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "5432"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # Cloudflare's tunnel edge, for the cloudflared connector (D-195).
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "7844"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "7844"
     destination_addresses = ["0.0.0.0/0", "::/0"]
   }
 

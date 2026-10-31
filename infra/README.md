@@ -40,7 +40,9 @@ What it declares (ADR 0106 section 1, D-193 to D-195):
 - One DOKS cluster in `tor1`, standard control plane (D-194), with auto-upgrade and a maintenance window as variables.
 - Two node pools of one `s-2vcpu-4gb` node each (D-194; the price is confirmed on DigitalOcean's page at first hosting). `platform` carries the label `foreman/pool=platform`. `agents` carries `foreman/pool=agents` and the `NoSchedule` taint with the same key and value, exactly what the Kubernetes agent runtime adapter sets on run pods (`AGENTS_POOL`).
 - The API endpoint allow-list (D-189) as `api_allowed_addresses`. Empty means no limit, and the runner's RBAC-limited token is the protection.
-- A cloud firewall on the worker nodes with no inbound rule, and outbound HTTPS and DNS only. Any other outbound port is added to `extra_outbound_tcp_ports` with Didi's approval.
+- A cloud firewall on the worker nodes with no inbound rule. Outbound: HTTPS, DNS, Supabase's session pooler (5432/tcp) and Cloudflare's tunnel edge (7844 tcp and udp). Any other outbound port is added to `extra_outbound_tcp_ports` with Didi's approval. Inside the cluster, network policies limit 5432 to the state API and the receiver, and 7844 to the `cloudflared` pod.
+- DOKS keeps its own firewall on the worker nodes, and DigitalOcean combines the allow rules of every firewall on a droplet. If the managed one allows all outbound traffic, these outbound rules change nothing, so the network policies are the real egress control. Check DigitalOcean's docs on this at first hosting.
+- The DigitalOcean provider keeps an admin credential for the cluster in state. It is set to expire after 1 hour (`kubeconfig_expire_seconds`), and state is encrypted. It is never an output.
 - The receiver's Cloudflare Tunnel, routing one host name and the webhook path to the receiver's in-cluster Service only, everything else to 404. Its DNS record is created only when `publish_receiver_dns = true` (a separate DNS gate).
 - Outputs: the cluster id, its API address and its CA certificate, which are plain settings for the runner, and the tunnel token as a sensitive output. Never a kubeconfig or token for the cluster.
 

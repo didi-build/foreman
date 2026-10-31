@@ -24,8 +24,10 @@ import {
   PLATFORM_NAMESPACE,
   PLATFORM_POOL,
   PLATFORM_SECRETS,
+  DEFAULT_DATABASE_PORT,
   RECEIVER,
   STATE_API,
+  TUNNEL_EDGE_PORT,
   platformObjects,
   stateApiRunSettings,
   type Deployment,
@@ -55,7 +57,6 @@ const PLATFORM: PlatformSettings = {
     designerAppLogin: "example-designer[bot]",
     runnerAppSlug: "example-runner",
   },
-  databasePort: 5432,
   clusterDns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
 };
 
@@ -379,7 +380,7 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
     expect(ingressPorts(STATE_API.name, platformPod(CLOUDFLARED.name))).toEqual([]);
   });
 
-  it("the connector takes no ingress, and reaches only DNS, the receiver and public 443", () => {
+  it("the connector takes no ingress, and reaches only DNS, the receiver, public 443 and the tunnel edge", () => {
     const policy = policyOf(CLOUDFLARED.name);
     expect(policy.spec.ingress).toEqual([]);
     const reachable = policy.spec.egress.map((rule) => ({
@@ -399,9 +400,11 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
         to: [`pods:${JSON.stringify(RECEIVER.podLabels)}`],
       },
       { ports: ["TCP/443"], to: ["public:0.0.0.0/0"] },
+      { ports: ["TCP/7844", "UDP/7844"], to: ["public:0.0.0.0/0"] },
     ]);
-    const publicRule = policy.spec.egress.find((r) => r.to[0]?.ipBlock);
-    expect(publicRule?.to[0]?.ipBlock?.except).toEqual([...NON_PUBLIC_IPV4]);
+    for (const rule of policy.spec.egress.filter((r) => r.to[0]?.ipBlock)) {
+      expect(rule.to[0]?.ipBlock?.except).toEqual([...NON_PUBLIC_IPV4]);
+    }
   });
 
   it("the state API and receiver reach only DNS and the database port on public addresses", () => {
@@ -409,7 +412,7 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
       const ports = policyOf(name).spec.egress.flatMap((r) =>
         r.ports.map((p) => `${p.protocol}/${p.port}`),
       );
-      expect(ports).toEqual(["UDP/53", "TCP/53", `TCP/${PLATFORM.databasePort}`]);
+      expect(ports).toEqual(["UDP/53", "TCP/53", "TCP/5432"]);
       const db = policyOf(name).spec.egress[1];
       expect(db?.to[0]?.ipBlock?.except).toEqual([...NON_PUBLIC_IPV4]);
     }
@@ -442,5 +445,31 @@ describe("cluster objects (unit: render)", () => {
       "foreman-runner",
       "agents-rehearsal",
     ]);
+  });
+});
+
+describe("special egress ports belong to one kind of pod each (unit: D-195)", () => {
+  /** Every port a policy allows out, as protocol/port. */
+  const egressPorts = (policy: NetworkPolicy): string[] =>
+    policy.spec.egress.flatMap((r) => r.ports.map((p) => `${p.protocol}/${p.port}`));
+  const allows = (port: string) =>
+    policies.filter((p) => egressPorts(p).includes(port)).map((p) => p.metadata.name);
+  const runPolicies = [...stage.policies];
+
+  it("defaults the database port to Supabase's session pooler, 5432", () => {
+    expect(DEFAULT_DATABASE_PORT).toBe(5432);
+    expect("databasePort" in PLATFORM).toBe(false);
+  });
+
+  it("only the tunnel connector may reach 7844, over TCP and UDP", () => {
+    expect(allows(`TCP/${TUNNEL_EDGE_PORT}`)).toEqual([CLOUDFLARED.name]);
+    expect(allows(`UDP/${TUNNEL_EDGE_PORT}`)).toEqual([CLOUDFLARED.name]);
+    for (const p of runPolicies)
+      expect(egressPorts(p).join(",")).not.toContain("/7844");
+  });
+
+  it("only the state API and the receiver may reach the database port", () => {
+    expect(allows("TCP/5432")).toEqual([STATE_API.name, RECEIVER.name]);
+    for (const p of runPolicies) expect(egressPorts(p)).not.toContain("TCP/5432");
   });
 });

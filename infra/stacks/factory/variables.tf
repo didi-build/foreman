@@ -53,7 +53,7 @@ variable "api_allowed_addresses" {
 }
 
 variable "extra_outbound_tcp_ports" {
-  description = "Outbound TCP ports the worker firewall allows besides HTTPS and DNS. Each one needs Didi's approval."
+  description = "Outbound TCP ports the worker firewall allows besides HTTPS, DNS, 5432 and 7844. Each one needs Didi's approval."
   type        = list(number)
   default     = []
 }

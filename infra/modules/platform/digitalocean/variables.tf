@@ -68,7 +68,7 @@ variable "kubeconfig_expire_seconds" {
 }
 
 variable "extra_outbound_tcp_ports" {
-  description = "Outbound TCP ports the worker firewall allows besides HTTPS and DNS. Empty until Didi approves more (see docs/runbooks/first-hosting.md)."
+  description = "Outbound TCP ports the worker firewall allows besides HTTPS, DNS, 5432 and 7844. Empty until Didi approves more (see docs/runbooks/first-hosting.md)."
   type        = list(number)
   default     = []
 }

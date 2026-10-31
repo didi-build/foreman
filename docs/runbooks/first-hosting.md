@@ -10,12 +10,12 @@
 
 ## 0. Answer the open questions first
 
-These are not decided. Each one changes what the apply in step 5 does, so settle them before it.
+Settle these before the apply in step 5.
 
-1. **Database port.** The state API and the receiver connect to Supabase. The cloud firewall allows outbound HTTPS and DNS only, so the database port must be added to `extra_outbound_tcp_ports`, and it is the `databasePort` setting of the platform objects. Recommended: the Supabase pooler's port only (5432 in session mode, or 6543 in transaction mode, whichever the services use), nothing else.
-2. **Tunnel port.** `cloudflared` reaches Cloudflare's edge on port 7844 (TCP and UDP), not 443. The connector's network policy and the cloud firewall allow 443 only, so the tunnel will not connect as written. Recommended: allow TCP and UDP 7844 to public addresses for the `cloudflared` pod only, and add 7844 to the cloud firewall.
-3. **Whether the cloud firewall limits outbound at all.** DOKS manages its own firewall for the worker nodes. DigitalOcean combines the allow rules of every firewall on a droplet, so if the managed one allows all outbound traffic, the outbound rules here change nothing. Network policies stay the real egress control either way. Recommended: read DigitalOcean's docs on the DOKS managed firewall at this step, and keep the rules here as a second layer only if they take effect.
-4. **The admin credential in state.** The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted and the credential is set to expire after 1 hour, but it is still an admin key outside the password manager (D-188). Recommended: accept it under ADR 0110 secrets rule 3, as listed in `infra/README.md`.
+Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Still open, each needing Didi:
+
+1. **Whether the cloud firewall limits outbound at all.** DOKS manages its own firewall for the worker nodes. DigitalOcean combines the allow rules of every firewall on a droplet, so if the managed one allows all outbound traffic, the outbound rules here change nothing. Network policies stay the real egress control either way. Recommended: read DigitalOcean's docs on the DOKS managed firewall at this step, and keep the rules here as a second layer only if they take effect.
+2. **The admin credential in state.** The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted and the credential is set to expire after 1 hour, but it is still an admin key outside the password manager (D-188). Recommended: accept it under ADR 0110 secrets rule 3, as listed in `infra/README.md`.
 
 ## 1. Read the real prices
 
@@ -70,7 +70,7 @@ Download the cluster's kubeconfig from the DigitalOcean control panel and keep i
 
 ## 7. Apply the cluster's standing objects
 
-Write a settings file outside the repo (images pinned by digest, the app logins, the database port from step 0, resource limits, the projects and their quotas; no secrets), then:
+Write a settings file outside the repo (images pinned by digest, the app logins, resource limits (`databasePort` defaults to 5432), the projects and their quotas; no secrets), then:
 
 ```bash
 node infra/kubernetes/render.ts <settings.json> | kubectl apply -f -
