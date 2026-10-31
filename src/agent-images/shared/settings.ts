@@ -5,12 +5,21 @@ import { readConfig, text, type Setting } from "../../service-kit/config.ts";
 import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
 
 /** Which runtime an image carries. Each image accepts only its own roles. */
-export type ImageKind = "claude-code" | "claude-api";
+export type ImageKind = "claude-code" | "claude-api" | "opencode";
 
 export const ROLES_BY_IMAGE: Record<ImageKind, readonly AgentRole[]> = {
   "claude-code": ["developer", "designer"],
   "claude-api": ["qa", "council", "triage"],
+  // D-222: OpenCode replaces Claude Code for these roles; the Claude Code image stays a fallback.
+  opencode: ["developer", "designer"],
 };
+
+/**
+ * Which API a model provider speaks, for a runtime that serves several providers (the OpenCode
+ * image). The Kubernetes runtime passes it in FOREMAN_MODEL_API, beside FOREMAN_MODEL_BASE_URL.
+ */
+export const MODEL_APIS = ["anthropic", "openai-compatible"] as const;
+export type ModelApi = (typeof MODEL_APIS)[number];
 
 /**
  * What the agent holds instead of a model credential (ADR 0106 section 5). The egress proxy
@@ -27,8 +36,14 @@ export interface ImageSettings {
   maxTurns: number;
   maxUsd: number;
   taskFile: string;
-  /** The egress proxy's address for the model provider, e.g. http://10.0.0.1:8080/anthropic. */
+  /**
+   * The egress proxy's address for the model provider: ANTHROPIC_BASE_URL for the Claude images
+   * (e.g. http://10.0.0.1:8080/anthropic), FOREMAN_MODEL_BASE_URL with the API's path for the
+   * OpenCode image (e.g. http://10.0.0.1:8080/deepinfra/v1/openai).
+   */
   modelBaseUrl: string;
+  /** The OpenCode image only: which API the provider speaks (FOREMAN_MODEL_API). */
+  modelApi?: ModelApi;
   /** The state API through the proxy (D-195). */
   stateApiUrl: string;
   stateApiToken: string;
@@ -45,11 +60,15 @@ const MODEL =
   /^(?=.{1,200}$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 const RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
-function oneOf<T extends string>(env: string, allowed: readonly T[]): Setting<T> {
+function oneOf<T extends string>(
+  env: string,
+  allowed: readonly T[],
+  problem: string,
+): Setting<T> {
   return {
     env,
     parse: (raw) => {
-      if (!allowed.includes(raw as T)) throw new Error("is not a role this image runs");
+      if (!allowed.includes(raw as T)) throw new Error(problem);
       return raw as T;
     },
   };
@@ -122,19 +141,34 @@ export function readImageSettings(
   kind: ImageKind,
   env: NodeJS.ProcessEnv = process.env,
 ): ImageSettings {
+  const run = {
+    runId: matching("FOREMAN_RUN_ID", RUN_ID, "is not a run id"),
+    role: oneOf("FOREMAN_ROLE", ROLES_BY_IMAGE[kind], "is not a role this image runs"),
+    model: matching("FOREMAN_MODEL", MODEL, "is not a model id"),
+    maxTurns: positiveInteger("FOREMAN_MAX_TURNS"),
+    maxUsd: positiveAmount("FOREMAN_MAX_BUDGET_USD"),
+    taskFile: text("FOREMAN_TASK_FILE"),
+  };
+  const stateApi = {
+    stateApiUrl: baseUrl("FOREMAN_STATE_API_URL"),
+    stateApiToken: text("FOREMAN_STATE_API_TOKEN"),
+    workDir: text("HOME"),
+  };
+  if (kind === "opencode") {
+    // OpenCode serves any provider, so it is told which API the provider speaks and the proxy's
+    // address for it, API path included. ANTHROPIC_BASE_URL is not read.
+    return readConfig(
+      {
+        ...run,
+        modelApi: oneOf("FOREMAN_MODEL_API", MODEL_APIS, "is not a model API"),
+        modelBaseUrl: baseUrl("FOREMAN_MODEL_BASE_URL"),
+        ...stateApi,
+      },
+      env,
+    );
+  }
   return readConfig(
-    {
-      runId: matching("FOREMAN_RUN_ID", RUN_ID, "is not a run id"),
-      role: oneOf("FOREMAN_ROLE", ROLES_BY_IMAGE[kind]),
-      model: matching("FOREMAN_MODEL", MODEL, "is not a model id"),
-      maxTurns: positiveInteger("FOREMAN_MAX_TURNS"),
-      maxUsd: positiveAmount("FOREMAN_MAX_BUDGET_USD"),
-      taskFile: text("FOREMAN_TASK_FILE"),
-      modelBaseUrl: baseUrl("ANTHROPIC_BASE_URL"),
-      stateApiUrl: baseUrl("FOREMAN_STATE_API_URL"),
-      stateApiToken: text("FOREMAN_STATE_API_TOKEN"),
-      workDir: text("HOME"),
-    },
+    { ...run, modelBaseUrl: baseUrl("ANTHROPIC_BASE_URL"), ...stateApi },
     env,
   );
 }

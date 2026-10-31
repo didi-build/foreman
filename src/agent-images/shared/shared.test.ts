@@ -66,6 +66,30 @@ describe("image settings (unit: config from the environment, fail closed)", () =
     });
   });
 
+  it("reads the provider's API and the proxy's address for it for the OpenCode image (D-222)", () => {
+    const env = {
+      ...ENV,
+      FOREMAN_ROLE: "developer",
+      ANTHROPIC_BASE_URL: "http://10.245.0.10:8080/not-read",
+      FOREMAN_MODEL_API: "openai-compatible",
+      FOREMAN_MODEL_BASE_URL: "http://10.245.0.10:8080/deepinfra/v1/openai/",
+    };
+    expect(readImageSettings("opencode", env)).toMatchObject({
+      role: "developer",
+      modelApi: "openai-compatible",
+      modelBaseUrl: "http://10.245.0.10:8080/deepinfra/v1/openai",
+    });
+    expect(() =>
+      readImageSettings("opencode", { ...env, FOREMAN_MODEL_API: "anthropic-v2" }),
+    ).toThrow(/FOREMAN_MODEL_API is not a model API/);
+    expect(() =>
+      readImageSettings("opencode", { ...env, FOREMAN_MODEL_BASE_URL: undefined }),
+    ).toThrow(/FOREMAN_MODEL_BASE_URL is not set/);
+    expect(() => readImageSettings("opencode", ENV)).toThrow(/FOREMAN_ROLE/);
+    // The Claude images keep reading ANTHROPIC_BASE_URL and have no API setting.
+    expect(readImageSettings("claude-api", ENV)).not.toHaveProperty("modelApi");
+  });
+
   it("refuses a role the image does not run", () => {
     expect(() => readImageSettings("claude-code", ENV)).toThrow(/FOREMAN_ROLE/);
     expect(() =>

@@ -258,12 +258,13 @@ describe.skipIf(!adminUrl)(
       expect((await runs.dispatch(request(nodeId), credential())).admitted).toBe(true);
     });
 
-    it("seeds the Flex capacity bounds, which the runner reads (migration 0007)", async () => {
+    it("seeds the Flex capacity bounds, which the runner reads (migrations 0007 and 0009)", async () => {
       expect((await store.getSetting("flex_capacity_retries"))?.value).toBe(3);
-      expect((await store.getSetting("max_rejected_model_requests"))?.value).toBe(5);
+      // 0007 seeds 5; 0009 raises it to 6, OpenCode's requests on one Flex 429 (D-223).
+      expect((await store.getSetting("max_rejected_model_requests"))?.value).toBe(6);
       expect(await runCapacityLimits(store)).toEqual({
         flexCapacityRetries: 3,
-        maxRejectedModelRequests: 5,
+        maxRejectedModelRequests: 6,
       });
     });
 
