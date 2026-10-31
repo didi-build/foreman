@@ -1,6 +1,6 @@
 # 0114. Model evaluation, routing and service tiers
 
-- **Status:** proposed. Review point: Didi reviews it before any part is built. Money and security choices are open questions at the end, each with a recommended answer.
+- **Status:** accepted at the review point (D-211, 2026-10-31). Its open questions were settled as D-203 to D-210.
 - **Date:** 2026-10-31
 - **Related:** D-142, D-143, D-154, D-158, D-161, D-162, D-171, D-185, D-186, D-194, P-04, P-11, P-12, P-17, N-26, N-30, N-31, build plan M3.2 and M4.5, [ADR 0106](./0106-agent-execution-environment.md), [ADR 0107](./0107-agent-dispatch-adapters.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md), [cost sheet](../costs.md)
 

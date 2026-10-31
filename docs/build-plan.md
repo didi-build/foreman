@@ -197,6 +197,8 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 
 ### M3.2 Dispatch adapters and runs
 
+- Routing and run records follow [ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) (accepted, D-211): every run records its task type, provider, model, family and the tier requested and served, and the model is chosen in the core from the routing policy. The dispatch step builds this.
+
 - What: adapters to start the Developer (Claude Code), QA (Claude for now, D-158; ADR 0112), Designer (Claude with MagicPath MCP), and Council and Triage (Claude). Each records a run.
 - Why: the bots do the judgment work.
 - How: per ADR 0106, 0107 and 0112. Following [ADR 0106](./decisions/0106-agent-execution-environment.md), each run is a Kubernetes Job on the agents pool of a small DigitalOcean cluster. The pool is tainted so nothing else runs there; the state API and the GitHub receiver run on the cluster's platform pool (D-193). Budgets (turns, minutes, dollars) are generous at first and enforced from outside the agent. When usage is exhausted, queue the dispatch and resume. Never kill a run mid-transition.
