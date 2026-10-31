@@ -94,9 +94,15 @@ Each integration sits behind an interface so it can be replaced.
 | Notification  | Push alerts and incident calls                                                                                                                                                                     | Providers are chosen at build time after checking current pricing                                                                                                                                                                                                                                                 |
 | Approval      | Creates Windmill approval pages and reads answers                                                                                                                                                  | Answers are saved as verbatim decisions. Links go only to Didi privately, expire quickly and close after one answer; the runner never relies on a link alone (D-170)                                                                                                                                              |
 
-### 2.8 Agent execution environment (decide during build)
+### 2.8 Agent execution environment (decided: ADR 0106, ADR 0107, ADR 0114)
 
 Agents need somewhere to run. Options for the M3 ADR: a Windmill worker with the agent CLI, GitHub Actions, or a separate sandboxed runtime. Claude Code can be run non-interactively from a command line (check the current documentation for the headless mode or Agent SDK before depending on a specific flag). Requirements: one agent per item, scoped to one project's repo and credentials, no production access, budgets enforced from outside the agent (turn, minute and dollar limits), and a clean report-back path that records a run and evidence.
+
+Decided: each run is a Kubernetes Job in the agent pool with its own egress proxy pod ([ADR 0106](../decisions/0106-agent-execution-environment.md)). The core picks the model at dispatch from the routing policy and the model catalog ([ADR 0114](../decisions/0114-model-evaluation-routing-and-tiers.md)). The agent holds no credentials: the proxy adds each provider's credential and is the only way out. There is no model gateway (D-217).
+
+![How an agent run works](./agent-run.png)
+
+The diagram's source is [`agent-run.mmd`](./agent-run.mmd) (Mermaid). After changing it, render it again to `agent-run.png`.
 
 ### 2.9 Infrastructure as code (Proposed, D-133)
 
