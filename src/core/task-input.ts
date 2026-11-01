@@ -69,14 +69,14 @@ export const PUSHING_ROLES: readonly AgentRole[] = ["developer", "designer"];
 export const runBranch = (nodeId: string): string => `foreman/${nodeId}`;
 
 /** Each line of item text, quoted, so it can never read as a heading of the input. */
-const quoted = (text: string): string =>
+export const quoted = (text: string): string =>
   text
     .split(/\r?\n/)
     .map((line) => `> ${line}`.trimEnd())
     .join("\n");
 
 /** A list of item text, one quoted entry per item, or the sentence that says it is empty. */
-const list = (items: string[], none: string): string =>
+export const list = (items: string[], none: string): string =>
   items.length === 0
     ? none
     : items.map((item) => `- ${item.replace(/\s*\r?\n\s*/g, " ")}`).join("\n");
@@ -136,10 +136,11 @@ export const RETURN_LIMITS = { findings: 20, noteChars: 1000, pathChars: 300 } a
 
 const COMMIT = /^[0-9a-f]{7,64}$/i;
 /** A commit id as recorded, or the words that say none was; any other text is not shown. */
-const commit = (sha: string | null, label = "commit"): string =>
+export const commit = (sha: string | null, label = "commit"): string =>
   sha !== null && COMMIT.test(sha) ? `${label} ${sha}` : `${label} (not recorded)`;
 
-const cut = (text: string, chars: number): string =>
+/** Text cut to a limit, saying so. */
+export const cut = (text: string, chars: number): string =>
   text.length <= chars ? text : `${text.slice(0, chars)} [cut at ${chars} characters]`;
 
 /** The section that says why the item came back. Agent text in it is quoted, never trusted. */
@@ -197,14 +198,16 @@ function returnSection(reason: ReturnReason): string {
   }
 }
 
-const section = (heading: string, body: string): string => `## ${heading}\n\n${body}`;
+export const section = (heading: string, body: string): string =>
+  `## ${heading}\n\n${body}`;
 
 /**
  * The run's input (D-213). Every role gets the item: its title, description and acceptance
  * criteria. The Developer and the Designer also get the paths in scope, the checks that must pass
  * before a push, and the repository and branch to push to, and on a fix round why the item came
  * back (a failed QA round's findings, or the failed staging check or deploy). QA gets the pull request and the head
- * commit to review, which the runner set (ADR 0107). Council and Triage get the item only.
+ * commit to review, which the runner set (ADR 0107). Triage gets the item only. A Council run
+ * gets its question instead (src/core/council-input.ts, D-228).
  */
 export function taskInput(context: TaskInputContext): string {
   const item = readItemBody(context.node.body);

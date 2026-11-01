@@ -121,6 +121,7 @@ describe("code track with the real guards (integration: contracts, library and g
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        questionTopic: null,
         ...testRouteColumns(bot),
       });
       return runId;

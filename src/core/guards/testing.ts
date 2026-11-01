@@ -152,6 +152,7 @@ export async function fixture(nodePatch: Partial<Node> = {}): Promise<Fixture> {
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        questionTopic: null,
         ...testRouteColumns(bot),
         ...extra,
       });

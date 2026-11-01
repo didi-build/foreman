@@ -612,7 +612,8 @@ export function createLibrary({
     /**
      * Nothing in an escalated state, on hold, or not agent-ready is dispatched (invariant 6), and
      * nothing stale: a reversed decision it relied on leaves no work running on that basis until
-     * the Council decides what to redo (M3.5, O-45).
+     * the Council decides what to redo (M3.5, O-45). It governs the builder runs and the dispatch
+     * plan; a Council run is admitted for its question instead (src/core/council.ts, O-47).
      */
     canDispatch(node: Node): boolean {
       return (

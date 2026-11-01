@@ -386,6 +386,7 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        questionTopic: null,
         ...testRouteColumns("developer", {
           serviceTierRequested: "flex" as const,
           serviceTierServed: "mixed" as const,
@@ -571,6 +572,7 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        questionTopic: null,
         ...testRouteColumns("developer"),
       };
       const later = { ...run, id: id(), nodeId: n.id, startedAt: T1 };

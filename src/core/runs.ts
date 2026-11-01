@@ -75,6 +75,11 @@ export interface DispatchRequest {
   /** Required for QA. */
   prNumber?: number | null;
   parentRunId?: string | null;
+  /**
+   * Required for the Council, refused for every other role: the topic key of the question the
+   * run answers (src/core/council.ts, D-228). Stored as the run's `questionTopic`.
+   */
+  questionTopic?: string | null;
 }
 
 export type DispatchRefusal =
@@ -307,7 +312,17 @@ export function admissionRefusal(
   return null;
 }
 
+/** A Council question's topic key: `escalation:<id>` or `decision-reversed:<id>` (migration 0014). */
+const QUESTION_TOPIC = /^[a-z][a-z-]*:[0-9a-f-]{36}$/;
+
 function checkDispatchRequest(request: DispatchRequest): void {
+  const topic = request.questionTopic ?? null;
+  if (request.role === "council" && (topic === null || !QUESTION_TOPIC.test(topic))) {
+    throw new LibraryError("A Council dispatch needs the topic key of its question");
+  }
+  if (request.role !== "council" && topic !== null) {
+    throw new LibraryError("Only a Council dispatch names a question");
+  }
   if (request.role !== "qa") return;
   const prNumber = request.prNumber;
   if (!request.headSha || !(isCount(prNumber) && prNumber > 0)) {
@@ -437,6 +452,7 @@ function newRun(
     firstTokenMs: null,
     reportedCostUsd: null,
     modelPrice: route.price,
+    questionTopic: request.questionTopic ?? null,
   };
 }
 

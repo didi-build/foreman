@@ -9,9 +9,9 @@
 // what it would record and writes nothing. Under the kill switch it refuses: the cancel-runs flow
 // ends those runs. It never touches a counter itself: the reported move does, by the P-03 rules
 // (a QA fail, or a builder's done report refused on its guards, which also starts the next fix
-// round, O-43).
+// round, O-43). A Council run's answer is checked and recorded first (./lib/council-runs.ts, D-228).
 import { createRuns, type RunReport } from "../src/core/runs.ts";
-import { reportedMoveAndFixRound, type AfterReport } from "./lib/builder-runs.ts";
+import { runEndSteps, type AfterRunEnd } from "./lib/council-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
 import { runReport } from "./lib/runs.ts";
 import { dryRunOn, killSwitchOn } from "./lib/switches.ts";
@@ -24,9 +24,9 @@ export interface RecordRunEndInput {
 export type RecordRunEndResult =
   | { outcome: "refused"; reason: "kill_switch" }
   | { outcome: "no_run" | "no_handle" | "running" }
-  | ({ outcome: "already_recorded" } & AfterReport)
+  | ({ outcome: "already_recorded" } & AfterRunEnd)
   | { outcome: "would_record"; report: RunReport }
-  | ({ outcome: "recorded"; report: RunReport } & AfterReport);
+  | ({ outcome: "recorded"; report: RunReport } & AfterRunEnd);
 
 export async function run(
   deps: FlowDeps,
@@ -34,20 +34,21 @@ export async function run(
 ): Promise<RecordRunEndResult> {
   if (await killSwitchOn(deps.store))
     return { outcome: "refused", reason: "kill_switch" };
-  const reported = () => reportedMoveAndFixRound(deps, input.runId);
   const known = await deps.store.getRun(input.runId);
   if (!known) return { outcome: "no_run" };
+  const steps = runEndSteps(deps, known);
   if (known.endedAt !== null)
-    return { outcome: "already_recorded", ...(await reported()) };
+    return { outcome: "already_recorded", ...(await steps.after()) };
   const handle = await deps.store.getRunHandle(input.runId);
   if (handle === null) return { outcome: "no_handle" };
   const status = await deps.runtime.poll(handle);
   if (status.state === "running") return { outcome: "running" };
-  const report = runReport(status.result);
-  if (await dryRunOn(deps.store)) return { outcome: "would_record", report };
+  const measured = runReport(status.result);
+  if (await dryRunOn(deps.store)) return { outcome: "would_record", report: measured };
+  const report = await steps.record(status.result, measured);
   const recorded = await createRuns(deps).recordEnd(input.runId, report);
   await deps.runtime.cleanup?.(handle);
-  const after = await reported();
+  const after = await steps.after();
   return recorded
     ? { outcome: "recorded", report, ...after }
     : { outcome: "already_recorded", ...after };
