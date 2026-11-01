@@ -70,6 +70,7 @@ describe.skipIf(!adminUrl)(
         transcriptRef: null,
         usageExhaustedCause: null,
         retryAfterSeconds: null,
+        questionTopic: null,
         ...testRouteColumns(role),
       });
       await runner.insertRunToken({

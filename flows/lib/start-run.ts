@@ -3,7 +3,9 @@
 // and no move without a running agent:
 //
 // 1. Read the item and build the run's input (D-213), with why the item came back on a fix round
-//    (O-41). A malformed item refuses here, before anything is written.
+//    (O-41). A malformed item refuses here, before anything is written. A Council run's input is
+//    its question instead, with the output schema of the question's kind (src/core/council.ts,
+//    D-228); a question no longer open refuses here.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
@@ -23,6 +25,7 @@
 // stall check reports the run. Nothing the agent does can move the item, since the move was never
 // written.
 import { createBuilderRuns } from "../../src/core/builder-runs.ts";
+import { createCouncil } from "../../src/core/council.ts";
 import { createFailures } from "../../src/core/failures.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
@@ -48,6 +51,8 @@ export interface StartRunInput {
   role: AgentRole;
   headSha?: string | null;
   prNumber?: number | null;
+  /** Council: the topic key of the question the run answers. */
+  questionTopic?: string | null;
 }
 
 export type StartRunResult =
@@ -102,13 +107,22 @@ export async function startRun(
   const branch = PUSHING_ROLES.includes(input.role) ? runBranch(node.id) : null;
   // A fix round's input says why the item came back (D-213, O-41).
   const returned = branch ? await createBuilderRuns(deps).returnReason(node.id) : null;
-  const text = taskInput({
-    ...input,
-    node,
-    project,
-    branch: branch ?? undefined,
-    returned,
-  });
+  const council =
+    input.role === "council" && input.questionTopic
+      ? await createCouncil(deps).taskFor(input.questionTopic)
+      : null;
+  if (input.role === "council" && !council) {
+    return { outcome: "not_started", reason: "no_open_question", failedGuards: [] };
+  }
+  const text = council
+    ? council.input
+    : taskInput({
+        ...input,
+        node,
+        project,
+        branch: branch ?? undefined,
+        returned,
+      });
 
   const starts = createRunStart(deps);
   const check = await starts.checkStart(node.id, input.role);
@@ -137,6 +151,7 @@ export async function startRun(
       evidenceIds,
       capacity,
       stateApiToken,
+      ...(council ? { outputSchema: council.outputSchema } : {}),
     });
     handle = await deps.runtime.start(task, deps.limits[input.role]);
   } catch (error) {

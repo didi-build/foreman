@@ -49,6 +49,8 @@ const ACTOR = { kind: "runner" as const, id: "escalation" };
 /** The trigger ref prefixes of the moves out of an escalation, followed by the decision id. */
 export const COUNCIL_TRIGGER = "council_decision:";
 export const DIDI_TRIGGER = "didi_answer:";
+/** The trigger ref prefix of the move to Didi when the Council gave no usable answer, then a run id. */
+export const COUNCIL_UNANSWERED_TRIGGER = "council_unanswered:";
 
 export interface EscalationsOptions {
   store: Store;
@@ -170,19 +172,12 @@ export function createEscalations(options: EscalationsOptions) {
   /** One open question for Didi on the node's topic, opened in live mode only. */
   async function askDidi(
     node: Node,
-    decision: { id: string; textVerbatim: string },
-    returnState: string,
+    payload: { [key: string]: Json },
   ): Promise<string | null> {
     const topicKey = escalationTopic(node.id);
     const open = await store.findOpenGateRequest(node.projectId, topicKey);
     if (open?.owner === "didi") return open.id;
     if (await dryRunOn()) return null;
-    const payload: { [key: string]: Json } = {
-      question: "The Council could not resolve this item, or its decision needs Didi.",
-      councilDecisionId: decision.id,
-      councilNote: decision.textVerbatim,
-      returnState,
-    };
     const gate = await library.openGateRequest({
       projectId: node.projectId,
       nodeId: node.id,
@@ -208,21 +203,43 @@ export function createEscalations(options: EscalationsOptions) {
       };
     }
     if (!didiState) return { nodeId: node.id, step: "waiting", on: "council" };
-    const gateRequestId = await askDidi(node, decision, back ?? "");
+    return toDidi(
+      node,
+      {
+        question:
+          "The Council could not resolve this item, or its decision needs Didi.",
+        councilDecisionId: decision.id,
+        councilNote: decision.textVerbatim,
+        returnState: back ?? "",
+      },
+      trigger,
+      "the Council could not resolve it, or its decision needs Didi",
+    );
+  }
+
+  /** The question for Didi, then the move to the state where he answers (`didi_question_open`). */
+  async function toDidi(
+    node: Node,
+    payload: { [key: string]: Json },
+    trigger: Trigger,
+    reason: string,
+  ): Promise<EscalationStep> {
+    const state = didiState as string;
+    const gateRequestId = await askDidi(node, payload);
     const result = await library.requestTransitionOnce({
       nodeId: node.id,
-      toState: didiState,
+      toState: state,
       blockedReason:
         "Waiting on Didi: the Council could not resolve it, or it needs him",
       trigger,
       actor: ACTOR,
-      reason: "the Council could not resolve it, or its decision needs Didi",
+      reason,
     });
     return {
       nodeId: node.id,
       step: "to_didi",
       gateRequestId,
-      move: asMove(didiState, result),
+      move: asMove(state, result),
     };
   }
 
@@ -253,9 +270,40 @@ export function createEscalations(options: EscalationsOptions) {
     return { nodeId, step: "not_escalated" };
   }
 
+  /**
+   * The Council's runs gave no usable answer for the item (D-228: one run and one re-run, see
+   * src/core/council.ts): one `escalation` gate request for Didi on the item's topic, with the
+   * reason, and the move to Escalated to Didi (trigger `council_unanswered:<last run id>`).
+   */
+  async function councilUnanswered(
+    nodeId: string,
+    lastRunId: string,
+    why: string,
+  ): Promise<EscalationStep> {
+    const node = await store.getNode(nodeId);
+    if (!node) return { nodeId, step: "no_node" };
+    if (!councilState || node.state !== councilState || !didiState) {
+      return { nodeId, step: "not_escalated" };
+    }
+    return toDidi(
+      node,
+      {
+        question: "The Council gave no usable answer for this item.",
+        reason: why,
+        lastCouncilRunId: lastRunId,
+        returnState: (await library.returnState(node.id)) ?? "",
+      },
+      { kind: "event", ref: `${COUNCIL_UNANSWERED_TRIGGER}${lastRunId}` },
+      "the Council gave no usable answer",
+    );
+  }
+
   return {
     escalate,
     resolve,
+    councilUnanswered,
+    /** The state an item waits in for the Council, from the contracts. */
+    councilState,
 
     /** `resolve` for every node in an escalated state, in the store's node order. */
     async resolveAll(): Promise<EscalationStep[]> {

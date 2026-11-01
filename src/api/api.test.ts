@@ -114,6 +114,7 @@ async function issue(
     transcriptRef: null,
     usageExhaustedCause: null,
     retryAfterSeconds: null,
+    questionTopic: null,
     ...testRouteColumns(role),
   });
   await store.insertRunToken({
