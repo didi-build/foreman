@@ -262,10 +262,10 @@ describe("a fix round under the switches and limits (flow: fake adapters, O-41)"
         await dispatchRecords(f, node.id),
       ]),
     ).toBe(before);
-    // The fix round adds no row: the only new one is the advance step's own dry-run plan.
+    // The fix round adds no row, and the advance step plans nothing on the head QA failed (O-42).
     expect(
       (await f.transitions(node.id)).slice(moves).map((t) => [t.toState, t.mode]),
-    ).toEqual([["in_qa_review", "dry_run"]]);
+    ).toEqual([]);
     expect(f.runtime.started).toHaveLength(2);
   });
 

@@ -111,8 +111,9 @@ transitions:
     to: in_qa_review
     tracks: [code, infra, docs]
     trigger: The Developer reports the work is done and names the PR.
-    guards: [ci_green_on_head, docs_updated_or_none]
-    evidence: [ci_run, docs_note]
+    # A head QA failed goes back to QA only as a new commit (M3.5, O-42).
+    guards: [ci_green_on_head, docs_updated_or_none, no_failed_qa_verdict_on_head]
+    evidence: [ci_run, docs_note, qa_verdict]
     timeout: The Developer's budget (not set). An overrun or a loop stops the item and sends it to the Council.
     fallback: Stays In development and the failure counter goes up by one.
 

@@ -7,7 +7,9 @@
 // store records an end once, so a repeated trigger records one end. A move that sends the item
 // back to be fixed (QA's fail) then starts the builder's fix round (O-41). In dry run it reports
 // what it would record and writes nothing. Under the kill switch it refuses: the cancel-runs flow
-// ends those runs. It never touches a counter: those are the P-03 rules (M3.5).
+// ends those runs. It never touches a counter itself: the reported move does, by the P-03 rules
+// (a QA fail, or a builder's done report refused on its guards, which also starts the next fix
+// round, O-43).
 import { createRuns, type RunReport } from "../src/core/runs.ts";
 import { reportedMoveAndFixRound, type AfterReport } from "./lib/builder-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";

@@ -363,6 +363,35 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("allows a failure count only with its run, keyed by the runner and never by the API or ingestion (migration 0013)", () => {
+      const insert = (runId: string, key: string) =>
+        sql(
+          `insert into factory.evidence (id, node_id, run_id, kind, ref, payload, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', ${runId}, 'failure_count', 'f', '{"cause": "report_refused"}', 'runner', ${AT}, ${key});`,
+          "factory_runner",
+        );
+      expectRejected(
+        insert("null", "'runner:failure_count:report_refused:run-0'"),
+        /evidence_failure_count_run/,
+      );
+      const ok = insert(`'${ID.run}'`, "'runner:failure_count:report_refused:run-1'");
+      expect(ok.ok, ok.err).toBe(true);
+      expectRejected(
+        insert(`'${ID.run}'`, "'runner:failure_count:report_refused:run-1'"),
+        /unique/,
+      );
+      for (const role of ["factory_api", "factory_ingest"]) {
+        expectRejected(
+          sql(
+            `insert into factory.evidence (id, node_id, run_id, kind, ref, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', '${ID.run}', 'failure_count', 'f', 'developer', ${AT}, 'runner:failure_count:x:${role}');`,
+            role,
+          ),
+          /row-level security/,
+        );
+      }
+    });
+
     it("seeds the staging deploy wait at one hour (migration 0012, D-225)", () => {
       const value = sql(
         "select value::text from factory.settings where key = 'staging_deploy_attention_after_minutes';",

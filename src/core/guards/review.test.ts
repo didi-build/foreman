@@ -312,6 +312,54 @@ describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", 
     });
   });
 
+  describe("no_failed_qa_verdict_on_head (M3.5, O-42)", () => {
+    const failed = {
+      verdict: "fail",
+      findings: [{ path: "src/a.ts", startLine: 1, endLine: 1, note: "wrong" }],
+      evidenceIds: [],
+    };
+    it("passes on a head QA has not reviewed, or passed", async () => {
+      const f = await fixture();
+      await f.ci(HEAD);
+      expect(await f.check("no_failed_qa_verdict_on_head")).toMatchObject({
+        pass: true,
+      });
+      await f.evidence(
+        "qa_verdict",
+        HEAD,
+        { ...failed, verdict: "pass", findings: [] },
+        { runId: await f.run("qa", "model-b") },
+      );
+      expect((await f.check("no_failed_qa_verdict_on_head")).pass).toBe(true);
+    });
+    it("fails on a head QA failed, naming the verdict, and passes again on a new head", async () => {
+      const f = await fixture();
+      await f.ci(OLD);
+      const verdict = await f.evidence("qa_verdict", OLD, failed, {
+        runId: await f.run("qa", "model-b"),
+      });
+      expect(await f.check("no_failed_qa_verdict_on_head")).toMatchObject({
+        pass: false,
+        evidenceIds: [verdict],
+      });
+      // A new commit: the fail on the older head is stale.
+      await f.ci(HEAD);
+      expect((await f.check("no_failed_qa_verdict_on_head")).pass).toBe(true);
+    });
+    it("fails with no linked PR (missing evidence) and, without throwing, on a malformed verdict", async () => {
+      const f = await fixture();
+      expect((await f.check("no_failed_qa_verdict_on_head")).detail).toMatch(
+        /no linked pull request/,
+      );
+      await f.ci(HEAD);
+      await f.evidence("qa_verdict", HEAD, { verdict: "maybe" });
+      expect(await f.check("no_failed_qa_verdict_on_head")).toMatchObject({
+        pass: false,
+        detail: "malformed qa_verdict payload",
+      });
+    });
+  });
+
   describe("qa_failed_with_findings", () => {
     const finding = { path: "src/a.ts", startLine: 3, endLine: 4, note: "off by one" };
     it("passes on a fail verdict with findings on the head commit", async () => {

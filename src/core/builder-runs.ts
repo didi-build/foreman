@@ -16,6 +16,8 @@
 // switch, the limits and the usage-exhausted wait.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { readQaVerdict } from "./guards/evidence.ts";
+import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
+import { failureCountKey } from "./failures.ts";
 import { createLibrary, type Clock, type IdSource } from "./library.ts";
 import { QA_FAIL_GUARD } from "./run-reports.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
@@ -39,9 +41,11 @@ export interface BuilderRunsOptions {
 /**
  * Why a builder run is due: `returned`, a fail move sent the item back and no run of the role
  * started since; `resumed`, the item's latest started run is the role's and ended
- * `usage_exhausted`. Admission then applies the wait (src/core/runs.ts).
+ * `usage_exhausted`, and admission then applies the wait (src/core/runs.ts); `refused`, the item's
+ * latest started run is the role's, its done report was refused on its guards and counted toward
+ * `failure` (P-03, M3.5, O-43), so the fix round goes on, bounded by the escalation.
  */
-export type BuilderRunCause = "returned" | "resumed";
+export type BuilderRunCause = "returned" | "resumed" | "refused";
 
 export type BuilderRunCheck =
   | { due: true; nodeId: string; role: AgentRole; cause: BuilderRunCause }
@@ -98,8 +102,10 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
   }
 
   /**
-   * The fail move that sent the node into its current state, when the node's latest applied
-   * transition is one: a contract move into this state, for its track, guarded by a return guard.
+   * The move that sent the node back into its current state, when the node's latest applied
+   * transition is one: a fail move (a contract move into this state, for its track, guarded by a
+   * return guard), or the way back out of an escalation (`to: return`, M3.5), after which the
+   * work goes on where it was escalated from.
    */
   async function returnMove(node: Node): Promise<Transition | null> {
     const last = (await store.listTransitions(node.id))
@@ -108,13 +114,37 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     if (!last || last.toState !== node.state) return null;
     const isReturn = contracts.transitions.some(
       (m) =>
-        !m.escalation &&
         m.from === last.fromState &&
-        m.to === last.toState &&
         trackMatches(m, node) &&
-        m.guards.some((g) => RETURN_GUARDS.includes(g)),
+        (m.escalation
+          ? m.to === "return"
+          : m.to === last.toState && m.guards.some((g) => RETURN_GUARDS.includes(g))),
     );
     return isReturn ? last : null;
+  }
+
+  /** The Council's decision or Didi's answer a move out of an escalation names (escalations.ts). */
+  async function escalationAnswer(back: Transition): Promise<ReturnReason | null> {
+    const ref = back.triggerRef ?? "";
+    const by = ref.startsWith(COUNCIL_TRIGGER)
+      ? "council"
+      : ref.startsWith(DIDI_TRIGGER)
+        ? "didi"
+        : null;
+    if (!by) return null;
+    const decision = await store.getDecision(ref.slice(ref.indexOf(":") + 1));
+    return { kind: "escalation_resolved", by, note: decision?.textVerbatim ?? null };
+  }
+
+  /** The `failure_count` row of a refused done report by this run, if one was counted. */
+  async function refusedReport(
+    node: Node,
+    runId: string,
+  ): Promise<Evidence | undefined> {
+    const key = failureCountKey("report_refused", runId);
+    return (await store.listEvidence({ nodeId: node.id, kind: "failure_count" })).find(
+      (e) => e.runId === runId && e.ref === key,
+    );
   }
 
   /** Whether the guards would let the item escalate now (`escalation_trigger_met`). */
@@ -164,6 +194,8 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
       const latest = started.at(-1);
       if (latest?.bot === role && latest.outcome === "usage_exhausted")
         cause = "resumed";
+      else if (latest?.bot === role && (await refusedReport(node, latest.id)))
+        cause = "refused";
     }
     if (!cause) return { due: false, nodeId, reason: "not_due" };
     if (await escalationDue(node)) {
@@ -174,6 +206,8 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
 
   /** The evidence the fail move carried, of the kinds that say why. */
   async function reasonFrom(node: Node, back: Transition): Promise<ReturnReason> {
+    const answered = await escalationAnswer(back);
+    if (answered) return answered;
     const carried = new Set(back.evidenceIds);
     const rows: Evidence[] = [];
     for (const kind of [
@@ -231,13 +265,30 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
 
     /**
      * Why the item came back, for the builder's input: from the evidence the fail move that sent
-     * it into its current state carried. Null when that is not how it got there (a first run).
+     * it into its current state carried. When the role's latest run reported done and the report
+     * was refused (O-43), that comes first, with the checks that failed, and the fail move's reason
+     * after it. Null when neither is how it got here (a first run).
      */
     async returnReason(nodeId: string): Promise<ReturnReason | null> {
       const node = await store.getNode(nodeId);
-      if (!node || !buildingRole(node)) return null;
+      const role = node ? buildingRole(node) : null;
+      if (!node || !role) return null;
       const back = await returnMove(node);
-      return back ? reasonFrom(node, back) : null;
+      const earlier = back ? await reasonFrom(node, back) : null;
+      const latest = (await store.listRuns({ nodeId }))
+        .filter((r) => r.bot === role)
+        .at(-1);
+      const refused = latest ? await refusedReport(node, latest.id) : undefined;
+      if (!refused) return earlier;
+      const guards = field(refused.payload, "failedGuards");
+      return {
+        kind: "report_refused",
+        failedGuards: Array.isArray(guards)
+          ? guards.filter((g): g is string => typeof g === "string")
+          : [],
+        commitSha: refused.commitSha,
+        earlier,
+      };
     },
   };
 }

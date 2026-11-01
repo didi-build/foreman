@@ -116,6 +116,12 @@ describe("dispatch guards (unit: guards on the memory store, ADR 0105)", () => {
           .pass,
       ).toBe(false);
     });
+    it("fails when stale: a decision it relied on was reversed (M3.5, O-45)", async () => {
+      expect(
+        (await (await fixture({ stale: true })).check("agent_ready_not_on_hold"))
+          .detail,
+      ).toMatch(/stale/);
+    });
   });
 
   describe("plan_attached", () => {

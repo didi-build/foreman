@@ -3,10 +3,15 @@
 // merge pass merges what QA passed and recovers a merge whose move was not written (M3.3, O-31).
 // The staging pass then checks each merged item on staging and recovers its moves, its escalation
 // and its dependents' release (M3.4, O-37), and reports the items that have waited past
-// `staging_deploy_attention_after_minutes` with no deploy recorded (D-225, O-40). Last, the
-// builder runs pass starts the fix round of each item a failed QA round or staging check sent
-// back, and resumes a builder run queued after `usage_exhausted` (O-41). It runs after the staging
-// pass, so an escalation that pass recovers is taken first. Under any other stop, none runs.
+// `staging_deploy_attention_after_minutes` with no deploy recorded (D-225, O-40). The escalation
+// pass then takes each escalated item on once the Council or Didi has answered (M3.5,
+// src/core/escalations.ts): back where it was escalated from with the counters reset, or on to
+// Didi with a gate request. Last, the builder runs pass starts the fix round of each item a failed
+// QA round, a staging check, a refused done report or an answered escalation sent back, and
+// resumes a builder run queued after `usage_exhausted` (O-41, O-43). It runs after the staging and
+// escalation passes, so an escalation that pass recovers is taken first. Under any other stop,
+// none runs.
+import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import { createMerges, type MergeResult } from "../../src/core/merge.ts";
 import type { ReconcileReport } from "../../src/core/reconcile.ts";
 import {
@@ -22,6 +27,8 @@ export interface LivePasses {
   verified: StagingResult[] | null;
   /** Items in Verifying on staging past the wait setting with no deploy, for the attention list. */
   stagingWaits: StagingDeployWait[] | null;
+  /** What the escalation pass did for each escalated item (M3.5). */
+  escalations: EscalationStep[] | null;
   /** The builder runs due with no move, and what their dispatch did. */
   builderRuns: BuilderRunStart[] | null;
   /** Settings the passes needed and could not read. */
@@ -37,6 +44,7 @@ export async function runLivePasses(
       merged: null,
       verified: null,
       stagingWaits: null,
+      escalations: null,
       builderRuns: null,
       problems: [],
     };
@@ -45,11 +53,13 @@ export async function runLivePasses(
   const staging = createStaging({ ...deps, checker: deps.stagingChecker });
   const verified = await staging.verifyReady();
   const { waits, problem } = await staging.deployWaits(verified);
+  const escalations = await createEscalations(deps).resolveAll();
   const builderRuns = await startBuilderRuns(deps);
   return {
     merged,
     verified,
     stagingWaits: waits,
+    escalations,
     builderRuns,
     problems: problem ? [problem] : [],
   };

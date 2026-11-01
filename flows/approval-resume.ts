@@ -4,12 +4,17 @@
 // gate request through the library. A request closes once, so a repeated resume records one
 // decision. The answer is recorded even under the kill switch or in dry run (D-201): Windmill
 // closes the link after one answer, so refusing would lose it, and nothing acts on it until both
-// are off; `heldBy` says so. A timeout records nothing; the request stays open (M4.1).
+// are off; `heldBy` says so. A timeout records nothing; the request stays open (M4.1). An
+// escalation answer then asks for the item's way back (./lib/approval.ts, M3.5).
 import { approvalDecision } from "../src/core/approvals.ts";
 import { createLibrary, LibraryError } from "../src/core/library.ts";
-import { readApprovalReply, type ApprovalReply } from "./lib/approval.ts";
+import {
+  afterAnswer,
+  readApprovalReply,
+  type AfterAnswer,
+  type ApprovalReply,
+} from "./lib/approval.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
-import { heldBy } from "./lib/switches.ts";
 import { windmillEnvironment } from "./lib/windmill.ts";
 
 export interface ApprovalResumeInput {
@@ -23,11 +28,7 @@ export interface ApprovalResumeInput {
 export type ApprovalResumeResult =
   | { outcome: "no_gate_request" | "already_closed" }
   | { outcome: "not_answered"; reply: ApprovalReply }
-  | {
-      outcome: "recorded";
-      decisionId: string;
-      heldBy: "kill_switch" | "dry_run" | null;
-    };
+  | ({ outcome: "recorded"; decisionId: string } & AfterAnswer);
 
 export async function run(
   deps: FlowDeps,
@@ -47,7 +48,7 @@ export async function run(
     if (error instanceof LibraryError) return { outcome: "already_closed" };
     throw error;
   }
-  return { outcome: "recorded", decisionId, heldBy: await heldBy(deps.store) };
+  return { outcome: "recorded", decisionId, ...(await afterAnswer(deps, gate)) };
 }
 
 export const main = (input: ApprovalResumeInput): Promise<ApprovalResumeResult> =>

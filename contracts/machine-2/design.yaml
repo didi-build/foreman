@@ -115,8 +115,9 @@ transitions:
     to: in_qa_review
     tracks: [design]
     trigger: The Designer reports the components are built.
-    guards: [ci_green_on_head, spec_components_exist]
-    evidence: [ci_run, screenshot]
+    # A head QA failed goes back to QA only as a new commit (M3.5, O-42).
+    guards: [ci_green_on_head, spec_components_exist, no_failed_qa_verdict_on_head]
+    evidence: [ci_run, screenshot, qa_verdict]
     timeout: The Designer's budget (not set).
     fallback: Stays Building components and the failure counter goes up by one.
 

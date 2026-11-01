@@ -104,13 +104,14 @@ export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardChec
   return result("escalation_trigger_met", true, ids, reasons.join("; "));
 }
 
-/**
- * The Council recorded a decision for this escalation, and it states it changes no product
- * direction and passes no gate (both flags present and false). Otherwise it goes to Didi.
- */
-export async function councilDecisionRecorded(ctx: GuardContext): Promise<GuardCheck> {
-  const name = "council_decision_recorded";
-  const decision = latest(
+/** The Council's `scope.outcome` when it says it cannot resolve the item (M3.5). */
+export const COUNCIL_CANNOT_RESOLVE = "cannot_resolve";
+
+/** The node's latest active Council decision since it entered its current state, if any. */
+export async function latestCouncilDecision(
+  ctx: GuardContext,
+): Promise<CurrentDecision | undefined> {
+  return latest(
     (await ctx.store.listDecisionsForNode(ctx.node.id)).filter(
       (d) =>
         d.status === "active" &&
@@ -118,9 +119,43 @@ export async function councilDecisionRecorded(ctx: GuardContext): Promise<GuardC
         sinceState(ctx, d.recordedAt),
     ),
   );
+}
+
+/** Didi's latest active decision on the node's escalation topic since it entered its state. */
+export async function latestDidiAnswer(
+  ctx: GuardContext,
+): Promise<CurrentDecision | undefined> {
+  const topic = escalationTopic(ctx.node.id);
+  return latest(
+    (await ctx.store.listDecisionsForNode(ctx.node.id)).filter(
+      (d) =>
+        d.status === "active" &&
+        d.byActor === "didi" &&
+        scopeOf(d).topicKey === topic &&
+        sinceState(ctx, d.recordedAt),
+    ),
+  );
+}
+
+/**
+ * The Council recorded a decision for this escalation that resolves it: it does not say it cannot
+ * resolve the item (`scope.outcome` `cannot_resolve`, M3.5), and it states it changes no product
+ * direction and passes no gate (both flags present and false). Otherwise it goes to Didi.
+ */
+export async function councilDecisionRecorded(ctx: GuardContext): Promise<GuardCheck> {
+  const name = "council_decision_recorded";
+  const decision = await latestCouncilDecision(ctx);
   if (!decision)
     return result(name, false, [], "no Council decision since the escalation");
   const scope = scopeOf(decision);
+  if (scope.outcome === COUNCIL_CANNOT_RESOLVE) {
+    return result(
+      name,
+      false,
+      [],
+      "the Council says it cannot resolve the item: it goes to Didi",
+    );
+  }
   if (scope.changesProductDirection !== false || scope.passesGate !== false) {
     return result(
       name,
@@ -146,16 +181,7 @@ export async function didiQuestionOpen(ctx: GuardContext): Promise<GuardCheck> {
 
 /** Didi's answer is saved verbatim, on the escalation topic, since the node was escalated to him. */
 export async function didiAnswerRecorded(ctx: GuardContext): Promise<GuardCheck> {
-  const topic = escalationTopic(ctx.node.id);
-  const answer = latest(
-    (await ctx.store.listDecisionsForNode(ctx.node.id)).filter(
-      (d) =>
-        d.status === "active" &&
-        d.byActor === "didi" &&
-        scopeOf(d).topicKey === topic &&
-        sinceState(ctx, d.recordedAt),
-    ),
-  );
+  const answer = await latestDidiAnswer(ctx);
   if (!answer)
     return result("didi_answer_recorded", false, [], "no answer from Didi yet");
   if (answer.textVerbatim.trim() === "") {

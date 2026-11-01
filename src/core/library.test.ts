@@ -375,9 +375,17 @@ describe("state library (unit, build plan M1.3, schema invariants)", () => {
       owner: "council",
       status: "open",
     });
-    await expect(
-      library.reverseDecision(decision.id, "didi", "again"),
-    ).rejects.toThrow();
+    // A repeat writes nothing again and returns the same open question (M3.5).
+    const again = await library.reverseDecision(decision.id, "didi", "again");
+    expect(again?.id).toBe(question?.id);
+    expect(await store.listOpenGateRequests(PROJECT)).toHaveLength(1);
+    // Once the Council answered it, a repeat still writes nothing.
+    await store.closeGateRequest(question?.id ?? "", {
+      status: "cancelled",
+      at: new Date(0),
+    });
+    expect(await library.reverseDecision(decision.id, "didi", "again")).toBeNull();
+    expect(await store.listOpenGateRequests(PROJECT)).toEqual([]);
   });
 
   it("counts up from 0, resets both counters, and reads the limit from settings", async () => {

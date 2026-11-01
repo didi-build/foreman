@@ -307,6 +307,38 @@ export async function qaFailedWithFindings(ctx: GuardContext): Promise<GuardChec
 }
 
 /**
+ * QA has not failed the current head (M3.5, closes O-41's gap): no `qa_verdict` on the head says
+ * `fail`. A head QA already failed goes back to QA only as a new commit, so a done report on the
+ * unchanged head is refused (and counted, P-03) instead of paying for QA on code it failed. A
+ * malformed verdict on the head fails the guard, since it cannot be read as anything but a fail.
+ */
+export async function noFailedQaVerdictOnHead(ctx: GuardContext): Promise<GuardCheck> {
+  const name = "no_failed_qa_verdict_on_head";
+  const head = await headCommit(ctx);
+  if (!head) return result(name, false, [], NO_HEAD);
+  const verdicts = await onCommit(ctx, "qa_verdict", head.sha);
+  const malformed = verdicts.filter((e) => !readQaVerdict(e.payload));
+  if (malformed.length > 0) {
+    return result(
+      name,
+      false,
+      malformed.map((e) => e.id),
+      "malformed qa_verdict payload",
+    );
+  }
+  const failed = verdicts.filter((e) => readQaVerdict(e.payload)?.verdict === "fail");
+  if (failed.length > 0) {
+    return result(
+      name,
+      false,
+      failed.map((e) => e.id),
+      `QA failed head ${head.sha}: it goes back to QA only as a new commit`,
+    );
+  }
+  return result(name, true, [], `QA has not failed head ${head.sha}`);
+}
+
+/**
  * This is not the third failed round. The guard runs before this round's failure is counted, so
  * this round is number `qa_round + 1`, and it passes while that is below `qa_round_cap`.
  */

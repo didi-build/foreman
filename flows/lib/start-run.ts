@@ -10,7 +10,8 @@
 // 3. Mint the state API token and admit the run (`runs.dispatch`): the run, its route and the
 //    token's hash commit together.
 // 4. Build the task and `start` it. If either fails, nothing runs: the run ends `fail` and its
-//    token is revoked.
+//    token is revoked. When the run before it on the item failed to start too, that counts one
+//    toward `failure` and asks for the escalation (P-03, src/core/failures.ts, O-44).
 // 5. Record the start (`recordStart`): the handle, the `dispatch_record` and the move, in one
 //    transaction. If it refuses (the kill switch, dry run, a guard, or the run was ended by the
 //    kill switch's cancel pass meanwhile) or fails, the started run is cancelled through the
@@ -22,6 +23,7 @@
 // stall check reports the run. Nothing the agent does can move the item, since the move was never
 // written.
 import { createBuilderRuns } from "../../src/core/builder-runs.ts";
+import { createFailures } from "../../src/core/failures.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
@@ -138,8 +140,12 @@ export async function startRun(
     });
     handle = await deps.runtime.start(task, deps.limits[input.role]);
   } catch (error) {
-    // Nothing was started: the run ends `fail`, which also revokes its token.
+    // Nothing was started: the run ends `fail`, which also revokes its token. A failed start
+    // after another one in a row counts toward `failure` and asks for the escalation (P-03, O-44).
     await runs.recordRunnerEnd(run.id, "fail").catch(() => false);
+    await createFailures(deps)
+      .dispatchFailed(run.id)
+      .catch(() => undefined);
     throw error;
   }
 

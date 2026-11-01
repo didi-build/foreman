@@ -122,7 +122,11 @@ describe("a Developer's done report (in_development to in_qa_review)", () => {
     const run = await t.ended(node.id, "developer");
     expect(await t.reports.requestReportedMove(run.id)).toMatchObject({
       outcome: "rejected",
-      failedGuards: ["ci_green_on_head", "docs_updated_or_none"],
+      failedGuards: [
+        "ci_green_on_head",
+        "docs_updated_or_none",
+        "no_failed_qa_verdict_on_head",
+      ],
     });
     expect(await t.state(node.id)).toBe("in_development");
   });
@@ -412,9 +416,17 @@ describe("QA's failed rounds and the counters (P-03, D-169, O-41)", () => {
         toState: "in_development",
       });
       expect(await counters(t, node.id)).toEqual({ qaRound: i + 1, failure: i + 1 });
-      // The fix round, started after the fail move, reports done on the same head, and the
-      // item goes back to review.
+      // The fix round, started after the fail move, pushes a new head and reports done, and the
+      // item goes back to review (a done report on the failed head is refused, O-42).
       t.advanceMinutes(20);
+      const next = heads[i + 1] ?? "";
+      await t.evidence(
+        node.id,
+        "ci_run",
+        { conclusion: "success", pr: 7, changedPaths: ["src/a.ts"] },
+        { commitSha: next },
+      );
+      await t.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: next });
       const dev = await t.ended(node.id, "developer");
       expect(await t.reports.requestReportedMove(dev.id)).toMatchObject({
         outcome: "applied",
