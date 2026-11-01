@@ -203,7 +203,7 @@ describe.skipIf(!adminUrl)(
       );
     });
 
-    it("lets the Council submit an idea and record a decision with only the API's grants", async () => {
+    it("lets the Council submit an idea and record an answer with only the API's grants", async () => {
       const token = await issue("council");
       expect((await call("POST", "/ideas", token, { title: "An idea" })).status).toBe(
         201,
@@ -211,11 +211,20 @@ describe.skipIf(!adminUrl)(
       expect(
         (
           await call("POST", "/decisions", token, {
-            kind: "council_decision",
+            kind: "interview_answer",
             text: "Go",
           })
         ).status,
       ).toBe(201);
+      // Only the runner records a council_decision (D-228, D-230).
+      expect(
+        (
+          await call("POST", "/decisions", token, {
+            kind: "council_decision",
+            text: "Go",
+          })
+        ).status,
+      ).toBe(400);
       expect((await call("GET", "/attention", token)).status).toBe(200);
     });
 

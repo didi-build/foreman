@@ -372,7 +372,8 @@ describe("state API calls (API seam, build plan M1.4)", () => {
     expect(ok.status).toBe(201);
     const saved = await store.getDecision(ok.body.decisionId as string);
     expect(saved).toMatchObject({ textVerbatim: text, byActor: "council" });
-    for (const kind of ["approval", "answer"]) {
+    // A council_decision is recorded only by the runner (D-228, D-230).
+    for (const kind of ["approval", "answer", "council_decision"]) {
       expect(
         (await call("POST", "/decisions", token, { kind, text: "yes" })).status,
       ).toBe(400);
