@@ -339,6 +339,62 @@ describe("state API calls (API seam, build plan M1.4)", () => {
     expect(elsewhere.status).toBe(403);
   });
 
+  it("stores the head commit a Developer's docs note names, on a docs note only (D-236)", async () => {
+    const { token } = await issue("developer", { nodeId: item.id });
+    const sha = "c".repeat(40);
+    const ok = await call("POST", "/reports", token, {
+      nodeId: item.id,
+      kind: "docs_note",
+      ref: "https://github.com/didi-build/rehearsal/pull/12",
+      commitSha: sha,
+      payload: { impact: "none" },
+    });
+    expect(ok.status).toBe(201);
+    const saved = (await store.listEvidence({ nodeId: item.id, kind: "docs_note" })).at(
+      -1,
+    );
+    expect(saved).toMatchObject({ commitSha: sha, recordedBy: "developer" });
+    const none = await call("POST", "/reports", token, {
+      nodeId: item.id,
+      kind: "docs_note",
+      ref: "x",
+      payload: { impact: "none" },
+    });
+    expect(none.status).toBe(201);
+    expect(
+      (await store.listEvidence({ nodeId: item.id, kind: "docs_note" })).at(-1)
+        ?.commitSha,
+    ).toBeNull();
+  });
+
+  it.each([
+    ["agent_report", "c".repeat(40), "commitSha is accepted on a docs_note only"],
+    [
+      "docs_note",
+      "c".repeat(7),
+      "commitSha must be a full 40-character lowercase hex sha",
+    ],
+    [
+      "docs_note",
+      "C".repeat(40),
+      "commitSha must be a full 40-character lowercase hex sha",
+    ],
+    ["docs_note", 42, "commitSha must be a full 40-character lowercase hex sha"],
+  ])("refuses a commit on a %s report given as %s", async (kind, commitSha, error) => {
+    const { token } = await issue("developer", { nodeId: item.id });
+    const before = (await store.listEvidence({ nodeId: item.id })).length;
+    const result = await call("POST", "/reports", token, {
+      nodeId: item.id,
+      kind,
+      ref: "x",
+      commitSha,
+      payload: { impact: "none" },
+    });
+    expect(result.status).toBe(400);
+    expect(JSON.stringify(result.body)).toContain(error);
+    expect((await store.listEvidence({ nodeId: item.id })).length).toBe(before);
+  });
+
   it.each(["ci_run", "preview_check", "staging_check", "qa_verdict", "merge_commit"])(
     "refuses a Developer report of kind %s (essential 6)",
     async (kind) => {

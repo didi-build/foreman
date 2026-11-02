@@ -91,7 +91,7 @@ The bot files are in `contracts/bots/<role>.yaml`, checked by `src/adapters/cont
 
 ### The Developer's and Designer's PR and docs note (D-235)
 
-The model pushes its branch with git. After a successful run, the OpenCode image's wrapper, in plain code, reads the `foreman-report` block at the end of the model's final message, opens the pull request for the run's branch with the run's GitHub write token (or reuses the open one, so a fix round keeps its PR), and posts the docs note to the state API (`POST /reports`). A missing or malformed block, a branch that was not pushed, or a GitHub or state API refusal fails the run with a text that names the step. The result line names the PR. No model tool and no runner permission were added. Details in [docs/bot-files.md](../bot-files.md) and O-61. Open: the docs note's timing against `docs_updated_or_none` (N-46).
+The model pushes its branch with git. After a successful run, the OpenCode image's wrapper, in plain code, reads the `foreman-report` block at the end of the model's final message, opens the pull request for the run's branch with the run's GitHub write token (or reuses the open one, so a fix round keeps its PR), and posts the docs note to the state API (`POST /reports`), naming the PR's head commit so `docs_updated_or_none` counts it for that head (D-236). A missing or malformed block, a branch that was not pushed, or a GitHub or state API refusal fails the run with a text that names the step. The result line names the PR. No model tool and no runner permission were added. Details in [docs/bot-files.md](../bot-files.md) and O-61.
 
 ## Depends on
 

@@ -956,6 +956,8 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         nodeId: NODE_ID,
         kind: "docs_note",
         ref: `https://github.com/${REPOSITORY}/pull/101`,
+        // The PR's head as read from GitHub, so the guard counts the note for it (D-236).
+        commitSha: HEAD_SHA,
         payload: { impact: "none" },
       });
       expect(mapRunEnd("complete", null, result, "m")).toMatchObject({
@@ -993,9 +995,9 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         },
         docsNote: { impact: "updated" },
       });
-      expect(proxy.stateApiRequests.at(-1)?.body.payload).toEqual({
-        impact: "updated",
-        note: "README: new flag",
+      expect(proxy.stateApiRequests.at(-1)?.body).toMatchObject({
+        commitSha: "b".repeat(40),
+        payload: { impact: "updated", note: "README: new flag" },
       });
     });
 

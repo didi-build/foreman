@@ -17,7 +17,7 @@ GitHub ingestion (`src/core/github-ingest.ts`, ADR 0113) keeps this true. It rec
 
 Head-scoped guards: `ci_green_on_head`, `docs_updated_or_none`, `qa_verdict_independent_on_head`, `privileged_paths_approved`, `no_merge_conflict_on_head`, `spec_components_exist`, `no_failed_qa_verdict_on_head`.
 
-A `docs_note` written by an agent through the state API carries no commit. It counts for the head when it names the head commit, or when it has no commit and was recorded at or after the head's `ci_run`.
+A `docs_note` written by an agent through the state API carries no commit, unless it names one: since D-236 the state API stores a full 40-character sha the agent sends on a `docs_note`, and on no other kind. The OpenCode wrapper sends the PR's head as it read it from GitHub. A note counts for the head when it names the head commit, or when it has no commit and was recorded at or after the head's latest `ci_run`. A note naming an older commit never counts once the head has moved.
 
 ## The merge guard (M3.3, D-218)
 

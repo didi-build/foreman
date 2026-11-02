@@ -67,6 +67,7 @@ export async function finishRun(
     token: context.stateApiToken,
     nodeId: context.nodeId,
     pullRequestUrl: pullRequest.url,
+    commitSha: pullRequest.headSha,
     docsNote: report.docsNote,
     ...(context.fetchImpl ? { fetchImpl: context.fetchImpl } : {}),
   });

@@ -108,14 +108,18 @@ export function parseRunReport(
 
 /**
  * Posts the docs note through the state API with the run's token (ADR 0102, `POST /reports`).
- * The API records it with no commit, by the run's role, for the run's own node only. Its `ref`
- * is the PR's link, the evidence the In development state names.
+ * The API records it by the run's role, for the run's own node only. Its `ref` is the PR's link,
+ * the evidence the In development state names, and `commitSha` is the PR's head as the wrapper
+ * read it from GitHub, so `docs_updated_or_none` counts the note for that head even though
+ * GitHub's `ci_run` rows for it arrive later (D-236).
  */
 export async function postDocsNote(options: {
   stateApiUrl: string;
   token: string;
   nodeId: string;
   pullRequestUrl: string;
+  /** The PR's head commit, a full 40-hex sha read from GitHub. */
+  commitSha: string;
   docsNote: DocsNote;
   fetchImpl?: typeof fetch;
 }): Promise<{ ok: true } | { ok: false; status: number | null }> {
@@ -132,6 +136,7 @@ export async function postDocsNote(options: {
         nodeId: options.nodeId,
         kind: "docs_note",
         ref: options.pullRequestUrl,
+        commitSha: options.commitSha,
         payload: options.docsNote,
       }),
       signal: AbortSignal.timeout(30_000),
