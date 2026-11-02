@@ -5,6 +5,10 @@
 # code.yaml; this file references those ids in its transitions. escalation.yaml owns the
 # escalated states.
 #
+# A move guarded by council_redo_recorded sends a stale item back to the start of its track when
+# the Council's reversal answer gives it redo (D-231). There is none out of Verifying on staging
+# or Done: every item there is merged, and a merged item needs Didi (N-43).
+#
 # A transition marked fallback_move implements a fallback the spec describes in prose (the
 # "Timeout and fallback" column). The consistency test pins each one to that row's words, and
 # expects no table row for it.
@@ -181,3 +185,49 @@ transitions:
     evidence: [staging_check]
     timeout: None.
     fallback: The failure counter goes up by one. The third failure goes to Escalated to Council.
+
+  # Back to the start of the track on a Council redo verdict (D-231).
+  - from: in_design_exploration
+    to: ready_for_design_exploration
+    tracks: [design]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+
+  - from: waiting_for_didi
+    to: ready_for_design_exploration
+    tracks: [design]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+
+  - from: writing_spec
+    to: ready_for_design_exploration
+    tracks: [design]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+
+  - from: building_components
+    to: ready_for_design_exploration
+    tracks: [design]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+
+  - from: in_qa_review
+    to: ready_for_design_exploration
+    tracks: [design]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).

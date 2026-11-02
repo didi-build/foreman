@@ -2,15 +2,17 @@
 // the memory store and the real machine-2 contracts and guards: the build plan's M3.5 success path
 // end to end (three failures, the Council's run, its answer, the item back at work); an unusable
 // answer that is re-run once and then goes to Didi; a reversal's question answered through the
-// reconcile flow's Council pass and the run-end flow; and the switches. The rules themselves are in
-// test/council.test.ts.
+// reconcile flow's Council pass and the run-end flow; a redo that cancels the item's run, sends it
+// back to the start of its track and lets the dispatch start it again on the same branch (D-231);
+// and the switches. The rules themselves are in test/council.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
-import { COUNCIL_OUTPUT_SCHEMAS } from "../../src/core/council.ts";
+import { redoPass } from "../../flows/lib/council-runs.ts";
+import { COUNCIL_OUTPUT_SCHEMAS, createCouncil } from "../../src/core/council.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import { createLibrary, reversalTopic } from "../../src/core/library.ts";
@@ -338,6 +340,166 @@ describe("a reversal's question (flow: fake adapters, D-229)", () => {
     });
     // The next pass has no Council question left to start.
     expect((await reconcileFlow(f.deps)).councilRuns).toEqual([]);
+  });
+});
+
+describe("a reversal's redo (flow: fake adapters, D-231)", () => {
+  it("cancels the item's run first, sends it back to Ready for dev, and the dispatch starts it again on the same branch", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const library = createLibrary(f.deps);
+    const owner = await f.node("in_development", { title: "The decision's item" });
+    const item = await f.node("ready_for_dev", { title: "Add the export button" });
+    const first = await dispatch(f.deps, { nodeId: item.id, role: "developer" });
+    if (first.outcome !== "started") throw new Error("the Developer was not started");
+    await f.store.setCounter(item.id, "failure", 2, f.clock.now());
+    const decision = await library.recordDecision(
+      {
+        projectId: f.projectId,
+        nodeId: owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Use the blue layout.",
+        byActor: "didi",
+      },
+      [item.id],
+    );
+    await library.reverseDecision(decision.id, "didi", "It tested badly.");
+    expect((await reconcileFlow(f.deps)).councilRuns).toMatchObject([
+      { step: "start", result: { outcome: "started" } },
+    ]);
+    const council = lastCouncilStart(f);
+    const ended = await finish(f, council.run.id, {
+      verdicts: [{ nodeId: item.id, verdict: "redo", note: "Start over." }],
+      note: "The layout is gone.",
+    });
+    expect(ended).toMatchObject({
+      council: {
+        answer: { recorded: true, verdicts: [{ result: "redo_move_due" }] },
+        redos: [
+          {
+            nodeId: item.id,
+            cancelled: [first.runId],
+            cancelFailed: [],
+            redo: { step: "moved", outcome: "applied", toState: "ready_for_dev" },
+          },
+        ],
+      },
+    });
+    // The run was stopped through the runtime before the move.
+    expect(f.runtime.cancelled).toHaveLength(1);
+    expect(await f.store.getRun(first.runId)).toMatchObject({ outcome: "cancelled" });
+    expect(await f.store.getNode(item.id)).toMatchObject({
+      state: "ready_for_dev",
+      stale: false,
+    });
+    expect(await f.store.getCounter(item.id, "failure")).toBe(0);
+    // The next reconcile pass finds nothing more to redo.
+    expect((await reconcileFlow(f.deps)).redos).toEqual([]);
+
+    // As for a fresh item: the dispatch starts the Developer, on the item's one branch.
+    const again = await dispatch(f.deps, { nodeId: item.id, role: "developer" });
+    expect(again).toMatchObject({ outcome: "started" });
+    expect(f.tasksFor.at(-1)?.branch).toBe(`foreman/${item.id}`);
+    expect((await f.store.getNode(item.id))?.state).toBe("in_development");
+  });
+
+  it("the reconcile flow takes a redo a cut-short run-end left, and reports a merged item for Didi", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const library = createLibrary(f.deps);
+    const owner = await f.node("in_development");
+    const built = await f.node("in_qa_review");
+    const merged = await f.node("done");
+    await f.evidence(
+      merged.id,
+      "merge_commit",
+      { pr: 3 },
+      { commitSha: "c".repeat(40) },
+    );
+    const decision = await library.recordDecision(
+      {
+        projectId: f.projectId,
+        nodeId: owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Use the blue layout.",
+        byActor: "didi",
+      },
+      [built.id, merged.id],
+    );
+    await library.reverseDecision(decision.id, "didi", "It tested badly.");
+    const topic = reversalTopic(decision.id);
+    const run = await f.run(owner.id, "council", 0, { questionTopic: topic });
+    // Only the answer is recorded, as if the run-end flow stopped right after it.
+    const answer = await createCouncil(f.deps).recordAnswer(run.id, {
+      verdicts: [
+        { nodeId: built.id, verdict: "redo", note: "" },
+        { nodeId: merged.id, verdict: "redo", note: "" },
+      ],
+      note: "Both rely on the layout.",
+    });
+    expect(answer).toMatchObject({
+      verdicts: [{ result: "redo_move_due" }, { result: "redo_needs_decision" }],
+    });
+    const pass = await reconcileFlow(f.deps);
+    expect(pass.redos).toMatchObject([
+      { nodeId: built.id, redo: { step: "moved", outcome: "applied" } },
+      { nodeId: merged.id, redo: { step: "redo_needs_decision" } },
+    ]);
+    expect(await f.store.getNode(built.id)).toMatchObject({
+      state: "ready_for_dev",
+      stale: false,
+    });
+    expect(await f.store.getNode(merged.id)).toMatchObject({
+      state: "done",
+      stale: true,
+    });
+  });
+
+  it("cancels nothing and moves nothing under the kill switch or in dry run", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const library = createLibrary(f.deps);
+    const owner = await f.node("in_development");
+    const item = await f.node("in_development");
+    await f.run(item.id, "developer");
+    const decision = await library.recordDecision(
+      {
+        projectId: f.projectId,
+        nodeId: owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Yes.",
+        byActor: "didi",
+      },
+      [item.id],
+    );
+    await library.reverseDecision(decision.id, "didi", "No.");
+    const run = await f.run(owner.id, "council", 0, {
+      questionTopic: reversalTopic(decision.id),
+    });
+    await createCouncil(f.deps).recordAnswer(run.id, {
+      verdicts: [{ nodeId: item.id, verdict: "redo", note: "" }],
+      note: "Redo it.",
+    });
+    for (const key of ["dry_run", "kill_switch"] as const) {
+      await f.setting("dry_run", key === "dry_run");
+      await f.setting("kill_switch", key === "kill_switch");
+      const reason = key;
+      const steps = await redoPass(f.deps);
+      expect(steps, key).toMatchObject([
+        { cancelled: [], redo: { step: "moved", outcome: "refused", reason } },
+      ]);
+      expect(f.runtime.cancelled, key).toEqual([]);
+    }
+    expect(await f.store.getNode(item.id)).toMatchObject({
+      state: "in_development",
+      stale: true,
+    });
+    expect(await f.store.listTransitions(item.id)).toEqual([]);
   });
 });
 

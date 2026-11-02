@@ -96,7 +96,7 @@ const tableCells = (heading: string): string[] =>
 
 /** "Blocked to Ready for dev" into from and to ids. Labels may themselves contain " to ". */
 function parseCell(cell: string, labels: Map<string, string>): string {
-  const plain = cell.replace(/\s*\((pass|fail)\)\s*$/, "");
+  const plain = cell.replace(/\s*\((pass|fail|redo)\)\s*$/, "");
   const known = [...labels.keys()].sort((a, b) => b.length - a.length);
   for (const from of known) {
     if (!plain.startsWith(`${from} to `)) continue;

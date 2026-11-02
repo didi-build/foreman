@@ -264,7 +264,7 @@ describe("QA's verdict report (in_qa_review)", () => {
 });
 
 describe("which moves a report triggers (from the contracts)", () => {
-  it("takes the Designer's report moves and QA's merge, and leaves out dispatch, fallback and escalation moves", async () => {
+  it("takes the Designer's report moves and QA's merge, and leaves out dispatch, fallback, escalation and redo moves", async () => {
     const t = await setup();
     const moves = async (state: string, role: string, track: "code" | "design") =>
       t.reports

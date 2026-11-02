@@ -1,5 +1,6 @@
 // The guard registry: exactly the guards of ADR 0105's guard list (24 from M2.2, the two merge
-// guard checks D-218 and M3.3 add, and the same-head check M3.5 adds), by name. Contracts name guards; the
+// guard checks D-218 and M3.3 add, the same-head check M3.5 adds, and the Council redo check D-231
+// adds), by name. Contracts name guards; the
 // library looks them up here. See docs/guards.md for the evidence each one reads.
 import type { GuardRegistry } from "../contracts.ts";
 import {
@@ -9,6 +10,7 @@ import {
   noPendingGate,
   planAttached,
 } from "./dispatch.ts";
+import { councilRedoRecorded } from "./council.ts";
 import {
   approvalRecorded,
   changesRequestedRecorded,
@@ -65,6 +67,7 @@ export const GUARDS: GuardRegistry = {
   council_decision_recorded: councilDecisionRecorded,
   didi_question_open: didiQuestionOpen,
   didi_answer_recorded: didiAnswerRecorded,
+  council_redo_recorded: councilRedoRecorded,
 };
 
 export const GUARD_NAMES: readonly string[] = Object.keys(GUARDS);

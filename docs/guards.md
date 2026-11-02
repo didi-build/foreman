@@ -1,6 +1,6 @@
 # Guards
 
-The guards from ADR 0105's guard list: 24 built in M2.2, `no_merge_conflict_on_head` and `qa_rounds_below_cap` added for the merge guard in M3.3 (D-218), and `no_failed_qa_verdict_on_head` added in M3.5 (O-42). Code: `src/core/guards/`, one pure function per guard, registered in `src/core/guards/index.ts` as `GUARDS`. Tests: next to each file, plus `test/guards-registry.test.ts` (the registry against the ADR) and `test/guards-walkthrough.test.ts` (a code item to Done with the real guards).
+The guards from ADR 0105's guard list: 24 built in M2.2, `no_merge_conflict_on_head` and `qa_rounds_below_cap` added for the merge guard in M3.3 (D-218), `no_failed_qa_verdict_on_head` added in M3.5 (O-42), and `council_redo_recorded` added by D-231. Code: `src/core/guards/`, one pure function per guard, registered in `src/core/guards/index.ts` as `GUARDS`. Tests: next to each file, plus `test/guards-registry.test.ts` (the registry against the ADR) and `test/guards-walkthrough.test.ts` (a code item to Done with the real guards).
 
 ## Rules every guard follows
 
@@ -48,7 +48,22 @@ Dry run and the kill switch count nothing.
 
 ## The Council's run and its answer (D-228, D-229)
 
-`src/core/council.ts` with `flows/lib/council-runs.ts`. An item in Escalated to Council with no Council decision, and a reversal's open Council question, each get one Council run through the dispatch (task type `council`); the run carries its question's topic (`runs.question_topic`, migration 0014). The Council has no tools. When its run ends, the runner checks the structured answer against the schema of its question's kind and records the `council_decision` itself, once per run, before it records the run's end; the Council never writes a decision or evidence a guard reads. An answer that fails the schema ends the run `fail`. After two unusable runs the question goes to Didi (O-47 to O-50).
+`src/core/council.ts` with `flows/lib/council-runs.ts`. An item in Escalated to Council with no Council decision, and a reversal's open Council question, each get one Council run through the dispatch (task type `council`); the run carries its question's topic (`runs.question_topic`, migration 0014). The Council has no tools. When its run ends, the runner checks the structured answer against the schema of its question's kind and records the `council_decision` itself, once per run, before it records the run's end; the Council never writes a decision or evidence a guard reads. An answer that fails the schema ends the run `fail`. After two unusable runs the question goes to Didi (O-47 to O-50). A reversal answer's `redo` is taken by the redo move below.
+
+## Back to the start on a Council redo (D-231, O-51 to O-53)
+
+`council_redo_recorded` (`src/core/guards/council.ts`) guards every move that sends a stale item back to the start of its track: In development and In QA review to Ready for dev, and In design exploration, Waiting for Didi, Writing spec, Building components and In QA review to Ready for design exploration. No move leaves Verifying on staging or Done this way, since every item there is merged.
+
+The runner links each item a reversal answer gives a verdict for to that answer (`node_decisions`), and the answer's scope names the items whose flags it cleared (`clearedNodeIds`). The guard reads the item's own decisions and transitions:
+
+- The item's stale episode starts after its last way out of stale: an answer that cleared its flag, or an applied redo move (trigger `council_redo:<Council decision id>`).
+- Every decision about the item reversed in that episode needs a Council answer for the item, recorded after the reversal, that is not `cannot_decide`. An open question, or one sent to Didi (N-41), fails the guard.
+- The latest active answer in the episode that gives the item `redo` stands. A redo given while another reversal was open is kept: once that one is answered `still_valid`, the redo stands.
+- The item is stale and has no `merge_commit`. A merged item's code is on main, so it fails here and waits for Didi (N-43).
+
+`src/core/council.ts` takes the move (`redo`), and `flows/lib/council-runs.ts` runs it (`redoPass`) right after a reversal answer and in the reconcile flow's live passes. The pass first cancels every active run on the item but a Council run through the runtime, as the kill switch's cancel pass does (D-202). The move's transaction reads the redo again, refuses with `run_active` while such a run is active, clears the stale flag, resets `failure` and `qa_round`, and cancels the item's open visual-approval request. The item keeps its branch and PR (D-220); the dispatch then starts it as a fresh item. A Developer's or QA's report never takes a redo move. Dry run and the kill switch cancel nothing and write nothing.
+
+`approval_recorded` and `changes_requested_recorded` read only an answer recorded since the item entered its state, so an answer about options a redo threw away never moves the item later (O-52).
 
 ## The merge commit
 

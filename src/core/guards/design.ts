@@ -23,12 +23,19 @@ const scopeOf = (decision: CurrentDecision): { [key: string]: Json } =>
     ? decision.scope
     : {};
 
-/** The latest active decision on the node's visual-approval request, if any. */
+/**
+ * The latest active decision on the node's visual-approval request since the node entered its
+ * current state, if any. An answer from before, for options a Council redo threw away (D-231), is
+ * not an answer to the options waiting now.
+ */
 async function visualAnswer(ctx: GuardContext): Promise<CurrentDecision | undefined> {
   const topic = visualApprovalTopic(ctx.node.id);
   return latest(
     (await ctx.store.listDecisionsForNode(ctx.node.id)).filter(
-      (d) => d.status === "active" && scopeOf(d).topicKey === topic,
+      (d) =>
+        d.status === "active" &&
+        scopeOf(d).topicKey === topic &&
+        d.recordedAt.getTime() >= ctx.node.stateSince.getTime(),
     ),
   );
 }

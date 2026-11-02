@@ -8,7 +8,8 @@
 // src/core/escalations.ts): back where it was escalated from with the counters reset, or on to
 // Didi with a gate request. The Council pass then starts a Council run for each open question
 // that has none, or sends a question whose runs gave no usable answer to Didi (D-228, D-229,
-// ./council-runs.ts). Last, the builder runs pass starts the fix round of each item a failed
+// ./council-runs.ts). The redo pass then sends each stale item whose Council redo stands back to
+// the start of its track, cancelling its runs first (D-231). Last, the builder runs pass starts the fix round of each item a failed
 // QA round, a staging check, a refused done report or an answered escalation sent back, and
 // resumes a builder run queued after `usage_exhausted` (O-41, O-43). It runs after the staging and
 // escalation passes, so an escalation that pass recovers is taken first. Under any other stop,
@@ -23,7 +24,12 @@ import {
 } from "../../src/core/staging.ts";
 import { startBuilderRuns, type BuilderRunStart } from "./builder-runs.ts";
 import type { FlowDeps } from "./compose.ts";
-import { councilPass, type CouncilPassStep } from "./council-runs.ts";
+import {
+  councilPass,
+  redoPass,
+  type CouncilPassStep,
+  type RedoPassStep,
+} from "./council-runs.ts";
 
 export interface LivePasses {
   merged: { nodeId: string; result: MergeResult }[] | null;
@@ -34,6 +40,8 @@ export interface LivePasses {
   escalations: EscalationStep[] | null;
   /** What the Council pass did for each open Council question (D-228, D-229). */
   councilRuns: CouncilPassStep[] | null;
+  /** What the redo pass did for each stale item with a Council redo standing (D-231). */
+  redos: RedoPassStep[] | null;
   /** The builder runs due with no move, and what their dispatch did. */
   builderRuns: BuilderRunStart[] | null;
   /** Settings the passes needed and could not read. */
@@ -51,6 +59,7 @@ export async function runLivePasses(
       stagingWaits: null,
       escalations: null,
       councilRuns: null,
+      redos: null,
       builderRuns: null,
       problems: [],
     };
@@ -61,6 +70,7 @@ export async function runLivePasses(
   const { waits, problem } = await staging.deployWaits(verified);
   const escalations = await createEscalations(deps).resolveAll();
   const councilRuns = await councilPass(deps);
+  const redos = await redoPass(deps);
   const builderRuns = await startBuilderRuns(deps);
   return {
     merged,
@@ -68,6 +78,7 @@ export async function runLivePasses(
     stagingWaits: waits,
     escalations,
     councilRuns,
+    redos,
     builderRuns,
     problems: problem ? [problem] : [],
   };
