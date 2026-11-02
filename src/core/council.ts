@@ -833,7 +833,10 @@ export function createCouncil(options: CouncilOptions) {
   const redoWrites =
     (nodeId: string, councilDecisionId: string): AlsoWrite =>
     async (tx) => {
-      const node = await tx.getNodeForUpdate(nodeId);
+      // A plain read: the move's own update already holds this row's lock in this transaction.
+      // Asking for FOR UPDATE here would wait on the key-share lock a racing move's transition
+      // insert holds on the same row, while that move waits on this one: a deadlock.
+      const node = await tx.getNode(nodeId);
       if (!node) return "no_node";
       // This move's own row is already written in the transaction: it is not an earlier redo.
       const trigger = `${REDO_TRIGGER}${councilDecisionId}`;
