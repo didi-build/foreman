@@ -7,6 +7,7 @@
 // and the switches. The rules themselves are in test/council.test.ts.
 import { describe, expect, it } from "vitest";
 
+import { run as resume } from "../../flows/approval-resume.ts";
 import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
@@ -405,7 +406,7 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
     expect((await f.store.getNode(item.id))?.state).toBe("in_development");
   });
 
-  it("the reconcile flow takes a redo a cut-short run-end left, and reports a merged item for Didi", async () => {
+  it("the reconcile flow takes a redo a cut-short run-end left, and opens a merged item's rework item", async () => {
     const f = await createFlowFixture();
     ticking(f);
     await f.live();
@@ -442,12 +443,16 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
       note: "Both rely on the layout.",
     });
     expect(answer).toMatchObject({
-      verdicts: [{ result: "redo_move_due" }, { result: "redo_needs_decision" }],
+      verdicts: [{ result: "redo_move_due" }, { result: "rework_due" }],
     });
     const pass = await reconcileFlow(f.deps);
     expect(pass.redos).toMatchObject([
       { nodeId: built.id, redo: { step: "moved", outcome: "applied" } },
-      { nodeId: merged.id, redo: { step: "redo_needs_decision" } },
+      {
+        nodeId: merged.id,
+        cancelled: [],
+        redo: { step: "reworked", outcome: "created" },
+      },
     ]);
     expect(await f.store.getNode(built.id)).toMatchObject({
       state: "ready_for_dev",
@@ -455,8 +460,19 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
     });
     expect(await f.store.getNode(merged.id)).toMatchObject({
       state: "done",
-      stale: true,
+      stale: false,
     });
+    const [edge] = await f.store.listEdges({ toNode: merged.id, type: "reworks" });
+    // The rework item is a fresh item in Ready for dev: the dispatch starts it on its own branch.
+    const started = await dispatch(f.deps, {
+      nodeId: edge!.fromNode,
+      role: "developer",
+    });
+    expect(started).toMatchObject({ outcome: "started" });
+    expect(f.tasksFor.at(-1)?.branch).toBe(`foreman/${edge!.fromNode}`);
+    expect(f.tasksFor.at(-1)?.input).toContain(`reworks item ${merged.id}`);
+    // The next pass has nothing more to do for either.
+    expect((await reconcileFlow(f.deps)).redos).toEqual([]);
   });
 
   it("cancels nothing and moves nothing under the kill switch or in dry run", async () => {
@@ -500,6 +516,111 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
       stale: true,
     });
     expect(await f.store.listTransitions(item.id)).toEqual([]);
+  });
+});
+
+describe("Didi's answer to a reversal's gate request (flow: fake adapters, D-234)", () => {
+  /** A reversal the Council could not decide on: its gate request for Didi is open. */
+  async function withDidi(f: FlowFixture) {
+    const library = createLibrary(f.deps);
+    const owner = await f.node("in_development", { title: "The decision's item" });
+    const item = await f.node("in_development");
+    const decision = await library.recordDecision(
+      {
+        projectId: f.projectId,
+        nodeId: owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Use the blue layout.",
+        byActor: "didi",
+      },
+      [item.id],
+    );
+    await library.reverseDecision(decision.id, "didi", "It tested badly.");
+    const topic = reversalTopic(decision.id);
+    await reconcileFlow(f.deps);
+    const first = lastCouncilStart(f);
+    await finish(f, first.run.id, {
+      verdicts: [{ nodeId: item.id, verdict: "cannot_decide", note: "Needs Didi." }],
+      note: "We cannot tell.",
+    });
+    const gate = await f.store.findOpenGateRequest(f.projectId, topic);
+    expect(gate).toMatchObject({ owner: "didi", kind: "escalation" });
+    return { owner, item, topic, gate: gate! };
+  }
+
+  it("starts one follow-up Council run with Didi's words in its input, and applies its answer", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const { item, topic, gate } = await withDidi(f);
+    const resumed = await resume(f.deps, {
+      gateRequestId: gate.id,
+      resume: { answer: "Changes requested", reply: "Redo it with the green layout." },
+      approvers: ["anonymous"],
+    });
+    expect(resumed).toMatchObject({
+      outcome: "recorded",
+      heldBy: null,
+      reversal: {
+        followUp: [{ step: "opened" }],
+        council: [{ topicKey: topic, step: "start", result: { outcome: "started" } }],
+      },
+    });
+    expect(resumed).not.toHaveProperty("escalation");
+    const followUp = lastCouncilStart(f);
+    expect(followUp.run.questionTopic).toBe(topic);
+    expect(followUp.input).toContain("> Redo it with the green layout.");
+    // A reconcile pass meanwhile starts nothing more.
+    const pass = await reconcileFlow(f.deps);
+    expect(pass.followUps).toEqual([]);
+    expect(pass.councilRuns).toMatchObject([{ topicKey: topic, step: "running" }]);
+    expect(
+      await finish(f, followUp.run.id, {
+        verdicts: [{ nodeId: item.id, verdict: "redo", note: "Use green." }],
+        note: "Didi wants green.",
+      }),
+    ).toMatchObject({
+      council: {
+        answer: { recorded: true, verdicts: [{ result: "redo_move_due" }] },
+        redos: [{ nodeId: item.id, redo: { step: "moved", outcome: "applied" } }],
+        council: [],
+      },
+    });
+    expect(await f.store.getNode(item.id)).toMatchObject({
+      state: "ready_for_dev",
+      stale: false,
+    });
+    expect(await f.store.findOpenGateRequest(f.projectId, topic)).toBeNull();
+  });
+
+  it("records the answer in dry run and acts on it once the reconcile flow runs live", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const { topic, gate } = await withDidi(f);
+    await f.setting("dry_run", true);
+    const starts = f.tasksFor.length;
+    expect(
+      await resume(f.deps, {
+        gateRequestId: gate.id,
+        resume: { answer: "Approve", reply: "It still stands." },
+        approvers: ["anonymous"],
+      }),
+    ).toMatchObject({
+      outcome: "recorded",
+      heldBy: "dry_run",
+      reversal: { followUp: [{ step: "held", reason: "dry_run" }], council: [] },
+    });
+    expect(await f.store.findOpenGateRequest(f.projectId, topic)).toBeNull();
+    expect(f.tasksFor).toHaveLength(starts);
+    await f.live();
+    const pass = await reconcileFlow(f.deps);
+    expect(pass.followUps).toMatchObject([{ topicKey: topic, step: "opened" }]);
+    expect(pass.councilRuns).toMatchObject([
+      { topicKey: topic, step: "start", result: { outcome: "started" } },
+    ]);
+    expect(lastCouncilStart(f).input).toContain("> It still stands.");
   });
 });
 

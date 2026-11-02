@@ -4,7 +4,10 @@
 // reversal answer, the question's gate request answered, the cleared flags and the question for
 // Didi commit together, once; two reversal answers naming the same items in opposite orders both
 // commit with no deadlock; a redo move commits with its cleared flag, reset counters and
-// cancelled visual-approval request, once, also when two calls race (D-231).
+// cancelled visual-approval request, once, also when two calls race (D-231); a merged item's
+// rework item commits with its `reworks` edge and the original's cleared flag, once, also when
+// two calls race (D-233, migration 0015); and a follow-up Council question after Didi's answer is
+// opened once when two calls race (D-234).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -13,6 +16,7 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { approvalDecision } from "../../src/core/approvals.ts";
 import { createCouncil } from "../../src/core/council.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
@@ -245,6 +249,138 @@ describe.skipIf(!adminUrl)(
       expect((await store.listTransitions(item.id)).map((m) => m.triggerRef)).toEqual([
         `council_redo:${answer.recorded ? answer.decisionId : ""}`,
       ]);
+    });
+
+    it("commits a merged item's rework item with its edge and the cleared flag, once, also when two calls race", async () => {
+      const t = await setup("95000000-0000-4000-8000", "council-e");
+      // Repeat the race a few times: one round can pass by luck.
+      for (let round = 0; round < 5; round++) {
+        const owner = await t.node("in_development");
+        const item = await t.node("done", { title: `Merged ${round}` });
+        await t.evidence(
+          item.id,
+          "merge_commit",
+          { pr: round },
+          { commitSha: "c".repeat(40) },
+        );
+        const decision = await t.library.recordDecision(
+          {
+            projectId: t.projectId,
+            nodeId: owner.id,
+            kind: "approval",
+            scope: {},
+            textVerbatim: "Yes",
+            byActor: "didi",
+          },
+          [item.id],
+        );
+        t.advanceMinutes(1);
+        await t.library.reverseDecision(decision.id, "didi", "No");
+        t.advanceMinutes(1);
+        const run = await t.run(owner.id, "council", 0, {
+          questionTopic: reversalTopic(decision.id),
+        });
+        const answer = await t.council.recordAnswer(run.id, {
+          verdicts: [{ nodeId: item.id, verdict: "redo", note: "Undo it." }],
+          note: "The change is wrong.",
+        });
+        expect(answer).toMatchObject({ verdicts: [{ result: "rework_due" }] });
+        t.advanceMinutes(1);
+        const results = await Promise.all([
+          t.council.redo(item.id),
+          t.council.redo(item.id),
+        ]);
+        const created = results.filter(
+          (r) => r.step === "reworked" && r.outcome === "created",
+        );
+        expect(created, `round ${round}`).toHaveLength(1);
+        const reworkId =
+          created[0]?.step === "reworked" ? created[0].reworkNodeId : null;
+        const edges = await pool.query(
+          "select from_node from factory.edges where to_node = $1 and type = 'reworks'",
+          [item.id],
+        );
+        expect(edges.rows).toEqual([{ from_node: reworkId }]);
+        const reworks = await pool.query(
+          "select count(*)::int as n from factory.nodes where title = $1",
+          [`Rework: Merged ${round}`],
+        );
+        expect(reworks.rows[0]?.n).toBe(1);
+        expect(await store.getNode(reworkId ?? "")).toMatchObject({
+          state: "ready_for_dev",
+          track: "code",
+          stale: false,
+          body: { rework: { originalNodeId: item.id, councilNote: "Undo it." } },
+        });
+        expect(await store.getNode(item.id)).toMatchObject({
+          state: "done",
+          stale: false,
+        });
+        // The other call waited on the original's lock, then found the item already opened or
+        // the flag already cleared; either way it wrote nothing.
+        const other = results.find((r) => r !== created[0]);
+        expect(
+          other?.step === "not_stale" ||
+            (other?.step === "reworked" && other.outcome === "already_created"),
+          `round ${round}`,
+        ).toBe(true);
+      }
+    });
+
+    it("opens one follow-up Council question after Didi's answer when two calls race", async () => {
+      const t = await setup("96000000-0000-4000-8000", "council-f");
+      for (let round = 0; round < 5; round++) {
+        const owner = await t.node("in_development");
+        const first = await t.node("in_development");
+        const second = await t.node("in_development");
+        const decision = await t.library.recordDecision(
+          {
+            projectId: t.projectId,
+            nodeId: owner.id,
+            kind: "approval",
+            scope: {},
+            textVerbatim: "Yes",
+            byActor: "didi",
+          },
+          [first.id, second.id],
+        );
+        t.advanceMinutes(1);
+        await t.library.reverseDecision(decision.id, "didi", "No");
+        t.advanceMinutes(1);
+        const topic = reversalTopic(decision.id);
+        const run = await t.run(owner.id, "council", 0, { questionTopic: topic });
+        await t.council.recordAnswer(run.id, {
+          verdicts: [
+            { nodeId: first.id, verdict: "cannot_decide", note: "" },
+            { nodeId: second.id, verdict: "cannot_decide", note: "" },
+          ],
+          note: "",
+        });
+        const gate = await store.findOpenGateRequest(t.projectId, topic);
+        t.advanceMinutes(1);
+        await t.library.answerGateRequest(
+          gate!.id,
+          approvalDecision(gate!, {
+            choice: "changes_requested",
+            words: "Redo both.",
+            approvers: ["anonymous"],
+          }),
+        );
+        t.advanceMinutes(1);
+        const results = await Promise.all([
+          t.council.followUp(topic),
+          t.council.followUp(topic),
+        ]);
+        expect(
+          results.filter((r) => r.step === "opened"),
+          `round ${round}`,
+        ).toHaveLength(1);
+        const followUps = await pool.query(
+          "select count(*)::int as n from factory.gate_requests where topic_key = $1 and kind = 'council_question' and payload ? 'didiDecisionId'",
+          [topic],
+        );
+        expect(followUps.rows[0]?.n).toBe(1);
+      }
     });
   },
 );

@@ -341,6 +341,12 @@ function ops(state: State): StoreOps {
         .sort(byTimeThenId<GateRequest>((g) => g.createdAt))
         .map(copy);
     },
+    async listGateRequests(projectId, topicKey) {
+      return [...state.gateRequests.values()]
+        .filter((g) => g.projectId === projectId && g.topicKey === topicKey)
+        .sort(byTimeThenId<GateRequest>((g) => g.createdAt))
+        .map(copy);
+    },
     async closeGateRequest(id, close) {
       const request = state.gateRequests.get(id);
       if (!request || request.status !== "open") return false;

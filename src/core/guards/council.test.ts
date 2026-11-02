@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Json } from "../store.ts";
-import { REDO_TRIGGER } from "./council.ts";
+import { REDO_TRIGGER, REWORK_EDGE } from "./council.ts";
 import { MERGE, NODE, fixture, type Fixture } from "./testing.ts";
 
 const GUARD = "council_redo_recorded";
@@ -85,7 +85,7 @@ describe("council_redo_recorded (unit: guards on the memory store, D-229, D-231)
     });
   });
 
-  it("fails when the item is not stale, or is merged (N-43)", async () => {
+  it("fails when the item is not stale, or is merged: a merged item gets a rework item (D-233)", async () => {
     const f = await fixture();
     const basis = await reversedBasis(f);
     await answer(f, basis, "redo");
@@ -162,6 +162,52 @@ describe("council_redo_recorded (unit: guards on the memory store, D-229, D-231)
     expect(await f.check(GUARD)).toMatchObject({
       pass: true,
       detail: `Council decision ${redo} gives redo`,
+    });
+  });
+
+  it("reads the latest Council answer on each reversal: a follow-up answer replaces the earlier one (D-234)", async () => {
+    const f = await fixture();
+    const basis = await reversedBasis(f);
+    // The first answer could not decide: the question went to Didi.
+    await answer(f, basis, "cannot_decide");
+    expect((await f.check(GUARD)).detail).toMatch(
+      `reversal of decision ${basis} has no Council verdict`,
+    );
+    // The follow-up after Didi's answer gives redo: it stands.
+    const redo = await answer(f, basis, "redo");
+    expect(await f.check(GUARD)).toMatchObject({
+      pass: true,
+      detail: `Council decision ${redo} gives redo`,
+    });
+    // A later answer on the same reversal replaces it, whatever it says.
+    await answer(f, basis, "cannot_decide");
+    expect((await f.check(GUARD)).detail).toMatch(
+      `reversal of decision ${basis} has no Council verdict`,
+    );
+    await answer(f, basis, "still_valid");
+    expect(await f.check(GUARD)).toMatchObject({
+      pass: false,
+      detail: "no Council redo verdict for it",
+    });
+  });
+
+  it("ends the stale episode when a rework item was opened for the item (D-233)", async () => {
+    const f = await fixture();
+    const basis = await reversedBasis(f);
+    await answer(f, basis, "redo");
+    expect((await f.check(GUARD)).pass).toBe(true);
+    const rework = "10000000-0000-4000-8000-000000000003";
+    await f.node(rework, { state: "ready_for_dev" });
+    await f.store.insertEdge({
+      id: "30000000-0000-4000-8000-000000000003",
+      fromNode: rework,
+      toNode: NODE,
+      type: REWORK_EDGE,
+      createdAt: new Date(Date.UTC(2026, 9, 29, 2)),
+    });
+    expect(await f.check(GUARD)).toMatchObject({
+      pass: false,
+      detail: "no Council redo verdict for it",
     });
   });
 });

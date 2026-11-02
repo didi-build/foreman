@@ -489,6 +489,18 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("accepts the reworks edge type and refuses an unknown one (migration 0015, D-233)", () => {
+      const insert = (type: string) =>
+        sql(
+          `insert into factory.edges (id, from_node, to_node, type, created_at)
+         values (gen_random_uuid(), '${ID.node2}', '${ID.node}', '${type}', ${AT});`,
+          "factory_runner",
+        );
+      const ok = insert("reworks");
+      expect(ok.ok, ok.err).toBe(true);
+      expectRejected(insert("undoes"), /edges_type_check/);
+    });
+
     it("derives a decision's status from its events, and allows one event per decision", () => {
       const status = sql(
         `select status || '|' || replaced_by_id from factory.decisions_current where id = '${ID.decision}';`,

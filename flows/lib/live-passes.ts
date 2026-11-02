@@ -6,10 +6,13 @@
 // `staging_deploy_attention_after_minutes` with no deploy recorded (D-225, O-40). The escalation
 // pass then takes each escalated item on once the Council or Didi has answered (M3.5,
 // src/core/escalations.ts): back where it was escalated from with the counters reset, or on to
-// Didi with a gate request. The Council pass then starts a Council run for each open question
+// Didi with a gate request. The follow-up pass then opens the follow-up Council question on each
+// reversal whose gate request Didi has answered (D-234, ./council-runs.ts). The Council pass then
+// starts a Council run for each open question
 // that has none, or sends a question whose runs gave no usable answer to Didi (D-228, D-229,
 // ./council-runs.ts). The redo pass then sends each stale item whose Council redo stands back to
-// the start of its track, cancelling its runs first (D-231). Last, the builder runs pass starts the fix round of each item a failed
+// the start of its track, cancelling its runs first (D-231), or opens a merged item's rework item
+// (D-233). Last, the builder runs pass starts the fix round of each item a failed
 // QA round, a staging check, a refused done report or an answered escalation sent back, and
 // resumes a builder run queued after `usage_exhausted` (O-41, O-43). It runs after the staging and
 // escalation passes, so an escalation that pass recovers is taken first. Under any other stop,
@@ -24,8 +27,10 @@ import {
 } from "../../src/core/staging.ts";
 import { startBuilderRuns, type BuilderRunStart } from "./builder-runs.ts";
 import type { FlowDeps } from "./compose.ts";
+import type { FollowUpStep } from "../../src/core/council.ts";
 import {
   councilPass,
+  followUpPass,
   redoPass,
   type CouncilPassStep,
   type RedoPassStep,
@@ -38,6 +43,8 @@ export interface LivePasses {
   stagingWaits: StagingDeployWait[] | null;
   /** What the escalation pass did for each escalated item (M3.5). */
   escalations: EscalationStep[] | null;
+  /** The follow-up Council questions opened after Didi's answers to reversals (D-234). */
+  followUps: FollowUpStep[] | null;
   /** What the Council pass did for each open Council question (D-228, D-229). */
   councilRuns: CouncilPassStep[] | null;
   /** What the redo pass did for each stale item with a Council redo standing (D-231). */
@@ -58,6 +65,7 @@ export async function runLivePasses(
       verified: null,
       stagingWaits: null,
       escalations: null,
+      followUps: null,
       councilRuns: null,
       redos: null,
       builderRuns: null,
@@ -69,6 +77,7 @@ export async function runLivePasses(
   const verified = await staging.verifyReady();
   const { waits, problem } = await staging.deployWaits(verified);
   const escalations = await createEscalations(deps).resolveAll();
+  const followUps = await followUpPass(deps);
   const councilRuns = await councilPass(deps);
   const redos = await redoPass(deps);
   const builderRuns = await startBuilderRuns(deps);
@@ -77,6 +86,7 @@ export async function runLivePasses(
     verified,
     stagingWaits: waits,
     escalations,
+    followUps,
     councilRuns,
     redos,
     builderRuns,

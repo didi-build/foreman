@@ -8,9 +8,12 @@ import {
   APPROVAL_CHOICE_LABELS,
   type ApprovalPageAnswer,
 } from "../../src/core/approvals.ts";
+import { REVERSAL_PREFIX, type FollowUpStep } from "../../src/core/council.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
+import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import type { GateRequest } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
+import { councilPass, followUpPass, type CouncilPassStep } from "./council-runs.ts";
 import { heldBy } from "./switches.ts";
 
 /**
@@ -67,21 +70,48 @@ export interface AfterAnswer {
   heldBy: "kill_switch" | "dry_run" | null;
   /** For an escalation question: what the move out of Escalated to Didi did. */
   escalation?: EscalationStep;
+  /**
+   * For a reversal's question to Didi (D-234): the follow-up Council question it opened, if any,
+   * and the Council pass on the topic, which starts the follow-up run.
+   */
+  reversal?: { followUp: FollowUpStep[]; council: CouncilPassStep[] };
 }
 
 /**
  * After an answer is recorded: what holds it, and for an escalation question the item's move back
  * out of Escalated to Didi (M3.5, src/core/escalations.ts). The guards decide that move, and the
  * kill switch and dry run hold it as for every move; the reconcile flow's escalation pass asks
- * again if this step is cut short. Any other gate kind asks for nothing.
+ * again if this step is cut short. For a reversal's question to Didi (an `escalation` request on
+ * a `decision-reversed:` topic), the follow-up Council question opens and its run starts
+ * (D-234), in live mode only; the reconcile flow's follow-up pass opens it later otherwise. Any
+ * other gate kind asks for nothing.
  */
 export async function afterAnswer(
   deps: FlowDeps,
   gate: GateRequest,
 ): Promise<AfterAnswer> {
   const escalation =
-    gate.kind === "escalation" && gate.nodeId
+    gate.kind === "escalation" &&
+    gate.nodeId &&
+    gate.topicKey === escalationTopic(gate.nodeId)
       ? await createEscalations(deps).resolve(gate.nodeId)
       : undefined;
-  return { heldBy: await heldBy(deps.store), ...(escalation ? { escalation } : {}) };
+  let reversal: AfterAnswer["reversal"];
+  if (
+    gate.kind === "escalation" &&
+    gate.owner === "didi" &&
+    gate.topicKey.startsWith(REVERSAL_PREFIX)
+  ) {
+    const followUp = await followUpPass(deps, [gate.topicKey]);
+    const opened = followUp.some((s) => s.step === "opened");
+    reversal = {
+      followUp,
+      council: opened ? await councilPass(deps, [gate.topicKey]) : [],
+    };
+  }
+  return {
+    heldBy: await heldBy(deps.store),
+    ...(escalation ? { escalation } : {}),
+    ...(reversal ? { reversal } : {}),
+  };
 }

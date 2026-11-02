@@ -1,7 +1,7 @@
 // The guard on a Council `redo` verdict (D-229, D-231, ADR 0105): the move that sends a stale
-// item back to the start of its track. It reads only the decisions about the node and its
-// transitions, so the runner (src/core/council.ts) can ask the same question inside the
-// transaction that records a reversal answer.
+// item back to the start of its track. It reads only the decisions about the node, its
+// transitions and its rework links, so the runner (src/core/council.ts) can ask the same question
+// inside the transaction that records a reversal answer.
 //
 // A Council reversal answer is a `council_decision` whose scope carries `reversedDecisionId` and
 // `verdicts` (D-228, O-49). The runner links every item it gives a verdict for to that decision
@@ -9,12 +9,15 @@
 // stale flag the answer cleared (`clearedNodeIds`).
 //
 // The item's stale episode starts after its last way out of stale: an answer that cleared its
-// flag, or an applied redo move (trigger `council_redo:<decision id>`). Inside the episode, every
-// decision about the item that was reversed must have a Council answer for the item that is not
-// `cannot_decide`; a reversal still open, or one sent to Didi (N-41), leaves the episode unsettled.
-// A settled episode with an active `redo` answer for the item is a redo, from the latest such
-// answer. The guard then passes only for a stale item with no `merge_commit`: merged code is on
-// main, and sending it back is more than a state move (N-43).
+// flag, an applied redo move (trigger `council_redo:<decision id>`), or a rework item opened for
+// it (a `reworks` edge to it, D-233). One reversal may get more than one Council answer: after
+// Didi answers its gate request, a follow-up Council run answers it again (D-234). For each
+// reversal, the latest answer that gives the item a verdict is the one that counts. Inside the
+// episode, every decision about the item that was reversed must have such a latest answer that is
+// not `cannot_decide`; a reversal still open, or one with Didi (N-41), leaves the episode
+// unsettled. A settled episode with an active `redo` answer for the item is a redo, from the
+// latest such answer. The guard then passes only for a stale item with no `merge_commit`: merged
+// code is on main, so the runner opens a rework item for it instead (D-233).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { CurrentDecision, Json, Transition } from "../store.ts";
 import { latest, result } from "./evidence.ts";
@@ -24,6 +27,9 @@ export const REDO_GUARD = "council_redo_recorded";
 
 /** The trigger ref prefix of a redo move, followed by the Council decision id. */
 export const REDO_TRIGGER = "council_redo:";
+
+/** The edge type from a rework item to the merged item it reworks (D-233, migration 0015). */
+export const REWORK_EDGE = "reworks";
 
 export type Verdict = "still_valid" | "redo" | "cannot_decide";
 
@@ -70,13 +76,14 @@ export type RedoState =
 
 /**
  * The item's stale episode from the decisions about it (`listDecisionsForNode`, which includes
- * the Council answers linked to it) and its transitions. Pure, so the runner can pass in an
- * answer it is about to record.
+ * the Council answers linked to it), its transitions and when rework items were opened for it.
+ * Pure, so the runner can pass in an answer it is about to record.
  */
 export function redoState(
   nodeId: string,
   decisions: readonly CurrentDecision[],
   transitions: readonly Transition[],
+  reworkedAt: readonly Date[] = [],
 ): RedoState {
   const answers = decisions.filter((d) => verdictFor(d, nodeId) !== null);
   const ends = [
@@ -84,31 +91,49 @@ export function redoState(
     ...transitions
       .filter((t) => t.mode === "applied" && t.triggerRef?.startsWith(REDO_TRIGGER))
       .map((t) => t.at.getTime()),
+    ...reworkedAt.map((at) => at.getTime()),
   ];
   const start = ends.length > 0 ? Math.max(...ends) : null;
   const inEpisode = (at: Date) => start === null || at.getTime() > start;
+  // The latest answer for the item on each reversal (oldest first, so a later one replaces it).
+  const latestFor = new Map<string, CurrentDecision>();
+  for (const a of answers) {
+    const reversedId = reversedIdOf(a);
+    if (reversedId) latestFor.set(reversedId, a);
+  }
   for (const reversal of decisions) {
     if (reversal.status !== "reversed" || !reversal.statusChangedAt) continue;
     if (!inEpisode(reversal.statusChangedAt)) continue;
     // An answer counts whatever its own status: a reversed answer opens its own question.
-    const answered = answers.some(
-      (a) =>
-        reversedIdOf(a) === reversal.id &&
-        a.recordedAt.getTime() >= (reversal.statusChangedAt as Date).getTime() &&
-        verdictFor(a, nodeId) !== "cannot_decide",
-    );
+    const answer = latestFor.get(reversal.id);
+    const answered =
+      answer !== undefined &&
+      answer.recordedAt.getTime() >= reversal.statusChangedAt.getTime() &&
+      verdictFor(answer, nodeId) !== "cannot_decide";
     if (!answered) return { kind: "unsettled", reversedDecisionId: reversal.id };
   }
   const redo = latest(
-    answers.filter(
-      (a) =>
-        a.status === "active" &&
-        inEpisode(a.recordedAt) &&
-        !clearedBy(a, nodeId) &&
-        verdictFor(a, nodeId) === "redo",
-    ),
+    [...latestFor.values()]
+      .filter(
+        (a) =>
+          a.status === "active" &&
+          inEpisode(a.recordedAt) &&
+          !clearedBy(a, nodeId) &&
+          verdictFor(a, nodeId) === "redo",
+      )
+      .sort((a, b) => a.recordedAt.getTime() - b.recordedAt.getTime()),
   );
   return redo ? { kind: "redo", decision: redo } : { kind: "settled" };
+}
+
+/** When rework items were opened for the item: its incoming `reworks` edges (D-233). */
+export async function reworkedAt(
+  store: Pick<GuardContext["store"], "listEdges">,
+  nodeId: string,
+): Promise<Date[]> {
+  return (await store.listEdges({ toNode: nodeId, type: REWORK_EDGE })).map(
+    (e) => e.createdAt,
+  );
 }
 
 /** The item's redo state, read through the guard's store or a transaction. */
@@ -117,6 +142,7 @@ export async function readRedoState(ctx: GuardContext): Promise<RedoState> {
     ctx.node.id,
     await ctx.store.listDecisionsForNode(ctx.node.id),
     await ctx.store.listTransitions(ctx.node.id),
+    await reworkedAt(ctx.store, ctx.node.id),
   );
 }
 
@@ -131,9 +157,9 @@ export async function isMerged(ctx: GuardContext): Promise<boolean> {
 
 /**
  * The Council's latest `redo` verdict for this stale item stands: every decision about it that
- * was reversed since its last way out of stale has a Council answer for it that is not
+ * was reversed since its last way out of stale has a latest Council answer for it that is not
  * `cannot_decide`, and the latest active one of those answers that gives `redo` exists. Fails for
- * an item that is not stale, and for a merged item (N-43).
+ * an item that is not stale, and for a merged item, which gets a rework item instead (D-233).
  */
 export async function councilRedoRecorded(ctx: GuardContext): Promise<GuardCheck> {
   if (!ctx.node.stale) return result(REDO_GUARD, false, [], "not stale");
@@ -142,7 +168,7 @@ export async function councilRedoRecorded(ctx: GuardContext): Promise<GuardCheck
       REDO_GUARD,
       false,
       [],
-      "merged: its code is on main, so a redo needs Didi (N-43)",
+      "merged: its code is on main, so a redo opens a rework item instead (D-233)",
     );
   }
   const state = await readRedoState(ctx);
