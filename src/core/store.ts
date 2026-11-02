@@ -54,7 +54,11 @@ export interface NodeStateChange {
   updatedAt: Date;
 }
 
-export type EdgeType = "blocks" | "split_into" | "design_for";
+/**
+ * `reworks` (migration 0015, D-233) links a rework item to the merged item whose change it undoes
+ * or reworks after a Council `redo`: from the rework item to the original.
+ */
+export type EdgeType = "blocks" | "split_into" | "design_for" | "reworks";
 
 export interface Edge {
   id: string;
@@ -426,6 +430,8 @@ export interface StoreOps {
   getGateRequest(id: string): Promise<GateRequest | null>;
   findOpenGateRequest(projectId: string, topicKey: string): Promise<GateRequest | null>;
   listOpenGateRequests(projectId: string): Promise<GateRequest[]>;
+  /** Every request on the topic, open or closed, oldest first. */
+  listGateRequests(projectId: string, topicKey: string): Promise<GateRequest[]>;
   /** Moves an open request to a closed status. Returns false if it was no longer open. */
   closeGateRequest(id: string, close: GateClose): Promise<boolean>;
 

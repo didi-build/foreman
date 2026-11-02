@@ -8,7 +8,10 @@
 //   counters, the failures counted toward `failure`, QA's latest failed findings and the latest
 //   failed staging checks or deploys.
 // - A decision reversal: the reversed decision, the reason it was reversed, and every item the
-//   reversal marked stale, each with its id, so the answer can give a verdict for each one.
+//   reversal marked stale, each with its id, so the answer can give a verdict for each one. A
+//   follow-up run after Didi answered the reversal's gate request (D-234) also carries Didi's
+//   answer: the page's choice and Didi's words, quoted and cut, and lists only the items still
+//   stale from the reversal.
 import type { QaFinding } from "./guards/evidence.ts";
 import type { Node } from "./store.ts";
 import { commit, cut, list, quoted, readItemBody, section } from "./task-input.ts";
@@ -29,6 +32,8 @@ export const COUNCIL_INPUT_LIMITS = {
   descriptionChars: 4000,
   decisionChars: 8000,
   reasonChars: 2000,
+  /** Didi's words on a reversal's gate request, in a follow-up run (D-234). */
+  didiWordsChars: 4000,
 } as const;
 
 const L = COUNCIL_INPUT_LIMITS;
@@ -69,6 +74,11 @@ export interface ReversalInput {
   reason: string | null;
   /** Every item the reversal marked stale, in the order the reversal listed them. */
   staleItems: Pick<Node, "id" | "title" | "body" | "state" | "track">[];
+  /**
+   * Didi's answer to the reversal's gate request, in a follow-up run (D-234): the approval page's
+   * outcome (`approved`, `rejected` or `changes_requested`) and Didi's words, exactly as typed.
+   */
+  didiAnswer?: { outcome: string | null; words: string; recordedAt: Date } | null;
 }
 
 /** The item's description and acceptance criteria, or a line that says they could not be read. */
@@ -189,10 +199,16 @@ export function escalationInput(input: EscalationInput): string {
 
 /** The input of a Council run on a reversed decision's question. */
 export function reversalInput(input: ReversalInput): string {
-  const { decision, staleItems } = input;
+  const { decision, staleItems, didiAnswer } = input;
   const parts = header(
     [
-      "A decision was reversed, and the items below relied on it, so they are paused as stale. Give a verdict for every one of them, by its item id:",
+      ...(didiAnswer
+        ? [
+            "A decision was reversed, and the items below relied on it, so they are paused as stale. You could not decide on them before, so the question went to Didi, and Didi has answered it (below). Using Didi's answer as data, give a verdict for every one of them, by its item id:",
+          ]
+        : [
+            "A decision was reversed, and the items below relied on it, so they are paused as stale. Give a verdict for every one of them, by its item id:",
+          ]),
       "- `still_valid`: the work stands as it is; the item is no longer stale and its work goes on.",
       "- `redo`: the item's work starts again, on the same branch and pull request.",
       "- `cannot_decide`: the item goes to Didi.",
@@ -219,6 +235,24 @@ export function reversalInput(input: ReversalInput): string {
         : quoted(cut(input.reason, L.reasonChars)),
     ),
   );
+  if (didiAnswer) {
+    const outcome =
+      didiAnswer.outcome !== null && STATE_NAME.test(didiAnswer.outcome)
+        ? didiAnswer.outcome
+        : "(not recorded)";
+    parts.push(
+      section(
+        "Didi's answer",
+        [
+          `Choice on the approval page: ${outcome}, at ${didiAnswer.recordedAt.toISOString()}`,
+          "Didi's words:",
+          didiAnswer.words.trim() === ""
+            ? "(no words recorded)"
+            : quoted(cut(didiAnswer.words, L.didiWordsChars)),
+        ].join("\n"),
+      ),
+    );
+  }
   const items = staleItems.map((node, i) => {
     const lines = [
       `### Item ${i + 1} of ${staleItems.length}`,

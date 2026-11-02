@@ -8,7 +8,7 @@
 # A move guarded by council_redo_recorded sends a stale item back to the start of its track when
 # the Council's reversal answer gives it redo (D-231). It is runner_only: only the Council's redo
 # step applies it, with the cancel, the flag and the counter reset (O-54). There is none out of Verifying on staging
-# or Done: every item there is merged, and a merged item needs Didi (N-43).
+# or Done: every item there is merged, and a merged item gets a linked rework item instead (D-233).
 #
 # A transition marked fallback_move implements a fallback the spec describes in prose (the
 # "Timeout and fallback" column). The consistency test pins each one to that row's words, and
@@ -180,7 +180,7 @@ transitions:
     runner_only: true
     evidence: []
     timeout: None.
-    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+    fallback: The item stays here, stale and paused. A merged item gets no move; the runner opens a linked rework item for it instead (D-233).
 
   - from: in_qa_review
     to: ready_for_dev
@@ -190,4 +190,4 @@ transitions:
     runner_only: true
     evidence: []
     timeout: None.
-    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+    fallback: The item stays here, stale and paused. A merged item gets no move; the runner opens a linked rework item for it instead (D-233).

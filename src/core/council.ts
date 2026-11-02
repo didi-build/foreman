@@ -28,9 +28,10 @@
 // verdict for it, or while another open reversal question still names it. Otherwise, when the
 // item's stale episode holds a `redo` (this answer's, or an earlier answer's still waiting), an
 // item still in an initial state of its track has its flag cleared (nothing was built yet, so the
-// dispatch starts the work again); a merged item stays stale and needs Didi (N-43); any other
-// item is due its redo move (D-231). With no `redo`, the flag is cleared. The answer's scope
-// names the items whose flags it cleared (`clearedNodeIds`).
+// dispatch starts the work again); a merged item is due a rework item (D-233); any other
+// item is due its redo move (D-231). With no `redo`, the flag is cleared. A merged item stays
+// stale until the redo pass opens its rework item (below). The answer's scope names the items
+// whose flags it cleared (`clearedNodeIds`).
 //
 // The redo move (`redo`, D-231) sends a stale item back to the start of its track: the contract
 // move out of its state guarded by `council_redo_recorded`, with the trigger
@@ -40,6 +41,24 @@
 // Council run is active on the item: the flow cancels those first through the runtime
 // (flows/lib/council-runs.ts, D-202). The item keeps its branch and PR (D-220). An item in an
 // escalated state has no redo move; it gets one once it returns.
+//
+// A merged item (it has a `merge_commit`) is not moved: its code is on main. Its redo opens one
+// new work item instead (`rework`, D-233), in its track's start state (the state its track's redo
+// moves lead to), on the same project and track, titled after the original, with the Council's
+// note quoted as data and the reversed decision's id in its body, linked to the original with a
+// `reworks` edge (migration 0015). The new item is agent-ready and off hold only if the original
+// was. In the same transaction the original's stale flag is cleared; the edge ends its stale
+// episode. It is opened once per (Council decision, original item).
+//
+// When Didi answers a reversal's gate request (the `escalation` gate request owned by Didi on the
+// reversal's topic), the answer is recorded on the approval page (D-200) and the reversal gets one
+// follow-up Council question (`followUp`, D-234): a new `council_question` on the same topic,
+// for the items still stale from that gate request, carrying Didi's decision id. Its run's input
+// quotes Didi's answer as data, and its answer is recorded and applied as any reversal answer.
+// A `cannot_decide`, or no usable answer after its one re-run, sends those items back to Didi
+// once more with a new gate request. Each Didi answer gets one follow-up, so nothing loops
+// without Didi. For each reversal and item, the latest Council answer counts
+// (src/core/guards/council.ts).
 //
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
@@ -55,10 +74,13 @@ import {
   REDO_GUARD,
   REDO_TRIGGER,
   redoState,
+  reworkedAt,
+  REWORK_EDGE,
   type Verdict,
 } from "./guards/council.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
 import { readQaVerdict } from "./guards/evidence.ts";
+import { quoted } from "./task-input.ts";
 import {
   createLibrary,
   type AlsoWrite,
@@ -77,6 +99,7 @@ import type {
   StoreOps,
   Transition,
 } from "./store.ts";
+import { StoreConflictError } from "./store.ts";
 
 /** The topic key prefixes of the two Council questions. */
 export const ESCALATION_PREFIX = "escalation:";
@@ -87,6 +110,10 @@ export const COUNCIL_RUNS_PER_QUESTION = 2;
 
 /** The Council's notes are kept up to this many characters, then cut with a marker. */
 export const COUNCIL_NOTE_CHARS = 4000;
+
+/** A rework item's title is the original's, after this prefix, cut to `REWORK_TITLE_CHARS`. */
+export const REWORK_TITLE_PREFIX = "Rework: ";
+export const REWORK_TITLE_CHARS = 500;
 
 /** Run ends that are not a failure to answer: a provider wait (FR-11) and the runner's own stop. */
 const NOT_AN_ATTEMPT: readonly (string | null)[] = ["usage_exhausted", "cancelled"];
@@ -171,6 +198,8 @@ export interface ReversalQuestion {
   decisionId: string;
   staleNodeIds: string[];
   reason: string | null;
+  /** A follow-up after Didi answered the reversal's gate request: that answer (D-234). */
+  didiDecisionId: string | null;
 }
 
 export type CouncilQuestion = EscalationQuestion | ReversalQuestion;
@@ -201,8 +230,8 @@ export interface AppliedVerdict {
     | "stale_for_another_reversal"
     /** Left stale until its redo move: the item is past the start of its track (D-231). */
     | "redo_move_due"
-    /** Left stale: the item is merged, so its code is on main and a redo needs Didi (N-43). */
-    | "redo_needs_decision"
+    /** Left stale until the redo pass opens its rework item: the item is merged (D-233). */
+    | "rework_due"
     /** Left stale: the item went to Didi with the others the Council could not decide. */
     | "to_didi"
     | "no_node";
@@ -213,8 +242,20 @@ export type RedoStep =
   | { nodeId: string; step: "no_node" | "not_stale" }
   /** No redo stands: none was given, or a reversal it relies on has no verdict for it yet. */
   | { nodeId: string; step: "not_due"; why: "settled" | "unsettled" }
-  /** Merged: its code is on main, so it stays stale and paused for Didi (N-43). */
-  | { nodeId: string; step: "redo_needs_decision"; councilDecisionId: string }
+  /** Merged: its code is on main, so the redo opens a rework item instead (D-233). */
+  | { nodeId: string; step: "rework_due"; councilDecisionId: string }
+  /**
+   * What `rework` did: `created` (the rework item, its link and the cleared flag committed),
+   * `already_created` (this Council decision opened it before), or `refused` with the reason.
+   */
+  | {
+      nodeId: string;
+      step: "reworked";
+      councilDecisionId: string;
+      outcome: "created" | "already_created" | "refused";
+      reworkNodeId: string | null;
+      reason?: string;
+    }
   /** No redo move out of its state now (an escalated state): it waits until it returns. */
   | { nodeId: string; step: "no_move"; councilDecisionId: string; state: string }
   /** The move is due. `activeRunIds` must be cancelled first (Council runs are not). */
@@ -260,6 +301,47 @@ export type CouncilAnswer =
         | "invalid";
       problem?: string;
     };
+
+/** What the follow-up after Didi's answer to a reversal's gate request found or did (D-234). */
+export type FollowUpStep =
+  | {
+      topicKey: string;
+      step: "not_due";
+      why:
+        /** The reversal's decision is not in the store. */
+        | "no_decision"
+        /** A question on the topic is open: the Council's, or Didi's. */
+        | "open_question"
+        /** Didi has answered no gate request on the topic. */
+        | "no_didi_answer"
+        /** Didi's latest answer already has its follow-up. */
+        | "already_followed_up"
+        /** None of the items Didi was asked about is still stale. */
+        | "nothing_stale";
+    }
+  /** Not opened: the kill switch or dry run holds Didi's answer (D-201). */
+  | { topicKey: string; step: "held"; reason: "kill_switch" | "dry_run" }
+  /** The follow-up Council question is open; the Council pass starts its run. */
+  | {
+      topicKey: string;
+      step: "opened";
+      gateRequestId: string;
+      didiDecisionId: string;
+      staleNodeIds: string[];
+    };
+
+/** A follow-up that is due: what its question is opened with. */
+interface FollowUpDue {
+  projectId: string;
+  nodeId: string | null;
+  decisionId: string;
+  didiGate: GateRequest;
+  didiDecisionId: string;
+  /** Every item Didi was asked about, still stale or not: the follow-up locks these. */
+  askedNodeIds: string[];
+  staleNodeIds: string[];
+  reason: string | null;
+}
 
 export interface CouncilOptions {
   store: Store;
@@ -368,6 +450,8 @@ class NotRecorded extends Error {
 
 const field = (value: Json | undefined, key: string): Json | undefined =>
   isObject(value) ? (value as { [key: string]: Json })[key] : undefined;
+const textOf = (value: Json | undefined): string | null =>
+  typeof value === "string" ? value : null;
 
 export function createCouncil(options: CouncilOptions) {
   const { store, contracts, clock, ids } = options;
@@ -413,6 +497,7 @@ export function createCouncil(options: CouncilOptions) {
       decisionId: gate.topicKey.slice(REVERSAL_PREFIX.length),
       staleNodeIds,
       reason: typeof reason === "string" ? reason : null,
+      didiDecisionId: textOf(field(gate.payload, "didiDecisionId")),
     };
   }
 
@@ -547,6 +632,7 @@ export function createCouncil(options: CouncilOptions) {
       const node = await store.getNode(id);
       if (node) staleItems.push(node);
     }
+    const didi = q.didiDecisionId ? await store.getDecision(q.didiDecisionId) : null;
     return reversalInput({
       decision: {
         id: q.decisionId,
@@ -557,6 +643,13 @@ export function createCouncil(options: CouncilOptions) {
       },
       reason: q.reason,
       staleItems,
+      didiAnswer: didi
+        ? {
+            outcome: textOf(scopeOf(didi).outcome),
+            words: didi.textVerbatim,
+            recordedAt: didi.recordedAt,
+          }
+        : null,
     });
   }
 
@@ -718,6 +811,7 @@ export function createCouncil(options: CouncilOptions) {
             nodeId,
             [...(await tx.listDecisionsForNode(nodeId)), pending],
             await tx.listTransitions(nodeId),
+            await reworkedAt(tx, nodeId),
           );
           if (
             episode.kind === "unsettled" ||
@@ -733,7 +827,7 @@ export function createCouncil(options: CouncilOptions) {
             verdicts.push({
               nodeId,
               verdict,
-              result: merged ? "redo_needs_decision" : "redo_move_due",
+              result: merged ? "rework_due" : "redo_move_due",
             });
             continue;
           }
@@ -815,11 +909,12 @@ export function createCouncil(options: CouncilOptions) {
       nodeId,
       await store.listDecisionsForNode(nodeId),
       await store.listTransitions(nodeId),
+      await reworkedAt(store, nodeId),
     );
     if (episode.kind !== "redo") return { nodeId, step: "not_due", why: episode.kind };
     const councilDecisionId = episode.decision.id;
     if (await isMerged({ node, store })) {
-      return { nodeId, step: "redo_needs_decision", councilDecisionId };
+      return { nodeId, step: "rework_due", councilDecisionId };
     }
     const move = redoMove(node);
     if (!move) return { nodeId, step: "no_move", councilDecisionId, state: node.state };
@@ -851,6 +946,7 @@ export function createCouncil(options: CouncilOptions) {
         nodeId,
         await tx.listDecisionsForNode(nodeId),
         (await tx.listTransitions(nodeId)).filter((t) => t.triggerRef !== trigger),
+        await reworkedAt(tx, nodeId),
       );
       if (episode.kind !== "redo" || episode.decision.id !== councilDecisionId) {
         return "redo_not_due";
@@ -868,14 +964,168 @@ export function createCouncil(options: CouncilOptions) {
       return null;
     };
 
+  /** The start state of a track: where its redo moves lead (D-231). */
+  function trackStart(track: Node["track"]): string | undefined {
+    if (track === null) return undefined;
+    return contracts.transitions.find(
+      (m) => m.guards.includes(REDO_GUARD) && (!m.tracks || m.tracks.includes(track)),
+    )?.to;
+  }
+
+  /** The rework item a Council decision opened for the original, if any. */
+  async function reworkOf(
+    tx: StoreOps,
+    nodeId: string,
+    councilDecisionId: string,
+  ): Promise<string | null> {
+    for (const edge of await tx.listEdges({ toNode: nodeId, type: REWORK_EDGE })) {
+      const rework = await tx.getNode(edge.fromNode);
+      if (
+        field(field(rework?.body, "rework"), "councilDecisionId") === councilDecisionId
+      ) {
+        return edge.fromNode;
+      }
+    }
+    return null;
+  }
+
+  /** The body of a rework item: the runner's words, with the Council's notes quoted as data. */
+  function reworkBody(
+    original: Node,
+    answer: CurrentDecision,
+    mergeCommit: string | null,
+  ): Json {
+    const scope = scopeOf(answer);
+    const reversedDecisionId = textOf(scope.reversedDecisionId) ?? "";
+    const verdicts = Array.isArray(scope.verdicts) ? scope.verdicts : [];
+    const itemNote =
+      textOf(
+        field(
+          verdicts.find((v) => field(v, "nodeId") === original.id),
+          "note",
+        ),
+      ) ?? "";
+    const description = [
+      `This item reworks item ${original.id}, which is already merged${mergeCommit ? ` (merge commit ${mergeCommit})` : ""}. Decision ${reversedDecisionId} that it relied on was reversed, and Council decision ${answer.id} gave it redo. Undo or rework the merged change as the Council's note says; nothing reverts main for you.`,
+      "The Council's note for the item, as the Council wrote it:",
+      itemNote.trim() === "" ? "(no note for the item)" : quoted(itemNote),
+      "The Council's note on the whole answer:",
+      answer.textVerbatim.trim() === "" ? "(no note)" : quoted(answer.textVerbatim),
+    ].join("\n\n");
+    return {
+      description,
+      rework: {
+        originalNodeId: original.id,
+        councilDecisionId: answer.id,
+        reversedDecisionId,
+        councilNote: itemNote,
+      },
+    };
+  }
+
+  /**
+   * Opens the rework item for a merged item whose redo stands (D-233), with its `reworks` edge to
+   * the original and the original's stale flag cleared, in one transaction that locks only the
+   * original. Once per (Council decision, original item): a repeat, or a racing call that waits
+   * on the lock, finds the item opened and writes nothing. Dry run and the kill switch write
+   * nothing.
+   */
+  async function rework(nodeId: string, councilDecisionId: string): Promise<RedoStep> {
+    const refused = (reason: string): RedoStep => ({
+      nodeId,
+      step: "reworked",
+      councilDecisionId,
+      outcome: "refused",
+      reworkNodeId: null,
+      reason,
+    });
+    return store.transaction(async (tx): Promise<RedoStep> => {
+      const switches = await held(tx);
+      if (switches) return refused(switches);
+      // The only node locked: the new item is inserted, never locked.
+      const node = await tx.getNodeForUpdate(nodeId);
+      if (!node) return refused("no_node");
+      const earlier = await reworkOf(tx, nodeId, councilDecisionId);
+      if (earlier) {
+        return {
+          nodeId,
+          step: "reworked",
+          councilDecisionId,
+          outcome: "already_created",
+          reworkNodeId: earlier,
+        };
+      }
+      if (!node.stale) return refused("not_stale");
+      const episode = redoState(
+        nodeId,
+        await tx.listDecisionsForNode(nodeId),
+        await tx.listTransitions(nodeId),
+        await reworkedAt(tx, nodeId),
+      );
+      if (episode.kind !== "redo" || episode.decision.id !== councilDecisionId) {
+        return refused("redo_not_due");
+      }
+      const merges = (await tx.listEvidence({ nodeId, kind: "merge_commit" })).filter(
+        (e) => e.commitSha !== null,
+      );
+      if (merges.length === 0) return refused("not_merged");
+      const start = trackStart(node.track);
+      const startState = start ? stateOf(start) : undefined;
+      if (!start || !startState?.initial) return refused("no_start_state");
+      const at = clock.now();
+      const title = `${REWORK_TITLE_PREFIX}${node.title}`;
+      const created: Node = {
+        id: ids.next(),
+        projectId: node.projectId,
+        type: "work_item",
+        track: node.track,
+        state: start,
+        substate: null,
+        ownerRole: (startState.owner ?? "runner").toLowerCase(),
+        title:
+          title.length <= REWORK_TITLE_CHARS
+            ? title
+            : title.slice(0, REWORK_TITLE_CHARS),
+        body: reworkBody(node, episode.decision, merges.at(-1)?.commitSha ?? null),
+        hold: node.hold,
+        agentReady: node.agentReady,
+        stale: false,
+        blockedReason: null,
+        stateSince: at,
+        linearIssueId: null,
+        linearStatusSynced: null,
+        version: 0,
+        createdAt: at,
+        updatedAt: at,
+      };
+      await tx.insertNode(created);
+      await tx.insertEdge({
+        id: ids.next(),
+        fromNode: created.id,
+        toNode: nodeId,
+        type: REWORK_EDGE,
+        createdAt: at,
+      });
+      await tx.setNodeFlags(nodeId, { stale: false }, at);
+      return {
+        nodeId,
+        step: "reworked",
+        councilDecisionId,
+        outcome: "created",
+        reworkNodeId: created.id,
+      };
+    });
+  }
+
   /**
    * Takes the item's redo move when it is due and no run but the Council's is active on it: back
    * to the start of its track, with the writes above, once per Council decision (trigger
    * `council_redo:<decision id>`). These writes are acts, so dry run refuses and writes nothing,
-   * and the kill switch refuses, as for every move.
+   * and the kill switch refuses, as for every move. A merged item gets its rework item instead.
    */
   async function redo(nodeId: string): Promise<RedoStep> {
     const check = await redoCheck(nodeId);
+    if (check.step === "rework_due") return rework(nodeId, check.councilDecisionId);
     if (check.step !== "due") return check;
     const { councilDecisionId, toState } = check;
     const result = await library.requestTransitionOnce(
@@ -901,11 +1151,152 @@ export function createCouncil(options: CouncilOptions) {
     };
   }
 
+  /**
+   * Whether the reversal's topic is due a follow-up after Didi's answer (D-234), read through the
+   * store or a transaction: no question is open on the topic, Didi answered the latest gate request
+   * Didi was asked on it, no request on the topic carries that answer yet, and some item Didi was
+   * asked about is still stale.
+   */
+  async function followUpDue(
+    ops: StoreOps,
+    topicKey: string,
+  ): Promise<FollowUpDue | Extract<FollowUpStep, { step: "not_due" }>> {
+    const notDue = (why: Extract<FollowUpStep, { step: "not_due" }>["why"]) => ({
+      topicKey,
+      step: "not_due" as const,
+      why,
+    });
+    if (!topicKey.startsWith(REVERSAL_PREFIX)) return notDue("no_decision");
+    const decisionId = topicKey.slice(REVERSAL_PREFIX.length);
+    const decision = await ops.getDecision(decisionId);
+    if (!decision) return notDue("no_decision");
+    const gates = await ops.listGateRequests(decision.projectId, topicKey);
+    if (gates.some((g) => g.status === "open")) return notDue("open_question");
+    const didiGate = gates
+      .filter(
+        (g) =>
+          g.owner === "didi" &&
+          g.kind === "escalation" &&
+          g.status === "answered" &&
+          g.decisionId !== null,
+      )
+      .at(-1);
+    if (!didiGate?.decisionId) return notDue("no_didi_answer");
+    const didiDecisionId = didiGate.decisionId;
+    if (gates.some((g) => field(g.payload, "didiDecisionId") === didiDecisionId)) {
+      return notDue("already_followed_up");
+    }
+    const askedNodeIds = textList(field(didiGate.payload, "nodeIds"));
+    const staleNodeIds: string[] = [];
+    for (const id of askedNodeIds) {
+      if ((await ops.getNode(id))?.stale) staleNodeIds.push(id);
+    }
+    if (staleNodeIds.length === 0) return notDue("nothing_stale");
+    const first = gates.find((g) => g.kind === "council_question");
+    return {
+      projectId: decision.projectId,
+      nodeId: didiGate.nodeId,
+      decisionId,
+      didiGate,
+      didiDecisionId,
+      askedNodeIds,
+      staleNodeIds,
+      reason: textOf(field(first?.payload, "reason")),
+    };
+  }
+
+  /**
+   * Opens the follow-up Council question on a reversal after Didi's answer (D-234): one
+   * `council_question` owned by the Council on the same topic, for the items still stale from
+   * Didi's gate request, with Didi's decision id, so the Council pass starts its run. Live mode
+   * only, read inside the transaction that writes: under the kill switch or in dry run Didi's
+   * answer stays recorded and nothing acts on it (D-201). The transaction locks every item Didi
+   * was asked about and the request's node once, up front, in sorted id order, then reads again,
+   * so two calls open one question.
+   */
+  async function followUp(topicKey: string): Promise<FollowUpStep> {
+    const first = await followUpDue(store, topicKey);
+    if (!("didiGate" in first)) return first;
+    return store
+      .transaction(async (tx): Promise<FollowUpStep> => {
+        const switches = await held(tx);
+        if (switches) return { topicKey, step: "held", reason: switches };
+        const lockIds = [
+          ...new Set(
+            [first.nodeId, ...first.askedNodeIds].filter(
+              (id): id is string => id !== null,
+            ),
+          ),
+        ].sort();
+        for (const lockId of lockIds) await tx.getNodeForUpdate(lockId);
+        const due = await followUpDue(tx, topicKey);
+        if (!("didiGate" in due)) return due;
+        const gate: GateRequest = {
+          id: ids.next(),
+          projectId: due.projectId,
+          nodeId: due.nodeId,
+          topicKey,
+          kind: "council_question",
+          owner: "council",
+          blocking: true,
+          payload: {
+            decisionId: due.decisionId,
+            reason: due.reason,
+            staleNodeIds: due.staleNodeIds,
+            didiDecisionId: due.didiDecisionId,
+            didiGateRequestId: due.didiGate.id,
+          },
+          approvalUrl: null,
+          status: "open",
+          decisionId: null,
+          supersededBy: null,
+          createdAt: clock.now(),
+          answeredAt: null,
+          lastNotifiedAt: null,
+        };
+        await tx.insertGateRequest(gate);
+        return {
+          topicKey,
+          step: "opened",
+          gateRequestId: gate.id,
+          didiDecisionId: due.didiDecisionId,
+          staleNodeIds: due.staleNodeIds,
+        };
+      })
+      .catch((error: unknown): FollowUpStep => {
+        // Another question on the topic was opened first (one open request per topic).
+        if (
+          error instanceof StoreConflictError &&
+          error.constraint === "gate_requests_one_open_per_topic"
+        ) {
+          return { topicKey, step: "not_due", why: "open_question" };
+        }
+        throw error;
+      });
+  }
+
   return {
     question,
 
     redoCheck,
     redo,
+
+    followUp,
+
+    /**
+     * The reversal topics a follow-up may be due on (D-234): every reversed decision a stale item
+     * relies on, in the store's node order, each once. Reads only.
+     */
+    async followUpTopics(): Promise<string[]> {
+      const topics = new Set<string>();
+      for (const node of await store.listNodes({})) {
+        if (!node.stale) continue;
+        for (const d of await store.listDecisionsForNode(node.id)) {
+          if (d.status === "reversed") topics.add(`${REVERSAL_PREFIX}${d.id}`);
+        }
+      }
+      return [...topics];
+    },
 
     /** The stale items, in the store's node order: where a redo may stand. Reads only. */
     async staleItems(): Promise<string[]> {
@@ -984,6 +1375,11 @@ export function createCouncil(options: CouncilOptions) {
         };
       }
       if (!q) return { recorded: false, reason: "question_closed" };
+      // A run started for an earlier question on the same reversal topic (before Didi's answer
+      // opened its follow-up, D-234) does not answer this one.
+      if (q.kind === "reversal" && run.startedAt.getTime() < q.openedAt.getTime()) {
+        return { recorded: false, reason: "question_closed" };
+      }
       if (q.kind === "escalation") {
         const read = readEscalationAnswer(structured);
         if ("problem" in read)

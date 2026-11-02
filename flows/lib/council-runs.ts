@@ -28,13 +28,21 @@
 // run the runtime could not stop leaves the item where it is for the next pass. Under the kill
 // switch or in dry run it cancels nothing, and the move refuses and writes nothing. The reconcile
 // flow's live passes run it for every stale item, after the Council pass, so an item an
-// escalation returned, or a pass cut short, is taken on later.
+// escalation returned, or a pass cut short, is taken on later. For a merged item it opens the
+// item's rework item instead (D-233): no run is cancelled, since the item does not move.
+//
+// The follow-up pass (`followUpPass`, D-234) opens the follow-up Council question on a reversal
+// whose gate request Didi has answered, and the Council pass then starts its run. The approval
+// resume step runs it right after Didi's answer (./approval.ts), and the reconcile flow's live
+// passes run it before the Council pass for every reversal a stale item relies on, so an answer
+// recorded under the kill switch or in dry run (D-201), or a step cut short, is acted on later.
 import {
   createCouncil,
   ESCALATION_PREFIX,
   REVERSAL_PREFIX,
   type CouncilAnswer,
   type CouncilNext,
+  type FollowUpStep,
   type RedoStep,
 } from "../../src/core/council.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
@@ -105,6 +113,24 @@ export async function councilPass(
   return steps;
 }
 
+/**
+ * Opens each due follow-up Council question after Didi's answer to a reversal (D-234): on the
+ * given topics, or on every reversal a stale item relies on. Topics with nothing due are left out
+ * of the result.
+ */
+export async function followUpPass(
+  deps: FlowDeps,
+  topicKeys?: readonly string[],
+): Promise<FollowUpStep[]> {
+  const council = createCouncil(deps);
+  const steps: FollowUpStep[] = [];
+  for (const topicKey of topicKeys ?? (await council.followUpTopics())) {
+    const step = await council.followUp(topicKey);
+    if (step.step !== "not_due") steps.push(step);
+  }
+  return steps;
+}
+
 /** What the redo pass did for one item: the runs it cancelled first, and the redo step. */
 export interface RedoPassStep {
   nodeId: string;
@@ -138,7 +164,10 @@ export async function redoPass(
         else step.cancelFailed.push(runId);
       }
     }
-    if (check.step === "due" && step.cancelFailed.length === 0) {
+    if (
+      (check.step === "due" && step.cancelFailed.length === 0) ||
+      check.step === "rework_due"
+    ) {
       step.redo = await council.redo(nodeId);
     }
     steps.push(step);
@@ -155,13 +184,14 @@ export interface AfterCouncilRun {
   builderRuns: BuilderRunStart[];
   /** The question's next step, when it is still open: its re-run, or Didi. */
   council: CouncilPassStep[];
-  /** For a reversal answer: the redo moves of the items it left due one (D-231). */
+  /** For a reversal answer: the redo moves and rework items it left due (D-231, D-233). */
   redos?: RedoPassStep[];
 }
 
 /**
  * After a Council run's end: the escalation pass for its item, the builder's next run if the item
- * returned, the redo moves a reversal answer left due, and the question's re-run or Didi if it is
+ * returned, the redo moves and rework items a reversal answer left due, and the question's re-run
+ * or Didi if it is
  * still open. Each step is idempotent, so a
  * repeated run-end trigger does nothing more.
  */
@@ -185,7 +215,7 @@ export async function afterCouncilRun(
   }
   if (topic.startsWith(REVERSAL_PREFIX) && answer?.recorded === true) {
     const due = (answer.verdicts ?? [])
-      .filter((v) => v.result === "redo_move_due")
+      .filter((v) => v.result === "redo_move_due" || v.result === "rework_due")
       .map((v) => v.nodeId);
     if (due.length > 0) after.redos = await redoPass(deps, due);
   }

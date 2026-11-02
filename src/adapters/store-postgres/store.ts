@@ -410,6 +410,13 @@ function ops(db: Queryable): StoreOps {
       );
       return result.map(toGateRequest);
     },
+    async listGateRequests(projectId, topicKey) {
+      const result = await rows(
+        "select * from factory.gate_requests where project_id = $1 and topic_key = $2 order by created_at, id",
+        [projectId, topicKey],
+      );
+      return result.map(toGateRequest);
+    },
     async closeGateRequest(id, close) {
       const changed = await exec(
         `update factory.gate_requests

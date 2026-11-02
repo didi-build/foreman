@@ -5,7 +5,9 @@
 // decision. The answer is recorded even under the kill switch or in dry run (D-201): Windmill
 // closes the link after one answer, so refusing would lose it, and nothing acts on it until both
 // are off; `heldBy` says so. A timeout records nothing; the request stays open (M4.1). An
-// escalation answer then asks for the item's way back (./lib/approval.ts, M3.5).
+// escalation answer then asks for the item's way back (./lib/approval.ts, M3.5), and Didi's
+// answer to a reversal's gate request opens its follow-up Council question and starts its run
+// (D-234).
 import { approvalDecision } from "../src/core/approvals.ts";
 import { createLibrary, LibraryError } from "../src/core/library.ts";
 import {

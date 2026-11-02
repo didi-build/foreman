@@ -69,13 +69,13 @@ A field of the wrong type refuses the dispatch before anything is written, and t
 
 ## edges
 
-| Column     | Type        | Notes                                                                                                     |
-| ---------- | ----------- | --------------------------------------------------------------------------------------------------------- |
-| id         | uuid pk     |                                                                                                           |
-| from_node  | uuid fk     |                                                                                                           |
-| to_node    | uuid fk     |                                                                                                           |
-| type       | text        | `blocks` (from blocks to), `split_into` (idea to work item), `design_for` (design item to developer item) |
-| created_at | timestamptz |                                                                                                           |
+| Column     | Type        | Notes                                                                                                                                                                                   |
+| ---------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id         | uuid pk     |                                                                                                                                                                                         |
+| from_node  | uuid fk     |                                                                                                                                                                                         |
+| to_node    | uuid fk     |                                                                                                                                                                                         |
+| type       | text        | `blocks` (from blocks to), `split_into` (idea to work item), `design_for` (design item to developer item), `reworks` (rework item to the merged item it reworks, migration 0015, D-233) |
+| created_at | timestamptz |                                                                                                                                                                                         |
 
 Constraint: unique (from_node, to_node, type). No self edges. A blocks cycle is rejected by the library when an edge is added.
 
@@ -143,7 +143,7 @@ Note: because rows are append-only, a reversal inserts a new `decisions` row and
 | decision_id | uuid fk                | The decision the node relies on |
 | pk          | (node_id, decision_id) |                                 |
 
-When a decision is reversed, every node in this table for that decision is marked stale, and a Council question is created. The Council's answer gives a verdict for every stale node, which the runner records and applies (D-229, `src/core/council.ts`): `still_valid` clears the flag, `redo` clears it for a node still in an initial state of its track and otherwise sends the node back to the start of its track with the redo move (D-231), and `cannot_decide` sends the node to Didi with one gate request. A merged node stays stale for Didi (N-43). A flag stays set while another reversal of a decision the node relies on has no Council verdict for it (O-50, O-51). The runner also links each node the answer gives a verdict for to the Council's `council_decision`, whose scope (`topicKey`, `runId`, `reversedDecisionId`, `verdicts`, `clearedNodeIds`) names the nodes whose flags it cleared; `council_redo_recorded` reads both (O-51).
+When a decision is reversed, every node in this table for that decision is marked stale, and a Council question is created. The Council's answer gives a verdict for every stale node, which the runner records and applies (D-229, `src/core/council.ts`): `still_valid` clears the flag, `redo` clears it for a node still in an initial state of its track and otherwise sends the node back to the start of its track with the redo move (D-231), and `cannot_decide` sends the node to Didi with one gate request. A merged node gets a new rework item in its track's start state, linked to it with a `reworks` edge, and its flag is cleared (D-233, O-55). A flag stays set while another reversal of a decision the node relies on has no Council verdict for it (O-50, O-51). The runner also links each node the answer gives a verdict for to the Council's `council_decision`, whose scope (`topicKey`, `runId`, `reversedDecisionId`, `verdicts`, `clearedNodeIds`) names the nodes whose flags it cleared; `council_redo_recorded` reads both (O-51). When Didi answers a reversal's gate request, a follow-up Council question on the same reversal (a `gate_requests` row with `didiDecisionId` in its payload) gets one more Council answer, and for each node the latest answer on a reversal counts (D-234, O-56).
 
 ## gate_requests
 
