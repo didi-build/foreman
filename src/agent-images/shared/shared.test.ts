@@ -11,7 +11,13 @@ import {
   providerErrorFromHttp,
   retryAfterSeconds,
 } from "./provider-error.ts";
-import { errorResult, redact, resultLine, type AgentResult } from "./result.ts";
+import {
+  errorResult,
+  exitCode,
+  redact,
+  resultLine,
+  type AgentResult,
+} from "./result.ts";
 import { PLACEHOLDER_CREDENTIAL, readImageSettings, secretValues } from "./settings.ts";
 import { parseTask } from "./task.ts";
 import { parseRunPrice, requestCostUsd, type RunPrice } from "./price.ts";
@@ -176,6 +182,18 @@ describe("result line (unit: round trip through the runtime's parser, ADR 0106 s
     const line = resultLine(sample, []);
     expect(line).not.toContain("\n");
     expect(parseAgentResult(`some log line\n${line}\n`)).toEqual(sample);
+  });
+
+  it("round-trips a stop for a decision, and exits 0 for it as for success (D-237)", () => {
+    const stopped: AgentResult = {
+      ...sample,
+      status: "needs_decision",
+      structured: { stopped: "needs_decision", reason: "needs a new screen" },
+    };
+    expect(parseAgentResult(resultLine(stopped, []))).toEqual(stopped);
+    expect(exitCode(stopped)).toBe(0);
+    expect(exitCode(sample)).toBe(0);
+    expect(exitCode(errorResult("x"))).toBe(1);
   });
 
   it("round-trips an error with a provider error and no counts", () => {

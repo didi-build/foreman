@@ -168,6 +168,8 @@ The runner's merge writes `merge_commit` under the same ingest key as GitHub ing
 | `didi_question_open`             | an open gate request on the escalation topic owned by `didi`                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `didi_answer_recorded`           | see the decision conventions above                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
+An `agent_report` that asks to escalate is a bot's own, through the state API, or the one the runner records from a builder that stopped because the item needs a decision (`{escalate: true, reason}`, D-237, O-63).
+
 ## Not yet checked
 
 - Citation checks for `qa_verdict` (cited files and lines exist at the head commit) need the repository and land with the runner (M3.2). Until then the guard trusts the stored findings shape.

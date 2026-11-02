@@ -137,6 +137,7 @@ describe("the other roles' inputs (unit, ADR 0107, ADR 0112)", () => {
       node: node({}),
       project,
       branch: runBranch(NODE_ID),
+      state: { name: "writing_spec", label: "Writing spec" },
     });
     expect(designer).toContain(`## Branch\n\nforeman/${NODE_ID}`);
     for (const role of ["council", "triage"] as const) {
@@ -145,6 +146,51 @@ describe("the other roles' inputs (unit, ADR 0107, ADR 0112)", () => {
       expect(input).not.toContain("## Repository");
       expect(input).not.toContain("## Branch");
     }
+  });
+});
+
+describe("the Designer's step (unit, D-238)", () => {
+  const designerInput = (state?: { name: string; label: string }) =>
+    taskInput({
+      role: "designer",
+      node: node({ checks: ["npm run check"] }),
+      project,
+      branch: runBranch(NODE_ID),
+      ...(state ? { state } : {}),
+    });
+  const developerInput = (state?: { name: string; label: string }) =>
+    taskInput({
+      role: "developer",
+      node: node({ checks: ["npm run check"] }),
+      project,
+      branch: runBranch(NODE_ID),
+      ...(state ? { state } : {}),
+    });
+
+  it("gives the Designer the item's state as the contracts name it, and changes nothing else", () => {
+    const input = designerInput({
+      name: "in_design_exploration",
+      label: "In design exploration",
+    });
+    expect(input).toContain(
+      "## The item's state\n\nin_design_exploration (In design exploration). Use it to pick your step, as your instructions say.",
+    );
+    // Without that one section, the Designer's input is the Developer's, unchanged.
+    const without = input.replace(/## The item's state\n\n[^\n]*\n\n/, "");
+    expect(without).toBe(developerInput());
+  });
+
+  it("refuses a Designer input without the item's state, or with a state name the contracts could not have", () => {
+    expect(() => designerInput()).toThrow("a designer input needs the item's state");
+    expect(() =>
+      designerInput({ name: "Writing spec\n## Branch", label: "x" }),
+    ).toThrow("a designer input needs the item's state");
+  });
+
+  it("gives no other role the state", () => {
+    expect(
+      developerInput({ name: "in_development", label: "In development" }),
+    ).not.toContain("## The item's state");
   });
 });
 

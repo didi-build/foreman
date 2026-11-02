@@ -371,6 +371,10 @@ describe("a staging fail starts the builder's fix round (flow: fake adapters, O-
     expect(tasksFor.at(-1)?.input).toContain(
       `The staging deploy of commit ${t.mergeSha} failed (GitHub state failure), and it covers merge commit ${t.mergeSha}.`,
     );
+    // The Designer is told its step from the item's state, by the contracts' name (D-238).
+    expect(tasksFor.at(-1)?.input).toContain(
+      "## The item's state\n\nbuilding_components (Building components).",
+    );
   });
 
   it("at the failure threshold escalates the item and starts nothing", async () => {

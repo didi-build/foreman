@@ -29,15 +29,16 @@ import type { JobStatus } from "./objects.ts";
  *   "firstTokenMs": 900 }
  * ```
  *
- * `status` is `success`, `error`, `max_turns` (the runtime's turn cap) or `max_budget` (its
- * dollar cap). `providerError` is the model provider's last error response, if the run ended on
+ * `status` is `success`, `error`, `max_turns` (the runtime's turn cap), `max_budget` (its
+ * dollar cap) or `needs_decision`: a builder stopped because the item needs a product decision or
+ * a new feature, with `structured` `{"stopped": "needs_decision", "reason": "..."}` (D-237, O-63). `providerError` is the model provider's last error response, if the run ended on
  * one. Every field but `foremanResult` and `status` may be missing. The last four are what the
  * runtime measured about the route (ADR 0114 sections 2, 8 and 9), each only where it can: the
  * tier the provider's responses reported (one tier, or `mixed`), the Flex capacity rejections it
  * retried and the whole seconds it waited on them, and the time to the first output token.
  */
 export interface AgentResult {
-  status: "success" | "error" | "max_turns" | "max_budget";
+  status: "success" | "error" | "max_turns" | "max_budget" | "needs_decision";
   finalText: string;
   structured?: unknown;
   turns: number | null;
@@ -58,7 +59,13 @@ export interface ProviderError {
   retryAfterSeconds: number | null;
 }
 
-const STATUSES = new Set(["success", "error", "max_turns", "max_budget"]);
+const STATUSES = new Set([
+  "success",
+  "error",
+  "max_turns",
+  "max_budget",
+  "needs_decision",
+]);
 const SERVED_TIERS: readonly ServedTier[] = ["standard", "flex", "priority", "mixed"];
 const MAX_FINAL_TEXT = 64 * 1024;
 const MAX_ERROR_TEXT = 4 * 1024;
@@ -72,6 +79,19 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const text = (value: unknown, max: number): string =>
   typeof value === "string" ? value.slice(0, max) : "";
 
+/** The longest reason a `needs_decision` result may give; the OpenCode image checks the same. */
+export const NEEDS_DECISION_MAX_REASON = 1000;
+
+/** The reason of a `needs_decision` result's `structured`, or null when it is not that shape. */
+export function needsDecisionReason(structured: unknown): string | null {
+  if (!isObject(structured)) return null;
+  const keys = Object.keys(structured);
+  if (keys.length !== 2 || structured.stopped !== "needs_decision") return null;
+  const reason = structured.reason;
+  if (typeof reason !== "string") return null;
+  const trimmed = reason.trim();
+  return trimmed !== "" && trimmed.length <= NEEDS_DECISION_MAX_REASON ? trimmed : null;
+}
 function tokens(value: unknown): RunTokens | null {
   if (!isObject(value)) return null;
   const { uncachedInput, cachedInput, cacheWriteInput, output } = value;
@@ -191,8 +211,9 @@ export function usageCause(
  * the deadline is `timeout` whatever the output says; the runtime's turn or dollar cap, or either
  * of the proxy's ceiling messages, is `budget_exceeded`; a provider rate-limit, capacity or
  * credit error is `usage_exhausted`, with the route's requested tier telling a Flex capacity
- * rejection from a rate limit; success needs both a Complete Job and a `success` result; anything
- * else, bad output included, is `fail`. What the runtime measured about the route is passed on.
+ * rejection from a rate limit; success needs both a Complete Job and a `success` result; a
+ * Complete Job with a well-formed `needs_decision` result is `success` with detail
+ * `needs_decision` and its reason (O-63); anything else, bad output included, is `fail`. What the runtime measured about the route is passed on.
  */
 export function mapRunEnd(
   state: "complete" | "deadline" | "failed",
@@ -216,6 +237,19 @@ export function mapRunEnd(
   if (result === null) return { ...base, outcome: "fail", detail: "bad_output" };
   if (state === "complete" && result.status === "success") {
     return { ...base, outcome: "success", detail: "success" };
+  }
+  if (state === "complete" && result.status === "needs_decision") {
+    // The run ended as its instructions say; the runner asks for the escalation (O-63). A
+    // reason of the wrong shape is bad output.
+    const reason = needsDecisionReason(result.structured);
+    return reason === null
+      ? { ...base, outcome: "fail", detail: "bad_output" }
+      : {
+          ...base,
+          outcome: "success",
+          detail: "needs_decision",
+          needsDecision: { reason },
+        };
   }
   if (result.status === "max_turns" || result.status === "max_budget") {
     return { ...base, outcome: "budget_exceeded", detail: result.status };

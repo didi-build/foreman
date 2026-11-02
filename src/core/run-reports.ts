@@ -32,6 +32,13 @@
 // report counts if it is asked for again once CI is red), and a refusal by `scope_matches_plan`
 // alone (a scope change, which the contract sends to the Council, not to the counter). A QA run's
 // report never counts: a merge waiting on a condition is not a failure.
+//
+// A builder that stopped because the item needs a decision (D-237, O-63): the run ended `success`
+// with its reason, and the run-end flow records that reason with `recordNeedsDecision` before the
+// end, as an `agent_report` asking to escalate, the form `escalation_trigger_met` already reads
+// ("a bot asked"). The report then asks for the escalation to the Council (D-177) with the run's
+// trigger instead of the done move, so nothing is counted toward `failure` and no fix round
+// starts. The Council decides; when it decides Didi is needed, the item goes on to Didi (M3.5).
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import type { GitHub } from "./github.ts";
 import {
@@ -48,7 +55,7 @@ import { REDO_GUARD } from "./guards/council.ts";
 import { headCommit, readCiRun } from "./guards/evidence.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
-import type { AgentRole, CounterKind, Node, Run, Store } from "./store.ts";
+import type { AgentRole, CounterKind, Evidence, Node, Run, Store } from "./store.ts";
 import { PUSHING_ROLES } from "./task-input.ts";
 
 export { MERGE_MOVE_GUARD };
@@ -107,6 +114,25 @@ export type ReportedMove =
       escalation?: ReportedEscalation;
       /** A refused done report, counted toward `failure` (P-03, O-43). */
       failureCount?: FailureCount;
+    };
+
+/** The longest reason a builder's stop may give (the runtime checks the same bound). */
+export const NEEDS_DECISION_REASON_CHARS = 1000;
+
+/** The `ref` of the `agent_report` the runner records for a builder's stop: one per run. */
+export const needsDecisionRef = (runId: string): string =>
+  `runner:needs_decision:run-${runId}`;
+
+/** The runner's own reason on the escalation move; the bot's words stay in its report. */
+export const NEEDS_DECISION_ESCALATION_REASON =
+  "the builder stopped: the item needs a product decision or a new feature";
+
+/** What `recordNeedsDecision` did. */
+export type NeedsDecisionRecord =
+  | { recorded: true | "already_recorded" }
+  | {
+      recorded: false;
+      reason: "no_run" | "no_node" | "not_a_builder" | "bad_reason";
     };
 
 const FAILURE_LIMIT_REASON =
@@ -201,8 +227,62 @@ export function createRunReports(options: RunReportsOptions) {
     );
   }
 
+  /** The `agent_report` a builder's stop was recorded as, if this run made one (O-63). */
+  async function neededDecision(node: Node, run: Run): Promise<Evidence | undefined> {
+    const ref = needsDecisionRef(run.id);
+    return (await store.listEvidence({ nodeId: node.id, kind: "agent_report" })).find(
+      (e) => e.runId === run.id && e.ref === ref,
+    );
+  }
+
   return {
     reportMoves,
+
+    /**
+     * Records a builder's stop for a decision as an `agent_report` asking to escalate, with the
+     * bot's reason, once per run (O-63). It is a record of what the run said, like the run's end,
+     * so it is written whatever the switches say; the escalation move obeys them. The node is
+     * locked first, so two flows for the same run write one row.
+     */
+    async recordNeedsDecision(
+      runId: string,
+      reason: string,
+    ): Promise<NeedsDecisionRecord> {
+      const run = await store.getRun(runId);
+      if (!run) return { recorded: false, reason: "no_run" };
+      if (!PUSHING_ROLES.includes(run.bot as AgentRole)) {
+        return { recorded: false, reason: "not_a_builder" };
+      }
+      const text = reason.trim();
+      if (text === "" || text.length > NEEDS_DECISION_REASON_CHARS) {
+        return { recorded: false, reason: "bad_reason" };
+      }
+      const nodeId = run.nodeId;
+      if (!nodeId) return { recorded: false, reason: "no_node" };
+      const ref = needsDecisionRef(run.id);
+      return store.transaction(async (tx) => {
+        if (!(await tx.getNodeForUpdate(nodeId))) {
+          return { recorded: false as const, reason: "no_node" as const };
+        }
+        const earlier = (await tx.listEvidence({ nodeId, kind: "agent_report" })).some(
+          (e) => e.runId === run.id && e.ref === ref,
+        );
+        if (earlier) return { recorded: "already_recorded" as const };
+        await tx.insertEvidence({
+          id: options.ids.next(),
+          nodeId,
+          runId: run.id,
+          kind: "agent_report",
+          ref,
+          commitSha: null,
+          payload: { escalate: true, reason: text },
+          recordedBy: "runner",
+          recordedAt: clock.now(),
+          supersedesId: null,
+        });
+        return { recorded: true as const };
+      });
+    },
 
     /**
      * Asks for the move the run's report triggers, once its end is recorded. Each move goes
@@ -252,6 +332,27 @@ export function createRunReports(options: RunReportsOptions) {
           past.triggerRef !== `dispatch:${run.id}`,
       );
       if (movedSince) return { requested: false, reason: "state_changed" };
+      // A builder that stopped for a decision asks for the escalation, not the done move (O-63).
+      if (
+        PUSHING_ROLES.includes(run.bot as AgentRole) &&
+        (await neededDecision(node, run))
+      ) {
+        const escalation = await escalate(
+          node.id,
+          trigger,
+          NEEDS_DECISION_ESCALATION_REASON,
+        );
+        if (!escalation) return { requested: false, reason: "no_move" };
+        return {
+          requested: true,
+          outcome: escalation.outcome,
+          toState: escalation.toState,
+          ...(escalation.reason ? { reason: escalation.reason } : {}),
+          ...(escalation.transitionId ? { transitionId: escalation.transitionId } : {}),
+          failedGuards: escalation.failedGuards,
+          escalation,
+        };
+      }
       const moves = reportMoves(node, run.bot);
       if (moves.length === 0) return { requested: false, reason: "no_move" };
 

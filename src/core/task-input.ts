@@ -81,6 +81,10 @@ export const list = (items: string[], none: string): string =>
     ? none
     : items.map((item) => `- ${item.replace(/\s*\r?\n\s*/g, " ")}`).join("\n");
 
+/** A state id as the contracts write it (contracts/machine-2). */
+const STATE_NAME = /^[a-z_]{1,64}$/;
+const oneLine = (text: string): string => text.replace(/\s*\r?\n\s*/g, " ").trim();
+
 /** The pieces the input is built from: the item, its project, and the run's own facts. */
 export interface TaskInputContext {
   role: AgentRole;
@@ -88,6 +92,11 @@ export interface TaskInputContext {
   project: Pick<Project, "repo">;
   /** Developer and Designer: the branch to push to (`runBranch`). */
   branch?: string;
+  /**
+   * Designer: the item's state as the contracts name it, and its label, when the input is built
+   * (D-238, O-64). It tells the Designer which step it is on: exploration, spec or components.
+   */
+  state?: { name: string; label: string };
   /** QA: the pull request and the head commit the runner set (ADR 0107). */
   prNumber?: number | null;
   headSha?: string | null;
@@ -203,7 +212,8 @@ export const section = (heading: string, body: string): string =>
 
 /**
  * The run's input (D-213). Every role gets the item: its title, description and acceptance
- * criteria. The Developer and the Designer also get the paths in scope, the checks that must pass
+ * criteria. The Designer gets the item's state, so it knows its step (D-238). The Developer and
+ * the Designer also get the paths in scope, the checks that must pass
  * before a push, and the repository and branch to push to, and on a fix round why the item came
  * back (a failed QA round's findings, or the failed staging check or deploy). QA gets the pull request and the head
  * commit to review, which the runner set (ADR 0107). Triage gets the item only. A Council run
@@ -230,6 +240,18 @@ export function taskInput(context: TaskInputContext): string {
   if (PUSHING_ROLES.includes(context.role)) {
     if (!context.branch)
       throw new LibraryError(`a ${context.role} input needs its branch`);
+    if (context.role === "designer") {
+      const state = context.state;
+      if (!state || !STATE_NAME.test(state.name)) {
+        throw new LibraryError("a designer input needs the item's state");
+      }
+      parts.push(
+        section(
+          "The item's state",
+          `${state.name} (${oneLine(state.label)}). Use it to pick your step, as your instructions say.`,
+        ),
+      );
+    }
     if (context.returned) {
       parts.push(section("Why the item came back", returnSection(context.returned)));
     }

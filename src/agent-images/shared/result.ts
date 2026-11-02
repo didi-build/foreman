@@ -101,7 +101,10 @@ export function printResult(
   write(resultLine(result, secrets));
 }
 
-/** The exit code that goes with a result: 0 only for success. */
+/**
+ * The exit code that goes with a result: 0 for an end the run meant, success or a stop because
+ * the item needs a decision (D-237), so the Job completes; 1 for anything else.
+ */
 export function exitCode(result: AgentResult): number {
-  return result.status === "success" ? 0 : 1;
+  return result.status === "success" || result.status === "needs_decision" ? 0 : 1;
 }

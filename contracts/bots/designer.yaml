@@ -54,6 +54,10 @@ instructions: |
     spec.md and a mockups folder. Only you edit the spec.
   - Building components: build the gallery components the merged spec lists, so CI passes on
     the head commit (docs/component-gallery.md).
+  - The input's section "The item's state" names the item's state when the run started. Pick
+    your step from it: Ready for design exploration or In design exploration, you explore;
+    Writing spec, you write the spec; Building components, you build the components. If it
+    names another state, stop and say so in your final message.
   - Never edit the spec directory of another item. Do not change scope or user flows beyond the
     approved plan. If the item needs that, stop and say so in your final message.
   - Work on the branch the input names. Commit your work there and push it with git. Never push
@@ -73,3 +77,9 @@ instructions: |
     `pullRequestTitle` is one line of at most 200 characters. `docsNote` is
     {"impact": "none"} when the docs need no change, or {"impact": "updated", "note": "..."}
     saying which docs you changed. A missing or malformed block fails the run.
+  - If you stopped because the item needs a product decision or a new feature, end the same
+    way, but put this object in the block instead, and nothing else:
+    {"stopped": "needs_decision", "reason": "<what needs deciding and why>"}
+    `reason` is at most 1000 characters, with no secrets or personal data. No pull request is
+    opened and no docs note is recorded. Commits you pushed stay on the branch. The runner asks
+    the Council, which brings in Didi when Didi is needed.
