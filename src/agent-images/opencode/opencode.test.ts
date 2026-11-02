@@ -12,14 +12,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   mapRunEnd,
   parseAgentResult,
 } from "../../adapters/agent-runtime/kubernetes/result.ts";
+import { readBotFiles } from "../../adapters/contracts-file/bot-files.ts";
 import { CEILING_MESSAGE, REJECTED_CEILING_MESSAGE } from "../../egress-proxy/proxy.ts";
 import type { RunPrice } from "../shared/price.ts";
+import { createFakeGitHub, type FakeGitHub } from "../testing/fake-github.ts";
+import { startFakeProxy, type FakeProxy } from "../testing/fake-proxy.ts";
 import { PLACEHOLDER_CREDENTIAL } from "../shared/settings.ts";
 import { refuseRepositoryConfig } from "./checkout.ts";
 import { OPENCODE_SWITCHES, openCodeCommand } from "./command.ts";
@@ -32,16 +35,31 @@ import {
   type RunTally,
 } from "./events.ts";
 import { runOpenCodeImage } from "./image.ts";
+import { FINISH_FAILURES } from "./finish.ts";
+import type { GitHubApi } from "./github.ts";
 import { limitStop } from "./limits.ts";
 import { mcpBlock } from "./magicpath.ts";
 import { openCodePermissions } from "./permissions.ts";
 import type { StopClock } from "./process.ts";
+import { openOrReusePullRequest } from "./pull-request.ts";
+import { parseRunReport } from "./report.ts";
 import { OPENCODE_RETRIES, openCodeResult } from "./result.ts";
 import type { OpenCodeSettings } from "./settings.ts";
 
 const STATE_TOKEN = "state-token-value-not-real-0123456789";
 const GITHUB_TOKEN = "github-token-value-not-real-0123456789";
 const RUN_ID = "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21";
+const NODE_ID = "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b";
+const BRANCH = `foreman/${NODE_ID}`;
+const REPOSITORY = "didi-build/rehearsal";
+const HEAD_SHA = "a".repeat(40);
+const FINAL = [
+  "Done.",
+  "",
+  "```foreman-report",
+  '{"pullRequestTitle": "Add the fixture change", "docsNote": {"impact": "none"}}',
+  "```",
+].join("\n");
 const NOW = new Date("2026-10-31T12:00:00Z");
 
 const SONNET_PRICE: RunPrice = {
@@ -77,6 +95,9 @@ const settings: OpenCodeSettings = {
   cliPath: "/opt/opencode/bin/opencode",
   configHome: "/opt/opencode/xdg-config",
   magicPathUrl: undefined,
+  repository: REPOSITORY,
+  egressProxyUrl: "http://10.245.0.10:8080",
+  githubToken: GITHUB_TOKEN,
 };
 
 const TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(git *)", "Bash(npm *)"];
@@ -580,6 +601,8 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
   let tmp: string;
   let lines: string[];
   let env: Record<string, string>;
+  let github: FakeGitHub;
+  let proxy: FakeProxy;
 
   const writeTask = (input: string, extra: Record<string, unknown> = {}) => {
     const file = join(dir, "task.json");
@@ -590,11 +613,16 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         instructions: "Fixture instructions.",
         input,
         allowedTools: TOOLS,
+        nodeId: NODE_ID,
+        branch: BRANCH,
         ...extra,
       }),
     );
     env.FOREMAN_TASK_FILE = file;
   };
+  /** A success run whose final message is `text`. */
+  const withFinal = (text: string) =>
+    `scenario=success final64=${Buffer.from(text, "utf8").toString("base64")}`;
   const call = () =>
     JSON.parse(readFileSync(join(work, "fake-opencode-call.json"), "utf8")) as {
       args: string[];
@@ -610,11 +638,20 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       write: (l) => lines.push(l),
       clock,
       now: () => NOW,
+      // The fake proxy tunnels to a plain HTTP fake GitHub: no TLS in tests.
+      secureTunnel: (socket) => socket,
     });
     return { code, result: parseAgentResult(lines.join("\n")) };
   };
 
-  beforeEach(() => {
+  afterEach(async () => {
+    await proxy.close();
+  });
+
+  beforeEach(async () => {
+    github = createFakeGitHub(REPOSITORY);
+    github.branches.set(BRANCH, HEAD_SHA);
+    proxy = await startFakeProxy(github);
     dir = mkdtempSync(join(tmpdir(), "foreman-opencode-test-"));
     const cli = join(dir, "opencode");
     copyFileSync(new URL("../testing/fake-opencode.mjs", import.meta.url), cli);
@@ -636,8 +673,10 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       FOREMAN_MODEL_BASE_URL: "http://127.0.0.1:9/anthropic/v1",
       FOREMAN_SERVICE_TIER: "standard",
       FOREMAN_MODEL_PRICE: JSON.stringify(SONNET_PRICE),
-      FOREMAN_STATE_API_URL: "http://127.0.0.1:9/state-api",
+      FOREMAN_STATE_API_URL: proxy.stateApiUrl,
       FOREMAN_STATE_API_TOKEN: STATE_TOKEN,
+      FOREMAN_REPOSITORY: REPOSITORY,
+      HTTPS_PROXY: proxy.proxyUrl,
       GITHUB_TOKEN,
       FOREMAN_OPENCODE_CLI: cli,
       FOREMAN_OPENCODE_CONFIG_HOME: join(dir, "xdg-config"),
@@ -653,7 +692,16 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
     expect(lines).toHaveLength(1);
     expect(result).toEqual({
       status: "success",
-      finalText: "Done.",
+      finalText: FINAL,
+      structured: {
+        pullRequest: {
+          number: 101,
+          url: `https://github.com/${REPOSITORY}/pull/101`,
+          headSha: HEAD_SHA,
+          reused: false,
+        },
+        docsNote: { impact: "none" },
+      },
       turns: 2,
       costUsd: expect.closeTo(0.025881, 12),
       tokens: {
@@ -836,6 +884,11 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       /FOREMAN_MAX_OUTPUT_TOKENS is not a whole number/,
     ],
     ["FOREMAN_ROLE", "qa", /FOREMAN_ROLE is not a role this image runs/],
+    ["FOREMAN_REPOSITORY", undefined, /FOREMAN_REPOSITORY is not set/],
+    ["FOREMAN_REPOSITORY", "../x", /FOREMAN_REPOSITORY is not a GitHub owner\/name/],
+    ["GITHUB_TOKEN", undefined, /GITHUB_TOKEN is not set/],
+    ["HTTPS_PROXY", undefined, /HTTPS_PROXY is not set/],
+    ["HTTPS_PROXY", "https://10.0.0.1:8080", /HTTPS_PROXY must be the egress proxy/],
   ])(
     "refuses a missing or bad %s by name before OpenCode starts",
     async (name, value, problem) => {
@@ -855,5 +908,406 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
     expect(result?.errorText).toBe("allowed tool 2 would allow every shell command");
     expect(existsSync(join(work, "fake-opencode-call.json"))).toBe(false);
     expect(readdirSync(tmp)).toEqual([]);
+  });
+
+  it("refuses a task without its node id or branch before OpenCode starts", async () => {
+    writeTask("scenario=success", { branch: undefined });
+    expect((await run()).result?.errorText).toBe("a developer task needs its branch");
+    writeTask("scenario=success", { nodeId: undefined });
+    expect((await run()).result?.errorText).toBe("a developer task needs its node id");
+    writeTask("scenario=success", { branch: "foreman/../main" });
+    expect((await run()).result?.errorText).toBe("a developer task needs its branch");
+    expect(existsSync(join(work, "fake-opencode-call.json"))).toBe(false);
+  });
+
+  describe("the run's PR and docs note (N-44, D-235)", () => {
+    const githubCalls = () => github.calls.map((c) => `${c.method} ${c.path}`);
+    const head = encodeURIComponent(`didi-build:${BRANCH}`);
+
+    it("opens the PR once with the run's token through the proxy, then posts the docs note", async () => {
+      writeTask("scenario=success");
+      const { code, result } = await run();
+      expect(code).toBe(0);
+      expect(githubCalls()).toEqual([
+        `GET /repos/${REPOSITORY}/branches/${BRANCH}`,
+        `GET /repos/${REPOSITORY}/pulls?state=open&head=${head}&per_page=100`,
+        `GET /repos/${REPOSITORY}`,
+        `POST /repos/${REPOSITORY}/pulls`,
+      ]);
+      // Every GitHub request went through a CONNECT tunnel to api.github.com only.
+      expect(proxy.connectTargets).toEqual(Array(4).fill("api.github.com:443"));
+      for (const call of github.calls) {
+        expect(call.headers.authorization).toBe(`Bearer ${GITHUB_TOKEN}`);
+        expect(call.headers.host).toBe("api.github.com");
+      }
+      expect(github.calls.at(-1)?.body).toEqual({
+        title: "Add the fixture change",
+        head: BRANCH,
+        base: "main",
+        body: "Done.",
+      });
+      expect(github.pulls).toHaveLength(1);
+      expect(proxy.stateApiRequests).toHaveLength(1);
+      const [note] = proxy.stateApiRequests;
+      expect(note?.method).toBe("POST");
+      expect(note?.path).toBe("/state-api/reports");
+      expect(note?.headers.authorization).toBe(`Bearer ${STATE_TOKEN}`);
+      expect(note?.body).toEqual({
+        nodeId: NODE_ID,
+        kind: "docs_note",
+        ref: `https://github.com/${REPOSITORY}/pull/101`,
+        // The PR's head as read from GitHub, so the guard counts the note for it (D-236).
+        commitSha: HEAD_SHA,
+        payload: { impact: "none" },
+      });
+      expect(mapRunEnd("complete", null, result, "m")).toMatchObject({
+        outcome: "success",
+        structured: { pullRequest: { number: 101, reused: false } },
+      });
+    });
+
+    it("reuses the open PR for the branch on a fix round, and never opens a second", async () => {
+      writeTask("scenario=success");
+      expect((await run()).code).toBe(0);
+      github.calls.length = 0;
+      github.branches.set(BRANCH, "b".repeat(40));
+      // A new run is a new pod with a fresh temporary folder.
+      env.TMPDIR = join(dir, "tmp-2");
+      mkdirSync(env.TMPDIR);
+      writeTask(
+        withFinal(
+          'Fixed the findings.\n```foreman-report\n{"pullRequestTitle": "Another title", "docsNote": {"impact": "updated", "note": "README: new flag"}}\n```',
+        ),
+      );
+      const { code, result } = await run();
+      expect(code).toBe(0);
+      expect(githubCalls()).toEqual([
+        `GET /repos/${REPOSITORY}/branches/${BRANCH}`,
+        `GET /repos/${REPOSITORY}/pulls?state=open&head=${head}&per_page=100`,
+      ]);
+      expect(github.pulls).toHaveLength(1);
+      expect(result?.structured).toEqual({
+        pullRequest: {
+          number: 101,
+          url: `https://github.com/${REPOSITORY}/pull/101`,
+          headSha: "b".repeat(40),
+          reused: true,
+        },
+        docsNote: { impact: "updated" },
+      });
+      expect(proxy.stateApiRequests.at(-1)?.body).toMatchObject({
+        commitSha: "b".repeat(40),
+        payload: { impact: "updated", note: "README: new flag" },
+      });
+    });
+
+    it("opens a new PR when the branch's earlier PR is closed or merged", async () => {
+      github.pulls.push({
+        number: 7,
+        state: "closed",
+        head: { ref: BRANCH, repo: { full_name: REPOSITORY } },
+        base: { ref: "main" },
+        title: "old",
+        body: "old",
+      });
+      writeTask("scenario=success");
+      const { result } = await run();
+      expect(result?.structured).toMatchObject({ pullRequest: { reused: false } });
+      expect(github.pulls.filter((p) => p.state === "open")).toHaveLength(1);
+    });
+
+    it.each([
+      ["no block", "Done.", "there is no foreman-report block"],
+      [
+        "two blocks",
+        `${FINAL}\n${FINAL}`,
+        "there is more than one foreman-report block",
+      ],
+      [
+        "an unclosed block",
+        "```foreman-report\n{}",
+        "the foreman-report block is not closed",
+      ],
+      [
+        "text that is not JSON",
+        "```foreman-report\nimpact: none\n```",
+        "the foreman-report block is not JSON",
+      ],
+      [
+        "an unknown field",
+        '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "merge": true}\n```',
+        "the foreman-report block must be an object with pullRequestTitle and docsNote only",
+      ],
+      [
+        "no docs note",
+        '```foreman-report\n{"pullRequestTitle": "t"}\n```',
+        "docsNote must be an object with impact and an optional note only",
+      ],
+      [
+        "a bad impact",
+        '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "maybe"}}\n```',
+        "docsNote.impact must be updated or none",
+      ],
+      [
+        "updated with no note",
+        '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "updated"}}\n```',
+        "docsNote.note must say what changed when impact is updated",
+      ],
+      [
+        "a two-line title",
+        '```foreman-report\n{"pullRequestTitle": "a\\nb", "docsNote": {"impact": "none"}}\n```',
+        "pullRequestTitle must be one line of 1 to 200 characters",
+      ],
+    ])(
+      "fails clearly on a final message with %s, calling neither GitHub nor the state API",
+      async (_case, text, problem) => {
+        writeTask(withFinal(text));
+        const { code, result } = await run();
+        expect(code).toBe(1);
+        expect(result?.errorText).toBe(`${FINISH_FAILURES.report}: ${problem}`);
+        expect(github.calls).toEqual([]);
+        expect(proxy.stateApiRequests).toEqual([]);
+        expect(mapRunEnd("failed", null, result, "m")).toMatchObject({
+          outcome: "fail",
+          detail: "job_failed",
+        });
+      },
+    );
+
+    it("fails clearly when the branch was never pushed, opening no PR and posting no note", async () => {
+      github.branches.clear();
+      writeTask("scenario=success");
+      const { code, result } = await run();
+      expect(code).toBe(1);
+      expect(result?.errorText).toBe(
+        `${FINISH_FAILURES.pullRequest}: the run's branch is not on GitHub: nothing was pushed`,
+      );
+      expect(github.pulls).toEqual([]);
+      expect(proxy.stateApiRequests).toEqual([]);
+    });
+
+    it.each([
+      [
+        `POST /repos/${REPOSITORY}/pulls`,
+        403,
+        "GitHub answered 403 while opening the pull request",
+      ],
+      [
+        `GET /repos/${REPOSITORY}`,
+        500,
+        "GitHub answered 500 while reading the repository",
+      ],
+      [
+        `GET /repos/${REPOSITORY}/pulls`,
+        401,
+        "GitHub answered 401 while listing the branch's pull requests",
+      ],
+      [
+        `GET /repos/${REPOSITORY}/branches/${BRANCH}`,
+        502,
+        "GitHub answered 502 while reading the run's branch",
+      ],
+    ])(
+      "maps GitHub's answer to %s with %s to a clear failure",
+      async (route, status, text) => {
+        github.failures.set(route, status);
+        writeTask("scenario=success");
+        const { code, result } = await run();
+        expect(code).toBe(1);
+        expect(result?.errorText).toBe(`${FINISH_FAILURES.pullRequest}: ${text}`);
+        expect(proxy.stateApiRequests).toEqual([]);
+      },
+    );
+
+    it("fails clearly when the proxy refuses the tunnel to GitHub", async () => {
+      const refusing = await startFakeProxy();
+      env.HTTPS_PROXY = refusing.proxyUrl;
+      writeTask("scenario=success");
+      const { result } = await run();
+      await refusing.close();
+      expect(result?.errorText).toBe(
+        `${FINISH_FAILURES.pullRequest}: GitHub could not be reached through the egress proxy while reading the run's branch`,
+      );
+    });
+
+    it.each([
+      [403, "the state API answered 403"],
+      [null, "the state API could not be reached"],
+    ])("fails clearly when the docs note is refused (%s)", async (status, text) => {
+      if (status === null) env.FOREMAN_STATE_API_URL = "http://127.0.0.1:9/state-api";
+      else proxy.reportReply = { status, body: { error: "no" } };
+      writeTask("scenario=success");
+      const { code, result } = await run();
+      expect(code).toBe(1);
+      expect(result?.errorText).toBe(`${FINISH_FAILURES.docsNote}: ${text}`);
+      expect(result?.structured).toBeUndefined();
+    });
+
+    it("never puts a token in the result, the PR, the state API call, a GitHub path or the task file", async () => {
+      writeTask(
+        withFinal(
+          `Used ${GITHUB_TOKEN} and ${STATE_TOKEN}.\n\`\`\`foreman-report\n{"pullRequestTitle": "Title ${GITHUB_TOKEN}", "docsNote": {"impact": "none"}}\n\`\`\``,
+        ),
+      );
+      await run();
+      const sent = JSON.stringify({
+        lines,
+        github: github.calls.map((c) => ({ path: c.path, body: c.body })),
+        pulls: github.pulls,
+        stateApi: proxy.stateApiRequests.map((r) => ({ path: r.path, body: r.body })),
+        task: readFileSync(env.FOREMAN_TASK_FILE as string, "utf8"),
+      });
+      expect(sent).not.toContain(GITHUB_TOKEN);
+      expect(sent).not.toContain(STATE_TOKEN);
+      expect(github.pulls[0]?.body).toBe("Used [redacted] and [redacted].");
+      expect(github.pulls[0]?.title).toBe("Title [redacted]");
+      // Each token goes only to its own service.
+      for (const call of github.calls)
+        expect(JSON.stringify(call.headers)).not.toContain(STATE_TOKEN);
+      for (const request of proxy.stateApiRequests)
+        expect(JSON.stringify(request.headers)).not.toContain(GITHUB_TOKEN);
+    });
+
+    it("never prints a token when GitHub fails", async () => {
+      github.failures.set(`POST /repos/${REPOSITORY}/pulls`, 403);
+      writeTask("scenario=success");
+      await run();
+      expect(lines.join("\n")).not.toContain(GITHUB_TOKEN);
+      expect(lines.join("\n")).not.toContain(STATE_TOKEN);
+    });
+  });
+});
+
+describe("the run's report (unit: the final message's foreman-report block, N-44)", () => {
+  it("reads the title, the docs note and the summary around the block", () => {
+    expect(
+      parseRunReport(
+        'Changed the form.\n\n```foreman-report\n{"pullRequestTitle": " Add the form ", "docsNote": {"impact": "none", "note": "no docs"}}\n```\n\nThanks.',
+      ),
+    ).toEqual({
+      report: {
+        pullRequestTitle: "Add the form",
+        docsNote: { impact: "none", note: "no docs" },
+        summary: "Changed the form.\n\n\nThanks.",
+      },
+    });
+  });
+
+  it("reads an indented block, as the bot files' instructions show it", () => {
+    expect(
+      parseRunReport(
+        '  ```foreman-report\n  {"pullRequestTitle": "t", "docsNote": {"impact": "updated", "note": "docs/a.md"}}\n  ```',
+      ),
+    ).toEqual({
+      report: {
+        pullRequestTitle: "t",
+        docsNote: { impact: "updated", note: "docs/a.md" },
+        summary: "",
+      },
+    });
+  });
+
+  it.each(["developer", "designer"] as const)(
+    "accepts the example block in the %s bot file's instructions",
+    (role) => {
+      const parsed = parseRunReport(readBotFiles()[role].instructions);
+      expect(parsed).toMatchObject({
+        report: { pullRequestTitle: "<one line>", docsNote: { impact: "none" } },
+      });
+    },
+  );
+
+  it("does not take a block with another info string", () => {
+    expect(
+      parseRunReport(
+        '```json\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}}\n```',
+      ),
+    ).toEqual({
+      problem: "there is no foreman-report block",
+    });
+  });
+});
+
+describe("the run's PR (unit: a scripted GitHub, N-44)", () => {
+  const scripted = (
+    answers: Record<string, { status: number | null; body?: unknown }[]>,
+  ) => {
+    const calls: string[] = [];
+    const api: GitHubApi = async (method, path) => {
+      const key = `${method} ${path.split("?")[0]}`;
+      calls.push(key);
+      const next = answers[key]?.shift();
+      return { status: next?.status ?? 404, body: next?.body ?? null };
+    };
+    return { api, calls };
+  };
+  const options = (github: GitHubApi) => ({
+    github,
+    repository: REPOSITORY,
+    branch: BRANCH,
+    title: "t",
+    body: "b",
+  });
+  const branchAnswer = { status: 200, body: { commit: { sha: HEAD_SHA } } };
+  const pull = (number: number) => ({
+    number,
+    state: "open",
+    head: { ref: BRANCH, repo: { full_name: REPOSITORY } },
+  });
+
+  it("reuses the PR another opener made between the list and the open (422)", async () => {
+    const { api, calls } = scripted({
+      [`GET /repos/${REPOSITORY}/branches/${BRANCH}`]: [branchAnswer],
+      [`GET /repos/${REPOSITORY}/pulls`]: [
+        { status: 200, body: [] },
+        { status: 200, body: [pull(9)] },
+      ],
+      [`GET /repos/${REPOSITORY}`]: [{ status: 200, body: { default_branch: "main" } }],
+      [`POST /repos/${REPOSITORY}/pulls`]: [{ status: 422, body: {} }],
+    });
+    expect(await openOrReusePullRequest(options(api))).toEqual({
+      ok: true,
+      pullRequest: {
+        number: 9,
+        url: `https://github.com/${REPOSITORY}/pull/9`,
+        headSha: HEAD_SHA,
+        reused: true,
+      },
+    });
+    expect(calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
+  });
+
+  it("refuses to pick when several open PRs have the branch as head, and ignores a fork's", async () => {
+    const fork = {
+      ...pull(5),
+      head: { ref: BRANCH, repo: { full_name: "someone/rehearsal" } },
+    };
+    const { api } = scripted({
+      [`GET /repos/${REPOSITORY}/branches/${BRANCH}`]: [branchAnswer, branchAnswer],
+      [`GET /repos/${REPOSITORY}/pulls`]: [
+        { status: 200, body: [pull(3), pull(4)] },
+        { status: 200, body: [fork, pull(4)] },
+      ],
+    });
+    expect(await openOrReusePullRequest(options(api))).toMatchObject({
+      ok: false,
+      problem: "several_open_pull_requests",
+    });
+    expect(await openOrReusePullRequest(options(api))).toMatchObject({
+      ok: true,
+      pullRequest: { number: 4, reused: true },
+    });
+  });
+
+  it("refuses GitHub answers in an unexpected shape instead of guessing", async () => {
+    const { api } = scripted({
+      [`GET /repos/${REPOSITORY}/branches/${BRANCH}`]: [
+        { status: 200, body: { commit: {} } },
+      ],
+    });
+    expect(await openOrReusePullRequest(options(api))).toMatchObject({
+      ok: false,
+      problem: "unexpected_answer",
+    });
   });
 });

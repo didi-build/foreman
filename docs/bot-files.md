@@ -46,3 +46,23 @@ QA's verdict schema is not in its bot file. The verdict is the state API's contr
 4. The GitHub installation token comes last, from the `InstallationTokens` port (`src/adapters/github/installation-tokens.ts`): Developer and Designer with write access, QA read-only for its fetch step (ADR 0106 section 5, D-159). Council and Triage get none.
 
 The runner's real token port refuses with `NotBuiltError` until the role's GitHub App is registered through the new-credentials gate (D-156, D-178). So today a Council or Triage task builds fully, and a Developer, Designer or QA task refuses on its token only. Neither credential value is in the task file or the run's spec: they travel in `credentials`, which `start` writes into the run's Secrets.
+
+## How a Developer or Designer run ends (D-235)
+
+The Developer's and Designer's instructions end with the shape of their final message: a short summary, then exactly one block like this, with one JSON object and nothing else:
+
+````text
+```foreman-report
+{"pullRequestTitle": "Add the login form", "docsNote": {"impact": "none"}}
+```
+````
+
+`docsNote` is `{"impact": "none"}` (a `note` is optional) or `{"impact": "updated", "note": "<which docs changed>"}`. When OpenCode ends with success, the image's wrapper (`src/agent-images/opencode/finish.ts`), in plain code and not through the model:
+
+1. Reads the block strictly. No block, two blocks, an unknown field or a bad value fails the run with "the final message has no usable report".
+2. Reads the run's branch on GitHub. A branch that was not pushed fails the run with "nothing was pushed".
+3. Reuses the open pull request whose head is that branch, or opens one into the repository's default branch with the block's title and the rest of the message as its description, credential values removed. A closed or merged PR is never reused.
+4. Posts the docs note to the state API (`POST /reports`, kind `docs_note`), with the PR's link as its `ref` and the PR's head commit, as it read it from GitHub, as its `commitSha`, so `docs_updated_or_none` counts the note for that head though GitHub's `ci_run` rows arrive later (D-236).
+5. Puts the PR (number, link, head commit, whether it was reused) in the result line's `structured` field.
+
+GitHub is reached through the run's egress proxy (a CONNECT tunnel to `api.github.com`, already in both bot files' `allowed_hosts`) with the run's GitHub token, and the state API through the proxy's `/state-api` route with the run's state API token. No host, tool or permission was added. The runner links the PR to the item from GitHub's own events, by its branch and App author, not from this result (O-61). The task file carries the run's node id and branch for this.

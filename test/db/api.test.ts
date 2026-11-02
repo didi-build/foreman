@@ -12,6 +12,7 @@ import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts"
 import { hashToken } from "../../src/api/auth.ts";
 import { ENTRY_CONTRACTS } from "../../src/api/entry.ts";
 import { createApiHandler } from "../../src/api/routes.ts";
+import { docsUpdatedOrNone } from "../../src/core/guards/review.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import type { AgentRole, Store } from "../../src/core/store.ts";
 import { testRouteColumns } from "../../src/core/routing-testing.ts";
@@ -236,6 +237,56 @@ describe.skipIf(!adminUrl)(
         ref: "pr/1",
       });
       expect(result.status).toBe(201);
+    });
+
+    it("stores the head a docs note names, and the guard counts it though CI is recorded later (D-236)", async () => {
+      const token = await issue("developer", { nodeId: item });
+      const NEXT = "e".repeat(40);
+      const named = await call("POST", "/reports", token, {
+        nodeId: item,
+        kind: "docs_note",
+        ref: "https://github.com/didi-build/rehearsal/pull/1",
+        commitSha: NEXT,
+        payload: { impact: "none" },
+      });
+      expect(named.status).toBe(201);
+      // A commit on any other kind is refused.
+      expect(
+        (
+          await call("POST", "/reports", token, {
+            nodeId: item,
+            kind: "agent_report",
+            ref: "x",
+            commitSha: NEXT,
+          })
+        ).status,
+      ).toBe(400);
+      const notes = await runner.listEvidence({ nodeId: item, kind: "docs_note" });
+      expect(notes.at(-1)).toMatchObject({ commitSha: NEXT, recordedBy: "developer" });
+
+      // The PR's head moves to NEXT; GitHub's ci_run rows for it arrive after the note.
+      for (const [conclusion, at] of [
+        ["pending", "2099-01-01T00:00:00Z"],
+        ["success", "2099-01-01T00:10:00Z"],
+      ] as const) {
+        await runner.insertEvidence({
+          id: nextId(),
+          nodeId: item,
+          runId: null,
+          kind: "ci_run",
+          ref: `ci/next/${conclusion}`,
+          commitSha: NEXT,
+          payload: { conclusion, pr: 1 },
+          recordedBy: "runner",
+          recordedAt: new Date(at),
+          supersedesId: null,
+        });
+      }
+      const node = await runner.getNode(item);
+      if (!node) throw new Error("the test node is missing");
+      expect(await docsUpdatedOrNone({ node, store: runner })).toMatchObject({
+        pass: true,
+      });
     });
 
     it("stores one QA verdict per run against the run's commit", async () => {

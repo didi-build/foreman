@@ -19,8 +19,16 @@ export interface AgentTaskFile {
   input: string;
   /** Developer and Designer: the Claude Code tools the run may use, from the bot file. */
   allowedTools?: string[];
-  /** QA: the node the verdict is for. */
+  /**
+   * QA: the node the verdict is for. Developer and Designer: the node the run works on, which
+   * the OpenCode image's wrapper names when it posts the run's docs note (N-44, D-235).
+   */
   nodeId?: string;
+  /**
+   * Developer and Designer: the branch the run pushes to (`runBranch` in src/core/task-input.ts).
+   * The OpenCode image's wrapper opens or reuses the pull request for it (N-44, D-235).
+   */
+  branch?: string;
   /** QA: the runner's evidence ids the verdict may cite (ADR 0107). */
   evidenceIds?: string[];
   /** Council and Triage: the JSON schema of the structured result, from the bot file. */
@@ -38,6 +46,12 @@ export const MAX_TASK_BYTES = 900 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** One allowed tool: a name, optionally with a pattern, for example `Bash(git *)` (D-196). */
 export const TOOL = /^[A-Za-z][A-Za-z0-9_]*(?:\([^()\n]{1,200}\))?$/;
+/**
+ * A branch name the wrapper may use in a GitHub API path: plain segments of letters, digits,
+ * `.`, `_` and `-` joined by `/`, none starting with `.` or `-`, so never `..` or an option.
+ */
+export const BRANCH =
+  /^(?=.{1,200}$)[A-Za-z0-9_][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -59,8 +73,16 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     if (tools.length === 0 || !tools.every((t) => TOOL.test(t))) {
       throw new Error(`a ${role} task needs its allowed tools`);
     }
-  } else if (task.allowedTools !== undefined) {
-    throw new Error(`a ${role} run has no Claude Code tools`);
+    if (!UUID.test(task.nodeId ?? ""))
+      throw new Error(`a ${role} task needs its node id`);
+    if (!BRANCH.test(task.branch ?? "") || (task.branch ?? "").endsWith(".lock")) {
+      throw new Error(`a ${role} task needs its branch`);
+    }
+  } else {
+    if (task.allowedTools !== undefined) {
+      throw new Error(`a ${role} run has no Claude Code tools`);
+    }
+    if (task.branch !== undefined) throw new Error(`a ${role} task has no branch`);
   }
   if (role === "qa") {
     if (!UUID.test(task.nodeId ?? "")) throw new Error("a QA task needs its node id");

@@ -7,6 +7,7 @@
 // kept here.
 import type { RunCapacityLimits } from "../../../core/runs.ts";
 import type { AgentRole, Run } from "../../../core/store.ts";
+import { PUSHING_ROLES, runBranch } from "../../../core/task-input.ts";
 import type { ModelProviderSetting } from "./manifests.ts";
 import type { KubernetesAgentTask } from "./runtime.ts";
 import type { AgentTaskFile } from "./task.ts";
@@ -91,6 +92,13 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
   };
   if (bot.allowedTools !== undefined) task.allowedTools = [...bot.allowedTools];
   if (bot.outputSchema !== undefined) task.outputSchema = bot.outputSchema;
+  if (PUSHING_ROLES.includes(role)) {
+    // The wrapper opens the run's PR on this branch and names this node with its docs note
+    // (N-44, D-235). Neither is a credential; both come from the run as the core admitted it.
+    if (!run.nodeId) throw new Error(`a ${role} run needs its node`);
+    task.nodeId = run.nodeId;
+    task.branch = runBranch(run.nodeId);
+  }
   if (role === "qa") {
     task.nodeId = run.nodeId ?? "";
     task.evidenceIds = [...(parts.evidenceIds ?? [])];

@@ -77,7 +77,17 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
       instructions: "Fixture instructions.",
       input: "Fixture input.",
       allowedTools: ["Read", "Edit"],
+      // The wrapper opens the PR on this branch and posts the docs note for this node (N-44).
+      nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      branch: "foreman/1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
     });
+  });
+
+  it("refuses a Developer run without its node, which the PR and docs note need (N-44)", () => {
+    const run = { ...parts().run, nodeId: null };
+    expect(() => buildKubernetesTask(parts({ run }))).toThrow(
+      "a developer run needs its node",
+    );
   });
 
   it("carries the route's tier and the Flex capacity bounds into the run (ADR 0114 sections 8 and 9)", () => {

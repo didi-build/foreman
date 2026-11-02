@@ -62,6 +62,32 @@ describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", 
       await f.evidence("docs_note", HEAD, { impact: "updated" });
       expect((await f.check("docs_updated_or_none")).pass).toBe(true);
     });
+    it("passes with a note naming the head, recorded before the head's ci_run rows (D-236)", async () => {
+      // The wrapper posts the note right after it opens the PR; GitHub's events come later.
+      const f = await fixture();
+      await f.evidence("docs_note", HEAD, { impact: "none" });
+      await f.ci(HEAD, "pending");
+      await f.ci(HEAD, "success");
+      expect(await f.check("docs_updated_or_none")).toMatchObject({
+        pass: true,
+        detail: "no docs impact stated",
+      });
+    });
+    it("ignores a note naming an older head once a later push moved the head (D-236)", async () => {
+      const f = await fixture();
+      await f.evidence("docs_note", OLD, { impact: "none" });
+      await f.ci(OLD, "success");
+      await f.ci(HEAD, "pending");
+      await f.ci(HEAD, "success");
+      expect((await f.check("docs_updated_or_none")).detail).toMatch(/no docs note/);
+    });
+    it("still ignores a commit-less note recorded before the head's latest ci_run", async () => {
+      const f = await fixture();
+      await f.ci(HEAD, "pending");
+      await f.evidence("docs_note", null, { impact: "none" });
+      await f.ci(HEAD, "success");
+      expect((await f.check("docs_updated_or_none")).pass).toBe(false);
+    });
     it("ignores a note written for an older head (stale)", async () => {
       const f = await fixture();
       await f.ci(OLD);

@@ -3,9 +3,10 @@
 // environment (ADR 0111). A missing or bad setting stops the run before anything is written or
 // started, and the error names the setting, never its value.
 import type { ServiceTier } from "../../core/store.ts";
-import { readConfig, type Setting } from "../../service-kit/config.ts";
+import { readConfig, text, type Setting } from "../../service-kit/config.ts";
 import { parseRunPrice, type RunPrice } from "../shared/price.ts";
 import {
+  baseUrl,
   readImageSettings,
   type ImageSettings,
   type ModelApi,
@@ -33,7 +34,17 @@ export interface OpenCodeSettings extends ImageSettings {
   configHome: string;
   /** FOREMAN_MAGICPATH_URL, when set. Refused while MagicPath is off (./magicpath.ts). */
   magicPathUrl: string | undefined;
+  /** FOREMAN_REPOSITORY, `owner/name`: where the wrapper opens the run's PR (N-44, D-235). */
+  repository: string;
+  /** HTTPS_PROXY: the run's egress proxy, which tunnels to api.github.com (ADR 0106). */
+  egressProxyUrl: string;
+  /** GITHUB_TOKEN: the run's installation token (D-178). A secret: never printed. */
+  githubToken: string;
 }
+
+/** A GitHub `owner/name`, never `.` or `..` as either part. */
+const REPOSITORY =
+  /^(?!\.\.?\/)[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
 
 const absolutePath = (env: string): Setting<string> => ({
   env,
@@ -69,6 +80,23 @@ const extraSettings = {
     fallback: "",
     parse: (raw: string) => (raw === "" ? undefined : raw),
   } satisfies Setting<string | undefined>,
+  repository: {
+    env: "FOREMAN_REPOSITORY",
+    parse: (raw: string) => {
+      if (!REPOSITORY.test(raw)) throw new Error("is not a GitHub owner/name");
+      return raw;
+    },
+  } satisfies Setting<string>,
+  egressProxyUrl: {
+    env: "HTTPS_PROXY",
+    parse: (raw: string) => {
+      const url = baseUrl("HTTPS_PROXY").parse(raw);
+      if (!url.startsWith("http://"))
+        throw new Error("must be the egress proxy's http URL");
+      return url;
+    },
+  } satisfies Setting<string>,
+  githubToken: text("GITHUB_TOKEN"),
 };
 
 export function readOpenCodeSettings(env: NodeJS.ProcessEnv): OpenCodeSettings {

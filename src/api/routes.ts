@@ -70,6 +70,21 @@ function id(body: Body, key: string, required = true): string | null {
   return value;
 }
 
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/** The commit a report names: a full 40-hex sha, on a `docs_note` only (D-236). */
+function reportCommit(body: Body, kind: string): string | null {
+  const value = body.commitSha;
+  if (value === undefined || value === null) return null;
+  if (kind !== "docs_note") {
+    throw new HttpError(400, "commitSha is accepted on a docs_note only");
+  }
+  if (typeof value !== "string" || !FULL_SHA.test(value)) {
+    throw new HttpError(400, "commitSha must be a full 40-character lowercase hex sha");
+  }
+  return value;
+}
+
 function oneOf<T extends string>(body: Body, key: string, allowed: readonly T[]): T {
   const value = body[key];
   if (typeof value !== "string" || !allowed.includes(value as T)) {
@@ -249,6 +264,11 @@ export function createApiHandler({
             ? (["agent_report"] as const)
             : (["agent_report", "docs_note"] as const);
         const kind = oneOf(input, "kind", kinds);
+        // A docs note may name the commit it covers: the PR head the OpenCode wrapper read from
+        // GitHub (D-236). A docs note is the agent's own statement, and `docs_updated_or_none`
+        // counts it only when that commit is the head the runner recorded. Any other kind never
+        // stores a commit from an agent (essential 6).
+        const commitSha = reportCommit(input, kind);
         const node = await nodeInProject(caller, id(input, "nodeId") as string);
         ownNode(caller, node.id);
         const evidence = await library.recordEvidence({
@@ -256,8 +276,7 @@ export function createApiHandler({
           runId: caller.run.id,
           kind,
           ref: text(input, "ref", 500) as string,
-          // An agent's word about a commit is never trusted evidence (essential 6).
-          commitSha: null,
+          commitSha,
           payload: json(input, "payload"),
           recordedBy: caller.role,
         });
