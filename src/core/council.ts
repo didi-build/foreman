@@ -666,7 +666,13 @@ export function createCouncil(options: CouncilOptions) {
       .transaction(async (tx): Promise<CouncilAnswer> => {
         const switches = await held(tx);
         if (switches) return { recorded: false, reason: switches };
-        await tx.getNodeForUpdate(run.nodeId);
+        // Lock the run's node and every item the answer names once, in one sorted order. Locking
+        // them in the answer's own order would let two answers naming the same items in opposite
+        // orders each hold one and wait on the other: a deadlock.
+        const lockIds = [
+          ...new Set([run.nodeId, ...answer.verdicts.map((v) => v.nodeId)]),
+        ].sort();
+        for (const lockId of lockIds) await tx.getNodeForUpdate(lockId);
         const earlier = (await tx.listDecisionsForNode(run.nodeId)).find(
           (d) => d.kind === "council_decision" && scopeOf(d).runId === run.id,
         );
@@ -696,7 +702,8 @@ export function createCouncil(options: CouncilOptions) {
         const linked: string[] = [];
         const cleared: string[] = [];
         for (const { nodeId, verdict } of answer.verdicts) {
-          const node = await tx.getNodeForUpdate(nodeId);
+          // Already locked above, in sorted order.
+          const node = await tx.getNode(nodeId);
           if (!node) {
             verdicts.push({ nodeId, verdict, result: "no_node" });
             continue;

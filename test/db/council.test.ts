@@ -2,7 +2,8 @@
 // answers on the real Postgres store, as the factory_runner role: a Council run keeps its question
 // (migration 0014); an escalation answer is recorded once per run, also when two calls race; a
 // reversal answer, the question's gate request answered, the cleared flags and the question for
-// Didi commit together, once; a redo move commits with its cleared flag, reset counters and
+// Didi commit together, once; two reversal answers naming the same items in opposite orders both
+// commit with no deadlock; a redo move commits with its cleared flag, reset counters and
 // cancelled visual-approval request, once, also when two calls race (D-231).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -134,6 +135,57 @@ describe.skipIf(!adminUrl)(
         [topic],
       );
       expect(councilDecisions.rows[0]?.n).toBe(1);
+    });
+
+    it("records two reversal answers that name the same items in opposite orders without a deadlock", async () => {
+      const t = await setup("94000000-0000-4000-8000", "council-d");
+      // A deadlock needs both transactions to hold one item each, so repeat the race a few times.
+      for (let round = 0; round < 8; round++) {
+        const ownerA = await t.node("in_development");
+        const ownerB = await t.node("in_development");
+        const first = await t.node("in_development");
+        const second = await t.node("in_development");
+        const decide = (nodeId: string) =>
+          t.library.recordDecision(
+            {
+              projectId: t.projectId,
+              nodeId,
+              kind: "approval",
+              scope: {},
+              textVerbatim: "Yes",
+              byActor: "didi",
+            },
+            [first.id, second.id],
+          );
+        const decisionA = await decide(ownerA.id);
+        const decisionB = await decide(ownerB.id);
+        t.advanceMinutes(1);
+        await t.library.reverseDecision(decisionA.id, "didi", "No");
+        await t.library.reverseDecision(decisionB.id, "didi", "No");
+        t.advanceMinutes(1);
+        const runA = await t.run(ownerA.id, "council", 0, {
+          questionTopic: reversalTopic(decisionA.id),
+        });
+        const runB = await t.run(ownerB.id, "council", 0, {
+          questionTopic: reversalTopic(decisionB.id),
+        });
+        const verdict = (nodeId: string) => ({
+          nodeId,
+          verdict: "still_valid",
+          note: "",
+        });
+        const results = await Promise.all([
+          t.council.recordAnswer(runA.id, {
+            verdicts: [verdict(first.id), verdict(second.id)],
+            note: "",
+          }),
+          t.council.recordAnswer(runB.id, {
+            verdicts: [verdict(second.id), verdict(first.id)],
+            note: "",
+          }),
+        ]);
+        expect(results.map((r) => r.recorded)).toEqual([true, true]);
+      }
     });
 
     it("commits a redo move with its flag, counters and visual-approval request, once, also when two calls race", async () => {
