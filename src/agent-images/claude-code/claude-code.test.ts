@@ -45,6 +45,8 @@ const task: AgentTaskFile = {
   instructions: "Fixture instructions.",
   input: "Fixture input.",
   allowedTools: ["Read", "Edit", "Bash(git status)"],
+  nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+  branch: "foreman/1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
 };
 
 describe("Claude Code command (unit: exact flags, no shell, ADR 0106 sections 4 to 6)", () => {

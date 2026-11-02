@@ -89,6 +89,10 @@ Starting tool list for the Developer and Designer bot files (D-196): `Read`, `Ed
 
 The bot files are in `contracts/bots/<role>.yaml`, checked by `src/adapters/contracts-file/bot-files.ts` and described in [docs/bot-files.md](../bot-files.md) (O-57 to O-60). Each gives its role's image kind, instructions, tools, hosts, limits, task types, model providers with each key's secret path, and the Council's and Triage's output schemas; none holds a model or a credential value. `flows/lib/tasks.ts` builds each run's task from the bot file, the run's route and its input. The GitHub installation token comes through a port that refuses until the role's GitHub App exists (D-178).
 
+### The Developer's and Designer's PR and docs note (D-235)
+
+The model pushes its branch with git. After a successful run, the OpenCode image's wrapper, in plain code, reads the `foreman-report` block at the end of the model's final message, opens the pull request for the run's branch with the run's GitHub write token (or reuses the open one, so a fix round keeps its PR), and posts the docs note to the state API (`POST /reports`). A missing or malformed block, a branch that was not pushed, or a GitHub or state API refusal fails the run with a text that names the step. The result line names the PR. No model tool and no runner permission were added. Details in [docs/bot-files.md](../bot-files.md) and O-61. Open: the docs note's timing against `docs_updated_or_none` (N-46).
+
 ## Depends on
 
 [ADR 0106](./0106-agent-execution-environment.md) (agent execution environment and budget enforcement, M3) is accepted (D-191). It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.

@@ -3,7 +3,9 @@
 // its arguments, environment, working folder, prompt and the config file it was given in
 // fake-opencode-call.json in its working folder, then prints `--format json` event lines in the
 // shape OpenCode 1.19.5 prints them (docs/spikes/opencode-runtime.md, check 1), chosen by
-// `scenario=<name>` in the prompt. It never calls a model and never uses the network.
+// `scenario=<name>` in the prompt. The success scenario's final message is a short summary and a
+// `foreman-report` block (N-44), or the base64 text after `final64=` in the prompt. It never
+// calls a model and never uses the network.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -34,6 +36,18 @@ writeFileSync(
 );
 
 const scenario = /scenario=([a-z0-9_-]+)/.exec(input)?.[1] ?? "success";
+const DEFAULT_FINAL = [
+  "Done.",
+  "",
+  "```foreman-report",
+  '{"pullRequestTitle": "Add the fixture change", "docsNote": {"impact": "none"}}',
+  "```",
+].join("\n");
+const final64 = /final64=([A-Za-z0-9+/=]+)/.exec(input)?.[1];
+const finalText =
+  final64 === undefined
+    ? DEFAULT_FINAL
+    : Buffer.from(final64, "base64").toString("utf8");
 const sessionID = "ses_fake";
 let clock = 1_790_000_000_000;
 const emit = (type, body) => {
@@ -82,7 +96,7 @@ const scenarios = {
     });
     stepFinish("tool-calls", tokens(1000, 40, 0, 0, 5000));
     emit("step_start", { part: { type: "step-start" } });
-    emit("text", { part: { type: "text", text: "Done." } });
+    emit("text", { part: { type: "text", text: finalText } });
     stepFinish("stop", tokens(12, 80, 20, 5400, 100));
     return 0;
   },

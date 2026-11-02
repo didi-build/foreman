@@ -1,10 +1,13 @@
 // Test helper: a local HTTP server that stands in for a run's egress proxy. It serves enough of
 // Anthropic's Messages API at `/anthropic/v1/messages` and the state API's `POST /qa-verdicts` at
-// `/state-api/...`. Replies come from a script, one per model request. It records every request
-// so tests can check the body (cache_control, tools) and the headers (no real credential).
-// Localhost only: no real model call and no network.
+// `/state-api/...`, and CONNECT tunnels, which it hands to an in-memory fake GitHub when one is
+// given (./fake-github.ts). Replies come from a script, one per model request. It records every
+// request so tests can check the body (cache_control, tools) and the headers (no real
+// credential). Localhost only: no real model call and no network.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+
+import type { FakeGitHub } from "./fake-github.ts";
 
 export interface RecordedRequest {
   method: string;
@@ -30,6 +33,12 @@ export interface FakeProxy {
   replies: FakeReply[];
   /** The state API's reply to a verdict. */
   verdictReply: FakeReply;
+  /** The state API's reply to `POST /reports`. */
+  reportReply: FakeReply;
+  /** The proxy's own address, as HTTPS_PROXY. */
+  proxyUrl: string;
+  /** The `host:port` of each CONNECT request, in order. */
+  connectTargets: string[];
   close(): Promise<void>;
 }
 
@@ -93,16 +102,22 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
 }
 
-export async function startFakeProxy(): Promise<FakeProxy> {
-  const state: Omit<FakeProxy, "modelBaseUrl" | "stateApiUrl" | "close"> = {
-    modelRequests: [],
-    stateApiRequests: [],
-    replies: [],
-    verdictReply: {
-      status: 201,
-      body: { evidenceId: "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f", commitSha: "x" },
-    },
-  };
+export async function startFakeProxy(github?: FakeGitHub): Promise<FakeProxy> {
+  const state: Omit<FakeProxy, "modelBaseUrl" | "stateApiUrl" | "proxyUrl" | "close"> =
+    {
+      modelRequests: [],
+      stateApiRequests: [],
+      replies: [],
+      verdictReply: {
+        status: 201,
+        body: { evidenceId: "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f", commitSha: "x" },
+      },
+      reportReply: {
+        status: 201,
+        body: { evidenceId: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b" },
+      },
+      connectTargets: [],
+    };
   const server: Server = createServer((request, response) => {
     void (async () => {
       const recorded: RecordedRequest = {
@@ -118,7 +133,10 @@ export async function startFakeProxy(): Promise<FakeProxy> {
           state.replies.shift() ?? reply.error(500, "api_error", "no scripted reply");
       } else if (recorded.path.startsWith("/state-api/")) {
         state.stateApiRequests.push(recorded);
-        out = state.verdictReply;
+        out =
+          recorded.path === "/state-api/reports"
+            ? state.reportReply
+            : state.verdictReply;
       } else {
         out = { status: 404, body: { error: "not found" } };
       }
@@ -129,12 +147,25 @@ export async function startFakeProxy(): Promise<FakeProxy> {
       response.end(JSON.stringify(out.body));
     })();
   });
+  // A CONNECT to api.github.com:443 is answered by the fake GitHub over plain HTTP inside the
+  // tunnel (the wrapper's TLS step is replaced in tests). Any other target is refused, as the
+  // real proxy refuses a host the bot file does not allow.
+  server.on("connect", (request: IncomingMessage, socket) => {
+    state.connectTargets.push(request.url ?? "");
+    if (!github || request.url !== "api.github.com:443") {
+      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+      return;
+    }
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    github.server.emit("connection", socket);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;
   return Object.assign(state, {
     modelBaseUrl: `${base}/anthropic`,
     stateApiUrl: `${base}/state-api`,
+    proxyUrl: base,
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),

@@ -112,6 +112,8 @@ export function credentialsFor(spec: KubernetesRunSpec): RunCredentials {
 }
 
 export const QA_NODE_ID = "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b";
+/** The node a Developer or Designer fixture works on, and its branch (`runBranch`). */
+export const BUILDER_NODE_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
 export const QA_EVIDENCE_ID = "2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d";
 
 /** A small valid task file for each fixture's role. Not real instructions. */
@@ -122,7 +124,12 @@ export function taskFor(spec: KubernetesRunSpec): AgentTaskFile {
     input: "Fixture input.",
   };
   if (spec.role === "developer" || spec.role === "designer") {
-    return { ...base, allowedTools: ["Read", "Edit", "Bash(git status)"] };
+    return {
+      ...base,
+      allowedTools: ["Read", "Edit", "Bash(git status)"],
+      nodeId: BUILDER_NODE_ID,
+      branch: `foreman/${BUILDER_NODE_ID}`,
+    };
   }
   if (spec.role === "qa") {
     return { ...base, nodeId: QA_NODE_ID, evidenceIds: [QA_EVIDENCE_ID] };
