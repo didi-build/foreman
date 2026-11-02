@@ -36,7 +36,8 @@ export const TASK_FILE_PATH = `${TASK_MOUNT_PATH}/${TASK_FILE_KEY}`;
 export const MAX_TASK_BYTES = 900 * 1024;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const TOOL = /^[A-Za-z][A-Za-z0-9_]*(?:\([^()\n]{1,200}\))?$/;
+/** One allowed tool: a name, optionally with a pattern, for example `Bash(git *)` (D-196). */
+export const TOOL = /^[A-Za-z][A-Za-z0-9_]*(?:\([^()\n]{1,200}\))?$/;
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 

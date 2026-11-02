@@ -12,7 +12,10 @@ export interface FlowEnvironment {
   executionsThisMonth(): Promise<number>;
 }
 
-/** Every secret path the flows read. `flows/windmill.yaml` lists the same paths. */
+/**
+ * Every fixed secret path the flows read. `flows/windmill.yaml` lists the same paths. A run's
+ * model key is read too, at the path its bot file's provider names for the run's project (D-143).
+ */
 export const SECRET_PATHS = {
   /** A login user in the `factory_runner` role (ADR 0104). New at first hosting. */
   database: "platform/state-store/runner-database-url",
@@ -31,6 +34,10 @@ export const VALUE_NAMES = {
   clusterCaCertificate: "agent_cluster_ca_certificate",
   /** The Kubernetes run settings as JSON (ADR 0106), no secret in it. */
   agentRunSettings: "agent_run_settings",
-  /** Runtime and bot version per role as JSON, until bot files are loaded. The route names the model. */
-  botProfiles: "bot_profiles",
+  /**
+   * The agent image references by image kind as JSON, each pinned by digest, for example
+   * `{"opencode": "<registry>/opencode@sha256:...", "claude-api": "..."}`. Each role's bot file
+   * names its kind (contracts/bots/); the digest changes with each image build, so it is a value.
+   */
+  agentImages: "agent_images",
 } as const;

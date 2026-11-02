@@ -10,8 +10,9 @@
 // question's topic (`runs.question_topic`, migration 0014).
 //
 // The Council has no tools (ADR 0107). It answers with structured output against the schema of its
-// question's kind, which its bot profile keeps (`COUNCIL_OUTPUT_SCHEMAS`). When the run ends, the
-// runner validates the answer and records the `council_decision` itself, once per run (D-228): the
+// question's kind, which its bot file keeps (contracts/bots/council.yaml, `output_schemas`). When
+// the run ends, the runner checks the answer against the same schema (src/core/output-schema.ts),
+// then reads it, and records the `council_decision` itself, once per run (D-228): the
 // Council never writes a decision or any evidence a guard trusts (essential 6). Its words are kept
 // only inside that schema-checked answer. An answer that does not fit the schema, or a run that
 // gave none, is not usable: the question gets one more run, and after that it goes to Didi as an
@@ -80,6 +81,8 @@ import {
 } from "./guards/council.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
 import { readQaVerdict } from "./guards/evidence.ts";
+import { outputProblem, type OutputSchema } from "./output-schema.ts";
+import type { BotProfile } from "./reconcile.ts";
 import { quoted } from "./task-input.ts";
 import {
   createLibrary,
@@ -89,6 +92,7 @@ import {
   type TransitionOutcome,
 } from "./library.ts";
 import type {
+  AgentRole,
   CurrentDecision,
   Decision,
   GateRequest,
@@ -118,50 +122,8 @@ export const REWORK_TITLE_CHARS = 500;
 /** Run ends that are not a failure to answer: a provider wait (FR-11) and the runner's own stop. */
 const NOT_AN_ATTEMPT: readonly (string | null)[] = ["usage_exhausted", "cancelled"];
 
-const ESCALATION_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["outcome", "note", "changesProductDirection", "passesGate"],
-  properties: {
-    outcome: { type: "string", enum: ["resolve", COUNCIL_CANNOT_RESOLVE] },
-    note: { type: "string" },
-    changesProductDirection: { type: "boolean" },
-    passesGate: { type: "boolean" },
-  },
-} as const;
-
-const REVERSAL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdicts", "note"],
-  properties: {
-    verdicts: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["nodeId", "verdict", "note"],
-        properties: {
-          nodeId: { type: "string" },
-          verdict: { type: "string", enum: ["still_valid", "redo", "cannot_decide"] },
-          note: { type: "string" },
-        },
-      },
-    },
-    note: { type: "string" },
-  },
-} as const;
-
-/**
- * The Council bot profile's output schemas, one per question kind. Bot files are not loaded yet
- * (ADR 0107: the runner reads one profile per role from settings, `{runtime, botVersion}`), so the
- * profile's default lives here; the task file carries the one for the run's question, and the
- * runner validates the answer against the same one.
- */
-export const COUNCIL_OUTPUT_SCHEMAS = {
-  escalation: ESCALATION_SCHEMA,
-  reversal: REVERSAL_SCHEMA,
-} as const;
+/** The fields of each answer, as the readers below check them. */
+const ESCALATION_FIELDS = ["outcome", "note", "changesProductDirection", "passesGate"];
 
 export type { Verdict };
 
@@ -349,6 +311,21 @@ export interface CouncilOptions {
   guards: GuardRegistry;
   clock: Clock;
   ids: IdSource;
+  /** The Council's bot profile gives the output schema of each question kind (D-228). */
+  bots: Pick<Record<AgentRole, BotProfile>, "council">;
+}
+
+/**
+ * The output schema of a question's kind, from the Council's bot file. The bot files loader
+ * refuses a Council bot file without both, so a missing one is a wiring error and throws.
+ */
+function councilSchema(
+  bots: CouncilOptions["bots"],
+  kind: CouncilQuestion["kind"],
+): OutputSchema {
+  const schema = bots.council.outputSchemas?.[kind];
+  if (!schema) throw new Error(`the Council bot file has no output schema for ${kind}`);
+  return schema;
 }
 
 const isObject = (value: unknown): value is { [key: string]: unknown } =>
@@ -378,8 +355,7 @@ export function readEscalationAnswer(
   value: unknown,
 ): { answer: EscalationAnswer } | { problem: string } {
   if (!isObject(value)) return { problem: "the answer is not an object" };
-  const keys = Object.keys(ESCALATION_SCHEMA.properties);
-  const shape = exactKeys(value, keys, "the answer ");
+  const shape = exactKeys(value, ESCALATION_FIELDS, "the answer ");
   if (shape) return { problem: shape };
   const { outcome, note, changesProductDirection, passesGate } = value;
   if (outcome !== "resolve" && outcome !== COUNCIL_CANNOT_RESOLVE) {
@@ -1344,10 +1320,7 @@ export function createCouncil(options: CouncilOptions) {
       return {
         question: q,
         input,
-        outputSchema: structuredClone(COUNCIL_OUTPUT_SCHEMAS[q.kind]) as Record<
-          string,
-          unknown
-        >,
+        outputSchema: structuredClone(councilSchema(options.bots, q.kind)),
       };
     },
 
@@ -1380,6 +1353,9 @@ export function createCouncil(options: CouncilOptions) {
       if (q.kind === "reversal" && run.startedAt.getTime() < q.openedAt.getTime()) {
         return { recorded: false, reason: "question_closed" };
       }
+      // First the bot file's schema, then the reader's own checks (D-228).
+      const problem = outputProblem(councilSchema(options.bots, q.kind), structured);
+      if (problem) return { recorded: false, reason: "invalid", problem };
       if (q.kind === "escalation") {
         const read = readEscalationAnswer(structured);
         if ("problem" in read)

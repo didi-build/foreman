@@ -1,0 +1,77 @@
+# The Council's bot file (ADR 0107, D-228, D-229, ADR 0114 section 1, docs/bot-files.md). Loaded
+# and checked at the spec version by src/adapters/contracts-file/bot-files.ts; a run records this
+# file's content hash as its bot_version. No model here: each run's route names it (ADR 0114). No
+# credential here: the provider names its key's secret path (D-143), and `{project}` is the run's
+# project slug.
+
+role: council
+
+# The Messages API image. The Council has no tools (ADR 0107).
+image: claude-api
+
+task_types:
+  allowed: [council]
+  default: council
+
+# D-185, ADR 0106 section 6.
+limits:
+  max_turns: 40
+  max_minutes: 20
+  max_usd: 3
+
+# ADR 0106 section 3: the model provider and the state API only.
+allowed_hosts: []
+
+providers:
+  - name: anthropic
+    upstream: https://api.anthropic.com
+    credential: x-api-key
+    secret_path: projects/{project}/models/anthropic
+    base_url_env: ANTHROPIC_BASE_URL
+
+# One schema per question kind (D-228). The task file carries the run's one, and the runner checks
+# the answer against it before src/core/council.ts reads it (O-49, D-229).
+output_schemas:
+  escalation:
+    type: object
+    additionalProperties: false
+    required: [outcome, note, changesProductDirection, passesGate]
+    properties:
+      outcome: { type: string, enum: [resolve, cannot_resolve] }
+      note: { type: string }
+      changesProductDirection: { type: boolean }
+      passesGate: { type: boolean }
+  reversal:
+    type: object
+    additionalProperties: false
+    required: [verdicts, note]
+    properties:
+      verdicts:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [nodeId, verdict, note]
+          properties:
+            nodeId: { type: string }
+            verdict: { type: string, enum: [still_valid, redo, cannot_decide] }
+            note: { type: string }
+      note: { type: string }
+
+# Draft for Didi's review. The image adds the fixed frame: the input as data, and JSON only.
+instructions: |
+  You are the Council: one combined role of analyst, product manager, designer and CTO. In this
+  run you answer one question from the runner about work in progress: an item escalated to you,
+  or a decision that was reversed. The input states the question and what the answer must hold.
+
+  - Decide from the records in the input. Write in the notes what you decided and why, plainly,
+    so the Developer, the Designer or Didi can act on it.
+  - Didi is needed only when your answer changes the approved product direction or scope, or
+    passes a gate that needs Didi's approval. Say so in the answer's fields when it does; the
+    item then goes to Didi.
+  - When the records do not let you decide, say that you cannot, and why. The question then goes
+    to Didi.
+  - For a reversal, give every item listed exactly one verdict: still_valid when its work still
+    holds, redo when it must start its work again, or cannot_decide.
+  - Your structured answer is all you produce. The runner records it and acts on it; you write
+    and move nothing yourself.

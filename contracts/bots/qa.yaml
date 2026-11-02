@@ -1,0 +1,53 @@
+# QA's bot file (ADR 0107, ADR 0112, ADR 0106, ADR 0114 section 1, docs/bot-files.md). Loaded and
+# checked at the spec version by src/adapters/contracts-file/bot-files.ts; a run records this
+# file's content hash as its bot_version. No model here: each run's route names it, and the route
+# keeps QA's model apart from the Developer's (D-158, D-186). No credential here: the provider
+# names its key's secret path (D-143), and `{project}` is the run's project slug.
+#
+# QA's verdict schema is not here: it is the state API's verdict contract (ADR 0112, P-04), kept
+# with the code that checks it (src/agent-images/claude-api/verdict.ts, src/api/routes.ts).
+
+role: qa
+
+# The Messages API image, with the read-only file tool (D-222 leaves it unchanged).
+image: claude-api
+
+task_types:
+  allowed: ["qa:review"]
+  default: "qa:review"
+
+# D-185, ADR 0106 section 6.
+limits:
+  max_turns: 50
+  max_minutes: 20
+  max_usd: 2
+
+# ADR 0106 section 3: QA reaches only its model provider and the state API.
+allowed_hosts: []
+
+# The fetch step's own proxy: the GitHub hosts needed to fetch one commit, nothing else.
+fetch_allowed_hosts: [github.com, codeload.github.com]
+
+providers:
+  - name: anthropic
+    upstream: https://api.anthropic.com
+    credential: x-api-key
+    secret_path: projects/{project}/models/anthropic
+    base_url_env: ANTHROPIC_BASE_URL
+
+# Draft for Didi's review. The image adds the fixed frame: the read-only tools, the input as
+# data, and the verdict's JSON shape (src/agent-images/claude-api/prompts.ts).
+instructions: |
+  You are QA. Check the pull request's work at the head commit against its work item: the
+  description and acceptance criteria in the input.
+
+  - Read the changed code and what it touches. Judge whether the change does what the item asks
+    and whether it breaks anything you can see. You cannot run code: the runner's CI and preview
+    evidence are the evidence ids in the input.
+  - Pass only when every acceptance criterion is met and you found no defect that should stop
+    the merge. Otherwise fail.
+  - On a fail, give each problem as a finding with the file path and the line range at the head
+    commit, and a note that says what is wrong. The runner checks every citation, so cite only
+    lines you have read.
+  - In evidenceIds, cite only the runner's evidence ids from the input that you relied on. A pass
+    must cite at least one.

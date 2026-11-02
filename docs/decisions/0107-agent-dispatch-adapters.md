@@ -85,6 +85,10 @@ The in-container side is in `src/agent-images/`: one image for Claude Code (Deve
 
 Starting tool list for the Developer and Designer bot files (D-196): `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(git *)` and `Bash(npm *)`, with `--permission-mode dontAsk`. No other shell command is allowed. Tools are added later only by a change to the bot file that Didi approves. The Designer also gets the MagicPath MCP tools (`mcp__magicpath`) and egress to the MagicPath host, switched on at D-190's gate.
 
+### Bot files
+
+The bot files are in `contracts/bots/<role>.yaml`, checked by `src/adapters/contracts-file/bot-files.ts` and described in [docs/bot-files.md](../bot-files.md) (O-57 to O-60). Each gives its role's image kind, instructions, tools, hosts, limits, task types, model providers with each key's secret path, and the Council's and Triage's output schemas; none holds a model or a credential value. `flows/lib/tasks.ts` builds each run's task from the bot file, the run's route and its input. The GitHub installation token comes through a port that refuses until the role's GitHub App exists (D-178).
+
 ## Depends on
 
 [ADR 0106](./0106-agent-execution-environment.md) (agent execution environment and budget enforcement, M3) is accepted (D-191). It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.

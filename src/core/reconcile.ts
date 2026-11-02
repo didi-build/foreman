@@ -47,6 +47,7 @@ import {
   type TransitionOutcome,
   type TransitionRequest,
 } from "./library.ts";
+import type { OutputSchema } from "./output-schema.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import {
   createRuns,
@@ -76,12 +77,16 @@ const ACTOR = { kind: "runner" as const, id: "reconcile" };
 const TRIGGER = { kind: "reconcile" as const, ref: null };
 
 /**
- * What the runner starts a role with. From each bot file once bot files are loaded. The model is
+ * What the core needs from a role's bot file (contracts/bots/, docs/bot-files.md). The model is
  * not here: each run's route names it (ADR 0114 section 5).
  */
 export interface BotProfile {
+  /** Recorded as the run's `runtime`: the bot file's agent image. */
   runtime: string;
+  /** Recorded as the run's `bot_version`: the bot file's content hash. */
   botVersion: string;
+  /** The Council: the output schema of each question kind (D-228). */
+  outputSchemas?: Readonly<Record<string, OutputSchema>>;
 }
 
 export interface ReconcileDeps {
@@ -464,7 +469,8 @@ export async function reconcile(
       role,
       outcome: "planned",
     };
-    const request: DispatchRequest = { nodeId: node.id, role, ...deps.bots[role] };
+    const { runtime, botVersion } = deps.bots[role];
+    const request: DispatchRequest = { nodeId: node.id, role, runtime, botVersion };
     if (role === "qa") {
       const head = await headOf(node.id);
       if (!head) return { ...plan, outcome: "no_head" };

@@ -1,7 +1,7 @@
 // Test support for model routing (ADR 0114): the routing settings migration 0005 seeds, the task
-// types in contracts/task-types.yaml, and the route columns of a run on the first policy. Tests
-// only. test/db/runs.test.ts checks the seeded settings equal these values, and
-// test/contracts-task-types.test.ts checks the file equals TEST_TASK_TYPES, so neither copy can
+// types in contracts/task-types.yaml and the bot files, and the route columns of a run on the
+// first policy. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
+// test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
 import { ROUTING_SETTINGS, type RunPrice } from "./routing.ts";
 import type { Json, Run, StoreOps } from "./store.ts";
@@ -79,7 +79,7 @@ export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<vo
   }
 }
 
-/** The task types in contracts/task-types.yaml. */
+/** The task types in contracts/task-types.yaml, with each bot file's roles. */
 export const TEST_TASK_TYPES: TaskTypes = {
   version: "e".repeat(40),
   meanings: {
