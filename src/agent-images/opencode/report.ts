@@ -8,9 +8,17 @@
 //
 // `docsNote` is the state API's `docs_note` payload (docs/guards.md): `{"impact": "none"}`,
 // optionally with a `note`, or `{"impact": "updated", "note": "<what changed in the docs>"}`.
-// The check is strict: no block, two blocks, text that is not that object, an unknown field, or
-// a field of the wrong shape is a problem the run fails on. Nothing is guessed or filled in.
-// The rest of the final message, without the block, becomes the PR's description.
+// When the item needs a product decision or a new feature, the model stops instead and the block
+// holds the second form (D-237, O-63), with exactly these two fields:
+//
+//   ```foreman-report
+//   {"stopped": "needs_decision", "reason": "The item asks for a new screen the plan does not have."}
+//   ```
+//
+// The check is strict: no block, two blocks, text that is not one of those objects, a mix of the
+// two forms, an unknown field, or a field of the wrong shape is a problem the run fails on.
+// Nothing is guessed or filled in. The rest of the final message, without the block, becomes the
+// PR's description; a stopped run opens no PR.
 
 export interface DocsNote {
   impact: "updated" | "none";
@@ -24,9 +32,20 @@ export interface RunReport {
   summary: string;
 }
 
+/** The second form: the run stopped because the item needs a decision (D-237). */
+export interface StoppedReport {
+  stopped: "needs_decision";
+  /** Why, in the model's words, trimmed. */
+  reason: string;
+}
+
 export const REPORT_INFO_STRING = "foreman-report";
 const MAX_TITLE = 200;
 const MAX_NOTE = 2000;
+/** The runner reads the same bound (NEEDS_DECISION_MAX_REASON in the runtime's result.ts). */
+export const MAX_STOP_REASON = 1000;
+const REPORT_KEYS = ["pullRequestTitle", "docsNote"];
+const STOPPED_KEYS = ["stopped", "reason"];
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40,7 +59,7 @@ const CLOSING = /^[ \t]*```[ \t]*$/;
 /** The report in the final message, or the reason it is unusable. */
 export function parseRunReport(
   finalText: string,
-): { report: RunReport } | { problem: string } {
+): { report: RunReport } | { stopped: StoppedReport } | { problem: string } {
   const lines = finalText.split(/\r?\n/);
   const openings = lines.flatMap((line, i) => (OPENING.test(line) ? [i] : []));
   if (openings.length === 0) return { problem: "there is no foreman-report block" };
@@ -56,10 +75,13 @@ export function parseRunReport(
   } catch {
     return { problem: "the foreman-report block is not JSON" };
   }
-  if (!isObject(value) || !onlyKeys(value, ["pullRequestTitle", "docsNote"])) {
+  if (isObject(value) && Object.keys(value).some((key) => STOPPED_KEYS.includes(key))) {
+    return readStopped(value);
+  }
+  if (!isObject(value) || !onlyKeys(value, REPORT_KEYS)) {
     return {
       problem:
-        "the foreman-report block must be an object with pullRequestTitle and docsNote only",
+        "the foreman-report block must be an object with pullRequestTitle and docsNote only, or with stopped and reason only",
     };
   }
   const title = value.pullRequestTitle;
@@ -104,6 +126,30 @@ export function parseRunReport(
       summary,
     },
   };
+}
+
+/** The second form, once a field of it is present: exactly `stopped` and `reason`, nothing mixed. */
+function readStopped(
+  value: Record<string, unknown>,
+): { stopped: StoppedReport } | { problem: string } {
+  if (!onlyKeys(value, STOPPED_KEYS) || Object.keys(value).length !== 2) {
+    return {
+      problem:
+        "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
+    };
+  }
+  if (value.stopped !== "needs_decision") {
+    return { problem: "stopped must be needs_decision" };
+  }
+  const reason = value.reason;
+  if (
+    typeof reason !== "string" ||
+    reason.trim() === "" ||
+    reason.trim().length > MAX_STOP_REASON
+  ) {
+    return { problem: `reason must be text of 1 to ${MAX_STOP_REASON} characters` };
+  }
+  return { stopped: { stopped: "needs_decision", reason: reason.trim() } };
 }
 
 /**

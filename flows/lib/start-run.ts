@@ -123,6 +123,18 @@ export async function startRun(
         project,
         branch: branch ?? undefined,
         returned,
+        // The Designer's step comes from the item's state (D-238): the state as the contracts
+        // name it and its label, never a database id.
+        ...(input.role === "designer"
+          ? {
+              state: {
+                name: node.state,
+                label: Object.hasOwn(deps.contracts.states, node.state)
+                  ? (deps.contracts.states[node.state]?.label ?? node.state)
+                  : node.state,
+              },
+            }
+          : {}),
       });
 
   const starts = createRunStart(deps);

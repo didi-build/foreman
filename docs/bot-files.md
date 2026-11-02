@@ -47,7 +47,7 @@ QA's verdict schema is not in its bot file. The verdict is the state API's contr
 
 The runner's real token port refuses with `NotBuiltError` until the role's GitHub App is registered through the new-credentials gate (D-156, D-178). So today a Council or Triage task builds fully, and a Developer, Designer or QA task refuses on its token only. Neither credential value is in the task file or the run's spec: they travel in `credentials`, which `start` writes into the run's Secrets.
 
-## How a Developer or Designer run ends (D-235)
+## How a Developer or Designer run ends (D-235, D-237)
 
 The Developer's and Designer's instructions end with the shape of their final message: a short summary, then exactly one block like this, with one JSON object and nothing else:
 
@@ -66,3 +66,21 @@ The Developer's and Designer's instructions end with the shape of their final me
 5. Puts the PR (number, link, head commit, whether it was reused) in the result line's `structured` field.
 
 GitHub is reached through the run's egress proxy (a CONNECT tunnel to `api.github.com`, already in both bot files' `allowed_hosts`) with the run's GitHub token, and the state API through the proxy's `/state-api` route with the run's state API token. No host, tool or permission was added. The runner links the PR to the item from GitHub's own events, by its branch and App author, not from this result (O-61). The task file carries the run's node id and branch for this.
+
+### When the item needs a decision (D-237)
+
+The instructions keep the rule "if the item needs a product decision or a new feature, stop and say so in your final message". A run that stops for that reason ends its final message the same way, but the block holds the second form, with exactly these two fields:
+
+````text
+```foreman-report
+{"stopped": "needs_decision", "reason": "The item asks for a settings screen the plan does not have."}
+```
+````
+
+`reason` is text of 1 to 1,000 characters. A block that mixes the two forms, a `stopped` value other than `needs_decision`, or a missing, empty or longer reason fails the run as above. On this form the wrapper reads no branch, opens no PR and posts no docs note; commits already pushed stay on the branch. The result line has status `needs_decision`, with `structured` `{"stopped": "needs_decision", "reason": "..."}`, credential values removed, and the image exits 0. The Kubernetes runtime maps it to the run outcome `success` with detail `needs_decision` and the reason; a reason of the wrong shape is bad output, `fail`.
+
+The run-end flow then records the reason as an `agent_report` asking to escalate (`{"escalate": true, "reason": "..."}`, written by the runner, once per run), the form `escalation_trigger_met` already reads, and the run's report asks for the escalation to Escalated to Council instead of the done move. Nothing is counted toward `failure` and no fix round starts. The Council's run gets the reason, quoted as data, in its question, and sends the item on to Escalated to Didi when it decides Didi is needed (D-177, O-46). Details in O-63.
+
+### The Designer's step (D-238)
+
+A Designer run's input has a section "The item's state": the item's state as the contracts name it, with its label, when the run's input was built (for example `writing_spec (Writing spec)`). The Designer's instructions map it to a step: Ready for design exploration or In design exploration is exploring, Writing spec is writing the spec, Building components is building components. Any other state is a stop. No other role's input changes (O-64).

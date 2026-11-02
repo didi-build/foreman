@@ -5,8 +5,15 @@ import {
   REJECTED_CEILING_MESSAGE,
 } from "../../../egress-proxy/proxy.ts";
 import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-error.ts";
+import { NEEDS_DECISION_REASON_CHARS } from "../../../core/run-reports.ts";
 import type { JobStatus } from "./objects.ts";
-import { jobMinutes, jobState, mapRunEnd, parseAgentResult } from "./result.ts";
+import {
+  jobMinutes,
+  jobState,
+  mapRunEnd,
+  NEEDS_DECISION_MAX_REASON,
+  parseAgentResult,
+} from "./result.ts";
 
 // Unit: the agent's result line and the outcome mapping (ADR 0106 section 6, ADR 0107).
 
@@ -305,5 +312,58 @@ describe("mapRunEnd (unit: outcome mapping, ADR 0106 section 6)", () => {
       "m",
     );
     expect(result.outcome).toBe("success");
+  });
+
+  it("maps a Complete Job with a well-formed needs_decision result to success with its reason (D-237, O-63)", () => {
+    const stopped = { stopped: "needs_decision", reason: " A new screen. " };
+    const result = mapRunEnd(
+      "complete",
+      JOB,
+      parse({ status: "needs_decision", structured: stopped, finalText: "Stopped." }),
+      "m",
+    );
+    expect(result).toMatchObject({
+      outcome: "success",
+      detail: "needs_decision",
+      needsDecision: { reason: "A new screen." },
+    });
+  });
+
+  it.each([
+    ["no structured answer", undefined],
+    ["another stop word", { stopped: "blocked", reason: "r" }],
+    ["an empty reason", { stopped: "needs_decision", reason: " " }],
+    [
+      "a reason over the bound",
+      { stopped: "needs_decision", reason: "x".repeat(1001) },
+    ],
+    ["an extra field", { stopped: "needs_decision", reason: "r", pr: 1 }],
+  ])(
+    "maps a needs_decision result with %s to fail, never to success",
+    (_case, structured) => {
+      const result = mapRunEnd(
+        "complete",
+        JOB,
+        parse({ status: "needs_decision", ...(structured ? { structured } : {}) }),
+        "m",
+      );
+      expect(result).toMatchObject({ outcome: "fail", detail: "bad_output" });
+      expect(result).not.toHaveProperty("needsDecision");
+    },
+  );
+
+  it("maps a needs_decision result on a Failed Job to fail", () => {
+    const result = mapRunEnd(
+      "failed",
+      JOB,
+      parse({
+        status: "needs_decision",
+        structured: { stopped: "needs_decision", reason: "r" },
+      }),
+      "m",
+    );
+    expect(result).toMatchObject({ outcome: "fail", detail: "job_failed" });
+    // The runtime and the core read one bound.
+    expect(NEEDS_DECISION_MAX_REASON).toBe(NEEDS_DECISION_REASON_CHARS);
   });
 });

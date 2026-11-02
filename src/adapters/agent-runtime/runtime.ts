@@ -39,6 +39,12 @@ export interface AgentRunResult {
   tokens: RunTokens | null;
   /** The model the runner started the run with, never the agent's own claim. */
   model: string;
+  /**
+   * Only with detail `needs_decision`: a builder stopped because the item needs a product decision
+   * or a new feature (D-237). The reason is the agent's own words, checked for shape and length
+   * only; the runner records it as the bot's request to escalate (O-63).
+   */
+  needsDecision?: { reason: string };
   /** Only with `usage_exhausted`. */
   usageExhaustedCause?: UsageExhaustedCause;
   /** Only with `usage_exhausted`, when the provider gave one. */

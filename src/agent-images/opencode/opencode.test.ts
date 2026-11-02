@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   mapRunEnd,
+  NEEDS_DECISION_MAX_REASON,
   parseAgentResult,
 } from "../../adapters/agent-runtime/kubernetes/result.ts";
 import { readBotFiles } from "../../adapters/contracts-file/bot-files.ts";
@@ -42,7 +43,7 @@ import { mcpBlock } from "./magicpath.ts";
 import { openCodePermissions } from "./permissions.ts";
 import type { StopClock } from "./process.ts";
 import { openOrReusePullRequest } from "./pull-request.ts";
-import { parseRunReport } from "./report.ts";
+import { MAX_STOP_REASON, parseRunReport } from "./report.ts";
 import { OPENCODE_RETRIES, openCodeResult } from "./result.ts";
 import type { OpenCodeSettings } from "./settings.ts";
 
@@ -1036,7 +1037,37 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       [
         "an unknown field",
         '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "merge": true}\n```',
-        "the foreman-report block must be an object with pullRequestTitle and docsNote only",
+        "the foreman-report block must be an object with pullRequestTitle and docsNote only, or with stopped and reason only",
+      ],
+      [
+        "the two forms mixed",
+        '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "stopped": "needs_decision", "reason": "r"}\n```',
+        "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
+      ],
+      [
+        "a stop with no reason",
+        '```foreman-report\n{"stopped": "needs_decision"}\n```',
+        "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
+      ],
+      [
+        "a stop with another word",
+        '```foreman-report\n{"stopped": "blocked", "reason": "r"}\n```',
+        "stopped must be needs_decision",
+      ],
+      [
+        "a stop with an empty reason",
+        '```foreman-report\n{"stopped": "needs_decision", "reason": "  "}\n```',
+        "reason must be text of 1 to 1000 characters",
+      ],
+      [
+        "a stop with a reason that is not text",
+        '```foreman-report\n{"stopped": "needs_decision", "reason": ["r"]}\n```',
+        "reason must be text of 1 to 1000 characters",
+      ],
+      [
+        "a stop with an over-long reason",
+        `\`\`\`foreman-report\n{"stopped": "needs_decision", "reason": "${"x".repeat(1001)}"}\n\`\`\``,
+        "reason must be text of 1 to 1000 characters",
       ],
       [
         "no docs note",
@@ -1073,6 +1104,52 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         });
       },
     );
+
+    it("ends needs_decision on the stopped form, calling neither GitHub nor the state API (D-237)", async () => {
+      writeTask(
+        withFinal(
+          'The item asks for a new screen.\n```foreman-report\n{"stopped": "needs_decision", "reason": " The plan has no settings screen; the item asks for one. "}\n```',
+        ),
+      );
+      const { code, result } = await run();
+      // An end the run meant: the Job completes.
+      expect(code).toBe(0);
+      expect(result?.status).toBe("needs_decision");
+      expect(result?.errorText).toBe("");
+      expect(result?.structured).toEqual({
+        stopped: "needs_decision",
+        reason: "The plan has no settings screen; the item asks for one.",
+      });
+      // No branch read, no PR, no docs note: whatever was pushed stays as it is.
+      expect(github.calls).toEqual([]);
+      expect(proxy.connectTargets).toEqual([]);
+      expect(github.pulls).toEqual([]);
+      expect(proxy.stateApiRequests).toEqual([]);
+      expect(mapRunEnd("complete", null, result, "m")).toMatchObject({
+        outcome: "success",
+        detail: "needs_decision",
+        needsDecision: {
+          reason: "The plan has no settings screen; the item asks for one.",
+        },
+      });
+    });
+
+    it("never puts a token in a stopped run's reason or result line", async () => {
+      writeTask(
+        withFinal(
+          `Stopped.\n\`\`\`foreman-report\n{"stopped": "needs_decision", "reason": "Saw ${GITHUB_TOKEN} and ${STATE_TOKEN}"}\n\`\`\``,
+        ),
+      );
+      const { result } = await run();
+      expect(lines.join("\n")).not.toContain(GITHUB_TOKEN);
+      expect(lines.join("\n")).not.toContain(STATE_TOKEN);
+      expect(result?.structured).toEqual({
+        stopped: "needs_decision",
+        reason: "Saw [redacted] and [redacted]",
+      });
+      expect(github.calls).toEqual([]);
+      expect(proxy.stateApiRequests).toEqual([]);
+    });
 
     it("fails clearly when the branch was never pushed, opening no PR and posting no note", async () => {
       github.branches.clear();
@@ -1214,6 +1291,46 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
       expect(parsed).toMatchObject({
         report: { pullRequestTitle: "<one line>", docsNote: { impact: "none" } },
       });
+    },
+  );
+
+  it("reads the stopped form: the reason trimmed, and no pull request fields (D-237)", () => {
+    expect(
+      parseRunReport(
+        'Needs a decision.\n```foreman-report\n{"stopped": "needs_decision", "reason": " A new feature. "}\n```',
+      ),
+    ).toEqual({ stopped: { stopped: "needs_decision", reason: "A new feature." } });
+    const longest = "x".repeat(MAX_STOP_REASON);
+    expect(
+      parseRunReport(
+        `\`\`\`foreman-report\n{"stopped": "needs_decision", "reason": "${longest}"}\n\`\`\``,
+      ),
+    ).toEqual({ stopped: { stopped: "needs_decision", reason: longest } });
+    expect(
+      parseRunReport(
+        '```foreman-report\n{"reason": "r", "docsNote": {"impact": "none"}}\n```',
+      ),
+    ).toEqual({
+      problem:
+        "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
+    });
+  });
+
+  it("checks the reason against the same bound as the runner", () => {
+    expect(MAX_STOP_REASON).toBe(NEEDS_DECISION_MAX_REASON);
+  });
+
+  it.each(["developer", "designer"] as const)(
+    "accepts the stopped form the %s bot file's instructions show",
+    (role) => {
+      const instructions = readBotFiles()[role].instructions;
+      const shown = /\{"stopped": "needs_decision", "reason": "[^"]*"\}/.exec(
+        instructions,
+      );
+      expect(shown).not.toBeNull();
+      expect(
+        parseRunReport(`\`\`\`foreman-report\n${shown?.[0] ?? ""}\n\`\`\``),
+      ).toMatchObject({ stopped: { stopped: "needs_decision" } });
     },
   );
 

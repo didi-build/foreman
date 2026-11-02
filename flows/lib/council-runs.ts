@@ -48,6 +48,7 @@ import {
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import { createRunReports } from "../../src/core/run-reports.ts";
 import type { RunReport } from "../../src/core/runs.ts";
 import type { Run } from "../../src/core/store.ts";
 import {
@@ -236,7 +237,8 @@ export type AfterRunEnd = AfterReport & CouncilAfter;
 /**
  * The run-end flow's steps around recording one run's end. `record` checks and records a finished
  * Council run's answer and returns the report to record its end with (`fail` for an unusable
- * answer); any other role's report is returned as it is. `after` runs once the end is recorded:
+ * answer); for a builder that stopped because the item needs a decision it records the reason
+ * first (O-63); any other report is returned as it is. `after` runs once the end is recorded:
  * the reported move and fix round (./builder-runs.ts), then for a Council run `afterCouncilRun`.
  */
 export function runEndSteps(deps: FlowDeps, run: Run) {
@@ -244,6 +246,17 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
   const isCouncil = run.bot === "council";
   return {
     async record(result: AgentRunResult, report: RunReport): Promise<RunReport> {
+      if (result.detail === "needs_decision" && report.outcome === "success") {
+        // A builder stopped because the item needs a decision (D-237, O-63): its reason is
+        // recorded as its request to escalate, and its report then asks for the escalation. Any
+        // other role, or a reason the runner cannot record, ends the run `fail`.
+        const reason = result.needsDecision?.reason;
+        const recorded =
+          reason === undefined
+            ? null
+            : await createRunReports(deps).recordNeedsDecision(run.id, reason);
+        return recorded?.recorded ? report : { ...report, outcome: "fail" };
+      }
       if (!isCouncil || report.outcome !== "success") return report;
       answer = await createCouncil(deps).recordAnswer(run.id, result.structured);
       return answer.recorded === false && answer.reason === "invalid"

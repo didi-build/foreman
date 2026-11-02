@@ -135,6 +135,134 @@ describe("run-end flow after a done report on a head QA failed (flow: fake adapt
   });
 });
 
+describe("run-end flow after a builder stopped for a decision (flow: fake adapters, D-237, O-63)", () => {
+  const REASON = "The item asks for a settings screen the plan does not have.";
+  const STOPPED: AgentRunResult = {
+    ...RESULT,
+    detail: "needs_decision",
+    needsDecision: { reason: REASON },
+  };
+
+  async function started(f: FlowFixture) {
+    const node = await f.node("ready_for_dev");
+    const run = await dispatch(f.deps, { nodeId: node.id, role: "developer" });
+    if (run.outcome !== "started") throw new Error("the Developer was not started");
+    expect((await f.store.getNode(node.id))?.state).toBe("in_development");
+    return { node, runId: run.runId };
+  }
+
+  it("escalates to the Council once with the bot's reason, counts nothing and retries nothing", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const { node, runId } = await started(f);
+    f.runtime.status.set(runId, { state: "finished", result: STOPPED });
+    const ended = await recordRunEnd(f.deps, { runId });
+    expect(ended).toMatchObject({
+      outcome: "recorded",
+      report: { outcome: "success" },
+      move: {
+        requested: true,
+        outcome: "applied",
+        toState: "escalated_to_council",
+        escalation: { outcome: "applied", toState: "escalated_to_council" },
+      },
+      builderRuns: [],
+      councilRuns: [{ topicKey: escalationTopic(node.id), step: "start" }],
+    });
+    const after = await f.store.getNode(node.id);
+    expect(after?.state).toBe("escalated_to_council");
+    expect(after?.blockedReason).toBe(
+      "the builder stopped: the item needs a product decision or a new feature",
+    );
+    // The bot's words are its request to escalate, the form the guard reads ("a bot asked").
+    const reports = await f.store.listEvidence({
+      nodeId: node.id,
+      kind: "agent_report",
+    });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      runId,
+      recordedBy: "runner",
+      commitSha: null,
+      payload: { escalate: true, reason: REASON },
+    });
+    const move = (await f.store.listTransitions(node.id)).at(-1);
+    expect(JSON.stringify(move?.guardResult)).toContain(`a bot asked: ${REASON}`);
+    // Not a failure: no count, no failure_count row, no fix round.
+    expect(await f.store.getCounter(node.id, "failure")).toBe(0);
+    expect(
+      await f.store.listEvidence({ nodeId: node.id, kind: "failure_count" }),
+    ).toEqual([]);
+    const runs = await f.store.listRuns({ nodeId: node.id });
+    expect(runs.map((r) => [r.bot, r.outcome])).toEqual([
+      ["developer", "success"],
+      ["council", null],
+    ]);
+    // The Council's run is told the bot's reason, quoted as data.
+    expect(f.tasksFor.at(-1)?.input).toContain(REASON);
+
+    // A repeated trigger writes nothing more and starts nothing more.
+    expect(await recordRunEnd(f.deps, { runId })).toMatchObject({
+      outcome: "already_recorded",
+      move: { outcome: "noop", reason: "duplicate_trigger" },
+      builderRuns: [],
+    });
+    expect(
+      await f.store.listEvidence({ nodeId: node.id, kind: "agent_report" }),
+    ).toHaveLength(1);
+    expect(
+      (await f.store.listTransitions(node.id)).filter(
+        (t) => t.toState === "escalated_to_council",
+      ),
+    ).toHaveLength(1);
+    expect((await reconcileFlow(f.deps)).builderRuns).toEqual([]);
+    expect(await f.store.listRuns({ nodeId: node.id })).toHaveLength(2);
+  });
+
+  it("ends the run fail, recording nothing, when the reason is missing or too long", async () => {
+    for (const needsDecision of [undefined, { reason: "x".repeat(1001) }]) {
+      const f = await createFlowFixture();
+      ticking(f);
+      await f.live();
+      const { node, runId } = await started(f);
+      const result: AgentRunResult = {
+        ...RESULT,
+        detail: "needs_decision",
+        ...(needsDecision ? { needsDecision } : {}),
+      };
+      f.runtime.status.set(runId, { state: "finished", result });
+      expect(await recordRunEnd(f.deps, { runId })).toMatchObject({
+        outcome: "recorded",
+        report: { outcome: "fail" },
+        move: { requested: false, reason: "not_success" },
+      });
+      expect((await f.store.getNode(node.id))?.state).toBe("in_development");
+      expect(
+        await f.store.listEvidence({ nodeId: node.id, kind: "agent_report" }),
+      ).toEqual([]);
+      expect(await f.store.getCounter(node.id, "failure")).toBe(0);
+    }
+  });
+
+  it("records nothing and moves nothing in dry run, as for every run end", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const { node, runId } = await started(f);
+    f.runtime.status.set(runId, { state: "finished", result: STOPPED });
+    // Dry run turned on after the run started: the run-end flow reports only.
+    await f.setting("dry_run", true);
+    expect(await recordRunEnd(f.deps, { runId })).toMatchObject({
+      outcome: "would_record",
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("in_development");
+    expect(
+      await f.store.listEvidence({ nodeId: node.id, kind: "agent_report" }),
+    ).toEqual([]);
+  });
+});
+
 describe("dispatch flow after repeated failed starts (flow: fake adapters, O-44)", () => {
   it("counts each failed start after the first, and the third count escalates", async () => {
     const f = await createFlowFixture();

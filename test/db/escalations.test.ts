@@ -107,6 +107,50 @@ describe.skipIf(!adminUrl)(
       expect((await store.getNode(node.id))?.state).toBe("escalated_to_council");
     });
 
+    it("turns a builder's stop for a decision into one escalation, with no count and one report row (D-237, O-63)", async () => {
+      const t = await setup("8a000000-0000-4000-8000", "nd");
+      const node = await t.node("in_development");
+      const dev = await t.ended(node.id, "developer", "success");
+      const reports = createRunReports(t.deps);
+      const reason = "The item asks for a new screen the plan does not have.";
+      // Two flows for the same run at once write one row: the node is locked first.
+      const [a, b] = await Promise.all([
+        reports.recordNeedsDecision(dev.id, reason),
+        reports.recordNeedsDecision(dev.id, reason),
+      ]);
+      expect([String(a.recorded), String(b.recorded)].sort()).toEqual([
+        "already_recorded",
+        "true",
+      ]);
+      expect(await reports.requestReportedMove(dev.id)).toMatchObject({
+        requested: true,
+        outcome: "applied",
+        toState: "escalated_to_council",
+      });
+      expect(await reports.requestReportedMove(dev.id)).toMatchObject({
+        outcome: "noop",
+        reason: "duplicate_trigger",
+      });
+      const rows = await pool.query(
+        "select run_id, recorded_by, payload from factory.evidence where node_id = $1 and kind = 'agent_report'",
+        [node.id],
+      );
+      expect(rows.rows).toEqual([
+        { run_id: dev.id, recorded_by: "runner", payload: { escalate: true, reason } },
+      ]);
+      expect(await store.getCounter(node.id, "failure")).toBe(0);
+      const counted = await pool.query(
+        "select count(*)::int as n from factory.evidence where node_id = $1 and kind = 'failure_count'",
+        [node.id],
+      );
+      expect(counted.rows[0]).toEqual({ n: 0 });
+      const after = await store.getNode(node.id);
+      expect(after?.state).toBe("escalated_to_council");
+      expect(after?.blockedReason).toBe(
+        "the builder stopped: the item needs a product decision or a new feature",
+      );
+    });
+
     it("counts a repeated failed start once per run", async () => {
       const t = await setup("82000000-0000-4000-8000", "b");
       const node = await t.node("ready_for_dev");
