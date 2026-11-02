@@ -92,7 +92,8 @@ export async function startRun(
   input: StartRunInput,
 ): Promise<StartRunResult> {
   const runs = createRuns(deps);
-  const request = { ...input, ...deps.bots[input.role] };
+  const { runtime, botVersion } = deps.bots[input.role];
+  const request = { ...input, runtime, botVersion };
   if (await dryRunOn(deps.store)) {
     const plan = await runs.planDispatch(request);
     return plan.admitted

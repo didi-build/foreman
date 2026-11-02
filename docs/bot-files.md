@@ -1,0 +1,48 @@
+# Bot files
+
+Each agent role (Developer, Designer, QA, Council, Triage) has one bot file in `contracts/bots/<role>.yaml`. The runner builds every run's task from it ([ADR 0107](./decisions/0107-agent-dispatch-adapters.md), [ADR 0106](./decisions/0106-agent-execution-environment.md) sections 3, 5 and 6, [ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) section 1). This page says what a bot file holds, how it is versioned and checked, and how a run's task is built from it. It is a page of its own because bot files are repository files, not database rows, so `docs/schema.md` is not their place (O-57).
+
+## Where they live and how they are versioned
+
+- The files sit in `contracts/`, so the spec version (the git commit of `docs/spec.md` and `contracts/`, ADR 0105) covers them, and the Windmill bundle ships them with the contracts.
+- `src/adapters/contracts-file/bot-files.ts` reads the five files and checks them. The flow layer's composition module loads them at start and refuses to run with a bad one. A run records its bot file's content hash, `sha256:<hex>` of the file's bytes, as `runs.bot_version`, and the bot file's `image` as `runs.runtime`.
+- The check is strict and collects every problem. An unknown field is refused, a `model` field is refused with the reason, and every problem names the file and the field, never a value from the file.
+- A change to a bot file is a change to the repository, reviewed like code. A new tool, host or cap needs Didi's approval (D-196, D-187, D-185).
+
+## Fields
+
+| Field                 | Roles               | What it sets                                                                                                                                                                                                                                                                                          |
+| --------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`                | all                 | The file's own role. Must match the file name                                                                                                                                                                                                                                                         |
+| `image`               | all                 | The agent image kind: `opencode` for the Developer and Designer (D-222), `claude-api` (the Messages API image) for QA, Council and Triage. The image reference, pinned by digest, is the `agent_images` value, since it changes with every image build                                                |
+| `instructions`        | all                 | The role's instructions: the stable, cached part of every run's task file. The run's input follows it as data (D-213). All five are drafts for Didi's review                                                                                                                                          |
+| `task_types`          | all                 | `allowed` and `default`: the role's task types from `contracts/task-types.yaml` and its default (ADR 0114 section 1). The core checks them with that file                                                                                                                                             |
+| `limits`              | all                 | `max_turns`, `max_minutes`, `max_usd` per run (D-185, ADR 0106 section 6), recorded in `runs.budget`. The Developer and Designer stay below 60 minutes, the GitHub token's lifetime                                                                                                                   |
+| `providers`           | all                 | Every model provider the role may be routed to: `name`, `upstream`, `credential` (`x-api-key`, `bearer` or `none`), `secret_path`, and `api` (OpenCode) or `base_url_env` (`ANTHROPIC_BASE_URL`, the Messages API image). The run's route picks one; a route to a provider not listed here is refused |
+| `allowed_hosts`       | all                 | CONNECT hosts for the agent's proxy. GitHub's for the Developer and Designer, empty for QA, Council and Triage (ADR 0106 section 3)                                                                                                                                                                   |
+| `allowed_tools`       | Developer, Designer | D-196's list, run with every other tool denied                                                                                                                                                                                                                                                        |
+| `mcp`                 | Designer            | `magicpath: { enabled: false }`. The check refuses `true` until D-190's new-credentials gate                                                                                                                                                                                                          |
+| `fetch_allowed_hosts` | QA                  | The GitHub hosts QA's fetch step may reach                                                                                                                                                                                                                                                            |
+| `output_schemas`      | Council, Triage     | The Council's `escalation` and `reversal` schemas (D-228), Triage's `answer` (a draft until M3.6). Only a checkable subset of JSON Schema is accepted (`src/core/output-schema.ts`)                                                                                                                   |
+
+No bot file holds a model: each run's route names it (ADR 0114 section 5). No bot file holds a credential: `secret_path` is a path such as `projects/{project}/models/anthropic`, where `{project}` is the run's project slug (D-143). Anything that is not a path under `platform/` or `projects/`, such as a pasted key, is refused without being repeated.
+
+QA's verdict schema is not in its bot file. The verdict is the state API's contract (ADR 0112, P-04), checked by the image (`src/agent-images/claude-api/verdict.ts`) and by the API, so it stays with that code (O-59).
+
+## The settings around them
+
+- `bot_profiles`, the Windmill value that gave each role's runtime and bot version until bot files existed, is removed. The bot files give both.
+- The per-run caps now come from the bot files. `REHEARSAL_RUN_LIMITS` in `src/core/runs.ts` is a copy for tests, and a test keeps the two equal.
+- `agent_images` (a Windmill value): the image reference for each image kind, pinned by digest.
+- `package_registries` (a setting, not seeded): each project's package registries by project slug, for example `{"rehearsal": ["registry.npmjs.org"]}` (D-187). A project with no entry gets no registry host.
+
+## How a run's task is built
+
+`flows/lib/tasks.ts` builds it through `buildKubernetesTask`:
+
+1. The bot file of the run's role gives the instructions, tools, hosts, the image kind and the provider entry for the run's route.
+2. The run, as admitted, gives the model, provider, tier and price (ADR 0114). The run's input is the core's (`src/core/task-input.ts`, or the Council's question with its schema from the same bot file).
+3. The model key is read by its secret path, for the route's provider and the run's project only, and goes into the run's proxy Secret only.
+4. The GitHub installation token comes last, from the `InstallationTokens` port (`src/adapters/github/installation-tokens.ts`): Developer and Designer with write access, QA read-only for its fetch step (ADR 0106 section 5, D-159). Council and Triage get none.
+
+The runner's real token port refuses with `NotBuiltError` until the role's GitHub App is registered through the new-credentials gate (D-156, D-178). So today a Council or Triage task builds fully, and a Developer, Designer or QA task refuses on its token only. Neither credential value is in the task file or the run's spec: they travel in `credentials`, which `start` writes into the run's Secrets.

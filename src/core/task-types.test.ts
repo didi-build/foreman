@@ -1,5 +1,6 @@
-// Seam: unit. The task types check and the role default (ADR 0114 section 1). The real file in
-// contracts/task-types.yaml is checked in test/contracts-task-types.test.ts.
+// Seam: unit. The task types check and the role default (ADR 0114 section 1). The real files,
+// contracts/task-types.yaml and each bot file's task_types, are checked in
+// test/contracts-task-types.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { TEST_TASK_TYPES } from "./routing-testing.ts";
@@ -18,13 +19,12 @@ const roles = {
 
 const file = (extra: Record<string, unknown> = {}) => ({
   task_types: TEST_TASK_TYPES.meanings,
-  roles,
   ...extra,
 });
 
 describe("task types (unit, ADR 0114 section 1)", () => {
   it("accepts the six task types with each role's allowed list and default", () => {
-    expect(validateTaskTypes("e".repeat(40), file())).toEqual({
+    expect(validateTaskTypes("e".repeat(40), file(), roles)).toEqual({
       taskTypes: TEST_TASK_TYPES,
       problems: [],
     });
@@ -41,40 +41,43 @@ describe("task types (unit, ADR 0114 section 1)", () => {
       "v",
       file({
         extra: 1,
+        roles,
         task_types: { ...TEST_TASK_TYPES.meanings, "Bad Id": "x", council: "" },
-        roles: {
-          ...roles,
-          developer: {
-            allowed: ["developer:code", "qa:review"],
-            default: "developer:code",
-          },
-          designer: { allowed: ["designer:art"], default: "designer:art" },
-          qa: { allowed: ["qa:review"], default: "triage" },
-          triage: undefined,
-          scanner: roles.council,
-        },
       }),
+      {
+        ...roles,
+        developer: {
+          allowed: ["developer:code", "qa:review"],
+          default: "developer:code",
+        },
+        designer: { allowed: ["designer:art"], default: "designer:art" },
+        qa: { allowed: ["qa:review"], default: "triage" },
+        triage: undefined,
+        scanner: roles.council,
+      },
     );
     expect(taskTypes).toBeUndefined();
     expect(problems).toEqual(
       expect.arrayContaining([
         "task types: unknown field extra",
+        // The roles live in the bot files now; the task types file may not carry them.
+        "task types: unknown field roles",
         "task_types: an id must be a role, optionally with :class",
         "task_types.council needs a meaning",
-        "roles: unknown role scanner",
-        "roles.developer.allowed names a task type of another role",
-        "roles.designer.allowed names a task type that task_types does not list",
-        "roles.qa.default must be one of its allowed task types",
-        "roles.triage needs allowed and default",
+        "task types: unknown role scanner",
+        "the developer bot file's task_types.allowed names a task type of another role",
+        "the designer bot file's task_types.allowed names a task type that task_types does not list",
+        "the qa bot file's task_types.default must be one of its allowed task types",
+        "the triage bot file's task_types needs allowed and default",
       ]),
     );
   });
 
   it("refuses a file that is not a mapping, and an empty version", () => {
-    expect(validateTaskTypes("v", ["developer"]).problems).toEqual([
+    expect(validateTaskTypes("v", ["developer"], roles).problems).toEqual([
       "task types must be a mapping",
     ]);
-    expect(validateTaskTypes("", file()).problems).toEqual([
+    expect(validateTaskTypes("", file(), roles).problems).toEqual([
       "version must be a non-empty string",
     ]);
   });

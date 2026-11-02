@@ -2,6 +2,7 @@
 // a store with one rehearsal project, a clock the test moves by hand, sequential ids, a fake
 // GitHub, and builders for nodes, edges, runs, evidence and gate requests. Fake data only.
 import { createFakeGitHub, type FakeGitHub } from "../src/adapters/github/fake.ts";
+import { readBotFiles } from "../src/adapters/contracts-file/bot-files.ts";
 import { loadContractFiles } from "../src/adapters/contracts-file/load.ts";
 import { validateContracts, type Contracts } from "../src/core/contracts.ts";
 import { GUARD_NAMES, GUARDS } from "../src/core/guards/index.ts";
@@ -36,12 +37,15 @@ export const HEAD = "b".repeat(40);
 export const START = Date.UTC(2026, 9, 31, 8, 0, 0);
 export const MINUTE = 60_000;
 
+/** The Council's output schemas, from its real bot file (contracts/bots/council.yaml, D-228). */
+export const COUNCIL_SCHEMAS = readBotFiles().council.outputSchemas ?? {};
+
 const BOT: BotProfile = { runtime: "claude_code", botVersion: "v1" };
 const BOTS: Record<AgentRole, BotProfile> = {
   developer: BOT,
   designer: BOT,
   qa: BOT,
-  council: BOT,
+  council: { ...BOT, outputSchemas: COUNCIL_SCHEMAS },
   triage: BOT,
 };
 

@@ -1,6 +1,6 @@
 # The runner's Windmill flows, schedules and resources, as data (build plan M3.1). Nothing here is
 # deployed. Deploying is mechanical once the Windmill workspace and token exist (first-hosting
-# runbook, step 15): bundle each entry with its imports and contracts/machine-2, push it as a
+# runbook, step 15): bundle each entry with its imports and contracts/, push it as a
 # script at its path, create the schedule and the approval flow, and store each resource and
 # variable at the path below. test/flows/windmill-description.test.ts keeps this file in step
 # with the code.
@@ -99,6 +99,8 @@ flows:
 # them and none is listed here.
 
 resources:
+  # A run's model key is read at the path its bot file's provider names for the run's project,
+  # projects/<slug>/models/<provider> (D-143, contracts/bots/). Each is stored at first hosting.
   secrets:
     - path: platform/state-store/runner-database-url
       holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
@@ -119,8 +121,8 @@ resources:
       holds: The cluster's CA certificate (first-hosting runbook step 8)
     - name: agent_run_settings
       holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106)
-    - name: bot_profiles
-      holds: Runtime and bot version per role as JSON, until bot files are loaded. The model comes from each run's route (ADR 0114)
+    - name: agent_images
+      holds: The agent image references by image kind as JSON, each pinned by digest. Each bot file (contracts/bots/) names its kind
   # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is
   # a new credential at first hosting; until then the count is not read and the pass says so.
   windmill_token: needed for the execution count (D-167)

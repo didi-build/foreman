@@ -13,11 +13,11 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { redoPass } from "../../flows/lib/council-runs.ts";
-import { COUNCIL_OUTPUT_SCHEMAS, createCouncil } from "../../src/core/council.ts";
+import { createCouncil } from "../../src/core/council.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import { createLibrary, reversalTopic } from "../../src/core/library.ts";
-import { HEAD } from "../reconcile-fixture.ts";
+import { COUNCIL_SCHEMAS, HEAD } from "../reconcile-fixture.ts";
 import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
@@ -125,7 +125,7 @@ describe("the M3.5 success path (flow: fake adapters, D-228)", () => {
     }
     const start = lastCouncilStart(f);
     expect(start.run.questionTopic).toBe(escalationTopic(node.id));
-    expect(start.outputSchema).toEqual(COUNCIL_OUTPUT_SCHEMAS.escalation);
+    expect(start.outputSchema).toEqual(COUNCIL_SCHEMAS.escalation);
     expect(start.input).toContain("## The question");
     expect(start.input).toContain("> Add the export button");
     expect(start.input).toContain("failure: 3");
@@ -289,7 +289,7 @@ describe("a reversal's question (flow: fake adapters, D-229)", () => {
     ]);
     const start = lastCouncilStart(f);
     expect(start.run.nodeId).toBe(owner.id);
-    expect(start.outputSchema).toEqual(COUNCIL_OUTPUT_SCHEMAS.reversal);
+    expect(start.outputSchema).toEqual(COUNCIL_SCHEMAS.reversal);
     for (const n of stale) expect(start.input).toContain(`Item id: ${n.id}`);
 
     // An answer that misses an item is refused: the run fails and is re-run.

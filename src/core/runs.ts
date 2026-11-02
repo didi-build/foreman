@@ -48,8 +48,10 @@ export interface RunLimits {
 export type RoleRunLimits = Record<AgentRole, RunLimits>;
 
 /**
- * The rehearsal limits (D-185, ADR 0106 section 6). They belong in each bot file; until bot
- * files are loaded, the runner passes these.
+ * The rehearsal limits (D-185, ADR 0106 section 6). The runner reads each role's limits from its
+ * bot file (contracts/bots/, `limits`); this copy is for tests, and
+ * src/adapters/contracts-file/bot-files.test.ts keeps the bot files equal to it, so a spend cap
+ * never changes in one place only.
  */
 export const REHEARSAL_RUN_LIMITS: RoleRunLimits = {
   developer: { maxTurns: 100, maxMinutes: 50, maxUsd: 5 },

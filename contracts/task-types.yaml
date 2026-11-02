@@ -2,9 +2,8 @@
 # type is the role plus a small task class. The core reads this file at the spec version (ADR 0105);
 # no flow carries its own list.
 #
-# `roles` names each agent role's allowed task types and its default. ADR 0114 puts that in each
-# bot file; bot files are not loaded yet (the runner reads one profile per role from settings), so
-# it lives here until they are. At dispatch the core takes the role's default. Who sets another
+# Each role's allowed task types and its default are in its bot file (contracts/bots/<role>.yaml,
+# `task_types`), as ADR 0114 says. At dispatch the core takes the role's default. Who sets another
 # allowed class on an item is settled with M3.6, so until then every Developer run is
 # `developer:code`.
 #
@@ -17,20 +16,3 @@ task_types:
   "qa:review": QA review of a pull request.
   council: A Council question.
   triage: Triage, and similar short classification or breakdown work.
-
-roles:
-  developer:
-    allowed: ["developer:code", "developer:infra"]
-    default: "developer:code"
-  designer:
-    allowed: [designer]
-    default: designer
-  qa:
-    allowed: ["qa:review"]
-    default: "qa:review"
-  council:
-    allowed: [council]
-    default: council
-  triage:
-    allowed: [triage]
-    default: triage

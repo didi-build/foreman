@@ -6,7 +6,13 @@ import { describe, expect, it } from "vitest";
 
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import { readApprovalReply } from "../../flows/lib/approval.ts";
-import { compose, NotBuiltError, parseBotProfiles } from "../../flows/lib/compose.ts";
+import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
+import {
+  compose,
+  NotBuiltError,
+  unregisteredInstallationTokens,
+  type RunToStart,
+} from "../../flows/lib/compose.ts";
 import {
   SECRET_PATHS,
   VALUE_NAMES,
@@ -17,14 +23,36 @@ import {
   WindmillNotConfiguredError,
 } from "../../flows/lib/windmill.ts";
 
-const PROFILE = { runtime: "kubernetes", botVersion: "v1" };
-const BOTS = JSON.stringify({
-  developer: PROFILE,
-  designer: PROFILE,
-  qa: { ...PROFILE, botVersion: "v2" },
-  council: PROFILE,
-  triage: PROFILE,
+const DIGEST = `@sha256:${"c".repeat(64)}`;
+const IMAGES = JSON.stringify({
+  opencode: `registry.example.com/foreman/opencode${DIGEST}`,
+  "claude-api": `registry.example.com/foreman/claude-api${DIGEST}`,
 });
+
+/** A Council run as the dispatch admits it, on the first routing policy. Fake data only. */
+const COUNCIL_START = {
+  run: {
+    id: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
+    bot: "council",
+    model: "claude-sonnet-5-5",
+    provider: "anthropic",
+    serviceTierRequested: "standard",
+    modelPrice: {
+      tiers: ["standard"],
+      pricePerMTok: { standard: { input: 3, cachedInput: 0.3, output: 15 } },
+    },
+    nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    headSha: null,
+    prNumber: null,
+  },
+  project: { slug: "rehearsal", repo: "didi-build/rehearsal" },
+  input: "Fixture input.",
+  branch: null,
+  evidenceIds: [],
+  capacity: { flexCapacityRetries: 3, maxRejectedModelRequests: 6 },
+  stateApiToken: "state-token-value-not-real-0123456789",
+  outputSchema: readBotFiles().council.outputSchemas?.escalation,
+} as unknown as RunToStart;
 
 function fakeEnvironment(values: Record<string, string> = {}) {
   const secretsRead: string[] = [];
@@ -36,7 +64,7 @@ function fakeEnvironment(values: Record<string, string> = {}) {
     async value(name) {
       const all: Record<string, string> = {
         [VALUE_NAMES.specVersion]: "e".repeat(40),
-        [VALUE_NAMES.botProfiles]: BOTS,
+        [VALUE_NAMES.agentImages]: IMAGES,
         [VALUE_NAMES.developerAppLogin]: "foreman-developer[bot]",
         [VALUE_NAMES.designerAppLogin]: "foreman-designer[bot]",
         [VALUE_NAMES.runnerAppSlug]: "foreman-runner",
@@ -65,7 +93,15 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         "foreman-designer[bot]",
       ]);
       expect(deps.runnerAppSlug).toBe("foreman-runner");
-      expect(deps.bots.qa.botVersion).toBe("v2");
+      // Runtime, version and limits come from the bot files (contracts/bots/).
+      const bots = readBotFiles();
+      expect(deps.bots.qa).toEqual({
+        runtime: "claude-api",
+        botVersion: bots.qa.version,
+      });
+      expect(deps.bots.developer.runtime).toBe("opencode");
+      expect(deps.bots.council.outputSchemas).toEqual(bots.council.outputSchemas);
+      expect(deps.limits.qa).toEqual({ maxTurns: 50, maxMinutes: 20, maxUsd: 2 });
       expect(deps.taskTypes.version).toBe("e".repeat(40));
       expect(deps.taskTypes.roles.developer.default).toBe("developer:code");
       expect(await deps.executionsThisMonth()).toBe(42);
@@ -87,7 +123,15 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(deps.github.listOpenPullRequests("didi-build/x")).rejects.toThrow(
         GitHubNotConfiguredError,
       );
-      await expect(deps.tasks.taskFor({} as never)).rejects.toThrow(NotBuiltError);
+      // The GitHub installation tokens wait on the role's GitHub App (D-178).
+      await expect(
+        unregisteredInstallationTokens().mint({
+          role: "developer",
+          repository: "didi-build/x",
+          access: "write",
+          runId: "r",
+        }),
+      ).rejects.toThrow(NotBuiltError);
       await expect(
         deps.github.listDeployments("didi-build/x", "staging", "b".repeat(40)),
       ).rejects.toThrow(GitHubNotConfiguredError);
@@ -97,6 +141,35 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(deps.stagingChecker.check({} as never)).rejects.toThrow(
         /deploy adapter's staging target/,
       );
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("builds a Council task from its bot file, reading its model key by path and the images once", async () => {
+    const { env, secretsRead } = fakeEnvironment();
+    const deps = await compose(env);
+    try {
+      const task = (await deps.tasks.taskFor(COUNCIL_START)) as {
+        image: string;
+        providers: { secretPath?: string }[];
+        credentials: { models: Record<string, string>; githubToken?: string };
+        task: { instructions: string; outputSchema?: unknown };
+      };
+      expect(task.image).toBe(`registry.example.com/foreman/claude-api${DIGEST}`);
+      expect(task.providers.map((p) => p.secretPath)).toEqual([
+        "projects/rehearsal/models/anthropic",
+      ]);
+      expect(Object.keys(task.credentials.models)).toEqual([
+        "projects/rehearsal/models/anthropic",
+      ]);
+      expect(task.credentials.githubToken).toBeUndefined();
+      expect(task.task.instructions).toBe(readBotFiles().council.instructions);
+      expect(task.task.outputSchema).toEqual(COUNCIL_START.outputSchema);
+      expect(secretsRead).toEqual([
+        SECRET_PATHS.database,
+        "projects/rehearsal/models/anthropic",
+      ]);
     } finally {
       await deps.close();
     }
@@ -118,13 +191,18 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     }
   });
 
-  it("names a bad bot profile value, never its content", () => {
-    expect(() => parseBotProfiles("{secret-ish")).toThrow(
-      new Error("bot_profiles is not valid JSON"),
-    );
-    expect(() =>
-      parseBotProfiles(JSON.stringify({ developer: { model: "m-123" } })),
-    ).toThrow(new Error("bot_profiles has no complete profile for developer"));
+  it("names a bad agent images value, never its content", async () => {
+    for (const raw of ["{secret-ish", JSON.stringify(["not", "an", "object"])]) {
+      const { env } = fakeEnvironment({ [VALUE_NAMES.agentImages]: raw });
+      const deps = await compose(env);
+      try {
+        await expect(deps.tasks.taskFor(COUNCIL_START)).rejects.toThrow(
+          /^agent_images (is not valid JSON|must be an object of image references)$/,
+        );
+      } finally {
+        await deps.close();
+      }
+    }
   });
 
   it("has a Windmill binding that refuses until the workspace and token exist", async () => {

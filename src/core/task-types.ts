@@ -1,7 +1,8 @@
 // Task types (ADR 0114 section 1): the role plus a small task class, the unit model routing and
-// the scorecard use. The list is data in contracts/task-types.yaml at the spec version (ADR 0105).
-// The contracts-file adapter parses it; this module only checks the plain object and picks a
-// run's task type.
+// the scorecard use. The list is data in contracts/task-types.yaml at the spec version (ADR 0105),
+// and each role's bot file (contracts/bots/<role>.yaml) names its allowed task types and its
+// default. The contracts-file adapter parses both; this module only checks the plain objects and
+// picks a run's task type.
 import type { AgentRole } from "./store.ts";
 
 export interface RoleTaskTypes {
@@ -44,15 +45,20 @@ const unknownKeys = (value: Record<string, unknown>, allowed: string[]): string[
   Object.keys(value).filter((key) => !allowed.includes(key));
 
 /**
- * Checks the parsed task-types file, collecting every problem at once: an unknown field, a bad
- * id, a role with no entry, an allowed type that is not listed, a default outside the allowed list.
- * Problems name the field, never a value from the file.
+ * Checks the parsed task-types file and each bot file's `task_types` (`roles`, by role),
+ * collecting every problem at once: an unknown field, a bad id, a role with no entry, an allowed
+ * type that is not listed, a default outside the allowed list. Problems name the field, never a
+ * value from the files.
  */
-export function validateTaskTypes(version: string, raw: unknown): TaskTypesResult {
+export function validateTaskTypes(
+  version: string,
+  raw: unknown,
+  roles: Readonly<Record<string, unknown>>,
+): TaskTypesResult {
   const problems: string[] = [];
   if (!isText(version)) problems.push("version must be a non-empty string");
   if (!isRecord(raw)) return { problems: ["task types must be a mapping"] };
-  for (const key of unknownKeys(raw, ["task_types", "roles"])) {
+  for (const key of unknownKeys(raw, ["task_types"])) {
     problems.push(`task types: unknown field ${key}`);
   }
 
@@ -73,50 +79,44 @@ export function validateTaskTypes(version: string, raw: unknown): TaskTypesResul
     }
   }
 
-  const roles = {} as Record<AgentRole, RoleTaskTypes>;
-  if (!isRecord(raw.roles)) {
-    problems.push("roles must be a mapping of agent roles");
-  } else {
-    for (const key of unknownKeys(raw.roles, [...ROLES])) {
-      problems.push(`roles: unknown role ${key}`);
+  const checked = {} as Record<AgentRole, RoleTaskTypes>;
+  for (const key of unknownKeys(roles as Record<string, unknown>, [...ROLES])) {
+    problems.push(`task types: unknown role ${key}`);
+  }
+  for (const role of ROLES) {
+    const entry = roles[role];
+    const where = `the ${role} bot file's task_types`;
+    if (!isRecord(entry)) {
+      problems.push(`${where} needs allowed and default`);
+      continue;
     }
-    for (const role of ROLES) {
-      const entry = raw.roles[role];
-      const where = `roles.${role}`;
-      if (!isRecord(entry)) {
-        problems.push(`${where} needs allowed and default`);
-        continue;
-      }
-      for (const key of unknownKeys(entry, ["allowed", "default"])) {
-        problems.push(`${where}: unknown field ${key}`);
-      }
-      const allowed = entry.allowed;
-      if (
-        !Array.isArray(allowed) ||
-        allowed.length === 0 ||
-        !allowed.every((id): id is string => typeof id === "string")
-      ) {
-        problems.push(`${where}.allowed must be a non-empty list of task type ids`);
-        continue;
-      }
-      if (allowed.some((id) => !Object.hasOwn(meanings, id))) {
-        problems.push(
-          `${where}.allowed names a task type that task_types does not list`,
-        );
-      }
-      if (allowed.some((id) => id !== role && !id.startsWith(`${role}:`))) {
-        problems.push(`${where}.allowed names a task type of another role`);
-      }
-      if (typeof entry.default !== "string" || !allowed.includes(entry.default)) {
-        problems.push(`${where}.default must be one of its allowed task types`);
-        continue;
-      }
-      roles[role] = { allowed: [...allowed], default: entry.default };
+    for (const key of unknownKeys(entry, ["allowed", "default"])) {
+      problems.push(`${where}: unknown field ${key}`);
     }
+    const allowed = entry.allowed;
+    if (
+      !Array.isArray(allowed) ||
+      allowed.length === 0 ||
+      !allowed.every((id): id is string => typeof id === "string")
+    ) {
+      problems.push(`${where}.allowed must be a non-empty list of task type ids`);
+      continue;
+    }
+    if (allowed.some((id) => !Object.hasOwn(meanings, id))) {
+      problems.push(`${where}.allowed names a task type that task_types does not list`);
+    }
+    if (allowed.some((id) => id !== role && !id.startsWith(`${role}:`))) {
+      problems.push(`${where}.allowed names a task type of another role`);
+    }
+    if (typeof entry.default !== "string" || !allowed.includes(entry.default)) {
+      problems.push(`${where}.default must be one of its allowed task types`);
+      continue;
+    }
+    checked[role] = { allowed: [...allowed], default: entry.default };
   }
 
   if (problems.length > 0) return { problems };
-  return { taskTypes: { version, meanings, roles }, problems };
+  return { taskTypes: { version, meanings, roles: checked }, problems };
 }
 
 /**

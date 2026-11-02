@@ -1,7 +1,7 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
-// needs from its environment: the store from the runner's database secret, the contracts at the
-// bundle's spec version, the guards, a clock and an id source, the GitHub reader, the agent
-// runtime and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
+// needs from its environment: the store from the runner's database secret, the contracts, the
+// task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
+// the GitHub reader, the agent runtime, each run's task and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
 // 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
@@ -11,20 +11,28 @@ import type { KubernetesRunSettings } from "../../src/adapters/agent-runtime/kub
 import { createKubernetesRuntime } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
 import type { AgentRuntime } from "../../src/adapters/agent-runtime/runtime.ts";
 import {
+  botProfiles,
+  botTaskTypes,
+  readBotFiles,
+  runLimits,
+} from "../../src/adapters/contracts-file/bot-files.ts";
+import {
   loadContractFiles,
   loadTaskTypesFile,
 } from "../../src/adapters/contracts-file/load.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
+import type { InstallationTokens } from "../../src/adapters/github/installation-tokens.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
-import type { BotProfile, ReconcileDeps } from "../../src/core/reconcile.ts";
+import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
-import { REHEARSAL_RUN_LIMITS, type RunCapacityLimits } from "../../src/core/runs.ts";
+import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
-import type { AgentRole, Node, Project, Run } from "../../src/core/store.ts";
+import type { Node, Project, Run } from "../../src/core/store.ts";
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
+import { createTaskSource } from "./tasks.ts";
 
 /** An agent runtime as flows see it. `cleanup` runs after a run's end is recorded (ADR 0107). */
 export interface FlowRuntime extends AgentRuntime<unknown, unknown> {
@@ -49,7 +57,7 @@ export interface RunToStart {
   capacity: RunCapacityLimits;
   stateApiToken: string;
   /**
-   * Council: the output schema of its question's kind, the Council bot profile's default
+   * Council: the output schema of its question's kind, from the Council's bot file
    * (src/core/council.ts, D-228). The task file carries it, and the runner checks the answer
    * against the same schema when the run ends.
    */
@@ -60,7 +68,7 @@ export interface RunToStart {
  * The task a run is started with (ADR 0102, ADR 0106 section 5, ADR 0107): the bot file's
  * instructions and settings, the run's route as its proxy's provider list, and the credentials
  * (the state API token from the runner, the GitHub installation token and the model credential
- * through their adapters). For the Kubernetes runtime, `buildKubernetesTask` builds it.
+ * through their adapters). Built by ./tasks.ts through `buildKubernetesTask`.
  */
 export interface TaskSource {
   taskFor(start: RunToStart): Promise<unknown>;
@@ -85,14 +93,6 @@ export class NotBuiltError extends Error {
     this.name = "NotBuiltError";
   }
 }
-
-const AGENT_ROLES: readonly AgentRole[] = [
-  "developer",
-  "qa",
-  "designer",
-  "council",
-  "triage",
-];
 
 /**
  * The runner's GitHub reads and merge calls. The runner App is registered at M3 (D-178); until
@@ -151,19 +151,33 @@ function jsonValue(name: string, raw: string): unknown {
   }
 }
 
-export function parseBotProfiles(raw: string): Record<AgentRole, BotProfile> {
-  const value = jsonValue(VALUE_NAMES.botProfiles, raw) as Record<string, unknown>;
-  const text = (v: unknown): v is string => typeof v === "string" && v.trim() !== "";
-  const profiles = {} as Record<AgentRole, BotProfile>;
-  for (const role of AGENT_ROLES) {
-    const p = (value as Record<string, Partial<BotProfile> | undefined> | null)?.[role];
-    if (!p || !text(p.runtime) || !text(p.botVersion)) {
-      throw new Error(`${VALUE_NAMES.botProfiles} has no complete profile for ${role}`);
-    }
-    // A model in the profile is ignored: each run's route names it (ADR 0114 section 5).
-    profiles[role] = { runtime: p.runtime, botVersion: p.botVersion };
+/**
+ * The GitHub installation tokens of the Developer, Designer and QA runs. They come from the role's
+ * GitHub App, registered at M3 through the new-credentials gate (D-156, D-178); until then every
+ * request refuses, so no Developer, Designer or QA run starts.
+ */
+export function unregisteredInstallationTokens(): InstallationTokens {
+  return {
+    mint: async () => {
+      throw new NotBuiltError(
+        "A run's GitHub installation token needs its role's GitHub App, registered at M3 through the new-credentials gate (D-156, D-178)",
+      );
+    },
+  };
+}
+
+/** The agent image references by image kind (`agent_images`). Names the value, never its content. */
+function parseAgentImages(raw: string): Record<string, string> {
+  const value = jsonValue(VALUE_NAMES.agentImages, raw);
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !Object.values(value).every((v) => typeof v === "string")
+  ) {
+    throw new Error(`${VALUE_NAMES.agentImages} must be an object of image references`);
   }
-  return profiles;
+  return value as Record<string, string>;
 }
 
 export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
@@ -173,11 +187,16 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     GUARD_NAMES,
   );
   if (!contracts) throw new Error(`The contracts are invalid: ${problems.join("; ")}`);
-  const checked = validateTaskTypes(specVersion, loadTaskTypesFile());
+  // The bot files at the bundle's spec version (contracts/bots/, docs/bot-files.md).
+  const botFiles = readBotFiles();
+  const checked = validateTaskTypes(
+    specVersion,
+    loadTaskTypesFile(),
+    botTaskTypes(botFiles),
+  );
   if (!checked.taskTypes) {
     throw new Error(`The task types are invalid: ${checked.problems.join("; ")}`);
   }
-  const bots = parseBotProfiles(await env.value(VALUE_NAMES.botProfiles));
   const appLogins = [
     await env.value(VALUE_NAMES.developerAppLogin),
     await env.value(VALUE_NAMES.designerAppLogin),
@@ -189,9 +208,12 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     max: 2,
   });
   pool.on("error", () => undefined);
+  const store = createPostgresStore(pool);
+  // Read on the first task built, so a flow that starts no agent never needs it.
+  let images: Promise<Record<string, string>> | undefined;
 
   return {
-    store: createPostgresStore(pool),
+    store,
     contracts,
     guards: GUARDS,
     clock: { now: () => new Date() },
@@ -199,8 +221,8 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     github: unregisteredGitHub(),
     appLogins,
     runnerAppSlug,
-    limits: REHEARSAL_RUN_LIMITS,
-    bots,
+    limits: runLimits(botFiles),
+    bots: botProfiles(botFiles),
     taskTypes: checked.taskTypes,
     runtime: lazyRuntime(async () =>
       createKubernetesRuntime({
@@ -216,13 +238,16 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
       }),
     ),
     stagingChecker: unbuiltStagingChecker(),
-    tasks: {
-      taskFor: async () => {
-        throw new NotBuiltError(
-          "A run's task needs the bot files, the provider settings and the GitHub App's installation tokens (ADR 0107, D-178)",
-        );
-      },
-    },
+    tasks: createTaskSource({
+      bots: botFiles,
+      images: () =>
+        (images ??= env
+          .value(VALUE_NAMES.agentImages)
+          .then((raw) => parseAgentImages(raw))),
+      secret: (path) => env.secret(path),
+      githubTokens: unregisteredInstallationTokens(),
+      store,
+    }),
     // 32 random bytes: far beyond guessing, and inside the API's token pattern (src/api/auth.ts).
     newRunToken: () => randomBytes(32).toString("base64url"),
     executionsThisMonth: () => env.executionsThisMonth(),

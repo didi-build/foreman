@@ -145,7 +145,7 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 /** One or more plain path segments, e.g. `/v1/openai`. No `.` or `..`, no query. */
-const API_PATH = /^(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,64}){1,8}$/;
+export const API_PATH = /^(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._-]{1,64}){1,8}$/;
 /** The roles whose image is OpenCode (D-222), which reads the provider's API and address. */
 const OPENCODE_ROLES: readonly AgentRole[] = ["developer", "designer"];
 const RESERVED_ENV =

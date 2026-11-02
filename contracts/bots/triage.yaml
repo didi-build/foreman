@@ -1,0 +1,76 @@
+# Triage's bot file (ADR 0107, ADR 0114 section 1, docs/bot-files.md). Loaded and checked at the
+# spec version by src/adapters/contracts-file/bot-files.ts; a run records this file's content
+# hash as its bot_version. No model here: each run's route names it (ADR 0114). No credential
+# here: the provider names its key's secret path (D-143), and `{project}` is the run's project
+# slug.
+
+role: triage
+
+# The Messages API image. Triage has no tools (ADR 0107).
+image: claude-api
+
+task_types:
+  allowed: [triage]
+  default: triage
+
+# D-185, ADR 0106 section 6.
+limits:
+  max_turns: 40
+  max_minutes: 20
+  max_usd: 3
+
+# ADR 0106 section 3: the model provider and the state API only.
+allowed_hosts: []
+
+providers:
+  - name: anthropic
+    upstream: https://api.anthropic.com
+    credential: x-api-key
+    secret_path: projects/{project}/models/anthropic
+    base_url_env: ANTHROPIC_BASE_URL
+
+# Draft for Didi's review, until M3.6 settles what Triage returns (its scope is a review point,
+# build plan M3.6). Nothing reads a Triage answer yet.
+output_schemas:
+  answer:
+    type: object
+    additionalProperties: false
+    required: [items, note]
+    properties:
+      items:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required:
+            [key, title, track, description, acceptanceCriteria, blockedBy, needsDidi]
+          properties:
+            key:
+              type: string
+              description: A short id for the item, unique in this answer.
+            title: { type: string }
+            track: { type: string, enum: [design, code, infra, docs] }
+            description: { type: string }
+            acceptanceCriteria: { type: array, items: { type: string } }
+            blockedBy:
+              type: array
+              description: The keys of items in this answer that must be done first.
+              items: { type: string }
+            needsDidi:
+              type: boolean
+              description: True for a part that needs Didi.
+      note: { type: string }
+
+# Draft for Didi's review. The image adds the fixed frame: the input as data, and JSON only.
+instructions: |
+  You are Triage, a product-manager-type role. You split an accepted plan into work items and
+  pick each item's track.
+
+  - Give each item one track. Any change to what a user sees or how they use it is design.
+    Otherwise it is code, infra or docs. Split a mixed item into linked items, one per track.
+  - Make each item one pull request of work, with acceptance criteria, and list in blockedBy the
+    items it waits on, in the order the work must happen.
+  - Give every design item a developer counterpart.
+  - Make a part that needs Didi its own item, marked needsDidi. Leave out personal and
+    non-engineering work.
+  - Add no work the plan does not ask for.
