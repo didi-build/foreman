@@ -143,7 +143,7 @@ Note: because rows are append-only, a reversal inserts a new `decisions` row and
 | decision_id | uuid fk                | The decision the node relies on |
 | pk          | (node_id, decision_id) |                                 |
 
-When a decision is reversed, every node in this table for that decision is marked stale, and a Council question is created. The Council's answer gives a verdict for every stale node, which the runner records and applies (D-229, `src/core/council.ts`): `still_valid` clears the flag, `redo` clears it for a node still in an initial state of its track and otherwise leaves it stale until a move back exists (N-40), and `cannot_decide` sends the node to Didi with one gate request. A flag stays set while another open reversal question still names the node (O-50).
+When a decision is reversed, every node in this table for that decision is marked stale, and a Council question is created. The Council's answer gives a verdict for every stale node, which the runner records and applies (D-229, `src/core/council.ts`): `still_valid` clears the flag, `redo` clears it for a node still in an initial state of its track and otherwise sends the node back to the start of its track with the redo move (D-231), and `cannot_decide` sends the node to Didi with one gate request. A merged node stays stale for Didi (N-43). A flag stays set while another reversal of a decision the node relies on has no Council verdict for it (O-50, O-51). The runner also links each node the answer gives a verdict for to the Council's `council_decision`, whose scope (`topicKey`, `runId`, `reversedDecisionId`, `verdicts`, `clearedNodeIds`) names the nodes whose flags it cleared; `council_redo_recorded` reads both (O-51).
 
 ## gate_requests
 

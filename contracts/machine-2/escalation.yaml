@@ -7,6 +7,8 @@
 #
 # Shared states: each state is declared in exactly one file, and the validator rejects a state id
 # declared twice. This file owns the two escalated states.
+# The two `to: return` moves are runner_only: only the escalation pass applies them, with both
+# counters reset (O-46, D-227, O-54).
 # Rules live here and in guard functions, never in the library (essential 3).
 
 part: escalation
@@ -53,6 +55,7 @@ transitions:
     to: return
     trigger: The Council records a decision.
     guards: [council_decision_recorded]
+    runner_only: true
     evidence: []
     timeout: Not set.
     fallback: A decision that changes product direction or scope goes to Escalated to Didi.
@@ -69,6 +72,7 @@ transitions:
     to: return
     trigger: Didi answers.
     guards: [didi_answer_recorded]
+    runner_only: true
     evidence: []
     timeout: None.
     fallback: Not applicable.

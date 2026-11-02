@@ -44,6 +44,7 @@ import {
 } from "./library.ts";
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import { createFailures, type FailureCount } from "./failures.ts";
+import { REDO_GUARD } from "./guards/council.ts";
 import { headCommit, readCiRun } from "./guards/evidence.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
@@ -183,7 +184,10 @@ export function createRunReports(options: RunReportsOptions) {
         m.guards.includes(QA_FAIL_GUARD),
     );
 
-  /** The moves a report by `role` triggers from the node's state, in contract order. */
+  /**
+   * The moves a report by `role` triggers from the node's state, in contract order. A redo move
+   * is the Council's (D-231, src/core/council.ts), never a report's.
+   */
   function reportMoves(node: Node, role: string): TransitionContract[] {
     if (stateOf(node.state)?.owner?.toLowerCase() !== role) return [];
     return contracts.transitions.filter(
@@ -192,6 +196,7 @@ export function createRunReports(options: RunReportsOptions) {
         !move.fallbackMove &&
         move.from === node.state &&
         !move.guards.includes(DISPATCH_GUARD) &&
+        !move.guards.includes(REDO_GUARD) &&
         (!move.tracks || (node.track !== null && move.tracks.includes(node.track))),
     );
   }

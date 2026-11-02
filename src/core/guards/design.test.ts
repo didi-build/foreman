@@ -76,6 +76,14 @@ describe("design guards (unit: guards on the memory store, ADR 0105)", () => {
       await f.decision("approval", "didi", { topicKey: "spend:x" }, "yes");
       expect((await f.check("approval_recorded")).pass).toBe(false);
     });
+    it("ignores an answer from before the item entered its state: options a redo threw away (D-231, O-52)", async () => {
+      const f = await fixture({ track: "design" });
+      await f.decision("approval", "didi", { topicKey: topic }, "Option A");
+      await f.enterState("waiting_for_didi");
+      expect((await f.check("approval_recorded")).detail).toBe("no answer recorded");
+      await f.decision("approval", "didi", { topicKey: topic }, "Option B");
+      expect((await f.check("approval_recorded")).pass).toBe(true);
+    });
   });
 
   describe("changes_requested_recorded", () => {

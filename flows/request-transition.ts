@@ -3,14 +3,18 @@
 // each needs come from the contracts and guards; the flow only passes the request on. The trigger
 // carries its own id, and the library takes a trigger id once, so a duplicate trigger writes one
 // transition row, applied or dry run. The library also refuses under the kill switch and writes
-// dry-run rows while `dry_run` is on.
+// dry-run rows while `dry_run` is on, and rejects a runner-only move (`runner_only_move`, O-54):
+// the Council's redo and the escalation's way back are applied only by their own runner steps.
 import { createLibrary, type TransitionRequest } from "../src/core/library.ts";
 import type { Transition } from "../src/core/store.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
 import { killSwitchOn } from "./lib/switches.ts";
 import { windmillEnvironment } from "./lib/windmill.ts";
 
-export interface RequestTransitionInput extends Omit<TransitionRequest, "trigger"> {
+export interface RequestTransitionInput extends Omit<
+  TransitionRequest,
+  "trigger" | "runnerOnly"
+> {
   /** The reconcile pass has its own flow. */
   trigger: { kind: Exclude<Transition["triggerKind"], "reconcile">; ref: string };
 }
@@ -29,7 +33,10 @@ export async function run(
   if (await killSwitchOn(deps.store)) {
     return { outcome: "refused", reason: "kill_switch", failedGuards: [] };
   }
-  const result = await createLibrary(deps).requestTransitionOnce(input);
+  // A runner-only move belongs to its own runner step: this flow never claims one (O-54).
+  const request: TransitionRequest = { ...input };
+  delete request.runnerOnly;
+  const result = await createLibrary(deps).requestTransitionOnce(request);
   return {
     outcome: result.outcome,
     reason: result.reason,

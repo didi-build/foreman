@@ -21,15 +21,28 @@
 // changesProductDirection, passesGate}` and the note as its text; the escalation pass then acts on
 // it (src/core/escalations.ts, `council_decision_recorded`). A reversal answer gives a verdict for
 // every item the reversal marked stale (D-229). It is recorded with the question's gate request
-// answered, and its verdicts applied, in one transaction: `still_valid` clears the stale flag;
-// `redo` clears it for an item still in an initial state of its track (nothing was built yet, so
-// the dispatch starts the work again) and leaves any other item stale, since no contract move
-// sends an item back to the start of its track (N-40); `cannot_decide` opens one `escalation`
-// gate request for Didi on the reversal's topic for those items. A flag stays set while another
-// open reversal question still names the item.
+// answered, and its verdicts applied, in one transaction. Each item with a verdict is linked to
+// the answer (`node_decisions`), so its own decisions list it (src/core/guards/council.ts).
+// `cannot_decide` opens one `escalation` gate request for Didi on the reversal's topic for those
+// items. A flag stays set while another reversal of a decision the item relies on has no Council
+// verdict for it, or while another open reversal question still names it. Otherwise, when the
+// item's stale episode holds a `redo` (this answer's, or an earlier answer's still waiting), an
+// item still in an initial state of its track has its flag cleared (nothing was built yet, so the
+// dispatch starts the work again); a merged item stays stale and needs Didi (N-43); any other
+// item is due its redo move (D-231). With no `redo`, the flag is cleared. The answer's scope
+// names the items whose flags it cleared (`clearedNodeIds`).
+//
+// The redo move (`redo`, D-231) sends a stale item back to the start of its track: the contract
+// move out of its state guarded by `council_redo_recorded`, with the trigger
+// `council_redo:<Council decision id>`, so a repeat writes one row. Its transaction also clears
+// the stale flag, resets both counters (as a Council resolution, D-169, D-227) and cancels the
+// item's open visual-approval request, if any (O-52), and it refuses while a run other than a
+// Council run is active on the item: the flow cancels those first through the runtime
+// (flows/lib/council-runs.ts, D-202). The item keeps its branch and PR (D-220). An item in an
+// escalated state has no redo move; it gets one once it returns.
 //
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
-import type { Contracts, GuardRegistry } from "./contracts.ts";
+import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { escalationInput, reversalInput } from "./council-input.ts";
 import { createEscalations, type EscalationStep } from "./escalations.ts";
 import {
@@ -37,8 +50,22 @@ import {
   escalationTopic,
   latestCouncilDecision,
 } from "./guards/escalation.ts";
+import {
+  isMerged,
+  REDO_GUARD,
+  REDO_TRIGGER,
+  redoState,
+  type Verdict,
+} from "./guards/council.ts";
+import { visualApprovalTopic } from "./guards/design.ts";
 import { readQaVerdict } from "./guards/evidence.ts";
-import { createLibrary, type Clock, type IdSource } from "./library.ts";
+import {
+  createLibrary,
+  type AlsoWrite,
+  type Clock,
+  type IdSource,
+  type TransitionOutcome,
+} from "./library.ts";
 import type {
   CurrentDecision,
   Decision,
@@ -109,7 +136,7 @@ export const COUNCIL_OUTPUT_SCHEMAS = {
   reversal: REVERSAL_SCHEMA,
 } as const;
 
-export type Verdict = "still_valid" | "redo" | "cannot_decide";
+export type { Verdict };
 
 export interface EscalationAnswer {
   outcome: "resolve" | typeof COUNCIL_CANNOT_RESOLVE;
@@ -167,14 +194,48 @@ export interface AppliedVerdict {
   result:
     /** The stale flag was cleared. */
     | "cleared"
-    /** Left stale: another open reversal question still names the item. */
+    /**
+     * Left stale: another reversal of a decision the item relies on has no Council verdict for it
+     * yet, or another open reversal question still names it.
+     */
     | "stale_for_another_reversal"
-    /** Left stale: the item is past the start of its track and no move sends it back (N-40). */
-    | "redo_needs_move"
+    /** Left stale until its redo move: the item is past the start of its track (D-231). */
+    | "redo_move_due"
+    /** Left stale: the item is merged, so its code is on main and a redo needs Didi (N-43). */
+    | "redo_needs_decision"
     /** Left stale: the item went to Didi with the others the Council could not decide. */
     | "to_didi"
     | "no_node";
 }
+
+/** What the redo step found or did for one item (D-231). */
+export type RedoStep =
+  | { nodeId: string; step: "no_node" | "not_stale" }
+  /** No redo stands: none was given, or a reversal it relies on has no verdict for it yet. */
+  | { nodeId: string; step: "not_due"; why: "settled" | "unsettled" }
+  /** Merged: its code is on main, so it stays stale and paused for Didi (N-43). */
+  | { nodeId: string; step: "redo_needs_decision"; councilDecisionId: string }
+  /** No redo move out of its state now (an escalated state): it waits until it returns. */
+  | { nodeId: string; step: "no_move"; councilDecisionId: string; state: string }
+  /** The move is due. `activeRunIds` must be cancelled first (Council runs are not). */
+  | {
+      nodeId: string;
+      step: "due";
+      councilDecisionId: string;
+      toState: string;
+      activeRunIds: string[];
+    }
+  /** The library's answer to the move, or `run_active` when a run must be cancelled first. */
+  | {
+      nodeId: string;
+      step: "moved";
+      councilDecisionId: string;
+      toState: string;
+      outcome: TransitionOutcome;
+      reason?: string;
+      transitionId?: string;
+      failedGuards: string[];
+    };
 
 /** What `recordAnswer` did with a Council run's answer. */
 export type CouncilAnswer =
@@ -573,32 +634,45 @@ export function createCouncil(options: CouncilOptions) {
     });
   }
 
+  /** The redo move out of the node's state, for its track, if any (D-231). */
+  function redoMove(node: Node): TransitionContract | undefined {
+    return contracts.transitions.find(
+      (m) =>
+        !m.escalation &&
+        m.from === node.state &&
+        m.guards.includes(REDO_GUARD) &&
+        (!m.tracks || (node.track !== null && m.tracks.includes(node.track))),
+    );
+  }
+
+  /** Runs on the node that block its redo move: every active run but the Council's. */
+  const blockingRuns = (runs: readonly Run[]) =>
+    runs.filter((r) => r.endedAt === null && r.bot !== "council");
+
   async function recordReversal(
     run: Run & { nodeId: string },
     q: ReversalQuestion,
     answer: ReversalAnswer,
   ): Promise<CouncilAnswer> {
     const at = clock.now();
-    const decision: Decision = {
-      id: ids.next(),
-      projectId: q.projectId,
-      nodeId: run.nodeId,
-      kind: "council_decision",
-      scope: {
-        topicKey: q.topicKey,
-        runId: run.id,
-        reversedDecisionId: q.decisionId,
-        verdicts: answer.verdicts.map((v) => ({ ...v })),
-      },
-      textVerbatim: answer.note,
-      byActor: "council",
-      recordedAt: at,
+    const decisionId = ids.next();
+    const scope = {
+      topicKey: q.topicKey,
+      runId: run.id,
+      reversedDecisionId: q.decisionId,
+      verdicts: answer.verdicts.map((v) => ({ ...v })),
     };
     return store
       .transaction(async (tx): Promise<CouncilAnswer> => {
         const switches = await held(tx);
         if (switches) return { recorded: false, reason: switches };
-        await tx.getNodeForUpdate(run.nodeId);
+        // Lock the run's node and every item the answer names once, in one sorted order. Locking
+        // them in the answer's own order would let two answers naming the same items in opposite
+        // orders each hold one and wait on the other: a deadlock.
+        const lockIds = [
+          ...new Set([run.nodeId, ...answer.verdicts.map((v) => v.nodeId)]),
+        ].sort();
+        for (const lockId of lockIds) await tx.getNodeForUpdate(lockId);
         const earlier = (await tx.listDecisionsForNode(run.nodeId)).find(
           (d) => d.kind === "council_decision" && scopeOf(d).runId === run.id,
         );
@@ -609,6 +683,74 @@ export function createCouncil(options: CouncilOptions) {
             decisionId: earlier.id,
           };
         }
+        // The answer as it will be recorded, so each item's stale episode can include it.
+        const pending: CurrentDecision = {
+          id: decisionId,
+          projectId: q.projectId,
+          nodeId: run.nodeId,
+          kind: "council_decision",
+          scope: { ...scope, clearedNodeIds: [] },
+          textVerbatim: answer.note,
+          byActor: "council",
+          recordedAt: at,
+          status: "active",
+          replacedById: null,
+          statusChangedAt: null,
+        };
+        const verdicts: AppliedVerdict[] = [];
+        const undecided: string[] = [];
+        const linked: string[] = [];
+        const cleared: string[] = [];
+        for (const { nodeId, verdict } of answer.verdicts) {
+          // Already locked above, in sorted order.
+          const node = await tx.getNode(nodeId);
+          if (!node) {
+            verdicts.push({ nodeId, verdict, result: "no_node" });
+            continue;
+          }
+          linked.push(nodeId);
+          if (verdict === "cannot_decide") {
+            undecided.push(nodeId);
+            verdicts.push({ nodeId, verdict, result: "to_didi" });
+            continue;
+          }
+          const episode = redoState(
+            nodeId,
+            [...(await tx.listDecisionsForNode(nodeId)), pending],
+            await tx.listTransitions(nodeId),
+          );
+          if (
+            episode.kind === "unsettled" ||
+            (await staleForAnother(tx, q.projectId, q.topicKey, nodeId))
+          ) {
+            verdicts.push({ nodeId, verdict, result: "stale_for_another_reversal" });
+            continue;
+          }
+          // Redo needs the item back at the start of its track. One still in an initial state has
+          // built nothing yet, so clearing its flag lets the dispatch start the work again.
+          if (episode.kind === "redo" && !stateOf(node.state)?.initial) {
+            const merged = await isMerged({ node, store: tx });
+            verdicts.push({
+              nodeId,
+              verdict,
+              result: merged ? "redo_needs_decision" : "redo_move_due",
+            });
+            continue;
+          }
+          await tx.setNodeFlags(nodeId, { stale: false }, at);
+          cleared.push(nodeId);
+          verdicts.push({ nodeId, verdict, result: "cleared" });
+        }
+        const decision: Decision = {
+          id: decisionId,
+          projectId: q.projectId,
+          nodeId: run.nodeId,
+          kind: "council_decision",
+          scope: { ...scope, clearedNodeIds: cleared },
+          textVerbatim: answer.note,
+          byActor: "council",
+          recordedAt: at,
+        };
         await tx.insertDecision(decision);
         // The question closes once: a second answer finds it closed and rolls back.
         const closed = await tx.closeGateRequest(q.gateRequestId, {
@@ -617,33 +759,7 @@ export function createCouncil(options: CouncilOptions) {
           at,
         });
         if (!closed) throw new NotRecorded();
-        const verdicts: AppliedVerdict[] = [];
-        const undecided: string[] = [];
-        for (const { nodeId, verdict } of answer.verdicts) {
-          const node = await tx.getNodeForUpdate(nodeId);
-          if (!node) {
-            verdicts.push({ nodeId, verdict, result: "no_node" });
-            continue;
-          }
-          if (verdict === "cannot_decide") {
-            undecided.push(nodeId);
-            verdicts.push({ nodeId, verdict, result: "to_didi" });
-            continue;
-          }
-          // Redo needs the item back at the start of its track. One still in an initial state has
-          // built nothing yet, so clearing its flag lets the dispatch start the work again. No
-          // contract move sends any other item back (N-40): it stays paused.
-          if (verdict === "redo" && !stateOf(node.state)?.initial) {
-            verdicts.push({ nodeId, verdict, result: "redo_needs_move" });
-            continue;
-          }
-          if (await staleForAnother(tx, q.projectId, q.topicKey, nodeId)) {
-            verdicts.push({ nodeId, verdict, result: "stale_for_another_reversal" });
-            continue;
-          }
-          await tx.setNodeFlags(nodeId, { stale: false }, at);
-          verdicts.push({ nodeId, verdict, result: "cleared" });
-        }
+        for (const nodeId of linked) await tx.linkNodeToDecision(nodeId, decision.id);
         let didiGateRequestId: string | null = null;
         if (undecided.length > 0) {
           const gate: GateRequest = {
@@ -688,8 +804,113 @@ export function createCouncil(options: CouncilOptions) {
       });
   }
 
+  /** Where the item's redo stands, writing nothing (D-231). */
+  async function redoCheck(
+    nodeId: string,
+  ): Promise<Exclude<RedoStep, { step: "moved" }>> {
+    const node = await store.getNode(nodeId);
+    if (!node) return { nodeId, step: "no_node" };
+    if (!node.stale) return { nodeId, step: "not_stale" };
+    const episode = redoState(
+      nodeId,
+      await store.listDecisionsForNode(nodeId),
+      await store.listTransitions(nodeId),
+    );
+    if (episode.kind !== "redo") return { nodeId, step: "not_due", why: episode.kind };
+    const councilDecisionId = episode.decision.id;
+    if (await isMerged({ node, store })) {
+      return { nodeId, step: "redo_needs_decision", councilDecisionId };
+    }
+    const move = redoMove(node);
+    if (!move) return { nodeId, step: "no_move", councilDecisionId, state: node.state };
+    return {
+      nodeId,
+      step: "due",
+      councilDecisionId,
+      toState: move.to,
+      activeRunIds: blockingRuns(await store.listRuns({ nodeId })).map((r) => r.id),
+    };
+  }
+
+  /**
+   * The writes that commit with the redo move: the redo still stands (read again under the move's
+   * transaction), no run but the Council's is active, the flag cleared, both counters reset and
+   * the open visual-approval request cancelled.
+   */
+  const redoWrites =
+    (nodeId: string, councilDecisionId: string): AlsoWrite =>
+    async (tx) => {
+      // A plain read: the move's own update already holds this row's lock in this transaction.
+      // Asking for FOR UPDATE here would wait on the key-share lock a racing move's transition
+      // insert holds on the same row, while that move waits on this one: a deadlock.
+      const node = await tx.getNode(nodeId);
+      if (!node) return "no_node";
+      // This move's own row is already written in the transaction: it is not an earlier redo.
+      const trigger = `${REDO_TRIGGER}${councilDecisionId}`;
+      const episode = redoState(
+        nodeId,
+        await tx.listDecisionsForNode(nodeId),
+        (await tx.listTransitions(nodeId)).filter((t) => t.triggerRef !== trigger),
+      );
+      if (episode.kind !== "redo" || episode.decision.id !== councilDecisionId) {
+        return "redo_not_due";
+      }
+      if (blockingRuns(await tx.listRuns({ nodeId })).length > 0) return "run_active";
+      const at = clock.now();
+      await tx.setNodeFlags(nodeId, { stale: false }, at);
+      await tx.setCounter(nodeId, "failure", 0, at);
+      await tx.setCounter(nodeId, "qa_round", 0, at);
+      const approval = await tx.findOpenGateRequest(
+        node.projectId,
+        visualApprovalTopic(nodeId),
+      );
+      if (approval) await tx.closeGateRequest(approval.id, { status: "cancelled", at });
+      return null;
+    };
+
+  /**
+   * Takes the item's redo move when it is due and no run but the Council's is active on it: back
+   * to the start of its track, with the writes above, once per Council decision (trigger
+   * `council_redo:<decision id>`). These writes are acts, so dry run refuses and writes nothing,
+   * and the kill switch refuses, as for every move.
+   */
+  async function redo(nodeId: string): Promise<RedoStep> {
+    const check = await redoCheck(nodeId);
+    if (check.step !== "due") return check;
+    const { councilDecisionId, toState } = check;
+    const result = await library.requestTransitionOnce(
+      {
+        nodeId,
+        toState,
+        trigger: { kind: "event", ref: `${REDO_TRIGGER}${councilDecisionId}` },
+        actor: { kind: "runner", id: "council" },
+        reason: "the Council gave it redo after a reversal",
+        runnerOnly: true,
+      },
+      redoWrites(nodeId, councilDecisionId),
+    );
+    return {
+      nodeId,
+      step: "moved",
+      councilDecisionId,
+      toState,
+      outcome: result.outcome,
+      ...(result.reason ? { reason: result.reason } : {}),
+      ...(result.transitionId ? { transitionId: result.transitionId } : {}),
+      failedGuards: result.guardReport.filter((c) => !c.pass).map((c) => c.name),
+    };
+  }
+
   return {
     question,
+
+    redoCheck,
+    redo,
+
+    /** The stale items, in the store's node order: where a redo may stand. Reads only. */
+    async staleItems(): Promise<string[]> {
+      return (await store.listNodes({})).filter((n) => n.stale).map((n) => n.id);
+    },
 
     /** Every open Council question, escalations first, in the store's order. */
     async questions(): Promise<CouncilQuestion[]> {

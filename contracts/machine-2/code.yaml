@@ -5,6 +5,11 @@
 # declared twice. This file owns the shared QA tail (in_qa_review, verifying_on_staging, done),
 # which design.yaml references by id. escalation.yaml owns the escalated states.
 #
+# A move guarded by council_redo_recorded sends a stale item back to the start of its track when
+# the Council's reversal answer gives it redo (D-231). It is runner_only: only the Council's redo
+# step applies it, with the cancel, the flag and the counter reset (O-54). There is none out of Verifying on staging
+# or Done: every item there is merged, and a merged item needs Didi (N-43).
+#
 # A transition marked fallback_move implements a fallback the spec describes in prose (the
 # "Timeout and fallback" column). The consistency test pins each one to that row's words, and
 # expects no table row for it.
@@ -165,3 +170,24 @@ transitions:
     evidence: [staging_check]
     timeout: None.
     fallback: The failure counter goes up by one. The third failure goes to Escalated to Council.
+
+  # Back to the start of the track on a Council redo verdict (D-231).
+  - from: in_development
+    to: ready_for_dev
+    tracks: [code, infra, docs]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).
+
+  - from: in_qa_review
+    to: ready_for_dev
+    tracks: [code, infra, docs]
+    trigger: The Council's reversal answer gives the item redo (D-229, D-231).
+    guards: [council_redo_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None.
+    fallback: The item stays here, stale and paused. A merged item gets no move and needs Didi (N-43).

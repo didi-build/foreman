@@ -4,7 +4,9 @@
 // Didi; the run's input carries the evidence as quoted data; the runner checks the run's answer
 // against its question's schema and records the `council_decision` itself, once per run; a
 // reversal answer clears, redoes or sends each stale item to Didi, and is refused if it misses an
-// item. The flows around these are in test/flows/council-flows.test.ts.
+// item; a redo sends an item past the start of its track back there with the redo move (D-231),
+// and leaves a merged item stale for Didi (N-43). The flows around these are in
+// test/flows/council-flows.test.ts.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,9 +17,10 @@ import {
   readReversalAnswer,
 } from "../src/core/council.ts";
 import { createEscalations } from "../src/core/escalations.ts";
+import { visualApprovalTopic } from "../src/core/guards/design.ts";
 import { escalationTopic } from "../src/core/guards/escalation.ts";
 import { createLibrary, reversalTopic } from "../src/core/library.ts";
-import type { Json, Node, Run } from "../src/core/store.ts";
+import type { Json, Node, Run, Track } from "../src/core/store.ts";
 import { createReconcileFixture, HEAD } from "./reconcile-fixture.ts";
 
 const RESOLVE = {
@@ -621,19 +624,6 @@ describe("recording a reversal answer (unit, D-229)", () => {
     expect(await t.council.question(topic)).toBeNull();
   });
 
-  it("keeps a redo item that is past the start of its track stale, since no move sends it back (N-40)", async () => {
-    const t = await setup();
-    const { owner, stale, topic } = await t.reversed(["in_development"]);
-    const run = await t.councilRun(owner.id, topic);
-    expect(
-      await t.council.recordAnswer(run.id, t.verdicts(stale, ["redo"])),
-    ).toMatchObject({
-      verdicts: [{ verdict: "redo", result: "redo_needs_move" }],
-    });
-    expect((await t.store.getNode(stale[0]!.id))?.stale).toBe(true);
-    expect((await t.store.getNode(stale[0]!.id))?.state).toBe("in_development");
-  });
-
   it("keeps an item stale while another open reversal question still names it", async () => {
     const t = await setup();
     const first = await t.reversed(["ready_for_dev"]);
@@ -711,5 +701,286 @@ describe("recording a reversal answer (unit, D-229)", () => {
     expect((await t.store.findOpenGateRequest(t.projectId, topic))?.owner).toBe(
       "council",
     );
+  });
+});
+
+describe("the redo move (unit, D-231)", () => {
+  /** One item in `state`, relying on a decision the Council has answered with this verdict. */
+  async function redoAnswered(
+    t: Awaited<ReturnType<typeof setup>>,
+    state: string,
+    track: Track = "code",
+    before?: (node: Node) => Promise<void>,
+  ) {
+    const owner = await t.node("in_development", { title: "The decision's item" });
+    const node = await t.node(state, {
+      track,
+      title: `Relies on it (${state})`,
+      ...(state.startsWith("escalated") ? { blockedReason: "test" } : {}),
+    });
+    await before?.(node);
+    const decision = await t.library.recordDecision(
+      {
+        projectId: t.projectId,
+        nodeId: owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Use the blue layout.",
+        byActor: "didi",
+      },
+      [node.id],
+    );
+    t.advanceMinutes(1);
+    await t.library.reverseDecision(decision.id, "didi", "It tested badly.");
+    const topic = reversalTopic(decision.id);
+    const run = await t.councilRun(owner.id, topic);
+    const answer = await t.council.recordAnswer(run.id, t.verdicts([node], ["redo"]));
+    if (answer.recorded !== true) throw new Error("the answer was not recorded");
+    t.advanceMinutes(1);
+    return { node, owner, decision, topic, answer };
+  }
+
+  it.each([
+    ["code", "in_development", "ready_for_dev"],
+    ["code", "in_qa_review", "ready_for_dev"],
+    ["design", "in_design_exploration", "ready_for_design_exploration"],
+    ["design", "waiting_for_didi", "ready_for_design_exploration"],
+    ["design", "writing_spec", "ready_for_design_exploration"],
+    ["design", "building_components", "ready_for_design_exploration"],
+    ["design", "in_qa_review", "ready_for_design_exploration"],
+  ] as const)(
+    "sends a %s item in %s back to %s with its flag cleared and counters reset, once",
+    async (track, state, start) => {
+      const t = await setup();
+      const { node, answer } = await redoAnswered(t, state, track, async (n) => {
+        await t.store.setCounter(n.id, "failure", 2, t.clock.now());
+        await t.store.setCounter(n.id, "qa_round", 1, t.clock.now());
+      });
+      expect(answer.verdicts).toMatchObject([
+        { verdict: "redo", result: "redo_move_due" },
+      ]);
+      // Recorded on the item: the answer is linked to it, and still stale until the move.
+      expect((await t.store.listDecisionsForNode(node.id)).map((d) => d.id)).toContain(
+        answer.decisionId,
+      );
+      expect(await t.store.getNode(node.id)).toMatchObject({ state, stale: true });
+      expect(await t.council.redoCheck(node.id)).toEqual({
+        nodeId: node.id,
+        step: "due",
+        councilDecisionId: answer.decisionId,
+        toState: start,
+        activeRunIds: [],
+      });
+      expect(await t.council.redo(node.id)).toMatchObject({
+        step: "moved",
+        outcome: "applied",
+        toState: start,
+        councilDecisionId: answer.decisionId,
+      });
+      expect(await t.store.getNode(node.id)).toMatchObject({
+        state: start,
+        stale: false,
+      });
+      expect(await t.store.getCounter(node.id, "failure")).toBe(0);
+      expect(await t.store.getCounter(node.id, "qa_round")).toBe(0);
+      const moves = await t.store.listTransitions(node.id);
+      expect(moves).toMatchObject([
+        {
+          fromState: state,
+          toState: start,
+          triggerRef: `council_redo:${answer.decisionId}`,
+          actorKind: "runner",
+          mode: "applied",
+        },
+      ]);
+      // A repeat finds the item no longer stale and writes nothing.
+      expect(await t.council.redo(node.id)).toEqual({
+        nodeId: node.id,
+        step: "not_stale",
+      });
+      expect(await t.store.listTransitions(node.id)).toHaveLength(1);
+      // The dispatch may start it again, as a fresh item.
+      expect(t.library.canDispatch((await t.store.getNode(node.id)) as Node)).toBe(
+        true,
+      );
+    },
+  );
+
+  it("cancels the item's open visual-approval request with the move out of Waiting for Didi (O-52)", async () => {
+    const t = await setup();
+    let gateId = "";
+    const { node } = await redoAnswered(t, "waiting_for_didi", "design", async (n) => {
+      gateId = (
+        await t.openGate(n.id, visualApprovalTopic(n.id), {
+          kind: "visual_approval",
+          owner: "didi",
+        })
+      ).id;
+    });
+    expect(await t.council.redo(node.id)).toMatchObject({ outcome: "applied" });
+    expect(await t.store.getGateRequest(gateId)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("refuses the move while a run other than the Council's is active, and takes it once that run has ended", async () => {
+    const t = await setup();
+    const { node, answer } = await redoAnswered(t, "in_qa_review");
+    const qa = await t.run(node.id, "qa");
+    await t.run(node.id, "council", 0, { questionTopic: escalationTopic(node.id) });
+    expect(await t.council.redoCheck(node.id)).toMatchObject({
+      step: "due",
+      activeRunIds: [qa.id],
+    });
+    expect(await t.council.redo(node.id)).toMatchObject({
+      step: "moved",
+      outcome: "refused",
+      reason: "run_active",
+    });
+    expect(await t.store.getNode(node.id)).toMatchObject({
+      state: "in_qa_review",
+      stale: true,
+    });
+    expect(await t.store.listTransitions(node.id)).toEqual([]);
+    // The flow cancels it through the runtime (flows/lib/cancel-runs.ts); here it just ends.
+    await t.store.endRun(qa.id, {
+      endedAt: t.clock.now(),
+      outcome: "cancelled",
+      turns: null,
+      minutes: null,
+      costUsd: null,
+      tokens: null,
+      transcriptRef: null,
+      usageExhaustedCause: null,
+      retryAfterSeconds: null,
+      serviceTierServed: null,
+      capacityRetries: null,
+      capacityWaitSeconds: null,
+      firstTokenMs: null,
+      reportedCostUsd: null,
+    });
+    expect(await t.council.redo(node.id)).toMatchObject({
+      outcome: "applied",
+      councilDecisionId: answer.decisionId,
+    });
+  });
+
+  it("leaves a merged item stale and paused, and reports that it needs Didi (N-43)", async () => {
+    const t = await setup();
+    for (const state of ["in_development", "verifying_on_staging", "done"]) {
+      const { node, answer } = await redoAnswered(t, state, "code", async (n) => {
+        await t.evidence(
+          n.id,
+          "merge_commit",
+          { pr: 7 },
+          { commitSha: "c".repeat(40) },
+        );
+      });
+      expect(answer.verdicts, state).toMatchObject([
+        { verdict: "redo", result: "redo_needs_decision" },
+      ]);
+      expect(await t.council.redo(node.id), state).toEqual({
+        nodeId: node.id,
+        step: "redo_needs_decision",
+        councilDecisionId: answer.decisionId,
+      });
+      expect(await t.store.getNode(node.id), state).toMatchObject({
+        state,
+        stale: true,
+      });
+      expect(await t.store.listTransitions(node.id), state).toEqual([]);
+    }
+  });
+
+  it("waits while the item is escalated: no redo move out of an escalated state", async () => {
+    const t = await setup();
+    const { node, answer } = await redoAnswered(t, "escalated_to_council");
+    expect(answer.verdicts).toMatchObject([{ result: "redo_move_due" }]);
+    expect(await t.council.redo(node.id)).toEqual({
+      nodeId: node.id,
+      step: "no_move",
+      councilDecisionId: answer.decisionId,
+      state: "escalated_to_council",
+    });
+  });
+
+  it("writes nothing in dry run or under the kill switch, and moves once live again", async () => {
+    const t = await setup();
+    const { node } = await redoAnswered(t, "in_development");
+    await t.setting("dry_run", true);
+    expect(await t.council.redo(node.id)).toMatchObject({
+      outcome: "refused",
+      reason: "dry_run",
+    });
+    await t.setting("dry_run", false);
+    await t.setting("kill_switch", true);
+    expect(await t.council.redo(node.id)).toMatchObject({
+      outcome: "refused",
+      reason: "kill_switch",
+    });
+    expect(await t.store.listTransitions(node.id)).toEqual([]);
+    expect(await t.store.getNode(node.id)).toMatchObject({ stale: true });
+    await t.setting("kill_switch", false);
+    expect(await t.council.redo(node.id)).toMatchObject({ outcome: "applied" });
+  });
+
+  it("keeps a redo given while another reversal is open, and takes it once that one is answered still_valid", async () => {
+    const t = await setup();
+    const first = await t.reversed(["in_development"]);
+    const item = first.stale[0]!;
+    const other = await t.library.recordDecision(
+      {
+        projectId: t.projectId,
+        nodeId: first.owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Use the short copy.",
+        byActor: "didi",
+      },
+      [item.id],
+    );
+    await t.library.reverseDecision(other.id, "didi", "Changed my mind.");
+    const run = await t.councilRun(first.owner.id, first.topic);
+    expect(
+      await t.council.recordAnswer(run.id, t.verdicts([item], ["redo"])),
+    ).toMatchObject({ verdicts: [{ result: "stale_for_another_reversal" }] });
+    expect(await t.council.redo(item.id)).toEqual({
+      nodeId: item.id,
+      step: "not_due",
+      why: "unsettled",
+    });
+    const second = await t.councilRun(first.owner.id, reversalTopic(other.id));
+    expect(
+      await t.council.recordAnswer(second.id, t.verdicts([item], ["still_valid"])),
+    ).toMatchObject({
+      verdicts: [{ verdict: "still_valid", result: "redo_move_due" }],
+    });
+    expect(await t.council.redo(item.id)).toMatchObject({
+      outcome: "applied",
+      toState: "ready_for_dev",
+    });
+  });
+
+  it("clears a still_valid item with no redo, and records which flags the answer cleared", async () => {
+    const t = await setup();
+    const { owner, stale, topic } = await t.reversed([
+      "in_development",
+      "ready_for_dev",
+    ]);
+    const run = await t.councilRun(owner.id, topic);
+    const answer = await t.council.recordAnswer(
+      run.id,
+      t.verdicts(stale, ["still_valid", "redo"]),
+    );
+    expect(answer).toMatchObject({
+      verdicts: [{ result: "cleared" }, { result: "cleared" }],
+    });
+    const recorded = await t.store.getDecision(
+      answer.recorded ? answer.decisionId : "",
+    );
+    expect(recorded?.scope).toMatchObject({
+      clearedNodeIds: stale.map((n) => n.id),
+    });
+    for (const n of stale) {
+      expect(await t.council.redo(n.id)).toEqual({ nodeId: n.id, step: "not_stale" });
+    }
   });
 });
