@@ -73,22 +73,33 @@ async function setup() {
 
 type LibraryOf = Awaited<ReturnType<typeof setup>>["library"];
 
+/**
+ * Walks the node through `states`. The way back out of an escalation is a runner-only move
+ * (O-54), so a step from an escalated state to a working one is asked for as the escalation's
+ * runner step asks for it. `from` is the node's state before the first step.
+ */
 async function walk(
   library: LibraryOf,
   nodeId: string,
   states: string[],
+  from?: string,
 ): Promise<void> {
+  let previous = from;
   for (const toState of states) {
+    const back =
+      previous?.startsWith("escalated") === true && !toState.startsWith("escalated");
     const result = await library.requestTransition({
       nodeId,
       toState,
       trigger: RECONCILE,
       actor: RUNNER,
       blockedReason: toState.startsWith("escalated") ? "stuck" : undefined,
+      ...(back ? { runnerOnly: true as const } : {}),
     });
     expect(result.outcome, `move to ${toState}: ${result.reason ?? ""}`).toBe(
       "applied",
     );
+    previous = toState;
   }
 }
 
@@ -153,7 +164,16 @@ describe("the real contracts drive the library (contract walkthrough, ADR 0105)"
     const node = await newItem(library, "code", "ready_for_dev");
     await walk(library, node.id, ["in_development", "escalated_to_council"]);
     expect((await store.getNode(node.id))?.blockedReason).toBe("stuck");
-    await walk(library, node.id, ["in_development"]);
+    // Asked for by anything but the escalation's runner step, the way back is refused (O-54).
+    expect(
+      await library.requestTransition({
+        nodeId: node.id,
+        toState: "in_development",
+        trigger: RECONCILE,
+        actor: RUNNER,
+      }),
+    ).toMatchObject({ outcome: "rejected", reason: "runner_only_move" });
+    await walk(library, node.id, ["in_development"], "escalated_to_council");
     expect((await store.getNode(node.id))?.state).toBe("in_development");
   });
 

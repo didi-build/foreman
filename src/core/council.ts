@@ -875,6 +875,7 @@ export function createCouncil(options: CouncilOptions) {
         trigger: { kind: "event", ref: `${REDO_TRIGGER}${councilDecisionId}` },
         actor: { kind: "runner", id: "council" },
         reason: "the Council gave it redo after a reversal",
+        runnerOnly: true,
       },
       redoWrites(nodeId, councilDecisionId),
     );

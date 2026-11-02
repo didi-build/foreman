@@ -53,6 +53,12 @@ export interface TransitionRequest {
   reason?: string | null;
   trigger: Trigger;
   actor: Actor;
+  /**
+   * Set only by the runner step that owns a runner-only move (`runner_only` in the contracts):
+   * the Council's redo and the escalation's way back, which write what goes with the move. Any
+   * other request for such a move is rejected with `runner_only_move` (O-54).
+   */
+  runnerOnly?: true;
 }
 
 export type TransitionOutcome = "applied" | "planned" | "noop" | "rejected" | "refused";
@@ -299,6 +305,9 @@ export function createLibrary({
     const move = await findMove(node, request.toState);
     if (!move) {
       return { outcome: "rejected", reason: "illegal_move", guardReport: [] };
+    }
+    if (move.runnerOnly && request.runnerOnly !== true) {
+      return { outcome: "rejected", reason: "runner_only_move", guardReport: [] };
     }
     const target = stateOf(request.toState);
     if (target?.requiresBlockedReason && !request.blockedReason) {

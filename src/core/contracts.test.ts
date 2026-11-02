@@ -202,12 +202,19 @@ describe("validateContracts (unit: contracts validator, ADR 0105)", () => {
     const code = codeData();
     (code.states as Data).working = state("Working", { escalated: "yes" });
     code.transitions = [
-      { from: "ready", to: "working", guards: "blockers_done", fallback_move: "true" },
+      {
+        from: "ready",
+        to: "working",
+        guards: "blockers_done",
+        fallback_move: "true",
+        runner_only: "yes",
+      },
     ];
     const all = problemsOf(["code.yaml", code]).join("\n");
     expect(all).toContain("escalated must be a boolean");
     expect(all).toContain("guards must be a list");
     expect(all).toContain("fallback_move must be a boolean");
+    expect(all).toContain("runner_only must be a boolean");
   });
 
   it("requires labels, owners, snake_case ids and known tracks and evidence kinds", () => {

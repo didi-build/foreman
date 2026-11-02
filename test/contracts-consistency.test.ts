@@ -111,6 +111,7 @@ interface FileMove {
   from: string;
   to: string;
   fallback_move?: boolean;
+  runner_only?: boolean;
   trigger?: string;
   guards?: string[];
   evidence?: string[];
@@ -209,6 +210,25 @@ describe("every merging move carries the merge guard (contract consistency, D-21
       expect(row?.[1], heading).toMatch(/no merge conflict/);
       expect(row?.[1], heading).toMatch(/round cap/);
       expect(row?.[1], heading).toMatch(/privileged path/);
+    }
+  });
+});
+
+describe("runner-only moves are the ones a runner step owns (contract consistency, O-54)", () => {
+  // The guards of the moves whose writes only their runner step makes: the Council's redo
+  // (cancel, flag, counters, D-231) and the escalation's way back (counters, O-46, D-227).
+  const RUNNER_GUARDS = [
+    "council_redo_recorded",
+    "council_decision_recorded",
+    "didi_answer_recorded",
+  ];
+
+  it("marks a move runner_only exactly when one of those guards guards it", () => {
+    for (const { file } of PAIRS) {
+      for (const t of fileTransitions(file)) {
+        const owned = (t.guards ?? []).some((g) => RUNNER_GUARDS.includes(g));
+        expect(t.runner_only === true, `${file}:${t.from}->${t.to}`).toBe(owned);
+      }
     }
   });
 });

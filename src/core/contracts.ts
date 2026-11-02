@@ -45,6 +45,11 @@ export interface TransitionContract {
   escalation?: boolean;
   /** Implements a prose fallback, so the spec consistency test expects no table row for it. */
   fallbackMove?: boolean;
+  /**
+   * Applied only by the runner step that owns it and writes what goes with it (a counter reset,
+   * a cancel): the library refuses it to any other request (`runner_only_move`, O-54).
+   */
+  runnerOnly?: boolean;
 }
 
 export interface Contracts {
@@ -141,6 +146,7 @@ const TRANSITION_KEYS = [
   "timeout",
   "fallback",
   "fallback_move",
+  "runner_only",
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -288,6 +294,9 @@ function validateTransition(
   if (value.fallback_move !== undefined && typeof value.fallback_move !== "boolean") {
     problems.push(`${where}: fallback_move must be a boolean`);
   }
+  if (value.runner_only !== undefined && typeof value.runner_only !== "boolean") {
+    problems.push(`${where}: runner_only must be a boolean`);
+  }
 
   return {
     from,
@@ -300,6 +309,7 @@ function validateTransition(
     fallback: isText(value.fallback) ? value.fallback : undefined,
     escalation: escalation || undefined,
     fallbackMove: value.fallback_move === true || undefined,
+    runnerOnly: value.runner_only === true || undefined,
   };
 }
 

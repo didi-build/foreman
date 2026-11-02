@@ -90,6 +90,8 @@ M3.3 added `no_merge_conflict_on_head` (D-218) and `qa_rounds_below_cap` (the bu
 
 Some legal moves exist only in a row's prose fallback ("if the check fails, the item goes back to In development"), not as table rows. The files mark these `fallback_move: true`. The test pins them with an explicit list, each entry naming its spec row and quoting the fallback words, checks that those words are in that row, and requires the files' fallback moves to equal the list exactly. So a fallback move can be neither invented nor lost without the test failing.
 
+A move marked `runner_only: true` is applied only by the runner step that owns it and makes the writes that go with it: the Council's redo moves (D-231) and the escalation's two `to: return` moves (O-46). The library rejects any other request for such a move with `runner_only_move`; the owning step sets `runnerOnly` on its request, and the transition flow never can. The consistency test requires the flag exactly on the moves guarded by `council_redo_recorded`, `council_decision_recorded` and `didi_answer_recorded` (O-54).
+
 ## Constraints
 
 - No rule outside contracts and guard functions (essential 3). The placeholder entry state in `src/api/entry.ts` moves into the contracts.

@@ -152,7 +152,7 @@ export function createEscalations(options: EscalationsOptions) {
     // Dry run writes a dry-run row and no counter, as for every count (P-03).
     const reset = (await dryRunOn()) ? undefined : resetCounters(node.id, clock);
     const result = await library.requestTransitionOnce(
-      { nodeId: node.id, toState, trigger, actor: ACTOR, reason },
+      { nodeId: node.id, toState, trigger, actor: ACTOR, reason, runnerOnly: true },
       reset,
     );
     return asMove(toState, result);
@@ -165,6 +165,7 @@ export function createEscalations(options: EscalationsOptions) {
       toState,
       trigger: { kind: "event", ref: null },
       actor: ACTOR,
+      runnerOnly: true,
     });
     return check.outcome === "allowed";
   }

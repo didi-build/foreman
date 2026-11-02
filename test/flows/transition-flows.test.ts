@@ -1,12 +1,17 @@
 // Seam: the transition flow and the approval resume step (build plan M3.1, M0.4, D-170) with
 // fake adapters on the memory store and the real machine-2 contracts and guards. The library's
 // rules are tested in src/core/library.test.ts; this covers what reaches the store through the
-// flows, and that a duplicate trigger writes one transition and one decision.
+// flows, and that a duplicate trigger writes one transition and one decision. A runner-only move
+// (the Council's redo, the escalation's way back, O-54) is refused here and applied only by its
+// own runner step.
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
 import { run as requestTransition } from "../../flows/request-transition.ts";
+import { createCouncil } from "../../src/core/council.ts";
+import { createEscalations } from "../../src/core/escalations.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
+import { createLibrary, reversalTopic } from "../../src/core/library.ts";
 import { createFlowFixture, HEAD, type FlowFixture } from "./flow-fixture.ts";
 
 /** An item with a finished PR: CI green on the head and a docs note, ready for QA. */
@@ -242,5 +247,95 @@ describe("approval resume step (flow: fake adapters, M0.4, D-170, D-200, D-201)"
         gateRequestId: "60000000-0000-4000-8000-000000000001",
       }),
     ).toEqual({ outcome: "no_gate_request" });
+  });
+});
+
+describe("runner-only moves (flow: fake adapters, O-54)", () => {
+  it("refuses a redo move the Council's answer allows, which only the Council's redo step applies", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const library = createLibrary(f.deps);
+    const owner = await f.node("in_development");
+    const item = await f.node("in_development");
+    await f.store.setCounter(item.id, "failure", 2, f.clock.now());
+    const decision = await library.recordDecision(
+      {
+        projectId: f.projectId,
+        nodeId: owner.id,
+        kind: "approval",
+        scope: {},
+        textVerbatim: "Yes.",
+        byActor: "didi",
+      },
+      [item.id],
+    );
+    await library.reverseDecision(decision.id, "didi", "No.");
+    const council = createCouncil(f.deps);
+    const run = await f.run(owner.id, "council", 0, {
+      questionTopic: reversalTopic(decision.id),
+    });
+    await council.recordAnswer(run.id, {
+      verdicts: [{ nodeId: item.id, verdict: "redo", note: "" }],
+      note: "Redo it.",
+    });
+    const before = await f.footprint(item.id);
+    expect(
+      await requestTransition(f.deps, {
+        nodeId: item.id,
+        toState: "ready_for_dev",
+        trigger: { kind: "human", ref: "by-hand-1" },
+        actor: { kind: "operator", id: "didi" },
+        // A flow input cannot claim the runner step's own move.
+        ...({ runnerOnly: true } as object),
+      }),
+    ).toEqual({
+      outcome: "rejected",
+      reason: "runner_only_move",
+      transitionId: undefined,
+      failedGuards: [],
+    });
+    expect(await f.footprint(item.id)).toBe(before);
+    expect(await council.redo(item.id)).toMatchObject({ outcome: "applied" });
+    expect(await f.store.getNode(item.id)).toMatchObject({
+      state: "ready_for_dev",
+      stale: false,
+    });
+    expect(await f.store.getCounter(item.id, "failure")).toBe(0);
+  });
+
+  it("refuses the way back out of an escalation, which only the escalation pass applies with its reset", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const node = await f.node("in_development");
+    await f.store.setCounter(node.id, "failure", 3, f.clock.now());
+    const escalations = createEscalations(f.deps);
+    await escalations.escalate(
+      node.id,
+      { kind: "event", ref: "test:escalate" },
+      "stuck",
+    );
+    f.advanceMinutes(1);
+    await createLibrary(f.deps).recordDecision({
+      projectId: f.projectId,
+      nodeId: node.id,
+      kind: "council_decision",
+      scope: { outcome: "resolve", changesProductDirection: false, passesGate: false },
+      textVerbatim: "Retry smaller.",
+      byActor: "council",
+    });
+    expect(
+      await requestTransition(f.deps, {
+        nodeId: node.id,
+        toState: "in_development",
+        trigger: { kind: "human", ref: "by-hand-2" },
+        actor: { kind: "operator", id: "didi" },
+      }),
+    ).toMatchObject({ outcome: "rejected", reason: "runner_only_move" });
+    expect((await f.store.getNode(node.id))?.state).toBe("escalated_to_council");
+    expect(await escalations.resolve(node.id)).toMatchObject({
+      step: "returned",
+      move: { outcome: "applied", toState: "in_development" },
+    });
+    expect(await f.store.getCounter(node.id, "failure")).toBe(0);
   });
 });
