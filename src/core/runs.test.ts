@@ -146,6 +146,7 @@ async function setup(clusterLimit: number | null = 10) {
     runtime: "claude_code",
     botVersion: "v1",
     ...(role === "qa" ? { prNumber: 7, headSha: HEAD } : {}),
+    ...(role === "council" ? { questionTopic: `escalation:${nodeId}` } : {}),
     ...extra,
   });
 
@@ -308,6 +309,26 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     await expect(
       t.runs.dispatch(t.request(nodeId, "qa", { headSha: null }), credential()),
     ).rejects.toThrow(LibraryError);
+  });
+
+  it("records a Council run's question and refuses a Council run without one, or a question on another role (D-228)", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    const runId = await t.started(t.request(nodeId, "council"));
+    expect((await t.store.getRun(runId))?.questionTopic).toBe(`escalation:${nodeId}`);
+    for (const questionTopic of [null, "escalation:not-an-id"]) {
+      await expect(
+        t.runs.dispatch(t.request(nodeId, "council", { questionTopic }), credential()),
+      ).rejects.toThrow("A Council dispatch needs the topic key of its question");
+    }
+    await expect(
+      t.runs.dispatch(
+        t.request(nodeId, "developer", { questionTopic: `escalation:${nodeId}` }),
+        credential(),
+      ),
+    ).rejects.toThrow("Only a Council dispatch names a question");
+    const developer = await t.started(t.request(await t.item(), "developer"));
+    expect((await t.store.getRun(developer))?.questionTopic).toBeNull();
   });
 
   it("allows at most agent_cluster_max_active_runs active runs across all projects", async () => {

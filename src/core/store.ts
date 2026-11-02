@@ -242,6 +242,11 @@ export interface Run {
    * `costUsd` is worked out from it. Null only for a run recorded without one: it is not priced.
    */
   modelPrice: RunPrice | null;
+  /**
+   * The topic key of the question a Council run answers (`escalation:<node id>` or
+   * `decision-reversed:<decision id>`, migration 0014, D-228). Null for every other run.
+   */
+  questionTopic: string | null;
 }
 
 /** A provider service tier (ADR 0114 section 8). */

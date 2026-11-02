@@ -54,7 +54,9 @@ export type FailureCount =
         | "no_run"
         | "no_node"
         | "not_a_failed_start"
-        | "first_failed_start";
+        | "first_failed_start"
+        /** A Council run's failed start counts as one of its question's runs instead (D-228). */
+        | "council_run";
     };
 
 export function createFailures(options: FailuresOptions) {
@@ -152,17 +154,22 @@ export function createFailures(options: FailuresOptions) {
      * because its task or its start failed (it has no handle), when it is not the first such run
      * in a row on the item. The row is the node's latest runs that all ended this way; a run that
      * started, or a refusal that admitted no run (the kill switch, dry run, the limits, the
-     * usage-exhausted wait), is not part of it and does not count.
+     * usage-exhausted wait), is not part of it and does not count. A Council run is not the
+     * item's work: its failed start counts as one of its question's runs (src/core/council.ts).
      */
     async dispatchFailed(runId: string): Promise<FailureCount> {
       const run = withNode(await store.getRun(runId));
       if (!run) return { counted: false, reason: "no_run" };
       if (!(await store.getNode(run.nodeId)))
         return { counted: false, reason: "no_node" };
+      if (run.bot === "council") return { counted: false, reason: "council_run" };
       if (!(await failedStart(run))) {
         return { counted: false, reason: "not_a_failed_start" };
       }
-      const runs = await store.listRuns({ nodeId: run.nodeId });
+      // The item's own work only: a Council run on the item is not part of the row.
+      const runs = (await store.listRuns({ nodeId: run.nodeId })).filter(
+        (r) => r.bot !== "council",
+      );
       const upTo = runs.slice(0, runs.findIndex((r) => r.id === run.id) + 1);
       let inRow = 0;
       for (let i = upTo.length - 1; i >= 0; i--) {

@@ -115,9 +115,12 @@ const RUNNER_EVIDENCE = new Set([
   "dispatch_record",
 ]);
 
-/** Decision kinds the API records. Approvals and gate answers come only through the approval channel. */
+/**
+ * Decision kinds the API records. Approvals and gate answers come only through the approval
+ * channel, and a `council_decision` only from the runner, which validates the Council's
+ * structured answer (D-228, D-230).
+ */
 const API_DECISION_KINDS: readonly DecisionKind[] = [
-  "council_decision",
   "interview_answer",
   "product_direction",
 ];

@@ -31,26 +31,26 @@ These three are proposals that need Didi's confirmation with the rest of the sch
 
 ## nodes
 
-| Column                 | Type        | Notes                                                                                                                             |
-| ---------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| id                     | uuid pk     |                                                                                                                                   |
-| project_id             | uuid fk     | Required on every node                                                                                                            |
-| type                   | text        | `idea` or `work_item`                                                                                                             |
-| track                  | text null   | `design`, `code`, `infra`, `docs`. Null for ideas                                                                                 |
-| state                  | text        | Current state name from the contracts                                                                                             |
-| substate               | text null   | For example `writing_spec`, `building_components`, `verifying_on_staging`. Needed because Linear shares statuses across substates |
-| owner_role             | text        | One owner role per state                                                                                                          |
-| title                  | text        |                                                                                                                                   |
-| body                   | jsonb       | Description, acceptance criteria, links                                                                                           |
-| hold                   | boolean     | A hold flag replaces hard-coded exclusions                                                                                        |
-| agent_ready            | boolean     | Only items marked agent-ready are dispatched                                                                                      |
-| stale                  | boolean     | Set when a decision the node depended on is reversed. A stale node is not dispatched (O-45)                                       |
-| blocked_reason         | text null   | Required whenever the state is Blocked or an escalated state                                                                      |
-| state_since            | timestamptz | For stall detection                                                                                                               |
-| linear_issue_id        | text null   |                                                                                                                                   |
-| linear_status_synced   | text null   | Last status the mirror wrote                                                                                                      |
-| version                | integer     | Optimistic lock. Starts at 0 and increments on every state change                                                                 |
-| created_at, updated_at | timestamptz |                                                                                                                                   |
+| Column                 | Type        | Notes                                                                                                                                                |
+| ---------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id                     | uuid pk     |                                                                                                                                                      |
+| project_id             | uuid fk     | Required on every node                                                                                                                               |
+| type                   | text        | `idea` or `work_item`                                                                                                                                |
+| track                  | text null   | `design`, `code`, `infra`, `docs`. Null for ideas                                                                                                    |
+| state                  | text        | Current state name from the contracts                                                                                                                |
+| substate               | text null   | For example `writing_spec`, `building_components`, `verifying_on_staging`. Needed because Linear shares statuses across substates                    |
+| owner_role             | text        | One owner role per state                                                                                                                             |
+| title                  | text        |                                                                                                                                                      |
+| body                   | jsonb       | Description, acceptance criteria, links                                                                                                              |
+| hold                   | boolean     | A hold flag replaces hard-coded exclusions                                                                                                           |
+| agent_ready            | boolean     | Only items marked agent-ready are dispatched                                                                                                         |
+| stale                  | boolean     | Set when a decision the node depended on is reversed. A stale node is not dispatched (O-45). The Council's verdict on the reversal clears it (D-229) |
+| blocked_reason         | text null   | Required whenever the state is Blocked or an escalated state                                                                                         |
+| state_since            | timestamptz | For stall detection                                                                                                                                  |
+| linear_issue_id        | text null   |                                                                                                                                                      |
+| linear_status_synced   | text null   | Last status the mirror wrote                                                                                                                         |
+| version                | integer     | Optimistic lock. Starts at 0 and increments on every state change                                                                                    |
+| created_at, updated_at | timestamptz |                                                                                                                                                      |
 
 Index: (project_id, state), (state, state_since).
 
@@ -143,7 +143,7 @@ Note: because rows are append-only, a reversal inserts a new `decisions` row and
 | decision_id | uuid fk                | The decision the node relies on |
 | pk          | (node_id, decision_id) |                                 |
 
-When a decision is reversed, every node in this table for that decision is marked stale, and a Council question is created.
+When a decision is reversed, every node in this table for that decision is marked stale, and a Council question is created. The Council's answer gives a verdict for every stale node, which the runner records and applies (D-229, `src/core/council.ts`): `still_valid` clears the flag, `redo` clears it for a node still in an initial state of its track and otherwise leaves it stale until a move back exists (N-40), and `cannot_decide` sends the node to Didi with one gate request. A flag stays set while another open reversal question still names the node (O-50).
 
 ## gate_requests
 
@@ -167,42 +167,43 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 
 ## runs
 
-| Column                 | Type         | Notes                                                                                                                                    |
-| ---------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| id                     | uuid pk      |                                                                                                                                          |
-| project_id             | uuid fk      |                                                                                                                                          |
-| node_id                | uuid null    |                                                                                                                                          |
-| bot                    | text         | Role bot name                                                                                                                            |
-| agent_id               | text null    |                                                                                                                                          |
-| runtime                | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                                   |
-| model                  | text         |                                                                                                                                          |
-| head_sha               | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                         |
-| pr_number              | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit         |
-| bot_version            | text         | Prompt, model and schema version behind the result                                                                                       |
-| started_at, ended_at   | timestamptz  |                                                                                                                                          |
-| outcome                | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                          |
-| turns                  | integer null |                                                                                                                                          |
-| minutes                | numeric null |                                                                                                                                          |
-| cost_usd               | numeric null | Worked out by the core when the end is recorded, from `tokens` and `model_price` at the served tier (ADR 0114 section 2, migration 0008) |
-| tokens                 | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                                    |
-| budget                 | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                            |
-| parent_run_id          | uuid null    | A bot run that dispatched agents                                                                                                         |
-| transcript_ref         | text null    | Where the transcript is kept. Never inline secrets                                                                                       |
-| usage_exhausted_cause  | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                          |
-| retry_after_seconds    | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                             |
-| task_type              | text         | From `contracts/task-types.yaml`, for example `developer:code` (ADR 0114 section 1, migration 0005)                                      |
-| provider               | text         | The provider entry name, as in the egress proxy's provider list, for example `anthropic` (migration 0005)                                |
-| model_family           | text         | From the model catalog. The QA independence rule reads it here (migration 0005)                                                          |
-| service_tier_requested | text         | `standard`, `flex` or `priority` (migration 0005)                                                                                        |
-| service_tier_served    | text null    | `standard`, `flex`, `priority` or `mixed`, from the provider's responses. Null when none reported it (migration 0005)                    |
-| routing_policy_version | text         | The `model_routing_policy` version the route came from (migration 0005)                                                                  |
-| model_catalog_version  | text         | The `model_catalog` version the family and price came from (migration 0005)                                                              |
-| capacity_retries       | integer null | Flex capacity rejections retried inside the run, at least 0 (ADR 0114 section 9, migration 0005)                                         |
-| capacity_wait_seconds  | integer null | Time spent waiting on those retries, at least 0 (migration 0005)                                                                         |
-| first_token_ms         | integer null | Time to the first output token of the first request, where the runtime reports it (migration 0005)                                       |
-| reported_cost_usd      | numeric null | The runtime's own cost figure, kept to compare with `cost_usd` (migration 0005)                                                          |
-| handle                 | jsonb null   | What the runtime's `start` returned, to poll or cancel the run. An object, never a credential (migration 0006)                           |
-| model_price            | jsonb null   | The route's model entry from the catalog version on the run, copied at admission: `tiers` and `pricePerMTok`. An object (migration 0008) |
+| Column                 | Type         | Notes                                                                                                                                                |
+| ---------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id                     | uuid pk      |                                                                                                                                                      |
+| project_id             | uuid fk      |                                                                                                                                                      |
+| node_id                | uuid null    |                                                                                                                                                      |
+| bot                    | text         | Role bot name                                                                                                                                        |
+| agent_id               | text null    |                                                                                                                                                      |
+| runtime                | text         | `claude_code`, `grok`, `windmill_ai`, `cursor`, `code`                                                                                               |
+| model                  | text         |                                                                                                                                                      |
+| head_sha               | text null    | The PR head commit the run was dispatched for. The API stores a QA verdict against it (ADR 0112)                                                     |
+| pr_number              | integer null | The pull request a QA run reviews (migration 0003). Admission allows one active QA run per project, pull request and head commit                     |
+| bot_version            | text         | Prompt, model and schema version behind the result                                                                                                   |
+| started_at, ended_at   | timestamptz  |                                                                                                                                                      |
+| outcome                | text         | `success`, `fail`, `timeout`, `cancelled`, `budget_exceeded`, `usage_exhausted`                                                                      |
+| turns                  | integer null |                                                                                                                                                      |
+| minutes                | numeric null |                                                                                                                                                      |
+| cost_usd               | numeric null | Worked out by the core when the end is recorded, from `tokens` and `model_price` at the served tier (ADR 0114 section 2, migration 0008)             |
+| tokens                 | jsonb null   | `uncachedInput`, `cachedInput`, `output`, and `cacheWriteInput` where the provider reports it (D-185)                                                |
+| budget                 | jsonb        | The limits applied to this run: `maxTurns`, `maxMinutes`, `maxUsd` (ADR 0107)                                                                        |
+| parent_run_id          | uuid null    | A bot run that dispatched agents                                                                                                                     |
+| transcript_ref         | text null    | Where the transcript is kept. Never inline secrets                                                                                                   |
+| usage_exhausted_cause  | text null    | `rate_limit`, `capacity` or `out_of_credit`. Set exactly when the outcome is `usage_exhausted` (migration 0003)                                      |
+| retry_after_seconds    | integer null | The provider's retry-after, only on a `usage_exhausted` end (migration 0003)                                                                         |
+| task_type              | text         | From `contracts/task-types.yaml`, for example `developer:code` (ADR 0114 section 1, migration 0005)                                                  |
+| provider               | text         | The provider entry name, as in the egress proxy's provider list, for example `anthropic` (migration 0005)                                            |
+| model_family           | text         | From the model catalog. The QA independence rule reads it here (migration 0005)                                                                      |
+| service_tier_requested | text         | `standard`, `flex` or `priority` (migration 0005)                                                                                                    |
+| service_tier_served    | text null    | `standard`, `flex`, `priority` or `mixed`, from the provider's responses. Null when none reported it (migration 0005)                                |
+| routing_policy_version | text         | The `model_routing_policy` version the route came from (migration 0005)                                                                              |
+| model_catalog_version  | text         | The `model_catalog` version the family and price came from (migration 0005)                                                                          |
+| capacity_retries       | integer null | Flex capacity rejections retried inside the run, at least 0 (ADR 0114 section 9, migration 0005)                                                     |
+| capacity_wait_seconds  | integer null | Time spent waiting on those retries, at least 0 (migration 0005)                                                                                     |
+| first_token_ms         | integer null | Time to the first output token of the first request, where the runtime reports it (migration 0005)                                                   |
+| reported_cost_usd      | numeric null | The runtime's own cost figure, kept to compare with `cost_usd` (migration 0005)                                                                      |
+| handle                 | jsonb null   | What the runtime's `start` returned, to poll or cancel the run. An object, never a credential (migration 0006)                                       |
+| model_price            | jsonb null   | The route's model entry from the catalog version on the run, copied at admission: `tiers` and `pricePerMTok`. An object (migration 0008)             |
+| question_topic         | text null    | Only on a Council run: the topic key of the question it answers, `escalation:<node id>` or `decision-reversed:<decision id>` (migration 0014, D-228) |
 
 A run is active while `ended_at` is null. Dispatch admission reads the active runs (index `runs_active`) under one advisory lock, in the transaction that inserts the run (ADR 0106 section 7, `src/core/runs.ts`).
 

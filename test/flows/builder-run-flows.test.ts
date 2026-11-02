@@ -381,8 +381,18 @@ describe("a staging fail starts the builder's fix round (flow: fake adapters, O-
     const result = await verifyStaging(deps, { repo: REPO, sha: t.mergeSha });
     expect(await t.state()).toBe("escalated_to_council");
     expect(result).toMatchObject({ builderRuns: [] });
-    expect((await reconcileFlow(deps)).builderRuns).toEqual([]);
-    expect(runtime.started).toEqual([]);
+    // The live pass starts the Council for the item's question (D-228), and no builder run.
+    const report = await reconcileFlow(deps);
+    expect(report.builderRuns).toEqual([]);
+    expect(report.councilRuns).toMatchObject([
+      { kind: "escalation", step: "start", result: { outcome: "started" } },
+    ]);
+    expect(
+      (await t.store.listRuns({ nodeId: t.node.id }))
+        .filter((r) => r.endedAt === null)
+        .map((r) => r.bot),
+    ).toEqual(["council"]);
+    expect(runtime.started).toHaveLength(1);
   });
 });
 

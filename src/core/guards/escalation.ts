@@ -107,17 +107,25 @@ export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardChec
 /** The Council's `scope.outcome` when it says it cannot resolve the item (M3.5). */
 export const COUNCIL_CANNOT_RESOLVE = "cannot_resolve";
 
-/** The node's latest active Council decision since it entered its current state, if any. */
+/**
+ * The node's latest active Council decision since it entered its current state, if any. A
+ * decision whose `scope.topicKey` names another question (a reversal's, `decision-reversed:<id>`,
+ * recorded on this node by the Council's run, D-228) is not this escalation's answer.
+ */
 export async function latestCouncilDecision(
   ctx: GuardContext,
 ): Promise<CurrentDecision | undefined> {
+  const topic = escalationTopic(ctx.node.id);
   return latest(
-    (await ctx.store.listDecisionsForNode(ctx.node.id)).filter(
-      (d) =>
+    (await ctx.store.listDecisionsForNode(ctx.node.id)).filter((d) => {
+      const decisionTopic = scopeOf(d).topicKey;
+      return (
         d.status === "active" &&
         d.kind === "council_decision" &&
-        sinceState(ctx, d.recordedAt),
-    ),
+        (decisionTopic === undefined || decisionTopic === topic) &&
+        sinceState(ctx, d.recordedAt)
+      );
+    }),
   );
 }
 

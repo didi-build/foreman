@@ -218,6 +218,7 @@ export async function createReconcileFixture(
       transcriptRef: null,
       usageExhaustedCause: null,
       retryAfterSeconds: null,
+      questionTopic: null,
       ...testRouteColumns(role),
       ...extra,
     };

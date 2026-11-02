@@ -392,6 +392,30 @@ describe.skipIf(!adminUrl)(
       }
     });
 
+    it("keeps a question topic only on a Council run, in the topic key's shape (migration 0014, D-228)", () => {
+      const insert = (bot: string, topic: string) =>
+        sql(
+          `insert into factory.runs (id, project_id, node_id, bot, runtime, model, bot_version, started_at, budget,
+             ${ROUTE_COLUMNS}, question_topic)
+           values (gen_random_uuid(), '${ID.project}', '${ID.node}', '${bot}', 'claude_api', 'model-a', 'v1', ${AT}, '{}',
+             ${ROUTE_VALUES}, ${topic});`,
+          "factory_runner",
+        );
+      const ok = insert("council", `'escalation:${ID.node}'`);
+      expect(ok.ok, ok.err).toBe(true);
+      const reversal = insert("council", `'decision-reversed:${ID.decision}'`);
+      expect(reversal.ok, reversal.err).toBe(true);
+      expect(insert("developer", "null").ok).toBe(true);
+      expectRejected(
+        insert("developer", `'escalation:${ID.node}'`),
+        /runs_question_topic_council/,
+      );
+      expectRejected(
+        insert("council", "'escalation:not an id'"),
+        /question_topic_check/,
+      );
+    });
+
     it("seeds the staging deploy wait at one hour (migration 0012, D-225)", () => {
       const value = sql(
         "select value::text from factory.settings where key = 'staging_deploy_attention_after_minutes';",

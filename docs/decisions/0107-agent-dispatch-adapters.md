@@ -75,7 +75,7 @@ The QA model reads; plain code checks. Preview and staging checks (D-103, the Do
 ### Rules every implementation follows
 
 - The runner enforces a wall-clock limit itself, on top of any limit the runtime offers. Some runtimes do not document when they stop.
-- The caller validates `structured` output against a schema. A QA verdict is checked as in the section above (P-04).
+- The caller validates `structured` output against a schema. A QA verdict is checked as in the section above (P-04). A Council answer is checked against the schema of its question's kind, which the run's task file also carries, and the runner records the `council_decision` from it itself; the Council writes nothing (D-228, `src/core/council.ts`).
 - The model endpoint and API key come from the bot file as settings, the key as a secret path resolved through the secrets interface (D-142). Values are never logged. The first release calls providers directly. A self-hosted gateway (LiteLLM or Bifrost) can be inserted in the second release by changing the endpoint setting, with no code change. OpenRouter is not chosen.
 - A "usage exhausted" response becomes status `usage_exhausted`, so the dispatch is queued and resumed, not counted as a failure (FR-11).
 

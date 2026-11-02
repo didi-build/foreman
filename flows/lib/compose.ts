@@ -48,6 +48,12 @@ export interface RunToStart {
   /** The Flex capacity bounds from the settings (ADR 0114 section 9). */
   capacity: RunCapacityLimits;
   stateApiToken: string;
+  /**
+   * Council: the output schema of its question's kind, the Council bot profile's default
+   * (src/core/council.ts, D-228). The task file carries it, and the runner checks the answer
+   * against the same schema when the run ends.
+   */
+  outputSchema?: Record<string, unknown>;
 }
 
 /**
