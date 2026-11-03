@@ -659,3 +659,90 @@ describe("Council and Triage (integration: structured output, no tools, ADR 0107
     });
   });
 });
+
+describe("QA's visual comparison (integration: images in, structured output, no tools, D-242)", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["components"],
+    properties: { components: { type: "array", items: { type: "string" } } },
+  };
+  const visualTask = {
+    instructions: "Compare the images.",
+    input: "Pair 1 of 1.",
+    nodeId: NODE_ID,
+    evidenceIds: [],
+    outputSchema: schema,
+    images: [
+      {
+        label: "Image 1: the approved option",
+        mediaType: "image/png",
+        data: "iVBORw0KGgo=",
+      },
+      {
+        label: "Image 2: the built component",
+        mediaType: "image/png",
+        data: "iVBORw0KGgp=",
+      },
+    ],
+  };
+
+  it("sends each image after its label, with no tools, and posts nothing", async () => {
+    proxy.replies.push(
+      reply.text(
+        JSON.stringify({
+          components: ["match"],
+          outOfScopeFindings: [{ title: "Token leak", detail: `saw ${STATE_TOKEN}` }],
+        }),
+      ),
+    );
+    const { code, result } = await run(envFor("qa", visualTask));
+    expect(code).toBe(0);
+    expect(result).toMatchObject({
+      status: "success",
+      structured: { components: ["match"] },
+    });
+    expect(JSON.stringify(result)).not.toContain(STATE_TOKEN);
+    const body = proxy.modelRequests[0]?.body;
+    expect(body?.tools).toBeUndefined();
+    expect(body?.output_config).toEqual({ format: { type: "json_schema", schema } });
+    const content = (body?.messages as { content: unknown }[])[0]?.content as {
+      type: string;
+      text?: string;
+      source?: unknown;
+    }[];
+    expect(content.map((c) => c.type)).toEqual([
+      "text",
+      "text",
+      "image",
+      "text",
+      "image",
+    ]);
+    expect(content[1]?.text).toBe("Image 1: the approved option");
+    expect(content[2]?.source).toEqual({
+      type: "base64",
+      media_type: "image/png",
+      data: "iVBORw0KGgo=",
+    });
+    expect(system(0)[0]?.text).toContain("comparing screenshots");
+    expect(proxy.stateApiRequests).toEqual([]);
+  });
+
+  it("refuses images on a role other than QA, and images with evidence ids", async () => {
+    const { result } = await run(
+      envFor("council", { ...visualTask, nodeId: undefined, evidenceIds: undefined }),
+    );
+    expect(result).toMatchObject({
+      status: "error",
+      errorText: "only a QA task carries images",
+    });
+    const cited = await run(
+      envFor("qa", { ...visualTask, evidenceIds: [EVIDENCE_ID] }),
+    );
+    expect(cited.result).toMatchObject({
+      status: "error",
+      errorText: "a QA task with images cites no evidence ids",
+    });
+    expect(proxy.modelRequests).toEqual([]);
+  });
+});

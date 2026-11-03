@@ -39,12 +39,14 @@ export const MINUTE = 60_000;
 
 /** The Council's output schemas, from its real bot file (contracts/bots/council.yaml, D-228). */
 export const COUNCIL_SCHEMAS = readBotFiles().council.outputSchemas ?? {};
+/** QA's visual answer schema, from its real bot file (contracts/bots/qa.yaml, D-242). */
+export const QA_SCHEMAS = readBotFiles().qa.outputSchemas ?? {};
 
 const BOT: BotProfile = { runtime: "claude_code", botVersion: "v1" };
 const BOTS: Record<AgentRole, BotProfile> = {
   developer: BOT,
   designer: BOT,
-  qa: BOT,
+  qa: { ...BOT, outputSchemas: QA_SCHEMAS },
   council: { ...BOT, outputSchemas: COUNCIL_SCHEMAS },
   triage: BOT,
 };

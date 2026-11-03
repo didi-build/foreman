@@ -11,6 +11,12 @@
 // answer carries that kind and the request's commit. A request that names no well-formed commit
 // gets no `commitSha`, so its approval matches no head and the guard keeps failing.
 //
+// A `visual_approval` request lists the options it shows (`payload.options`, their names). An
+// approval that names one of them records it as `scope.option`, which the visual comparison and
+// the Designer's input read as the option Didi approved (src/core/visual-comparison.ts, D-242). A
+// name the request does not list is not recorded, and nothing is guessed from Didi's words. How
+// the page asks for the name is open (N-53).
+//
 // The answer is recorded even while the kill switch or dry run is on (D-201): recording a fact is
 // not acting on it, and the transition flows refuse or write dry-run rows until both are off.
 import type { Decision, GateRequest, Json } from "./store.ts";
@@ -31,6 +37,8 @@ export interface ApprovalPageAnswer {
   words: string | null;
   /** Who the page says answered; `anonymous` on Windmill's free plan (D-170). */
   approvers: string[];
+  /** A visual approval: the option the page says Didi approved, by name. */
+  option?: string | null;
 }
 
 const OUTCOME: Record<ApprovalChoice, string> = {
@@ -42,6 +50,30 @@ const OUTCOME: Record<ApprovalChoice, string> = {
 export type ApprovalDecision = Omit<Decision, "id" | "recordedAt" | "projectId">;
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
+
+/** The option names a visual-approval request lists. */
+function listedOptions(gate: GateRequest): string[] {
+  const payload = gate.payload;
+  const options =
+    payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      ? payload.options
+      : undefined;
+  return Array.isArray(options)
+    ? options.filter((o): o is string => typeof o === "string")
+    : [];
+}
+
+/** The approved option's name, when it is one the visual-approval request lists. */
+function approvedOptionScope(
+  gate: GateRequest,
+  answer: ApprovalPageAnswer,
+): { [key: string]: Json } {
+  if (gate.kind !== "visual_approval" || answer.choice !== "approve") return {};
+  const option = answer.option;
+  return typeof option === "string" && listedOptions(gate).includes(option)
+    ? { option }
+    : {};
+}
 
 /** The scope fields a gate kind's guard reads, from the gate request itself. */
 function guardScope(gate: GateRequest): { [key: string]: Json } {
@@ -73,6 +105,7 @@ export function approvalDecision(
     pageUrl: gate.approvalUrl,
     approvers: [...answer.approvers],
     ...guardScope(gate),
+    ...approvedOptionScope(gate, answer),
   };
   return {
     nodeId: gate.nodeId,

@@ -31,6 +31,12 @@
 // escalation returned, or a pass cut short, is taken on later. For a merged item it opens the
 // item's rework item instead (D-233): no run is cancelled, since the item does not move.
 //
+// A QA run of task type `qa:visual` (D-242) is checked the same way before its end is recorded:
+// the runner validates its answer and records `visual_comparison` itself
+// (src/core/visual-comparison.ts), and an answer it cannot record ends the run `fail`. Its report
+// then asks for QA's moves like any QA run: the merge guard decides, so the merge happens once the
+// review's verdict and the visual comparison both pass on the head.
+//
 // The follow-up pass (`followUpPass`, D-234) opens the follow-up Council question on a reversal
 // whose gate request Didi has answered, and the Council pass then starts its run. The approval
 // resume step runs it right after Didi's answer (./approval.ts), and the reconcile flow's live
@@ -47,6 +53,12 @@ import {
 } from "../../src/core/council.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import { createFindingIdeas, type FindingIdeas } from "../../src/core/finding-ideas.ts";
+import {
+  createVisualComparisons,
+  VISUAL_TASK_TYPE,
+  type VisualRecord,
+} from "../../src/core/visual-comparison.ts";
+import { pngCodec } from "../../src/adapters/screenshots/png.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { createRunReports } from "../../src/core/run-reports.ts";
@@ -237,6 +249,8 @@ export type AfterRunEnd = AfterReport &
   CouncilAfter & {
     /** When the end was recorded now: the ideas made from the run's findings (D-244, O-65). */
     findingIdeas?: FindingIdeas;
+    /** A visual comparison run's answer as the runner recorded it, or why not (D-242). */
+    visual?: VisualRecord;
   };
 
 /**
@@ -253,7 +267,9 @@ export type AfterRunEnd = AfterReport &
 export function runEndSteps(deps: FlowDeps, run: Run) {
   let answer: CouncilAnswer | undefined;
   let findingIdeas: FindingIdeas | undefined;
+  let visual: VisualRecord | undefined;
   const isCouncil = run.bot === "council";
+  const isVisual = run.bot === "qa" && run.taskType === VISUAL_TASK_TYPE;
   async function reportToRecord(
     result: AgentRunResult,
     report: RunReport,
@@ -268,6 +284,20 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
           ? null
           : await createRunReports(deps).recordNeedsDecision(run.id, reason);
       return recorded?.recorded ? report : { ...report, outcome: "fail" };
+    }
+    if (isVisual && report.outcome === "success") {
+      // The runner checks the answer and records `visual_comparison` itself (D-242). Anything
+      // but a recorded answer ends the run `fail`: an answer that does not fit, a run on a
+      // builder's model (D-158), or a comparison that cannot be built again.
+      visual = await createVisualComparisons({ ...deps, png: pngCodec }).recordAnswer(
+        run.id,
+        result.structured,
+      );
+      return visual.recorded === false &&
+        visual.reason !== "kill_switch" &&
+        visual.reason !== "dry_run"
+        ? { ...report, outcome: "fail" }
+        : report;
     }
     if (!isCouncil || report.outcome !== "success") return report;
     answer = await createCouncil(deps).recordAnswer(run.id, result.structured);
@@ -287,6 +317,7 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       const reported = {
         ...(await reportedMoveAndFixRound(deps, run.id)),
         ...(findingIdeas ? { findingIdeas } : {}),
+        ...(visual ? { visual } : {}),
       };
       if (isCouncil) {
         return { ...reported, council: await afterCouncilRun(deps, run, answer) };

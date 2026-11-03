@@ -1,14 +1,19 @@
 // The Messages API image's run (QA, Council, Triage; ADR 0106, 0107, 0112): read the settings
 // and the task, run the loop against the egress proxy's provider address with a placeholder key,
 // and print one result line. QA reads its tree with the read-only file tool and posts its
-// verdict through the state API; Council and Triage return structured output only.
+// verdict through the state API; Council and Triage return structured output only. A QA task
+// with images is the visual comparison (D-242): no tools, the images in the first message, and
+// structured output only, which the runner checks and records; it posts nothing.
 import Anthropic from "@anthropic-ai/sdk";
 
 import type { ServiceTier } from "../../core/store.ts";
 import { readConfig, type Setting } from "../../service-kit/config.ts";
 import { createLogger } from "../../service-kit/logger.ts";
 import { parseRunPrice } from "../shared/price.ts";
-import { withinFindingBounds } from "../../core/out-of-scope-findings.ts";
+import {
+  readOutOfScopeFindings,
+  withinFindingBounds,
+} from "../../core/out-of-scope-findings.ts";
 import {
   errorResult,
   exitCode,
@@ -219,6 +224,55 @@ async function qaRun(
   };
 }
 
+async function visualRun(
+  settings: ImageSettings,
+  task: AgentTaskFile,
+  client: MessagesClient,
+  common: Common,
+  deps: ApiImageDeps,
+  secrets: readonly string[],
+): Promise<AgentResult> {
+  if (!task.outputSchema)
+    return errorResult("a visual comparison task needs its answer schema");
+  const { result } = await runLoop({
+    client,
+    model: settings.model,
+    maxTurns: settings.maxTurns,
+    maxUsd: settings.maxUsd,
+    ...common,
+    ...(deps.clock ? { clock: deps.clock } : {}),
+    system: systemText("qa", task.instructions, true),
+    tools: [],
+    input: fencedInput(task.input),
+    images: task.images ?? [],
+    outputSchema: task.outputSchema,
+  });
+  if (result.status !== "success") return result;
+  let answer: unknown;
+  try {
+    answer = JSON.parse(result.finalText) as unknown;
+  } catch {
+    return { ...result, status: "error", errorText: "the answer is not JSON" };
+  }
+  // The runner checks the answer against its schema and rules (src/core/visual-comparison.ts).
+  // Here only credential values are removed, and the out-of-scope findings cut back to their
+  // bounds afterwards, as for QA's verdict (D-244, O-65).
+  const clean = redact(answer, secrets);
+  const listed =
+    typeof clean === "object" && clean !== null && !Array.isArray(clean)
+      ? (clean as Record<string, unknown>).outOfScopeFindings
+      : undefined;
+  const findings = readOutOfScopeFindings(listed);
+  const structured =
+    listed !== undefined && "findings" in findings
+      ? {
+          ...(clean as Record<string, unknown>),
+          outOfScopeFindings: findings.findings.map(withinFindingBounds),
+        }
+      : clean;
+  return { ...result, structured };
+}
+
 async function structuredRun(
   settings: ImageSettings,
   task: AgentTaskFile,
@@ -261,9 +315,11 @@ export async function runClaudeApiImage(
     const task = readTask(settings.role, settings.taskFile);
     const client = (deps.client ?? sdkClient)(settings);
     result =
-      settings.role === "qa"
-        ? await qaRun(settings, task, env, client, deps, common, secrets)
-        : await structuredRun(settings, task, client, common, deps);
+      settings.role === "qa" && task.images !== undefined
+        ? await visualRun(settings, task, client, common, deps, secrets)
+        : settings.role === "qa"
+          ? await qaRun(settings, task, env, client, deps, common, secrets)
+          : await structuredRun(settings, task, client, common, deps);
   } catch (error) {
     // Setting and task errors name the problem, never a value.
     result = errorResult(error instanceof Error ? error.message : "the run failed");

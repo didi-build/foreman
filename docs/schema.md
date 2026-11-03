@@ -127,6 +127,8 @@ Enforcement: no UPDATE or DELETE for any application role (revoke, or a trigger 
 | supersedes_id | uuid null   | A new record replaces an old one without editing it                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ingest_key    | text null   | Unique. Only on `ci_run` and `merge_commit` (migration 0002, ADR 0113), so webhooks and polling record a fact once, and on the runner's `staging_deploy`, `staging_check` and `staging_no_result` (migration 0011, M3.4) and `staging_deploy_failed` (migration 0012, D-225), so each staging fact is recorded once. The runner's merge uses the same key for its `merge_commit` (M3.3). The runner's `failure_count` carries one too (migration 0013), so each count is recorded once |
 
+The runner writes `visual_comparison` (from a checked `qa:visual` answer, on the run's head commit, `ref` `runner:visual_comparison:run-<run id>`) and an option's `screenshot` (on the commit the option was captured at); their payloads are in `docs/guards.md` (D-242, O-66). No migration: both kinds were in the first schema, and `visual_comparison` already needs a commit.
+
 Rule: a guard reads only evidence whose `commit_sha` equals the PR's current head commit. A new commit makes earlier verdicts stale automatically.
 
 ## decisions (append-only; status changes through new rows)
@@ -144,6 +146,8 @@ Rule: a guard reads only evidence whose `commit_sha` equals the PR's current hea
 | status         | text        | `active`, `reversed`, `superseded`                                                |
 | supersedes_id  | uuid null   |                                                                                   |
 | reversed_by_id | uuid null   |                                                                                   |
+
+A visual approval that names the approved option keeps it as `scope.option` (the option's folder name), only when the visual-approval request's payload lists it in `options` (D-242, O-66).
 
 Note: because rows are append-only, a reversal inserts a new `decisions` row and records its id in `reversed_by_id` through a controlled path. The implementing agent proposes the exact mechanism in the M1 ADR (for example, a separate `decision_events` table).
 

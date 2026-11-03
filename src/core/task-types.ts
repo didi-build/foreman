@@ -3,6 +3,7 @@
 // and each role's bot file (contracts/bots/<role>.yaml) names its allowed task types and its
 // default. The contracts-file adapter parses both; this module only checks the plain objects and
 // picks a run's task type.
+import { LibraryError } from "./library.ts";
 import type { AgentRole } from "./store.ts";
 
 export interface RoleTaskTypes {
@@ -120,10 +121,22 @@ export function validateTaskTypes(
 }
 
 /**
- * The task type a run of `role` gets: the role's default (ADR 0114 section 1). An item's own task
- * class is read here once M3.6 settles who sets it; until then every Developer run is
- * `developer:code`.
+ * The task type a run of `role` gets: the role's default (ADR 0114 section 1), or the task type
+ * the dispatch asked for, which must be one the role's bot file allows. Only the runner asks for
+ * one today: QA's visual comparison, `qa:visual` (D-242). An item's own task class is read here
+ * once M3.6 settles who sets it; until then every Developer run is `developer:code`.
  */
-export function taskTypeFor(taskTypes: TaskTypes, role: AgentRole): string {
-  return taskTypes.roles[role].default;
+export function taskTypeFor(
+  taskTypes: TaskTypes,
+  role: AgentRole,
+  requested?: string | null,
+): string {
+  const entry = taskTypes.roles[role];
+  if (requested === undefined || requested === null) return entry.default;
+  if (!entry.allowed.includes(requested)) {
+    throw new LibraryError(
+      `The ${role} bot file does not allow the requested task type`,
+    );
+  }
+  return requested;
 }

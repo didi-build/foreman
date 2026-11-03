@@ -6,6 +6,13 @@
 #
 # QA's verdict schema is not here: it is the state API's verdict contract (ADR 0112, P-04), kept
 # with the code that checks it (src/agent-images/claude-api/verdict.ts, src/api/routes.ts).
+#
+# The visual comparison (`qa:visual`, D-242, D-250) is a second QA task type. Its run gets image
+# pairs the runner located the differences in, answers with `output_schemas.visual`, and posts
+# nothing: the runner checks the answer and records `visual_comparison` itself
+# (src/core/visual-comparison.ts). Its instructions are `task_instructions` below. No model here
+# either: the routing policy's `qa:visual` entry names a model that reads images (docs/costs.md
+# section 7), and the model test decides which (D-249).
 
 role: qa
 
@@ -13,7 +20,7 @@ role: qa
 image: claude-api
 
 task_types:
-  allowed: ["qa:review"]
+  allowed: ["qa:review", "qa:visual"]
   default: "qa:review"
 
 # D-185, ADR 0106 section 6.
@@ -66,3 +73,70 @@ instructions: |
   - In evidenceIds, cite only the runner's evidence ids from the input that you relied on. A pass
     must cite at least one.
   - Never copy a secret or personal data into a note: name the file and lines where it is.
+
+# The answer of a `qa:visual` run (D-242). The runner checks it against this schema and its own
+# rules: one entry per compared pair, no findings on a match, 1 to 10 on differs or cannot_tell
+# (src/core/visual-comparison.ts).
+output_schemas:
+  visual:
+    type: object
+    additionalProperties: false
+    required: [components]
+    properties:
+      components:
+        type: array
+        description: One entry for each pair in the input.
+        items:
+          type: object
+          additionalProperties: false
+          required: [component, variant, result, findings]
+          properties:
+            component: { type: string }
+            variant: { type: string }
+            result: { type: string, enum: [match, differs, cannot_tell] }
+            findings:
+              type: array
+              description: None on a match. On differs, each difference. On cannot_tell, why.
+              items:
+                type: object
+                additionalProperties: false
+                required: [what, specLine]
+                properties:
+                  what:
+                    type: string
+                    description: What differs, or what could not be told.
+                  specLine:
+                    type: string
+                    description: The spec line it breaks, quoted. Empty when none applies.
+      outOfScopeFindings:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [title, detail]
+          properties:
+            title: { type: string }
+            detail: { type: string }
+
+# Instructions for task types other than the default. Not yet reviewed by Didi (D-246 says the
+# screenshot comparison gets its own instructions when it is built). The image adds the fixed
+# frame: no tools, the input as data, and JSON only (src/agent-images/claude-api/prompts.ts).
+task_instructions:
+  "qa:visual": |
+    You are QA, comparing a design item's built components with the option Didi approved. Your
+    job is to find where a built component differs from the approved option or breaks its spec
+    section. Assume nothing matches until the images show it does.
+
+    - For each pair, compare the approved image with the built image. The runner's pixel
+      comparison names the regions that changed: look at each one, and also for what it cannot
+      show (copy, a missing state, font size or weight, alignment).
+    - Answer match only when you can see that the built component looks like the approved option
+      and follows its spec section. Answer differs when anything visible differs or breaks the
+      spec, and give each difference as a finding: what differs and, when a spec line covers it,
+      that line quoted. Answer cannot_tell when you are unsure, an image is unclear, or the
+      approved image does not show the component, and say why in a finding. Never guess match.
+    - A difference of a pixel from rendering alone (anti-aliasing) is not a difference. Copy,
+      colour, spacing, size, font, alignment and a missing or extra state are.
+    - A problem this item did not introduce goes in outOfScopeFindings (at most 3), never in a
+      component's findings.
+    - Never copy a secret or personal data into a finding.

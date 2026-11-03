@@ -267,6 +267,15 @@ DiffSpot (a May 2026 paper, read through search only) is the closest published m
 
 20 synthetic pairs, half identical and half with one planted difference (colour, spacing, copy, a missing state, font, alignment), each run 3 times on the three shortlisted models and the alternate, with a `match` / `differs` / `cannot_tell` answer per component. Rank by false-pass rate, then false-fail rate, then consistency. Estimated total under 1 USD.
 
+### How to run the test (D-242, D-249)
+
+The harness is `spikes/visual-model-test/`. It draws the 20 pairs in code (`pairs.ts`), builds each request exactly as the runner builds a `qa:visual` run's task (the same crops, pixel summary, input text, QA's `qa:visual` instructions and answer schema from `contracts/bots/qa.yaml`, and the Messages API image's frame), sends each pair 3 times, and scores the answers with the runner's own check: false-pass rate, then false-fail rate, then consistency, with the `cannot_tell` rate and unusable answers beside them. It prints one JSON record.
+
+- No network, no key: `node spikes/visual-model-test/run.ts` runs a fake model that answers from the pixel summary alone. Its record is the baseline the scaffolding gives for free.
+- A real model (Didi's credential gate): set `VISUAL_TEST_API_KEY` in the shell, never in a file, and run `node spikes/visual-model-test/run.ts --real --model <id>` for Anthropic's Messages API, or add `--api openai` and `VISUAL_TEST_BASE_URL` (for DeepInfra, `https://api.deepinfra.com/v1/openai`) for an OpenAI-compatible endpoint. Without `--real`, or without the key or a model, it refuses and names what is missing. The key is never printed.
+
+Paste each record into this section with the date. The routing policy gets a `qa:visual` entry only after the test has picked a model (N-57).
+
 ### Measured and guessed
 
 - Read directly on 2026-11-03: DeepInfra prices, Flex, tags and deprecations; DeepInfra's image limits; Haiku 5.5's prices and image token formula; the model-card numbers marked V without S.

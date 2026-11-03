@@ -98,6 +98,7 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       expect(deps.bots.qa).toEqual({
         runtime: "claude-api",
         botVersion: bots.qa.version,
+        outputSchemas: bots.qa.outputSchemas,
       });
       expect(deps.bots.developer.runtime).toBe("opencode");
       expect(deps.bots.council.outputSchemas).toEqual(bots.council.outputSchemas);
@@ -231,6 +232,21 @@ describe("approval page reply (unit: flow layer, M0.4, D-200)", () => {
       words: " as typed ",
       approvers: ["anonymous"],
     });
+  });
+
+  it("reads an option name when the page sends one, and adds nothing when it does not (D-242, N-53)", () => {
+    expect(
+      readApprovalReply({ answer: "Approve", reply: "a", option: "a" }, ["anonymous"]),
+    ).toEqual({
+      answered: true,
+      choice: "approve",
+      words: "a",
+      approvers: ["anonymous"],
+      option: "a",
+    });
+    expect(
+      readApprovalReply({ answer: "Approve", reply: "a", option: 3 }, []),
+    ).not.toHaveProperty("option");
   });
 
   it("reads a timeout, and a form with no known answer, as no answer, keeping any words", () => {
