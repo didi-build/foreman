@@ -16,7 +16,10 @@
 // Triage its run, its re-run, or the Council after two runs with no usable answer (M3.6,
 // ./triage-runs.ts). The hold release pass then clears the hold flag of each held item whose
 // release request Didi approved, when the approval step could not (a switch held it, or it was cut
-// short; D-269, src/core/hold-release.ts). The plan approval pass runs before the Triage pass: for
+// short; D-269, src/core/hold-release.ts). The option capture pass then captures each design
+// item's exploration options once CI has rendered them at its PR head, opens Didi's
+// visual-approval request and asks again for the Designer report's move into Waiting for Didi
+// (O-88, ./option-capture.ts). The plan approval pass runs before the Triage pass: for
 // each idea in Submitted or Council planning with a plan from the planning chat, it opens Didi's
 // plan-approval request for the latest plan, or takes the move Didi's answer calls for (D-266,
 // src/core/plans.ts), so an idea Didi approved goes on to Triage in the same pass. Last, the builder runs pass starts the fix round of each item a failed
@@ -37,6 +40,7 @@ import {
   type StagingResult,
 } from "../../src/core/staging.ts";
 import { startBuilderRuns, type BuilderRunStart } from "./builder-runs.ts";
+import { optionCapturePass, type OptionCapturePassStep } from "./option-capture.ts";
 import { triagePass, type TriagePassStep } from "./triage-runs.ts";
 import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans.ts";
 import type { FlowDeps } from "./compose.ts";
@@ -68,6 +72,8 @@ export interface LivePasses {
   triage: TriagePassStep[] | null;
   /** What the hold release pass did for each held item with an answered release request (D-269). */
   holdReleases: HoldReleaseStep[] | null;
+  /** What the option capture pass did for each design item in exploration (O-88). */
+  optionCaptures: OptionCapturePassStep[] | null;
   /** The builder runs due with no move, and what their dispatch did. */
   builderRuns: BuilderRunStart[] | null;
   /** Settings the passes needed and could not read. */
@@ -90,6 +96,7 @@ export async function runLivePasses(
       plans: null,
       triage: null,
       holdReleases: null,
+      optionCaptures: null,
       builderRuns: null,
       problems: [],
     };
@@ -113,6 +120,7 @@ export async function runLivePasses(
   for (const nodeId of await releases.pending()) {
     holdReleases.push(await releases.release(nodeId));
   }
+  const optionCaptures = await optionCapturePass(deps);
   const builderRuns = await startBuilderRuns(deps);
   return {
     merged,
@@ -125,6 +133,7 @@ export async function runLivePasses(
     plans,
     triage,
     holdReleases,
+    optionCaptures,
     builderRuns,
     problems: problem ? [problem] : [],
   };
