@@ -256,6 +256,24 @@ describe("approval page reply (unit: flow layer, M0.4, D-200, D-254)", () => {
     },
   );
 
+  it("reads Didi's optional size call on a visual approval, and leaves it out when skipped (D-278)", () => {
+    expect(
+      readApprovalReply({ decision: "Approve", small_tweak: "Yes, a small tweak" }, []),
+    ).toMatchObject({ answered: true, smallTweak: true });
+    expect(
+      readApprovalReply(
+        { decision: "Reject", feedback: "No.", small_tweak: "No, not a small tweak" },
+        [],
+      ),
+    ).toMatchObject({ answered: true, smallTweak: false });
+    expect(readApprovalReply({ decision: "Approve" }, [])).not.toHaveProperty(
+      "smallTweak",
+    );
+    expect(
+      readApprovalReply({ decision: "Approve", small_tweak: "maybe" }, []),
+    ).not.toHaveProperty("smallTweak");
+  });
+
   it("reads a form with no options or no feedback, and refuses options that are not names", () => {
     expect(readApprovalReply({ decision: "Approve" }, [])).toEqual({
       answered: true,

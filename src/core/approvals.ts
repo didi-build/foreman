@@ -64,6 +64,11 @@ export interface ApprovalPageAnswer {
   approvers: string[];
   /** The options the answer names, by name, in the page's order. Left out: none. */
   options?: string[];
+  /**
+   * Didi's own call on whether a visual change was a small tweak (D-278). Left out when Didi
+   * skipped the field.
+   */
+  smallTweak?: boolean;
 }
 
 const OUTCOME: Record<ApprovalChoice, string> = {
@@ -158,10 +163,13 @@ function optionScope(
   if (gate.kind !== "visual_approval") return {};
   const listed = requestOptions(gate);
   const named = (answer.options ?? []).filter((o) => listed.includes(o));
+  // Didi's own judgement of the change's size, kept for the Council's visual call (D-278).
+  const size: { [key: string]: Json } =
+    typeof answer.smallTweak === "boolean" ? { smallTweak: answer.smallTweak } : {};
   if (answer.choice === "approve") {
-    return named.length === 1 ? { option: named[0] as string } : {};
+    return named.length === 1 ? { option: named[0] as string, ...size } : size;
   }
-  return named.length > 0 ? { options: named } : {};
+  return named.length > 0 ? { options: named, ...size } : size;
 }
 
 /** The scope fields a gate kind's guard reads, from the gate request itself. */

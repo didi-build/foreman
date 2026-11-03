@@ -113,6 +113,13 @@ flows:
           required: false
           items: { type: string, enum: [] }
         feedback: { type: string, required: false }
+        # D-278: on a visual approval, Didi's own judgement of the change's size, optional. Left
+        # blank, the Council's call on that request counts as unmeasured. A choice, not a
+        # checkbox, so that skipping it is not read as "No".
+        small_tweak:
+          type: string
+          required: false
+          enum: ["Yes, a small tweak", "No, not a small tweak"]
 
 # GitHub webhooks go to the receiver service (ADR 0113), not to Windmill, so no flow ingests
 # them and none is listed here.

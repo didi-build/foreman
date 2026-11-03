@@ -79,11 +79,22 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     });
   });
 
-  it("is one form: a decision of the three labels the core reads, the request's options, and feedback (D-254)", () => {
+  it("is one form: a decision of the three labels the core reads, the request's options, feedback (D-254) and the optional size call (D-278)", () => {
     const approval = description.flows.find((f) => f.name === "approval");
     expect(approval?.suspend?.hide_cancel).toBe(true);
     const form = approval?.suspend?.resume_form ?? {};
-    expect(Object.keys(form)).toEqual(["decision", "options", "feedback"]);
+    expect(Object.keys(form)).toEqual([
+      "decision",
+      "options",
+      "feedback",
+      "small_tweak",
+    ]);
+    // D-278: Didi's optional size call, a choice so that skipping it is not read as "No".
+    expect(form.small_tweak).toEqual({
+      type: "string",
+      required: false,
+      enum: ["Yes, a small tweak", "No, not a small tweak"],
+    });
     expect(form.decision).toEqual({
       type: "string",
       required: true,

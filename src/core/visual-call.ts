@@ -232,12 +232,14 @@ export interface VisualCallPair {
   /** Didi's latest active answer on the same request, if any. */
   didi: { decisionId: string; outcome: DidiOutcome; answeredAt: Date } | null;
   /**
-   * `agree`: a small tweak Didi approved, or needs_didi on a request Didi asked changes on or
-   * rejected. `disagree`: any other answered pair. `no_answer_yet`: the request is still open.
-   * `no_answer`: the request closed without Didi's answer (cancelled or superseded). `dropped`:
-   * the Council gave no usable call.
+   * Measured against Didi's own judgement of size on the approval form (D-278): `agree` when
+   * the Council's call (small tweak or needs Didi) matches Didi's answer to "this was a small
+   * tweak", `disagree` when it does not, `unmeasured` when Didi answered but skipped that field.
+   * `no_answer_yet`: the request is still open. `no_answer`: the request closed without Didi's
+   * answer (cancelled or superseded). `dropped`: the Council gave no usable call.
    */
-  agreement: "agree" | "disagree" | "no_answer_yet" | "no_answer" | "dropped";
+  agreement:
+    "agree" | "disagree" | "unmeasured" | "no_answer_yet" | "no_answer" | "dropped";
 }
 
 const DIDI_OUTCOMES: readonly string[] = ["approved", "changes_requested", "rejected"];
@@ -286,10 +288,15 @@ export async function visualCallPairs(
         : null;
       let agreement: VisualCallPair["agreement"];
       if (call === VISUAL_CALL_DROPPED) agreement = "dropped";
-      else if (didi) {
-        const councilWouldApprove = call === "small_tweak_council_would_approve";
+      else if (didi && answer) {
+        const didiSmall = scopeOf(answer).smallTweak;
+        const councilSmall = call === "small_tweak_council_would_approve";
         agreement =
-          councilWouldApprove === (didi.outcome === "approved") ? "agree" : "disagree";
+          typeof didiSmall !== "boolean"
+            ? "unmeasured"
+            : councilSmall === didiSmall
+              ? "agree"
+              : "disagree";
       } else {
         const gate = await store.getGateRequest(gateRequestId);
         agreement = gate?.status === "open" ? "no_answer_yet" : "no_answer";

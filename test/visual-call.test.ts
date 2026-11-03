@@ -415,6 +415,7 @@ describe("pairing each call with Didi's answer (unit, read-only, D-263)", () => 
     const answer = async (
       i: number,
       choice: "approve" | "changes_requested" | "reject",
+      smallTweak?: boolean,
     ) => {
       const gate = (await f.store.getGateRequest(items[i]!.gateId))!;
       return library.answerGateRequest(
@@ -424,13 +425,16 @@ describe("pairing each call with Didi's answer (unit, read-only, D-263)", () => 
           words: choice === "approve" ? null : "No.",
           approvers: ["anonymous"],
           options: ["a"],
+          ...(smallTweak === undefined ? {} : { smallTweak }),
         }),
       );
     };
     f.advanceMinutes(1);
-    await answer(0, "approve");
-    await answer(1, "changes_requested");
-    await answer(2, "reject");
+    // Agreement is measured against Didi's own size call (D-278), not the decision; an answer
+    // that skips the size field is unmeasured.
+    await answer(0, "approve", true);
+    await answer(1, "changes_requested", true);
+    await answer(2, "reject", false);
     await answer(3, "approve");
     await f.store.closeGateRequest(items[4]!.gateId, {
       status: "cancelled",
@@ -440,9 +444,9 @@ describe("pairing each call with Didi's answer (unit, read-only, D-263)", () => 
     const pairs = await visualCallPairs(f.store);
     expect(pairs.map((p) => [p.call, p.didi?.outcome ?? null, p.agreement])).toEqual([
       ["small_tweak_council_would_approve", "approved", "agree"],
-      ["small_tweak_council_would_approve", "changes_requested", "disagree"],
+      ["small_tweak_council_would_approve", "changes_requested", "agree"],
       ["needs_didi", "rejected", "agree"],
-      ["needs_didi", "approved", "disagree"],
+      ["needs_didi", "approved", "unmeasured"],
       ["needs_didi", null, "no_answer"],
       ["dropped", null, "dropped"],
     ]);
