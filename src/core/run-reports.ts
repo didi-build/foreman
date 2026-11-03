@@ -38,6 +38,12 @@
 // asks for the escalation after its moves are refused; the guards allow it only on the second
 // `cannot_tell` on the head in the current state, and refuse it, writing nothing, on the first.
 //
+// Option folders Didi did not approve (D-259): when QA's report finds the merge refused because
+// the PR still carries such folders (`unpicked_options_removed`), `qa_failed_with_findings`
+// passes too, so the same report goes on to QA's fail move in contract order, counted and
+// escalated at the cap as above, with the run's trigger. When the check fails closed for missing
+// data, the fail move is refused as well and the item stays In QA review (the merge's fallback).
+//
 // A builder that stopped because the item needs a decision (D-237, O-63): the run ended `success`
 // with its reason, and the run-end flow records that reason with `recordNeedsDecision` before the
 // end, as an `agent_report` asking to escalate, the form `escalation_trigger_met` already reads

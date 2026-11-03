@@ -6,6 +6,7 @@
 // approved option's folder from Didi's approval on the visual-approval request and the runner's
 // screenshot of that option (`approvedOptionRecord`, src/core/visual-comparison.ts).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
+import type { Evidence } from "../store.ts";
 import { approvedOptionRecord } from "../visual-comparison.ts";
 import { NO_HEAD, headCommit, readCiRun, result } from "./evidence.ts";
 
@@ -24,6 +25,50 @@ export function optionFolderOf(path: string): string | null {
   return match ? (match[1] as string) : null;
 }
 
+/** The option folders in the PR at a head, or why they cannot be read (fails closed). */
+export type OptionFolders =
+  | { problem: string }
+  | {
+      /** Every option folder among the changed paths, sorted. */
+      folders: string[];
+      /** Those that are not the approved option's folder, sorted. */
+      unpicked: string[];
+      /** Whether an approved option's folder is recorded; read only when a folder is present. */
+      approved: boolean;
+    };
+
+/**
+ * The option folders among a `ci_run`'s `changedPaths`, and which of them are not the approved
+ * option's folder. A problem when the payload is malformed or the changed paths are not recorded.
+ * The approval is read only when an option folder is present. Reads only.
+ */
+export async function optionFoldersAt(
+  store: GuardContext["store"],
+  nodeId: string,
+  ciRun: Evidence,
+): Promise<OptionFolders> {
+  const ci = readCiRun(ciRun.payload);
+  if (!ci) return { problem: "malformed ci_run payload" };
+  if (!ci.changedPaths) {
+    return {
+      problem:
+        "the PR's changed paths are not recorded, so its option folders cannot be checked",
+    };
+  }
+  const folders = [
+    ...new Set(
+      ci.changedPaths.map(optionFolderOf).filter((f): f is string => f !== null),
+    ),
+  ].sort();
+  if (folders.length === 0) return { folders, unpicked: [], approved: false };
+  const approved = await approvedOptionRecord(store, nodeId);
+  return {
+    folders,
+    unpicked: folders.filter((f) => f !== approved?.path),
+    approved: approved !== null,
+  };
+}
+
 /**
  * The PR at the head no longer carries the folder of any exploration option Didi did not approve:
  * every option folder among the head `ci_run`'s `changedPaths` is the approved option's folder.
@@ -34,26 +79,12 @@ export async function unpickedOptionsRemoved(ctx: GuardContext): Promise<GuardCh
   const head = await headCommit(ctx);
   if (!head) return result(NAME, false, [], NO_HEAD);
   const ids = [head.ciRun.id];
-  const ci = readCiRun(head.ciRun.payload);
-  if (!ci) return result(NAME, false, ids, "malformed ci_run payload");
-  if (!ci.changedPaths) {
-    return result(
-      NAME,
-      false,
-      ids,
-      "the PR's changed paths are not recorded, so its option folders cannot be checked",
-    );
-  }
-  const folders = [
-    ...new Set(
-      ci.changedPaths.map(optionFolderOf).filter((f): f is string => f !== null),
-    ),
-  ].sort();
-  if (folders.length === 0) {
+  const found = await optionFoldersAt(ctx.store, ctx.node.id, head.ciRun);
+  if ("problem" in found) return result(NAME, false, ids, found.problem);
+  if (found.folders.length === 0) {
     return result(NAME, true, ids, `no option folder in the PR on head ${head.sha}`);
   }
-  const approved = await approvedOptionRecord(ctx.store, ctx.node.id);
-  const unpicked = folders.filter((f) => f !== approved?.path);
+  const { unpicked } = found;
   if (unpicked.length === 0) {
     return result(
       NAME,
@@ -67,7 +98,7 @@ export async function unpickedOptionsRemoved(ctx: GuardContext): Promise<GuardCh
     unpicked.length > MAX_NAMED_FOLDERS
       ? ` and ${unpicked.length - MAX_NAMED_FOLDERS} more`
       : "";
-  const why = approved
+  const why = found.approved
     ? "option folders Didi did not approve are still in the PR"
     : "no approved option's folder is recorded, and option folders are in the PR";
   return result(NAME, false, ids, `${why} on head ${head.sha}: ${named}${more}`);

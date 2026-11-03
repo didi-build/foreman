@@ -10,7 +10,8 @@
 // Which states and moves count comes from the contracts, never from a list of state names: the
 // building state is one whose owner is a role that pushes a branch (Developer, Designer), and a
 // fail move is a move into it guarded by `qa_failed_with_findings` (QA's fail, from a fail
-// verdict or a visual comparison that differs, D-252),
+// verdict, a visual comparison that differs, D-252, or a PR that still carries option folders
+// Didi did not approve, D-259),
 // `staging_check_failed` (the staging fail path) or `changes_requested_recorded` (Didi asked for
 // changes to, or rejected, the design options: the move back to In design exploration, which the
 // contract says carries Didi's words back into exploration, D-243 rule 5). Plain logic over an injected store, contracts,
@@ -20,6 +21,7 @@
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
 import { readQaVerdict, readVisualComparison } from "./guards/evidence.ts";
+import { optionFoldersAt } from "./guards/options.ts";
 import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
 import { failureCountKey } from "./failures.ts";
 import { createLibrary, type Clock, type IdSource } from "./library.ts";
@@ -263,6 +265,27 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     };
   }
 
+  /**
+   * D-259: QA's fail move carried only the head `ci_run` when the PR still carried option folders
+   * Didi did not approve. The folders are read again from that `ci_run`'s changed paths and the
+   * approved option, so they are the ones the merge refused. Paths only.
+   */
+  async function leftOptions(node: Node, carried: Set<string>): Promise<ReturnReason> {
+    const ciRun = (await store.listEvidence({ nodeId: node.id, kind: "ci_run" }))
+      .filter((e) => carried.has(e.id))
+      .at(-1);
+    if (!ciRun) return { kind: "not_recorded" };
+    const found = await optionFoldersAt(store, node.id, ciRun);
+    if ("problem" in found || !found.approved || found.unpicked.length === 0) {
+      return { kind: "not_recorded" };
+    }
+    return {
+      kind: "unpicked_options_left",
+      commitSha: ciRun.commitSha,
+      folders: found.unpicked,
+    };
+  }
+
   /** The evidence the fail move carried, of the kinds that say why. */
   async function reasonFrom(node: Node, back: Transition): Promise<ReturnReason> {
     const answered = await escalationAnswer(back);
@@ -286,7 +309,7 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     const evidence = rows
       .sort((a, b) => a.recordedAt.getTime() - b.recordedAt.getTime())
       .at(-1);
-    if (!evidence) return { kind: "not_recorded" };
+    if (!evidence) return leftOptions(node, carried);
     if (evidence.kind === "qa_verdict") {
       const verdict = readQaVerdict(evidence.payload);
       if (!verdict || verdict.verdict !== "fail") return { kind: "not_recorded" };

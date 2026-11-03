@@ -11,7 +11,7 @@ import {
   readVisualComparison,
   result,
 } from "./evidence.ts";
-import { failedVisualComparison } from "./review.ts";
+import { failedVisualComparison, unpickedOptionsLeft } from "./review.ts";
 import { STAGING_CHECK_ATTEMPTS, stagingNoResults } from "./staging.ts";
 
 export const escalationTopic = (nodeId: string): string => `escalation:${nodeId}`;
@@ -34,8 +34,9 @@ async function numberSetting(ctx: GuardContext, key: string): Promise<number | n
 
 /**
  * The failed QA verdict on the head, recorded in the current state, when its round is the one
- * that reaches the cap: this round is `qa_round + 1`, as for `not_third_failed_round`, which
- * refuses the fail move for the same round. Null otherwise. The runner counts that round with the
+ * that reaches the cap (or a visual comparison that differs, D-252, or a QA report on a PR that
+ * still carries unpicked option folders, D-259, in the current state): this round is
+ * `qa_round + 1`, as for `not_third_failed_round`, which refuses the fail move for the same round. Null otherwise. The runner counts that round with the
  * escalation (src/core/run-reports.ts).
  */
 async function cappedFailedRound(
@@ -59,11 +60,16 @@ async function cappedFailedRound(
   }
   // D-252: a visual comparison that differs is a failed round too.
   const visual = await failedVisualComparison(ctx, head.sha);
-  if (!visual) return null;
-  const row = (await onCommit(ctx, "visual_comparison", head.sha)).find(
-    (e) => e.id === visual.id,
-  );
-  return row && sinceState(ctx, row.recordedAt) ? { id: visual.id, round } : null;
+  const row = visual
+    ? (await onCommit(ctx, "visual_comparison", head.sha)).find(
+        (e) => e.id === visual.id,
+      )
+    : undefined;
+  if (visual && row && sinceState(ctx, row.recordedAt)) return { id: visual.id, round };
+  // D-259: so is a QA report, in the current state, on a PR that still carries unpicked option
+  // folders. The folders are read from the head, so the report's time is what places the round.
+  const left = await unpickedOptionsLeft(ctx, head);
+  return left && sinceState(ctx, left.reportedAt) ? { id: left.id, round } : null;
 }
 
 /** How many `cannot_tell` visual comparisons on one head escalate the item (D-252). */
@@ -88,8 +94,8 @@ export async function visualCannotTellOnHead(
 
 /**
  * The failure counter or the QA round count reached its limit, QA failed the round that reaches
- * the cap in the current state (a fail verdict, or a visual comparison that differs), a run went
- * over budget in the current state, the staging check ended without a result on its first try
+ * the cap in the current state (a fail verdict, a visual comparison that differs, or a QA report
+ * on a PR that still carries unpicked option folders), a run went over budget in the current state, the staging check ended without a result on its first try
  * and its one re-dispatch in the current state (M3.4), the visual comparison said `cannot_tell`
  * twice on the head in the current state (D-252), or a bot asked to escalate with a written
  * reason in the current state.
