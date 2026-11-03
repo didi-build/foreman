@@ -16,7 +16,7 @@ COPY src/adapters/store-postgres ./src/adapters/store-postgres
 COPY src/api ./src/api
 
 USER node
-EXPOSE 8080
+EXPOSE 8080 8081
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
   CMD ["node", "-e", "fetch(`http://127.0.0.1:${process.env.PORT ?? 8080}/health`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 CMD ["node", "src/api/main.ts"]

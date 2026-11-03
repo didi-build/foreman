@@ -7,6 +7,7 @@ import {
   DEFAULT_DATABASE_PORT,
   PLATFORM_POOL,
   RECEIVER,
+  STATE_API_PUBLIC,
   TUNNEL_EDGE_PORT,
   serviceUrl,
 } from "../infra/kubernetes/platform.ts";
@@ -231,7 +232,7 @@ describe("outputs (unit: D-188, D-195)", () => {
 });
 
 describe("receiver tunnel (unit: D-195)", () => {
-  it("routes one host name and the webhook path to the receiver's internal Service only", () => {
+  it("routes one host name and the webhook path to the receiver's internal Service, and the planning path only when set", () => {
     const config = only(
       cfCode,
       /resource\s+"cloudflare_zero_trust_tunnel_cloudflared_config"\s+"receiver"/,
@@ -239,7 +240,11 @@ describe("receiver tunnel (unit: D-195)", () => {
     const rules = [...config.matchAll(/service\s*=\s*([^\n]+)/g)].map((m) =>
       m[1]?.trim(),
     );
-    expect(rules).toEqual(["var.receiver_tunnel.service_url", '"http_status:404"']);
+    expect(rules).toEqual([
+      "var.receiver_tunnel.service_url",
+      "var.planning_service_url",
+      '"http_status:404"',
+    ]);
     expect(only(stackCode, /variable\s+"receiver_service_url"/)).toContain(
       `default     = "${serviceUrl(RECEIVER)}"`,
     );
@@ -251,6 +256,40 @@ describe("receiver tunnel (unit: D-195)", () => {
   it("validates that the tunnel targets an in-cluster Service", () => {
     expect(only(cfCode, /variable\s+"receiver_tunnel"/)).toMatch(
       /svc\\\\.cluster\\\\.local/,
+    );
+    expect(only(cfCode, /variable\s+"planning_service_url"/)).toMatch(
+      /svc\\\\.cluster\\\\.local/,
+    );
+  });
+
+  it("forwards exactly /plans to the state API's public Service, on the receiver's host name, only after Didi's tunnel gate (D-271)", () => {
+    const config = only(
+      cfCode,
+      /resource\s+"cloudflare_zero_trust_tunnel_cloudflared_config"\s+"receiver"/,
+    );
+    // The path is fixed in the module, not a setting, so no variable can widen it.
+    const paths = [...config.matchAll(/path\s*=\s*([^\n]+)/g)].map((m) => m[1]?.trim());
+    expect(paths).toEqual([
+      "var.receiver_tunnel.path",
+      `"^${STATE_API_PUBLIC.path}$"`,
+      "null",
+    ]);
+    expect(config).toMatch(/var\.planning_service_url == null \? \[\] :/);
+    expect(only(cfCode, /variable\s+"planning_service_url"/)).toMatch(
+      /default\s*=\s*null/,
+    );
+    expect(stackCode).toMatch(
+      /planning_service_url\s*=\s*var\.expose_planning_route \? var\.planning_service_url : null/,
+    );
+    expect(only(stackCode, /variable\s+"expose_planning_route"/)).toMatch(
+      /default\s*=\s*false/,
+    );
+    expect(only(stackCode, /variable\s+"planning_service_url"/)).toContain(
+      `default     = "${serviceUrl(STATE_API_PUBLIC)}"`,
+    );
+    // No new DNS record: the path rides on the receiver's host name.
+    expect(blocks(cfCode, /resource\s+"cloudflare_dns_record"\s+"\w+"/)).toHaveLength(
+      2,
     );
   });
 

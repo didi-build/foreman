@@ -85,3 +85,15 @@ variable "receiver_webhook_path" {
   type        = string
   default     = "^/github/webhook$"
 }
+
+variable "expose_planning_route" {
+  description = "Add the planning chat's /plans route to the receiver's tunnel (D-271). False until Didi approves the tunnel change at first hosting; then one apply changes the tunnel's routing only."
+  type        = bool
+  default     = false
+}
+
+variable "planning_service_url" {
+  description = "The state API's public Service, whose port serves POST /plans only (src/api/public.ts). Must match infra/kubernetes/platform.ts (test/infra-cluster.test.ts checks it)."
+  type        = string
+  default     = "http://state-api-public.foreman-platform.svc.cluster.local:8081"
+}

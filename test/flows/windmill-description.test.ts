@@ -12,6 +12,10 @@ import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
+import {
+  PLAN_APPROVAL_FLOW_PATH,
+  WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
+} from "../../src/adapters/windmill/plan-approval-flow.ts";
 import { APPROVAL_CHOICE_LABELS } from "../../src/core/approvals.ts";
 import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
@@ -114,17 +118,31 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     expect(forFlows.map((s) => s.path).sort()).toEqual(
       Object.values(SECRET_PATHS).sort(),
     );
-    // The one secret a service other than the flows reads: the planning chat's token hash,
-    // which the state API reads (D-266).
+    // The secrets a service other than the flows reads: the planning chat's token hash (D-266)
+    // and the state API's Windmill credential for the plan-approval flow (D-273), both read by
+    // the state API.
     expect(description.resources.secrets.filter((s) => s.read_by)).toEqual([
       expect.objectContaining({
         path: PLANNING_TOKEN_SHA256_PATH,
+        read_by: "state API",
+      }),
+      expect.objectContaining({
+        path: WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
         read_by: "state API",
       }),
     ]);
     expect(description.resources.values.map((v) => v.name).sort()).toEqual(
       Object.values(VALUE_NAMES).sort(),
     );
+  });
+});
+
+describe("the plan-approval flow (unit: repo guard, D-273)", () => {
+  it("is a called flow at the path the state API's port starts", () => {
+    const flow = description.flows.find((f) => f.name === "plan_approval");
+    expect(flow?.path).toBe(PLAN_APPROVAL_FLOW_PATH);
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/plan-approval.ts");
   });
 });
 

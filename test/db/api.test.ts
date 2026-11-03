@@ -11,6 +11,7 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { createFakePlanApprovalFlow } from "../../src/adapters/windmill/fake-plan-approval-flow.ts";
 import { hashToken } from "../../src/api/auth.ts";
 import { ENTRY_CONTRACTS } from "../../src/api/entry.ts";
 import { createApiHandler } from "../../src/api/routes.ts";
@@ -25,6 +26,7 @@ import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 const DB = `foreman_api_test_${process.pid}`;
 /** The planning chat's token for this test run only (D-266); never asserted on or logged. */
 const PLANNING_TOKEN = randomBytes(32).toString("base64url");
+const approvalFlow = createFakePlanApprovalFlow();
 const NOW = new Date("2026-10-29T12:00:00Z");
 const HEAD = "c".repeat(40);
 const PROJECT = "00000000-0000-4000-8000-0000000000b1";
@@ -198,6 +200,8 @@ describe.skipIf(!adminUrl)(
             tokenSha256: hashToken(PLANNING_TOKEN),
             ids: { next: nextId },
             store,
+            approvalFlow,
+            logger: createLogger("state-api-db-test", () => undefined),
           },
         }),
       });
@@ -364,6 +368,56 @@ describe.skipIf(!adminUrl)(
       ).toEqual([["agent_report", "planning", null]]);
       expect(await runner.listTransitions(ideaId)).toEqual([]);
       expect(await runner.listOpenGateRequests(PROJECT)).toEqual([]);
+      // The plan-approval flow was started once for it (D-273 (2)).
+      expect(approvalFlow.started).toEqual([ideaId]);
+      // Its status reads back with only the API's grants, framed as data (D-273 (3)).
+      const status = await call(
+        "GET",
+        "/planning/projects/rehearsal/submissions",
+        PLANNING_TOKEN,
+      );
+      expect(status.status).toBe(200);
+      expect(status.body).toMatchObject({
+        read: "submissions",
+        data: { submissions: [{ ideaId, title: "Settings page", status: "waiting" }] },
+      });
+      expect(
+        (await call("GET", "/planning/projects/rehearsal/feedback", PLANNING_TOKEN))
+          .status,
+      ).toBe(200);
+      // An accepted plan, as the runner records it, reads back as factory_api.
+      const [submissionReport] = await runner.listEvidence({ nodeId: ideaId });
+      await runner.insertDecision({
+        id: nextId(),
+        projectId: PROJECT,
+        nodeId: ideaId,
+        kind: "council_decision",
+        scope: {
+          kind: "plan_accepted",
+          recordedBy: "runner",
+          submissionId: submissionReport?.id ?? null,
+        },
+        textVerbatim: "Plan: a settings page.",
+        byActor: "council",
+        recordedAt: NOW,
+      });
+      const accepted = await call(
+        "GET",
+        "/planning/projects/rehearsal/accepted",
+        PLANNING_TOKEN,
+      );
+      expect(accepted.status).toBe(200);
+      expect(accepted.body).toMatchObject({
+        data: {
+          acceptedPlans: [
+            {
+              ideaId,
+              plan: "Plan: a settings page.",
+              productDirection: "Settings stay on one page.",
+            },
+          ],
+        },
+      });
       // The planning chat's token is refused everywhere else.
       expect((await call("GET", `/nodes/${item}`, PLANNING_TOKEN)).status).toBe(403);
     });

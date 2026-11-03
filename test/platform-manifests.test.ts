@@ -27,8 +27,10 @@ import {
   DEFAULT_DATABASE_PORT,
   RECEIVER,
   STATE_API,
+  STATE_API_PUBLIC,
   TUNNEL_EDGE_PORT,
   platformObjects,
+  serviceUrl,
   stateApiRunSettings,
   type Deployment,
   type PlatformObject,
@@ -36,6 +38,7 @@ import {
 } from "../infra/kubernetes/platform.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../src/api/auth.ts";
+import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../src/adapters/windmill/plan-approval-flow.ts";
 import { secretEnvName } from "../src/service-kit/config.ts";
 
 // Unit: the platform namespace's objects as data (ADR 0106 sections 1 and 4, D-193, D-195).
@@ -204,13 +207,30 @@ describe("platform namespace (unit: ADR 0106 section 1)", () => {
       services.map((s) => [s.metadata.name, s.spec.type, s.spec.ports[0]?.port]),
     ).toEqual([
       [STATE_API.name, "ClusterIP", STATE_API.port],
+      [STATE_API_PUBLIC.name, "ClusterIP", STATE_API_PUBLIC.port],
       [RECEIVER.name, "ClusterIP", RECEIVER.port],
     ]);
     for (const s of services) {
-      expect(s.spec.selector).toEqual(
-        deploymentOf(s.metadata.name).spec.selector.matchLabels,
-      );
+      const target =
+        s.metadata.name === STATE_API_PUBLIC.name ? STATE_API.name : s.metadata.name;
+      expect(s.spec.selector).toEqual(deploymentOf(target).spec.selector.matchLabels);
+      expect(s.spec.ports).toHaveLength(1);
     }
+  });
+
+  it("gives the state API's public port (D-271) its own Service and container port, set by PUBLIC_PORT", () => {
+    const container = deploymentOf(STATE_API.name).spec.template.spec.containers[0];
+    expect(container?.ports.map((p) => [p.name, p.containerPort])).toEqual([
+      ["http", STATE_API.port],
+      ["public", STATE_API_PUBLIC.port],
+    ]);
+    expect(container?.env).toContainEqual({
+      name: "PUBLIC_PORT",
+      value: String(STATE_API_PUBLIC.port),
+    });
+    expect(serviceUrl(STATE_API_PUBLIC)).toBe(
+      "http://state-api-public.foreman-platform.svc.cluster.local:8081",
+    );
   });
 });
 
@@ -309,6 +329,18 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
     });
   });
 
+  it("gives the state API its Windmill credential for the plan-approval flow at its secret path, optional until first hosting (D-273)", () => {
+    const env = deploymentOf(STATE_API.name)
+      .spec.template.spec.containers.flatMap((c) => c.env)
+      .find((e) => e.name === secretEnvName(WINDMILL_PLAN_APPROVAL_TOKEN_PATH));
+    expect(env).toEqual({
+      name: "SECRET_PLATFORM_STATE_API_WINDMILL_PLAN_APPROVAL_TOKEN",
+      valueFrom: {
+        secretKeyRef: { ...PLATFORM_SECRETS.stateApiWindmillToken, optional: true },
+      },
+    });
+  });
+
   it("mounts each Secret only into the pod that uses it", () => {
     const used = (name: string) =>
       deploymentOf(name)
@@ -317,6 +349,7 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
     expect(used(STATE_API.name)).toEqual([
       PLATFORM_SECRETS.stateApiDatabase.name,
       PLATFORM_SECRETS.stateApiPlanningToken.name,
+      PLATFORM_SECRETS.stateApiWindmillToken.name,
     ]);
     expect(used(CLOUDFLARED.name)).toEqual([PLATFORM_SECRETS.tunnelToken.name]);
     expect(used(RECEIVER.name).sort()).toEqual(
@@ -394,10 +427,17 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
       RECEIVER.port,
     ]);
     expect(ingressPorts(RECEIVER.name, platformPod(STATE_API.name))).toEqual([]);
-    expect(ingressPorts(STATE_API.name, platformPod(CLOUDFLARED.name))).toEqual([]);
   });
 
-  it("the connector takes no ingress, and reaches only DNS, the receiver, public 443 and the tunnel edge", () => {
+  it("the state API accepts the connector on its public port only, never on the agents' port (D-271)", () => {
+    expect(ingressPorts(STATE_API.name, platformPod(CLOUDFLARED.name))).toEqual([
+      STATE_API_PUBLIC.port,
+    ]);
+    expect(ingressPorts(STATE_API.name, agentProxyPod)).toEqual([STATE_API.port]);
+    expect(ingressPorts(STATE_API.name, platformPod(RECEIVER.name))).toEqual([]);
+  });
+
+  it("the connector takes no ingress, and reaches only DNS, the receiver, the state API's public port, public 443 and the tunnel edge", () => {
     const policy = policyOf(CLOUDFLARED.name);
     expect(policy.spec.ingress).toEqual([]);
     const reachable = policy.spec.egress.map((rule) => ({
@@ -415,6 +455,10 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
       {
         ports: [`TCP/${RECEIVER.port}`],
         to: [`pods:${JSON.stringify(RECEIVER.podLabels)}`],
+      },
+      {
+        ports: [`TCP/${STATE_API_PUBLIC.port}`],
+        to: [`pods:${JSON.stringify(STATE_API.podLabels)}`],
       },
       { ports: ["TCP/443"], to: ["public:0.0.0.0/0"] },
       { ports: ["TCP/7844", "UDP/7844"], to: ["public:0.0.0.0/0"] },

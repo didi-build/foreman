@@ -357,6 +357,14 @@ function ops(db: Queryable): StoreOps {
       );
       return result.map(toCurrentDecision);
     },
+    async listDecisionsRecordedOn(nodeId) {
+      const result = await rows(
+        `select * from factory.decisions_current where node_id = $1
+         order by recorded_at, id`,
+        [nodeId],
+      );
+      return result.map(toCurrentDecision);
+    },
     async linkNodeToDecision(nodeId, decisionId) {
       await exec(
         `insert into factory.node_decisions (node_id, decision_id) values ($1, $2)

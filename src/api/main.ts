@@ -3,11 +3,22 @@
 // once Didi creates the planning chat's credential at first hosting (D-266), the SHA-256 of its
 // token at the secret path `platform/state-api/planning-token-sha256`. Until then it is unset and
 // no planning token is accepted.
+//
+// It listens on two ports. PORT (8080) is the internal one the agents' egress proxies call.
+// PUBLIC_PORT (8081) is the one the Cloudflare Tunnel connector forwards the planning chat's
+// `POST /plans` to, and serves that route only, with a size and a rate limit (D-271, ./public.ts).
+// After each submission the API starts the plan-approval flow with its own narrow Windmill
+// credential at `platform/state-api/windmill-plan-approval-token` (D-273 (2)); until Didi creates
+// it at first hosting the start is refused and the reconcile pass opens the request.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createLibrary } from "../core/library.ts";
 import { createPostgresStore } from "../adapters/store-postgres/store.ts";
+import {
+  WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
+  windmillPlanApprovalFlow,
+} from "../adapters/windmill/plan-approval-flow.ts";
 import {
   ConfigError,
   port,
@@ -20,6 +31,7 @@ import { createLogger } from "../service-kit/logger.ts";
 import { exitOnSignals, startService } from "../service-kit/server.ts";
 import { PLANNING_TOKEN_SHA256_PATH, SHA256_HEX } from "./auth.ts";
 import { ENTRY_CONTRACTS } from "./entry.ts";
+import { createPublicHandler } from "./public.ts";
 import { createApiHandler } from "./routes.ts";
 
 const NAME = "state-api";
@@ -36,12 +48,21 @@ const planningTokenSha256: Setting<string | null> = {
   },
 };
 
+/** The state API's Windmill credential: optional until Didi creates it (D-273 (2)). */
+const windmillPlanApprovalToken: Setting<string | null> = {
+  env: secretEnvName(WINDMILL_PLAN_APPROVAL_TOKEN_PATH),
+  fallback: "",
+  parse: (raw) => (raw.trim() === "" ? null : raw),
+};
+
 let config;
 try {
   config = readConfig({
     port: port("PORT", "8080"),
+    publicPort: port("PUBLIC_PORT", "8081"),
     databaseUrl: text("DATABASE_URL"),
     planningTokenSha256,
+    windmillPlanApprovalToken,
   });
 } catch (error) {
   logger.error("invalid configuration", {
@@ -69,21 +90,40 @@ const library = createLibrary({
   ids,
 });
 
+const api = createApiHandler({
+  store,
+  library,
+  clock,
+  ...(config.planningTokenSha256 === null
+    ? {}
+    : {
+        planning: {
+          tokenSha256: config.planningTokenSha256,
+          ids,
+          store,
+          approvalFlow: windmillPlanApprovalFlow(config.windmillPlanApprovalToken),
+          logger,
+        },
+      }),
+});
 const service = await startService({
   name: NAME,
   port: config.port,
   logger,
-  handle: createApiHandler({
-    store,
-    library,
-    clock,
-    ...(config.planningTokenSha256 === null
-      ? {}
-      : { planning: { tokenSha256: config.planningTokenSha256, ids, store } }),
-  }),
+  handle: api,
 });
-logger.info("listening", { port: service.port });
+const publicService = await startService({
+  name: NAME,
+  port: config.publicPort,
+  logger,
+  handle: createPublicHandler({ api, clock, logger }),
+});
+logger.info("listening", { port: service.port, publicPort: publicService.port });
 exitOnSignals(
-  { port: service.port, stop: () => service.stop().then(() => pool.end()) },
+  {
+    port: service.port,
+    stop: () =>
+      Promise.all([service.stop(), publicService.stop()]).then(() => pool.end()),
+  },
   logger,
 );
