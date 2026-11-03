@@ -85,7 +85,7 @@ export interface BotProfile {
   runtime: string;
   /** Recorded as the run's `bot_version`: the bot file's content hash. */
   botVersion: string;
-  /** The Council: the output schema of each question kind (D-228). */
+  /** The Council: the output schema of each question kind (D-228). QA: its visual answer (D-242). */
   outputSchemas?: Readonly<Record<string, OutputSchema>>;
 }
 

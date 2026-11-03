@@ -88,6 +88,11 @@ export interface LoopOptions {
   tools: Anthropic.Tool[];
   /** The first user message: this run's input. */
   input: string;
+  /**
+   * QA's visual comparison (D-242): images sent in the first message after the input, each
+   * after its label. Base64 PNGs.
+   */
+  images?: readonly { label: string; mediaType: "image/png"; data: string }[];
   /** The JSON schema the final answer must follow (structured outputs). */
   outputSchema?: Record<string, unknown>;
   runTool?: (name: string, input: unknown) => Promise<ToolOutput>;
@@ -102,6 +107,23 @@ const textOf = (message: Anthropic.Message): string =>
   message.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("");
+
+/** The input as text, or as text followed by each labelled image (multi-image input). */
+export function firstMessage(
+  options: Pick<LoopOptions, "input" | "images">,
+): string | Anthropic.ContentBlockParam[] {
+  if (!options.images || options.images.length === 0) return options.input;
+  return [
+    { type: "text", text: options.input },
+    ...options.images.flatMap((image): Anthropic.ContentBlockParam[] => [
+      { type: "text", text: image.label },
+      {
+        type: "image",
+        source: { type: "base64", media_type: image.mediaType, data: image.data },
+      },
+    ]),
+  ];
+}
 
 export function buildRequest(
   options: LoopOptions,
@@ -140,7 +162,9 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
   const clock = options.clock ?? realClock;
   const startedAt = clock.now();
   const minuteLimitMs = options.maxMinutes * 60_000;
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: options.input }];
+  const messages: Anthropic.MessageParam[] = [
+    { role: "user", content: firstMessage(options) },
+  ];
   let turns = 0;
   let costUsd = 0;
   let tokens: RunTokens = { ...NO_TOKENS };

@@ -82,6 +82,11 @@ export interface DispatchRequest {
    * run answers (src/core/council.ts, D-228). Stored as the run's `questionTopic`.
    */
   questionTopic?: string | null;
+  /**
+   * A task type other than the role's default, which the role's bot file must allow (ADR 0114
+   * section 1). Only QA's visual comparison asks for one, `qa:visual` (D-242).
+   */
+  taskType?: string | null;
 }
 
 export type DispatchRefusal =
@@ -226,7 +231,13 @@ async function queuedDispatch(
   const resumeAt = usageResumeAt(latest, waitMinutes);
   let nextCandidate = false;
   if (latest.usageExhaustedCause === "capacity" && isAgentRole(latest.bot)) {
-    const choice = chooseRoute(await routeInput(store, latest.bot, node, taskTypes));
+    // The queued run's own task type, while its bot file still allows it.
+    const taskType = taskTypes.roles[latest.bot].allowed.includes(latest.taskType)
+      ? latest.taskType
+      : null;
+    const choice = chooseRoute(
+      await routeInput(store, latest.bot, node, taskTypes, taskType),
+    );
     nextCandidate = choice.routed && choice.route.afterCapacity === "next_candidate";
   }
   return {
@@ -467,11 +478,12 @@ async function routeInput(
   role: AgentRole,
   node: Node,
   taskTypes: TaskTypes,
+  requestedTaskType?: string | null,
 ): Promise<RouteInput> {
   const value = async (key: string): Promise<Json> =>
     (await store.getSetting(key))?.value ?? null;
   const earlierRuns = await store.listRuns({ nodeId: node.id });
-  const taskType = taskTypeFor(taskTypes, role);
+  const taskType = taskTypeFor(taskTypes, role, requestedTaskType);
   const latest = earlierRuns.at(-1);
   const capacityEnd: CapacityEnd | null =
     latest?.outcome === "usage_exhausted" &&
@@ -527,7 +539,13 @@ async function admission(
     await positiveIntegerSetting(store, "agent_cluster_max_active_runs"),
   );
   if (refusal) return refusal;
-  const input = await routeInput(store, request.role, node, taskTypes);
+  const input = await routeInput(
+    store,
+    request.role,
+    node,
+    taskTypes,
+    request.taskType,
+  );
   const choice = chooseRoute(input);
   if (!choice.routed) {
     return { admitted: false, reason: "no_route", noRoute: choice.noRoute };

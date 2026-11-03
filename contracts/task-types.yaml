@@ -14,5 +14,6 @@ task_types:
   "developer:infra": Developer work on infrastructure code, workflows or migrations.
   designer: Designer work.
   "qa:review": QA review of a pull request.
+  "qa:visual": QA's visual comparison of a design item's components with the approved option (D-242).
   council: A Council question.
   triage: Triage, and similar short classification or breakdown work.

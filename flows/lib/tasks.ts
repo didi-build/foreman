@@ -28,6 +28,7 @@ import {
 } from "../../src/adapters/github/installation-tokens.ts";
 import type { AgentRole, Store } from "../../src/core/store.ts";
 import { PUSHING_ROLES } from "../../src/core/task-input.ts";
+import { VISUAL_TASK_TYPE } from "../../src/core/visual-comparison.ts";
 import type { RunToStart, TaskSource } from "./compose.ts";
 
 /** The setting that lists each project's package registries (D-187), by project slug. */
@@ -86,8 +87,16 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         ? { ...entry, secretPath: secretPathFor(entry.secretPath, project.slug) }
         : { ...entry };
 
+      const visual = role === "qa" && run.taskType === VISUAL_TASK_TYPE;
       let outputSchema: Record<string, unknown> | undefined;
-      if (role === "council") {
+      if (visual) {
+        // The visual comparison's answer schema and its images (D-242); the core read the schema
+        // from this same bot file.
+        if (!start.outputSchema || !start.images || start.images.length === 0) {
+          throw new Error("a visual comparison run needs its answer schema and images");
+        }
+        outputSchema = start.outputSchema;
+      } else if (role === "council") {
         // The question's kind picks the schema; the core read it from this same bot file.
         if (!start.outputSchema)
           throw new Error("a Council run needs its question's output schema");
@@ -103,9 +112,11 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
             ]),
           ]
         : [...bot.allowedHosts];
+      // A task type with instructions of its own uses them (QA's `qa:visual`, D-242).
+      const instructions = bot.taskInstructions?.[run.taskType] ?? bot.instructions;
       const botFile: KubernetesBotFile = {
         image,
-        instructions: bot.instructions,
+        instructions,
         allowedHosts,
         ...(bot.allowedTools ? { allowedTools: [...bot.allowedTools] } : {}),
         ...(bot.fetchAllowedHosts
@@ -139,6 +150,15 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         providers: [provider],
         input: start.input,
         evidenceIds: start.evidenceIds,
+        ...(visual
+          ? {
+              images: (start.images ?? []).map((image) => ({
+                label: image.label,
+                mediaType: "image/png" as const,
+                data: Buffer.from(image.png).toString("base64"),
+              })),
+            }
+          : {}),
         stateApiToken: start.stateApiToken,
         ...(githubToken !== undefined ? { githubToken } : {}),
         modelCredentials,

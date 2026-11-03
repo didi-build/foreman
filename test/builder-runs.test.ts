@@ -6,6 +6,8 @@
 import { describe, expect, it } from "vitest";
 
 import { createBuilderRuns } from "../src/core/builder-runs.ts";
+import { visualApprovalTopic } from "../src/core/guards/design.ts";
+import { createLibrary } from "../src/core/library.ts";
 import { createRunReports } from "../src/core/run-reports.ts";
 import type { AgentRole, Run, Track } from "../src/core/store.ts";
 import { createReconcileFixture, HEAD, REPO } from "./reconcile-fixture.ts";
@@ -133,6 +135,47 @@ describe("a builder run due after QA's fail (unit, O-41)", () => {
     expect(await t.builderRuns.check(t.node.id)).toMatchObject({
       due: true,
       role: "designer",
+    });
+  });
+
+  it("is due for the Designer after Didi asks for changes to the options, and quotes Didi's words (D-242, D-243)", async () => {
+    const f = await createReconcileFixture();
+    await f.setting("dry_run", false);
+    const node = await f.node("waiting_for_didi", {
+      track: "design",
+      ownerRole: "operator",
+    });
+    await end(f, await startedBuilderRun(f, node.id, "designer"));
+    f.advanceMinutes(5);
+    await f.store.insertDecision({
+      id: f.deps.ids.next(),
+      projectId: f.projectId,
+      nodeId: node.id,
+      kind: "answer",
+      scope: { topicKey: visualApprovalTopic(node.id), outcome: "changes_requested" },
+      textVerbatim: "Make the button green.",
+      byActor: "didi",
+      recordedAt: f.clock.now(),
+    });
+    f.advanceMinutes(1);
+    const moved = await createLibrary(f.deps).requestTransition({
+      nodeId: node.id,
+      toState: "in_design_exploration",
+      trigger: { kind: "reconcile", ref: null },
+      actor: { kind: "runner", id: "test" },
+    });
+    expect(moved.outcome).toBe("applied");
+    const builderRuns = createBuilderRuns(f.deps);
+    expect(await builderRuns.check(node.id)).toEqual({
+      due: true,
+      nodeId: node.id,
+      role: "designer",
+      cause: "returned",
+    });
+    expect(await builderRuns.returnReason(node.id)).toEqual({
+      kind: "changes_requested",
+      outcome: "changes_requested",
+      words: "Make the button green.",
     });
   });
 

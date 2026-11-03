@@ -5,7 +5,11 @@
 // 1. Read the item and build the run's input (D-213), with why the item came back on a fix round
 //    (O-41). A malformed item refuses here, before anything is written. A Council run's input is
 //    its question instead, with the output schema of the question's kind (src/core/council.ts,
-//    D-228); a question no longer open refuses here.
+//    D-228); a question no longer open refuses here. A QA run of task type `qa:visual` gets the
+//    runner's visual comparison instead: the image pairs with their located differences and the
+//    spec sections, and the visual answer schema (src/core/visual-comparison.ts, D-242, D-250); a
+//    comparison that cannot be built (no approved option, a screenshot missing or changed)
+//    refuses here.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
@@ -28,6 +32,13 @@ import { createBuilderRuns } from "../../src/core/builder-runs.ts";
 import { createCouncil } from "../../src/core/council.ts";
 import { createFailures } from "../../src/core/failures.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
+import {
+  approvedOptionRecord,
+  createVisualComparisons,
+  VISUAL_TASK_TYPE,
+  type VisualTask,
+} from "../../src/core/visual-comparison.ts";
+import { pngCodec } from "../../src/adapters/screenshots/png.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
   createRuns,
@@ -53,6 +64,8 @@ export interface StartRunInput {
   prNumber?: number | null;
   /** Council: the topic key of the question the run answers. */
   questionTopic?: string | null;
+  /** QA: `qa:visual` for the visual comparison (D-242); left out for the review. */
+  taskType?: string | null;
 }
 
 export type StartRunResult =
@@ -115,27 +128,49 @@ export async function startRun(
   if (input.role === "council" && !council) {
     return { outcome: "not_started", reason: "no_open_question", failedGuards: [] };
   }
+  const isVisual = input.taskType === VISUAL_TASK_TYPE;
+  if (isVisual && input.role !== "qa") {
+    return { outcome: "not_started", reason: "not_a_qa_run", failedGuards: [] };
+  }
+  let visual: VisualTask | null = null;
+  if (isVisual) {
+    if (!input.headSha) {
+      return { outcome: "not_started", reason: "no_head", failedGuards: [] };
+    }
+    const built = await createVisualComparisons({
+      ...deps,
+      png: pngCodec,
+    }).taskFor(node.id, input.headSha);
+    if ("refused" in built) {
+      return { outcome: "not_started", reason: built.refused, failedGuards: [] };
+    }
+    visual = built;
+  }
   const text = council
     ? council.input
-    : taskInput({
-        ...input,
-        node,
-        project,
-        branch: branch ?? undefined,
-        returned,
-        // The Designer's step comes from the item's state (D-238): the state as the contracts
-        // name it and its label, never a database id.
-        ...(input.role === "designer"
-          ? {
-              state: {
-                name: node.state,
-                label: Object.hasOwn(deps.contracts.states, node.state)
-                  ? (deps.contracts.states[node.state]?.label ?? node.state)
-                  : node.state,
-              },
-            }
-          : {}),
-      });
+    : visual
+      ? visual.input
+      : taskInput({
+          ...input,
+          node,
+          project,
+          branch: branch ?? undefined,
+          returned,
+          // The Designer's step comes from the item's state (D-238): the state as the contracts
+          // name it and its label, never a database id. It also gets the option Didi approved,
+          // once one is recorded (D-242, D-243 rule 3).
+          ...(input.role === "designer"
+            ? {
+                approvedOption: await approvedOptionRecord(deps.store, node.id),
+                state: {
+                  name: node.state,
+                  label: Object.hasOwn(deps.contracts.states, node.state)
+                    ? (deps.contracts.states[node.state]?.label ?? node.state)
+                    : node.state,
+                },
+              }
+            : {}),
+        });
 
   const starts = createRunStart(deps);
   const check = await starts.checkStart(node.id, input.role);
@@ -152,7 +187,7 @@ export async function startRun(
   let handle: unknown;
   try {
     const evidenceIds =
-      input.role === "qa" && run.headSha
+      input.role === "qa" && run.headSha && !visual
         ? await qaEvidenceIds(deps.store, node.id, run.headSha)
         : [];
     const task = await deps.tasks.taskFor({
@@ -165,6 +200,7 @@ export async function startRun(
       capacity,
       stateApiToken,
       ...(council ? { outputSchema: council.outputSchema } : {}),
+      ...(visual ? { outputSchema: visual.outputSchema, images: visual.images } : {}),
     });
     handle = await deps.runtime.start(task, deps.limits[input.role]);
   } catch (error) {

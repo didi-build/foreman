@@ -56,6 +56,29 @@ describe("an approval page answer (unit, D-200)", () => {
     },
   );
 
+  it("records the approved option only when the visual-approval request lists it (D-242)", () => {
+    const listing = { ...GATE, payload: { options: ["a", "b"] } };
+    const scope = (
+      gate: GateRequest,
+      option: string | null,
+      choice: "approve" | "reject" = "approve",
+    ) =>
+      approvalDecision(gate, {
+        choice,
+        words: "Option a.",
+        approvers: ["anonymous"],
+        option,
+      }).scope;
+    expect(scope(listing, "a")).toMatchObject({ option: "a" });
+    expect(scope(listing, "c")).not.toHaveProperty("option");
+    expect(scope(listing, null)).not.toHaveProperty("option");
+    expect(scope(GATE, "a")).not.toHaveProperty("option");
+    expect(scope(listing, "a", "reject")).not.toHaveProperty("option");
+    expect(scope({ ...listing, kind: "new_credentials" }, "a")).not.toHaveProperty(
+      "option",
+    );
+  });
+
   it("records no words as empty text, which approval_recorded never accepts", () => {
     expect(
       approvalDecision(GATE, { choice: "approve", words: null, approvers: [] })

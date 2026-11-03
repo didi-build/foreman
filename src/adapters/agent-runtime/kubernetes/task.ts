@@ -31,9 +31,30 @@ export interface AgentTaskFile {
   branch?: string;
   /** QA: the runner's evidence ids the verdict may cite (ADR 0107). */
   evidenceIds?: string[];
-  /** Council and Triage: the JSON schema of the structured result, from the bot file. */
+  /**
+   * Council and Triage, and QA's visual comparison: the JSON schema of the structured result,
+   * from the bot file.
+   */
   outputSchema?: Record<string, unknown>;
+  /**
+   * QA's visual comparison (D-242): the image pairs the runner made, in order, each with the
+   * runner's own label. A QA task with images carries the answer schema and no evidence ids,
+   * and its image posts nothing: the runner records the answer.
+   */
+  images?: TaskImage[];
 }
+
+/** One PNG for a visual comparison run, base64 encoded. */
+export interface TaskImage {
+  label: string;
+  mediaType: "image/png";
+  data: string;
+}
+
+/** At most 20 pairs: an approved crop and a built crop each. */
+export const MAX_TASK_IMAGES = 40;
+const LABEL = /^[A-Za-z0-9 ,.:()_-]{1,200}$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 /** Where the agent pod finds its task file. */
 export const TASK_MOUNT_PATH = "/task";
@@ -93,7 +114,37 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
   } else if (task.evidenceIds !== undefined) {
     throw new Error("only a QA task carries evidence ids");
   }
-  const structured = role === "council" || role === "triage";
+  const visual = task.images !== undefined;
+  if (visual) {
+    const images = task.images ?? [];
+    if (role !== "qa") throw new Error("only a QA task carries images");
+    if (
+      !Array.isArray(images) ||
+      images.length === 0 ||
+      images.length > MAX_TASK_IMAGES
+    ) {
+      throw new Error(`a QA task's images must be 1 to ${MAX_TASK_IMAGES}`);
+    }
+    for (const image of images) {
+      if (
+        !isObject(image) ||
+        Object.keys(image).length !== 3 ||
+        typeof image.label !== "string" ||
+        !LABEL.test(image.label) ||
+        image.mediaType !== "image/png" ||
+        typeof image.data !== "string" ||
+        !BASE64.test(image.data)
+      ) {
+        throw new Error(
+          "each of a QA task's images needs a label, image/png and base64 data",
+        );
+      }
+    }
+    if ((task.evidenceIds ?? []).length > 0) {
+      throw new Error("a QA task with images cites no evidence ids");
+    }
+  }
+  const structured = role === "council" || role === "triage" || visual;
   if (structured && !isObject(task.outputSchema)) {
     throw new Error(`a ${role} task needs its output schema`);
   }

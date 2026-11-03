@@ -9,6 +9,7 @@ import type {
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
+import { createFakeScreenshotBundles } from "../../src/adapters/screenshots/fake.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
@@ -75,6 +76,7 @@ export function flowDepsFor(
   stagingChecker: StagingChecker = createFakeStagingChecker(),
 ) {
   const runtime = createFakeRuntime();
+  const screenshots = createFakeScreenshotBundles();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
@@ -82,6 +84,7 @@ export function flowDepsFor(
     ...base,
     runtime,
     stagingChecker,
+    screenshots,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -109,6 +112,7 @@ export function flowDepsFor(
   return {
     deps,
     runtime,
+    screenshots,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {
@@ -120,7 +124,7 @@ export function flowDepsFor(
 export async function createFlowFixture() {
   const f = await createReconcileFixture();
   const stagingChecker = createFakeStagingChecker();
-  const { deps, runtime, tasksFor, tokens, setExecutions } = flowDepsFor(
+  const { deps, runtime, screenshots, tasksFor, tokens, setExecutions } = flowDepsFor(
     f.deps,
     stagingChecker,
   );
@@ -143,6 +147,7 @@ export async function createFlowFixture() {
     deps,
     runtime,
     stagingChecker,
+    screenshots,
     tasksFor,
     tokens,
     setExecutions,

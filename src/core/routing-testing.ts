@@ -88,6 +88,8 @@ export const TEST_TASK_TYPES: TaskTypes = {
       "Developer work on infrastructure code, workflows or migrations.",
     designer: "Designer work.",
     "qa:review": "QA review of a pull request.",
+    "qa:visual":
+      "QA's visual comparison of a design item's components with the approved option (D-242).",
     council: "A Council question.",
     triage: "Triage, and similar short classification or breakdown work.",
   },
@@ -97,7 +99,7 @@ export const TEST_TASK_TYPES: TaskTypes = {
       default: "developer:code",
     },
     designer: { allowed: ["designer"], default: "designer" },
-    qa: { allowed: ["qa:review"], default: "qa:review" },
+    qa: { allowed: ["qa:review", "qa:visual"], default: "qa:review" },
     council: { allowed: ["council"], default: "council" },
     triage: { allowed: ["triage"], default: "triage" },
   },

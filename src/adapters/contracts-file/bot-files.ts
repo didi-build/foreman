@@ -4,8 +4,9 @@
 //
 // A bot file holds the role's instructions (the cached prefix of every run's task file), its agent
 // image, its tools, its hosts, its model providers with each key's secret path (D-142, D-143), its
-// per-run limits (D-185), its task types and, for the Council and Triage, its output schemas. It
-// never holds a model (each run's route names it, ADR 0114) or a credential value.
+// per-run limits (D-185), its task types and, for the Council, Triage and QA's visual comparison,
+// its output schemas. A task type other than the role's default may have its own instructions
+// (`task_instructions`, QA's `qa:visual`, D-242). It never holds a model (each run's route names it, ADR 0114) or a credential value.
 //
 // The check is strict and collects every problem: an unknown field is refused, and a problem names
 // the file and the field, never a value from the file, so a key pasted into the wrong place cannot
@@ -64,6 +65,11 @@ const PUSHING: readonly AgentRole[] = ["developer", "designer"];
 const SCHEMA_NAMES: Partial<Record<AgentRole, readonly string[]>> = {
   council: ["escalation", "reversal"],
   triage: ["answer"],
+  qa: ["visual"],
+};
+/** Task types whose runs need instructions of their own (D-242). */
+const TASK_INSTRUCTIONS: Partial<Record<AgentRole, readonly string[]>> = {
+  qa: ["qa:visual"],
 };
 /** ADR 0106 section 5: an installation token lasts at most an hour. */
 const GITHUB_TOKEN_MINUTES = 60;
@@ -81,6 +87,7 @@ const FIELDS = [
   "mcp",
   "fetch_allowed_hosts",
   "output_schemas",
+  "task_instructions",
 ] as const;
 
 /** One role's bot file, checked. No credential value is in it. */
@@ -104,8 +111,10 @@ export interface BotFile {
   magicPath?: boolean;
   /** QA: the fetch step's GitHub hosts. */
   fetchAllowedHosts?: string[];
-  /** Council (by question kind) and Triage (`answer`). */
+  /** Council (by question kind), Triage (`answer`) and QA (`visual`). */
   outputSchemas?: Record<string, OutputSchema>;
+  /** Instructions by task type, for a task type that is not the default (QA's `qa:visual`). */
+  taskInstructions?: Record<string, string>;
 }
 
 export type BotFiles = Record<AgentRole, BotFile>;
@@ -382,6 +391,49 @@ function checkSchemas(role: AgentRole, raw: unknown, add: (p: string) => void) {
   return problems.length === 0 ? (raw as Record<string, OutputSchema>) : undefined;
 }
 
+function checkTaskInstructions(
+  role: AgentRole,
+  raw: unknown,
+  taskTypes: unknown,
+  add: (p: string) => void,
+): Record<string, string> | undefined {
+  const names = TASK_INSTRUCTIONS[role] ?? [];
+  if (names.length === 0) {
+    if (raw !== undefined)
+      add(`task_instructions: a ${role} run has only its instructions`);
+    return undefined;
+  }
+  if (!isRecord(raw) || Object.keys(raw).sort().join() !== [...names].sort().join()) {
+    add(`task_instructions must give exactly: ${names.join(", ")}`);
+    return undefined;
+  }
+  const allowed =
+    isRecord(taskTypes) && Array.isArray(taskTypes.allowed) ? taskTypes.allowed : [];
+  let ok = true;
+  for (const name of names) {
+    const value = raw[name];
+    if (
+      !allowed.includes(name) ||
+      (isRecord(taskTypes) && taskTypes.default === name)
+    ) {
+      add(
+        `task_instructions.${name} must be an allowed task type other than the default`,
+      );
+      ok = false;
+    }
+    if (!isText(value)) {
+      add(`task_instructions.${name} must be non-empty text`);
+      ok = false;
+    } else if (value.length > MAX_INSTRUCTION_CHARS) {
+      add(
+        `task_instructions.${name} must be at most ${MAX_INSTRUCTION_CHARS} characters`,
+      );
+      ok = false;
+    }
+  }
+  return ok ? { ...(raw as Record<string, string>) } : undefined;
+}
+
 /** Checks one role's parsed bot file. Every problem names the file and the field. */
 function checkBotFile(
   role: AgentRole,
@@ -452,6 +504,13 @@ function checkBotFile(
   } else if (data.output_schemas !== undefined) {
     add(`output_schemas: a ${role} run has no structured answer here`);
   }
+  const taskInstructions = checkTaskInstructions(
+    role,
+    data.task_instructions,
+    data.task_types,
+    add,
+  );
+  if (taskInstructions) bot.taskInstructions = taskInstructions;
 
   if (problems.length > before) return null;
   return {
@@ -486,7 +545,7 @@ export function validateBotFiles(raw: Record<AgentRole, RawBotFile>): {
   return problems.length > 0 ? { problems } : { bots, problems };
 }
 
-/** What the core records and reads for each role: runtime, version, Council schemas. */
+/** What the core records and reads for each role: runtime, version, Council and QA schemas. */
 export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
   const profiles = {} as Record<AgentRole, BotProfile>;
   for (const role of BOT_ROLES) {
@@ -494,7 +553,7 @@ export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
     profiles[role] = {
       runtime: bot.image,
       botVersion: bot.version,
-      ...(role === "council" && bot.outputSchemas
+      ...((role === "council" || role === "qa") && bot.outputSchemas
         ? { outputSchemas: bot.outputSchemas }
         : {}),
     };

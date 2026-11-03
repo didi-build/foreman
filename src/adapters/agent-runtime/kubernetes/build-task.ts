@@ -10,7 +10,7 @@ import type { AgentRole, Run } from "../../../core/store.ts";
 import { PUSHING_ROLES, runBranch } from "../../../core/task-input.ts";
 import type { ModelProviderSetting } from "./manifests.ts";
 import type { KubernetesAgentTask } from "./runtime.ts";
-import type { AgentTaskFile } from "./task.ts";
+import type { AgentTaskFile, TaskImage } from "./task.ts";
 
 /** What a bot file gives a Kubernetes run (ADR 0107). No credential value is in it. */
 export interface KubernetesBotFile {
@@ -24,7 +24,7 @@ export interface KubernetesBotFile {
   allowedHosts: string[];
   /** QA only. */
   fetchAllowedHosts?: string[];
-  /** Council and Triage. */
+  /** Council and Triage, and QA's visual comparison. */
   outputSchema?: Record<string, unknown>;
 }
 
@@ -52,6 +52,8 @@ export interface KubernetesTaskParts {
   input: string;
   /** QA: the runner's evidence ids the verdict may cite. */
   evidenceIds?: string[];
+  /** QA's visual comparison: the image pairs, in order (D-242). */
+  images?: TaskImage[];
   stateApiToken: string;
   /** Developer and Designer: the agent pod. QA: the fetch pod. Council and Triage: none. */
   githubToken?: string;
@@ -102,6 +104,7 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
   if (role === "qa") {
     task.nodeId = run.nodeId ?? "";
     task.evidenceIds = [...(parts.evidenceIds ?? [])];
+    if (parts.images !== undefined) task.images = parts.images.map((i) => ({ ...i }));
   }
 
   return {

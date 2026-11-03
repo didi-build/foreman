@@ -31,6 +31,10 @@ import type { StagingChecker } from "../../src/core/staging.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { Node, Project, Run } from "../../src/core/store.ts";
+import type {
+  ScreenshotBundles,
+  VisualImage,
+} from "../../src/core/visual-comparison.ts";
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
 import { createTaskSource } from "./tasks.ts";
 
@@ -58,10 +62,12 @@ export interface RunToStart {
   stateApiToken: string;
   /**
    * Council: the output schema of its question's kind, from the Council's bot file
-   * (src/core/council.ts, D-228). The task file carries it, and the runner checks the answer
-   * against the same schema when the run ends.
+   * (src/core/council.ts, D-228). QA's visual comparison: its answer schema (D-242). The task
+   * file carries it, and the runner checks the answer against the same schema when the run ends.
    */
   outputSchema?: Record<string, unknown>;
+  /** QA's visual comparison: the image pairs, in order, as PNG bytes (D-242, D-250). */
+  images?: VisualImage[];
 }
 
 /**
@@ -79,6 +85,8 @@ export interface FlowDeps extends ReconcileDeps {
   /** The runner's staging smoke check (ADR 0107), from the deploy adapter (M3.7). */
   stagingChecker: StagingChecker;
   tasks: TaskSource;
+  /** CI's screenshot bundles for the visual comparison (D-242). Not built yet: it refuses. */
+  screenshots: ScreenshotBundles;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
   executionsThisMonth(): Promise<number>;
@@ -125,6 +133,20 @@ function unbuiltStagingChecker(): StagingChecker {
     check: async () => {
       throw new NotBuiltError(
         "The staging check needs the deploy adapter's staging target (build plan M3.7, N-29)",
+      );
+    },
+  };
+}
+
+/**
+ * CI's screenshot bundles (D-242). How CI hands its screenshots to the runner is not decided yet
+ * (N-52): until then every read refuses, so no visual comparison starts and nothing is recorded.
+ */
+export function unbuiltScreenshotBundles(): ScreenshotBundles {
+  return {
+    read: async () => {
+      throw new NotBuiltError(
+        "The screenshot bundles need the path from CI to the runner, which is not decided yet (N-52)",
       );
     },
   };
@@ -238,6 +260,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
       }),
     ),
     stagingChecker: unbuiltStagingChecker(),
+    screenshots: unbuiltScreenshotBundles(),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

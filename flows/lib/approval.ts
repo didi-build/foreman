@@ -2,7 +2,8 @@
 // Windmill hands the step after a `suspend` two values: `resume`, the form's fields, or an error
 // object when the request timed out or was cancelled; and `approvers`, which is `["anonymous"]`
 // on the free plan. The form (flows/windmill.yaml) has two fields: `answer`, one of the page's
-// three labels, and `reply`, Didi's words. This reads that shape and nothing more; what an answer
+// three labels, and `reply`, Didi's words. An `option` field, the approved option's name on a
+// visual approval, is read when present; the form does not ask for it yet (N-53). This reads that shape and nothing more; what an answer
 // records is `approvalDecision` in the core.
 import {
   APPROVAL_CHOICE_LABELS,
@@ -61,7 +62,16 @@ export function readApprovalReply(resume: unknown, approvers: unknown): Approval
       approvers: names,
     };
   }
-  return { answered: true, choice, words, approvers: names };
+  // A visual approval's option name, when the page sends one (N-53: the page has no such field
+  // yet). The core records it only when the request lists that option.
+  const option = typeof fields.option === "string" ? fields.option : undefined;
+  return {
+    answered: true,
+    choice,
+    words,
+    approvers: names,
+    ...(option !== undefined ? { option } : {}),
+  };
 }
 
 /** What the step reports after an answer is recorded. */

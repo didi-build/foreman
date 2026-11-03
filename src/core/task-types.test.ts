@@ -12,7 +12,7 @@ const roles = {
     default: "developer:code",
   },
   designer: { allowed: ["designer"], default: "designer" },
-  qa: { allowed: ["qa:review"], default: "qa:review" },
+  qa: { allowed: ["qa:review", "qa:visual"], default: "qa:review" },
   council: { allowed: ["council"], default: "council" },
   triage: { allowed: ["triage"], default: "triage" },
 };
@@ -23,7 +23,7 @@ const file = (extra: Record<string, unknown> = {}) => ({
 });
 
 describe("task types (unit, ADR 0114 section 1)", () => {
-  it("accepts the six task types with each role's allowed list and default", () => {
+  it("accepts the seven task types with each role's allowed list and default", () => {
     expect(validateTaskTypes("e".repeat(40), file(), roles)).toEqual({
       taskTypes: TEST_TASK_TYPES,
       problems: [],
@@ -34,6 +34,14 @@ describe("task types (unit, ADR 0114 section 1)", () => {
     expect(taskTypeFor(TEST_TASK_TYPES, "developer")).toBe("developer:code");
     expect(taskTypeFor(TEST_TASK_TYPES, "qa")).toBe("qa:review");
     expect(taskTypeFor(TEST_TASK_TYPES, "triage")).toBe("triage");
+  });
+
+  it("gives a requested task type only when the role's bot file allows it (D-242)", () => {
+    expect(taskTypeFor(TEST_TASK_TYPES, "qa", "qa:visual")).toBe("qa:visual");
+    expect(taskTypeFor(TEST_TASK_TYPES, "qa", null)).toBe("qa:review");
+    expect(() => taskTypeFor(TEST_TASK_TYPES, "developer", "qa:visual")).toThrow(
+      "does not allow the requested task type",
+    );
   });
 
   it("collects every problem, naming the field", () => {

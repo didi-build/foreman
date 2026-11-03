@@ -22,13 +22,14 @@ describe("contracts/task-types.yaml and the bot files' task types (unit: repo gu
     expect(taskTypes).toEqual(TEST_TASK_TYPES);
   });
 
-  it("names the six task types of ADR 0114 section 1", () => {
+  it("names the six task types of ADR 0114 section 1 and QA's visual comparison (D-242)", () => {
     expect(Object.keys(TEST_TASK_TYPES.meanings).sort()).toEqual([
       "council",
       "designer",
       "developer:code",
       "developer:infra",
       "qa:review",
+      "qa:visual",
       "triage",
     ]);
   });

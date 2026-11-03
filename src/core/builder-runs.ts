@@ -9,12 +9,15 @@
 //
 // Which states and moves count comes from the contracts, never from a list of state names: the
 // building state is one whose owner is a role that pushes a branch (Developer, Designer), and a
-// fail move is a move into it guarded by `qa_failed_with_findings` (QA's fail) or
-// `staging_check_failed` (the staging fail path). Plain logic over an injected store, contracts,
+// fail move is a move into it guarded by `qa_failed_with_findings` (QA's fail),
+// `staging_check_failed` (the staging fail path) or `changes_requested_recorded` (Didi asked for
+// changes to, or rejected, the design options: the move back to In design exploration, which the
+// contract says carries Didi's words back into exploration, D-243 rule 5). Plain logic over an injected store, contracts,
 // guards, clock and id source (D-162). It reads only: the runner starts the run through the
 // dispatch flow, and admission (src/core/runs.ts) still decides, under its lock, with the kill
 // switch, the limits and the usage-exhausted wait.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
+import { visualApprovalTopic } from "./guards/design.ts";
 import { readQaVerdict } from "./guards/evidence.ts";
 import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
 import { failureCountKey } from "./failures.ts";
@@ -25,8 +28,15 @@ import { ESCALATION_GUARD, STAGING_FAIL_GUARD } from "./staging.ts";
 import type { AgentRole, Evidence, Json, Node, Store, Transition } from "./store.ts";
 import { PUSHING_ROLES, type ReturnReason } from "./task-input.ts";
 
+/** The guard of the move back to exploration after Didi asks for changes (contracts/machine-2). */
+export const CHANGES_REQUESTED_GUARD = "changes_requested_recorded";
+
 /** The guards that mark a move as one that sends the item back to be fixed. */
-export const RETURN_GUARDS: readonly string[] = [QA_FAIL_GUARD, STAGING_FAIL_GUARD];
+export const RETURN_GUARDS: readonly string[] = [
+  QA_FAIL_GUARD,
+  STAGING_FAIL_GUARD,
+  CHANGES_REQUESTED_GUARD,
+];
 
 const ACTOR = { kind: "runner" as const, id: "dispatch" };
 
@@ -204,10 +214,55 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     return { due: true, nodeId, role, cause };
   }
 
+  /**
+   * Didi's words when the move back was the changes-requested move: Didi's latest active answer
+   * on the item's visual-approval request asking for changes or rejecting, recorded before the
+   * move. Null when the move was another one.
+   */
+  async function changesRequested(
+    node: Node,
+    back: Transition,
+  ): Promise<ReturnReason | null> {
+    const isChangesMove = contracts.transitions.some(
+      (m) =>
+        !m.escalation &&
+        m.from === back.fromState &&
+        m.to === back.toState &&
+        trackMatches(m, node) &&
+        m.guards.includes(CHANGES_REQUESTED_GUARD),
+    );
+    if (!isChangesMove) return null;
+    const topic = visualApprovalTopic(node.id);
+    const answer = (await store.listDecisionsForNode(node.id))
+      .filter((d) => {
+        const outcome = field(d.scope, "outcome");
+        return (
+          d.status === "active" &&
+          d.kind === "answer" &&
+          d.byActor === "didi" &&
+          field(d.scope, "topicKey") === topic &&
+          (outcome === "changes_requested" || outcome === "rejected") &&
+          d.recordedAt.getTime() <= back.at.getTime()
+        );
+      })
+      .at(-1);
+    if (!answer) return { kind: "not_recorded" };
+    return {
+      kind: "changes_requested",
+      outcome:
+        field(answer.scope, "outcome") === "rejected"
+          ? "rejected"
+          : "changes_requested",
+      words: answer.textVerbatim,
+    };
+  }
+
   /** The evidence the fail move carried, of the kinds that say why. */
   async function reasonFrom(node: Node, back: Transition): Promise<ReturnReason> {
     const answered = await escalationAnswer(back);
     if (answered) return answered;
+    const changes = await changesRequested(node, back);
+    if (changes) return changes;
     const carried = new Set(back.evidenceIds);
     const rows: Evidence[] = [];
     for (const kind of [

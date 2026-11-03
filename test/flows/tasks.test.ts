@@ -168,6 +168,48 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     });
   });
 
+  it("builds QA's visual comparison task: its own instructions, its answer schema and the images, no evidence ids (D-242)", async () => {
+    const { tasks } = source();
+    const start = startFor("qa", { outputSchema: BOTS.qa.outputSchemas?.visual });
+    (start.run as { taskType: string }).taskType = "qa:visual";
+    start.evidenceIds = [];
+    start.images = [
+      { label: "Image 1: the approved option", png: new Uint8Array([137, 80, 78, 71]) },
+      { label: "Image 2: the built component", png: new Uint8Array([137, 80, 78, 72]) },
+    ];
+    const task = (await tasks.taskFor(start)) as KubernetesAgentTask;
+    const { file } = acceptedByRuntime("qa", task);
+    expect(file.instructions).toBe(BOTS.qa.taskInstructions?.["qa:visual"]);
+    expect(file.instructions).not.toBe(BOTS.qa.instructions);
+    expect(file.outputSchema).toEqual(BOTS.qa.outputSchemas?.visual);
+    expect(file.evidenceIds).toEqual([]);
+    expect(file.images).toEqual([
+      {
+        label: "Image 1: the approved option",
+        mediaType: "image/png",
+        data: "iVBORw==",
+      },
+      {
+        label: "Image 2: the built component",
+        mediaType: "image/png",
+        data: "iVBOSA==",
+      },
+    ]);
+    // Without its images or schema the run is refused.
+    delete start.images;
+    await expect(tasks.taskFor(start)).rejects.toThrow(
+      "a visual comparison run needs its answer schema and images",
+    );
+  });
+
+  it("keeps QA's review task as it was: no images, no schema, the review instructions", async () => {
+    const { tasks } = source();
+    const task = (await tasks.taskFor(startFor("qa"))) as KubernetesAgentTask;
+    expect(task.task.images).toBeUndefined();
+    expect(task.task.outputSchema).toBeUndefined();
+    expect(task.task.instructions).toBe(BOTS.qa.instructions);
+  });
+
   it("builds the Council's task with its question's schema, and no GitHub token", async () => {
     const { tasks, minted } = source();
     const task = (await tasks.taskFor(

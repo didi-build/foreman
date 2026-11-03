@@ -322,6 +322,42 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     ).toEqual(["triage.yaml: output_schemas must give exactly: answer"]);
   });
 
+  it("give QA's visual comparison its answer schema and its own instructions, and no other role any (D-242)", () => {
+    const bots = readBotFiles();
+    expect(Object.keys(bots.qa.outputSchemas ?? {})).toEqual(["visual"]);
+    expect(bots.qa.taskInstructions?.["qa:visual"]).toContain("cannot_tell");
+    expect(botProfiles(bots).qa.outputSchemas).toEqual(bots.qa.outputSchemas);
+    expect(
+      validateBotFiles(
+        withData("qa", (d) => {
+          d.task_types = { allowed: ["qa:review"], default: "qa:review" };
+        }),
+      ).problems,
+    ).toEqual([
+      "qa.yaml: task_instructions.qa:visual must be an allowed task type other than the default",
+    ]);
+    expect(
+      validateBotFiles(
+        withData("qa", (d) => {
+          delete d.task_instructions;
+          delete d.output_schemas;
+        }),
+      ).problems,
+    ).toEqual([
+      "qa.yaml: output_schemas must give exactly: visual",
+      "qa.yaml: task_instructions must give exactly: qa:visual",
+    ]);
+    expect(
+      validateBotFiles(
+        withData("developer", (d) => {
+          d.task_instructions = { "developer:infra": "Infra work." };
+        }),
+      ).problems,
+    ).toEqual([
+      "developer.yaml: task_instructions: a developer run has only its instructions",
+    ]);
+  });
+
   it("names the file of a YAML error, a missing file and a stray file, never their content", () => {
     const broken = folder((d) =>
       writeFileSync(
