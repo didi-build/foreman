@@ -15,6 +15,11 @@ import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts"
 import { approvalDecision } from "../../src/core/approvals.ts";
 import { createHoldReleases, holdReleaseTopic } from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
+import {
+  createPlanApprovals,
+  createPlanSubmissions,
+  planApprovalTopic,
+} from "../../src/core/plans.ts";
 import type { Store } from "../../src/core/store.ts";
 import { createTriage, TRACK_DECISION_POINT } from "../../src/core/triage.ts";
 import { createReconcileFixture } from "../reconcile-fixture.ts";
@@ -247,6 +252,55 @@ describe.skipIf(!adminUrl)(
       expect(steps.map((s) => s.step).sort()).toEqual(["not_held", "released"]);
       expect((await store.getNode(held.id))?.hold).toBe(false);
       expect(await releases.pending()).toEqual([]);
+    });
+
+    it("accepts the planning chat's plan once when two steps race after Didi's Approve (D-266)", async () => {
+      const t = await createReconcileFixture({
+        store,
+        idPrefix: "9e000000-0000-4000-8000",
+        slug: "tr5",
+      });
+      await t.setting("dry_run", false);
+      const submitted = await createPlanSubmissions(t.deps).submit({
+        projectSlug: "tr5",
+        ideaId: null,
+        title: "Settings page",
+        plan: PLAN,
+        productDirection: DIRECTION,
+        answers: [],
+      });
+      if (!submitted.recorded) throw new Error("not recorded");
+      const ideaId = submitted.ideaId;
+      const approvals = createPlanApprovals(t.deps);
+      const [x, y] = await Promise.all([
+        approvals.step(ideaId),
+        approvals.step(ideaId),
+      ]);
+      expect([x.step, y.step].sort()).toEqual(["opened", "waiting"]);
+      const request = await store.findOpenGateRequest(
+        t.projectId,
+        planApprovalTopic(ideaId),
+      );
+      if (!request) throw new Error("no request");
+      await createLibrary(t.deps).answerGateRequest(
+        request.id,
+        approvalDecision(request, { choice: "approve", words: null, approvers: [] }),
+      );
+      const steps = await Promise.all([approvals.step(ideaId), approvals.step(ideaId)]);
+      expect(steps.map((s) => s.step)).toContain("accepted");
+      expect((await store.getNode(ideaId))?.state).toBe("plan_accepted");
+      const rows = await pool.query(
+        "select count(*) from factory.decisions where node_id = $1 and kind = 'council_decision' and scope->>'kind' = 'plan_accepted'",
+        [ideaId],
+      );
+      expect(Number(rows.rows[0]?.count)).toBe(1);
+      const moves = await pool.query(
+        "select from_state, to_state from factory.transitions where node_id = $1",
+        [ideaId],
+      );
+      expect(moves.rows).toEqual([
+        { from_state: "submitted", to_state: "plan_accepted" },
+      ]);
     });
 
     it("records a rejected answer once, on the idea, by the runner", async () => {

@@ -129,6 +129,17 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
 - The runner's database login, a user in the `factory_runner` role (ADR 0104), stored at `platform/state-store/runner-database-url` in Windmill resources.
 - A Windmill token that can list the workspace's jobs, for the monthly execution count (D-167). Until it exists, the reconcile flow skips the alert check and says so.
+- The planning chat's state API token (D-266). It lets the Council's planning chat submit a plan with `POST /plans` and nothing else (ADR 0102). Generate a long random value (at least 32 characters of letters, digits, `-` and `_`) in the password manager and keep it there. Put the value itself only into the planning chat's own settings. The state API holds only its SHA-256: store the hash at `platform/state-api/planning-token-sha256` in Windmill resources, and in the state API's Secret, piped straight in so neither value lands in a file or the shell history:
+
+  ```bash
+  # The token comes from the password manager's command line on stdin, with no trailing newline
+  # (a newline changes the hash and the API then refuses the token). Only its hash goes on.
+  sha256sum | cut -d' ' -f1 | tr -d '\n' \
+    | kubectl -n foreman-platform create secret generic state-api-planning-token --from-file=sha256=/dev/stdin
+  kubectl -n foreman-platform rollout restart deployment/state-api
+  ```
+
+  The Secret is optional for the state API's pod: until it exists, no planning token is accepted. How the chat reaches the state API from outside the cluster is open (N-67); settle it before this step.
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 

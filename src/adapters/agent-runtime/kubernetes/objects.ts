@@ -48,7 +48,11 @@ export interface PodSecurityContext {
 
 export type EnvVar =
   | { name: string; value: string }
-  | { name: string; valueFrom: { secretKeyRef: { name: string; key: string } } };
+  | {
+      name: string;
+      /** `optional`: the pod starts while the Secret does not exist yet, with the variable unset. */
+      valueFrom: { secretKeyRef: { name: string; key: string; optional?: boolean } };
+    };
 
 export interface VolumeMount {
   name: string;

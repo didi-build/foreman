@@ -84,6 +84,7 @@ export interface GuardContext {
     | "findOpenGateRequest"
     | "listOpenGateRequests"
     | "listDecisionsForNode"
+    | "listGateRequests"
     | "getProject"
   >;
 }

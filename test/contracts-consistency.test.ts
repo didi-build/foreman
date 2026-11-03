@@ -323,8 +323,24 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       );
     }
     expect(parsed.transitions.map((t) => `${t.from}->${t.to}`)).toEqual([
+      "submitted->plan_accepted",
+      "council_planning->plan_accepted",
+      "submitted->council_planning",
       "plan_accepted->triage",
       "triage->handed_off",
+    ]);
+  });
+
+  it("only the runner takes the planning chat's moves, on Didi's answer (D-266, D-230)", () => {
+    const planning = parsed.transitions.filter((t) =>
+      (t.guards ?? []).some((g) => g.startsWith("plan_") && g !== "plan_attached"),
+    );
+    expect(
+      planning.map((t) => [`${t.from}->${t.to}`, t.guards, t.runner_only]),
+    ).toEqual([
+      ["submitted->plan_accepted", ["plan_approval_recorded"], true],
+      ["council_planning->plan_accepted", ["plan_approval_recorded"], true],
+      ["submitted->council_planning", ["plan_return_recorded"], true],
     ]);
   });
 });

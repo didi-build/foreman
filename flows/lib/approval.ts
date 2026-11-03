@@ -23,10 +23,16 @@ import {
   type HoldReleaseStep,
 } from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
+import {
+  createPlanApprovals,
+  PLAN_APPROVAL_PREFIX,
+  type PlanApprovalStep,
+} from "../../src/core/plans.ts";
 import type { GateRequest, Json } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
 import { councilPass, followUpPass, type CouncilPassStep } from "./council-runs.ts";
 import { heldBy } from "./switches.ts";
+import { triagePass, type TriagePassStep } from "./triage-runs.ts";
 
 /**
  * An answer, or why there is none: Windmill's error name for a timeout or a cancel, `no_choice`
@@ -153,6 +159,12 @@ export interface AfterAnswer {
    * is held by a switch or cut short.
    */
   holdRelease?: HoldReleaseStep;
+  /**
+   * For a plan-approval request (D-266): the idea's move on Didi's answer, and on Approve the
+   * Triage pass for the idea, which starts Triage as M3.6 built. The reconcile flow's plan
+   * approval pass asks again if this step is held by a switch or cut short.
+   */
+  plan?: { step: PlanApprovalStep; triage: TriagePassStep[] };
 }
 
 /**
@@ -163,7 +175,10 @@ export interface AfterAnswer {
  * a `decision-reversed:` topic), the follow-up Council question opens and its run starts
  * (D-234), in live mode only; the reconcile flow's follow-up pass opens it later otherwise. For a
  * held item's release request (D-269), the runner clears the hold flag on Didi's Approve
- * (src/core/hold-release.ts). Any other gate kind asks for nothing.
+ * (src/core/hold-release.ts). For a plan-approval request (D-266), the idea moves into Plan
+ * accepted on Approve, with `plan_accepted` recorded by the runner, and Triage starts; Reject or
+ * Request changes sends an idea in Submitted back to Council planning (src/core/plans.ts). Any
+ * other gate kind asks for nothing.
  */
 export async function afterAnswer(
   deps: FlowDeps,
@@ -192,10 +207,17 @@ export async function afterAnswer(
     gate.nodeId && gate.topicKey === `${HOLD_RELEASE_PREFIX}${gate.nodeId}`
       ? await createHoldReleases(deps).release(gate.nodeId)
       : undefined;
+  let plan: AfterAnswer["plan"];
+  if (gate.nodeId && gate.topicKey === `${PLAN_APPROVAL_PREFIX}${gate.nodeId}`) {
+    const step = await createPlanApprovals(deps).step(gate.nodeId);
+    const accepted = step.step === "accepted" && step.move.outcome === "applied";
+    plan = { step, triage: accepted ? await triagePass(deps, [gate.nodeId]) : [] };
+  }
   return {
     heldBy: await heldBy(deps.store),
     ...(escalation ? { escalation } : {}),
     ...(reversal ? { reversal } : {}),
     ...(holdRelease ? { holdRelease } : {}),
+    ...(plan ? { plan } : {}),
   };
 }

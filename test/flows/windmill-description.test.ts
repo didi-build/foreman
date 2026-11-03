@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
+import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
 import { APPROVAL_CHOICE_LABELS } from "../../src/core/approvals.ts";
 import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
@@ -35,7 +36,10 @@ interface Description {
       >;
     };
   }[];
-  resources: { secrets: { path: string }[]; values: { name: string }[] };
+  resources: {
+    secrets: { path: string; read_by?: string }[];
+    values: { name: string }[];
+  };
 }
 
 const description = parse(readFileSync("flows/windmill.yaml", "utf8")) as Description;
@@ -95,9 +99,18 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
   });
 
   it("lists exactly the secrets and values the composition module reads", () => {
-    expect(description.resources.secrets.map((s) => s.path).sort()).toEqual(
+    const forFlows = description.resources.secrets.filter((s) => !s.read_by);
+    expect(forFlows.map((s) => s.path).sort()).toEqual(
       Object.values(SECRET_PATHS).sort(),
     );
+    // The one secret a service other than the flows reads: the planning chat's token hash,
+    // which the state API reads (D-266).
+    expect(description.resources.secrets.filter((s) => s.read_by)).toEqual([
+      expect.objectContaining({
+        path: PLANNING_TOKEN_SHA256_PATH,
+        read_by: "state API",
+      }),
+    ]);
     expect(description.resources.values.map((v) => v.name).sort()).toEqual(
       Object.values(VALUE_NAMES).sort(),
     );

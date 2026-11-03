@@ -2,11 +2,16 @@
 # no transition here names tracks.
 #
 # Every state of the spec's Machine 1 table is declared, so a state name in the store is always a
-# contract state. Only the two moves the minimum Machine 1 automates are declared (build plan M3.6,
-# D-265): Plan accepted to Triage, and Triage to Handed off. The Interview and Council planning stay
-# a chat with the Council (D-261), and how an idea reaches Plan accepted from that chat is open
-# (N-61), so no move into Plan accepted, and none out of Submitted, Interview, Council planning or
-# Needs Didi, exists yet. Parking or rejecting an idea is Didi's and has no move yet either.
+# contract state. Only the moves the minimum Machine 1 automates are declared (build plan M3.6,
+# D-265, D-266): Plan accepted to Triage, and Triage to Handed off; and the moves of the planning
+# chat's plan (D-266). The Interview and Council planning stay a chat with the Council (D-261),
+# whose planning chat submits the plan through the state API (src/core/plans.ts). Didi's Approve on
+# the runner's plan-approval request moves the idea from Submitted, or from Council planning after
+# a resubmission, into Plan accepted; Reject or Request changes moves an idea in Submitted back to
+# Council planning, where the chat can submit again. These three moves are runner_only: only the
+# plan approval step applies them, and the move into Plan accepted records `plan_accepted` in its
+# transaction (D-230). No move out of Interview or Needs Didi exists, and the automated Interview
+# is the next release. Parking or rejecting an idea is Didi's and has no move yet either.
 #
 # Triage to Handed off is runner_only: only the Triage handoff step applies it, in the one
 # transaction that creates the work items from Triage's checked answer (src/core/triage.ts).
@@ -23,7 +28,7 @@ states:
     purpose: Log a new idea, from Didi, a bot's finding or the Scanner.
     input: A title and a body.
     output: The idea, logged.
-    evidence_to_exit: Not set. The move to Interview is not built (N-61).
+    evidence_to_exit: Didi's answer to the planning chat's plan (D-266). The move to Interview is not built.
     tools: None.
     budget: not set
     side_effects: None.
@@ -126,6 +131,33 @@ states:
     failure: Not applicable.
 
 transitions:
+  - from: submitted
+    to: plan_accepted
+    trigger: Didi approves the plan the planning chat submitted (D-266). The runner records plan_accepted in the same transaction.
+    guards: [plan_approval_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. The request shows again in each daily check.
+    fallback: Stays in Submitted until Didi answers the request for the latest plan.
+
+  - from: council_planning
+    to: plan_accepted
+    trigger: Didi approves the plan the planning chat submitted again (D-266). The runner records plan_accepted in the same transaction.
+    guards: [plan_approval_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. The request shows again in each daily check.
+    fallback: Stays in Council planning until Didi answers the request for the latest plan.
+
+  - from: submitted
+    to: council_planning
+    trigger: Didi rejects the plan or asks for changes, with feedback (D-254, D-266).
+    guards: [plan_return_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None.
+    fallback: Stays in Submitted.
+
   - from: plan_accepted
     to: triage
     trigger: The idea reaches Plan accepted, or the reconcile pass finds it there.

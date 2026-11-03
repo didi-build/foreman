@@ -35,6 +35,8 @@ import {
   type PlatformSettings,
 } from "../infra/kubernetes/platform.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
+import { PLANNING_TOKEN_SHA256_PATH } from "../src/api/auth.ts";
+import { secretEnvName } from "../src/service-kit/config.ts";
 
 // Unit: the platform namespace's objects as data (ADR 0106 sections 1 and 4, D-193, D-195).
 // Nothing here talks to a cluster. Policies are checked by evaluating their selectors against the
@@ -295,12 +297,27 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
     );
   });
 
+  it("gives the state API the planning chat's token hash at its secret path, optional until first hosting (D-266)", () => {
+    const env = deploymentOf(STATE_API.name)
+      .spec.template.spec.containers.flatMap((c) => c.env)
+      .find((e) => e.name === secretEnvName(PLANNING_TOKEN_SHA256_PATH));
+    expect(env).toEqual({
+      name: "SECRET_PLATFORM_STATE_API_PLANNING_TOKEN_SHA256",
+      valueFrom: {
+        secretKeyRef: { ...PLATFORM_SECRETS.stateApiPlanningToken, optional: true },
+      },
+    });
+  });
+
   it("mounts each Secret only into the pod that uses it", () => {
     const used = (name: string) =>
       deploymentOf(name)
         .spec.template.spec.containers.flatMap((c) => c.env)
         .flatMap((e) => ("valueFrom" in e ? [e.valueFrom.secretKeyRef.name] : []));
-    expect(used(STATE_API.name)).toEqual([PLATFORM_SECRETS.stateApiDatabase.name]);
+    expect(used(STATE_API.name)).toEqual([
+      PLATFORM_SECRETS.stateApiDatabase.name,
+      PLATFORM_SECRETS.stateApiPlanningToken.name,
+    ]);
     expect(used(CLOUDFLARED.name)).toEqual([PLATFORM_SECRETS.tunnelToken.name]);
     expect(used(RECEIVER.name).sort()).toEqual(
       [
