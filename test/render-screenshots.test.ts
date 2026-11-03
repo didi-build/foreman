@@ -245,6 +245,52 @@ describe.skipIf(!browserInstalled)(
       );
     }, 120_000);
 
+    it("renders an option page from its own folder only, so a file elsewhere in the repo cannot change it (D-285)", () => {
+      const repo = scratch();
+      git(repo, "init", "-q", "-b", "main");
+      const folder = "design/billing/plans/options/bold";
+      mkdirSync(join(repo, folder), { recursive: true });
+      writeFileSync(
+        join(repo, folder, "index.html"),
+        [
+          "<!doctype html>",
+          '<link rel="stylesheet" href="own.css" />',
+          '<link rel="stylesheet" href="/design/shared.css" />',
+          '<div data-component="plan-card"><p>Plan</p></div>',
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(join(repo, folder, "own.css"), "p { color: rgb(0, 0, 128); }\n");
+      const renderWith = (sharedCss: string) => {
+        writeFileSync(join(repo, "design/shared.css"), sharedCss);
+        git(repo, "add", ".");
+        git(repo, "commit", "-q", "--allow-empty", "-m", "head");
+        const head = git(repo, "rev-parse", "HEAD");
+        const out = join(scratch(), "head-options");
+        const result = render([
+          "--kind",
+          "head-options",
+          "--commit",
+          head,
+          "--root",
+          repo,
+          "--out",
+          out,
+        ]);
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(
+          `${folder}: refused 1 requests outside its folder`,
+        );
+        return JSON.parse(readFileSync(join(out, "manifest.json"), "utf8")).options[0]
+          .sha256 as string;
+      };
+      // A build pull request changing the shared file leaves the render as it was.
+      expect(renderWith("body { background: rgb(255, 0, 0); }\n")).toBe(
+        renderWith("body { background: rgb(0, 255, 0); }\n"),
+      );
+    }, 120_000);
+
     it("refuses a commit that is not the one checked out", () => {
       const result = render([
         "--kind",

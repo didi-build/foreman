@@ -17,7 +17,9 @@
 //
 // Every page is rendered at a fixed viewport and device scale, in light mode with reduced motion,
 // UTC and en-US, animations disabled for the screenshot, and every request that leaves the local
-// server is refused. The written manifest is then read back with the runner's own check
+// server is refused. An option page may load only files inside its own folder (D-285): any other
+// request, to the rest of the checkout included, is refused too, so an option renders from its
+// folder alone and the comparison's check that the folder is unchanged (D-281) covers all of it. The written manifest is then read back with the runner's own check
 // (scripts/lib/screenshot-bundle.ts `checkBundle`); any mismatch fails the step.
 //
 // Usage:
@@ -307,6 +309,14 @@ async function renderOptionPages(
     const rendered: RenderedOption[] = [];
     for (const folder of folders) {
       const page = await context.newPage();
+      // Only this option's own folder (D-285); a page route runs before the context's.
+      const own = `${origin}/${folder.path}/`;
+      let refused = 0;
+      await page.route("**/*", (route) => {
+        if (route.request().url().startsWith(own)) return route.continue();
+        refused += 1;
+        return route.abort();
+      });
       await page.goto(`${origin}/${folder.path}/${OPTION_PAGE}`, {
         waitUntil: "load",
         timeout: NAV_TIMEOUT_MS,
@@ -336,6 +346,9 @@ async function renderOptionPages(
       );
       const png = await page.screenshot({ ...SCREENSHOT, fullPage: true });
       await page.close();
+      if (refused > 0) {
+        console.log(`${folder.path}: refused ${refused} requests outside its folder`);
+      }
       const { width, height } = pngSize(png);
       const regions = optionRegions(marked, { width, height });
       if ("problem" in regions)
