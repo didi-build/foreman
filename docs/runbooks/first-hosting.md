@@ -115,6 +115,8 @@ Create the Anthropic API key for agent runs with a monthly spending limit at the
 
 Register the GitHub Apps of D-156 together, each with its own identity. The runner App's webhook URL is `https://<receiver host name>/github/webhook`, with the webhook secret from step 10. Their private keys stay with the runner, never on the cluster.
 
+The runner App's permissions are the ones in D-127 plus two read-only ones from D-267: `contents: read` (the repo map's checkout) and `actions: read` (CI's screenshot bundles). Check the App's permission page shows nothing wider before installing it.
+
 In each project repository, protect builder branches against force pushes (a branch ruleset covering the runner's branch names), so the rule in the Developer's and Designer's instructions is also enforced by GitHub (D-245).
 
 ## 14. Set `agent_cluster_max_active_runs`
