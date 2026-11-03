@@ -475,6 +475,42 @@ export function specSection(markdown: string, component: string): string {
   return cut(lines.slice(start, end).join("\n").trim(), VISUAL_LIMITS.specSectionChars);
 }
 
+/**
+ * One pair as the plan builds it: with a region, the option's crop and the built image lined up
+ * and compared (./visual-diff.ts); without one, the whole option page and no comparison. The
+ * model test harness builds its pairs with the same function (spikes/visual-model-test/).
+ */
+export function locatedPair(
+  component: string,
+  variant: string,
+  optionPage: Raster,
+  region: Region | null,
+  built: Raster,
+  specSectionText: string,
+): VisualPair {
+  if (!region) {
+    return {
+      component,
+      variant,
+      located: false,
+      summary: null,
+      approved: optionPage,
+      built,
+      specSection: specSectionText,
+    };
+  }
+  const compared = compareRasters(crop(optionPage, region), built);
+  return {
+    component,
+    variant,
+    located: true,
+    summary: compared.summary,
+    approved: compared.approvedCrop,
+    built: compared.builtCrop,
+    specSection: specSectionText,
+  };
+}
+
 // ---- The plan ------------------------------------------------------------------------------------
 
 /** One component variant to compare. */
@@ -851,28 +887,16 @@ export function createVisualComparisons(options: VisualComparisonOptions) {
         specTexts.get(shot.specPath) as string,
         shot.component,
       );
-      if (region) {
-        const compared = compareRasters(crop(optionPage, region), built);
-        pairs.push({
-          component: shot.component,
-          variant: shot.variant,
-          located: true,
-          summary: compared.summary,
-          approved: compared.approvedCrop,
-          built: compared.builtCrop,
-          specSection: sectionText,
-        });
-      } else {
-        pairs.push({
-          component: shot.component,
-          variant: shot.variant,
-          located: false,
-          summary: null,
-          approved: optionPage,
+      pairs.push(
+        locatedPair(
+          shot.component,
+          shot.variant,
+          optionPage,
+          region ?? null,
           built,
-          specSection: sectionText,
-        });
-      }
+          sectionText,
+        ),
+      );
     }
     return {
       ready: true,
