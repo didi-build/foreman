@@ -1,7 +1,7 @@
 // Seam: the screenshot bundles' GitHub read (unit with fakes, D-267, D-242, N-52 option a). The
-// runner's port mints a read-only `actions` token for the one repository, lists the artifacts of
-// the bundle's name, takes the newest unexpired one whose workflow run is on the commit asked for,
-// downloads it and reads the zip in memory. A fake token port and a fake HTTP port stand in for
+// runner's port mints a read-only `actions` token for the one repository, lists the workflow runs
+// of the commit asked for, then each run's artifacts of the bundle's name, takes the newest
+// unexpired one, downloads it and reads the zip in memory (D-276). A fake token port and a fake HTTP port stand in for
 // GitHub; the artifacts are synthetic zips made here. No network, no real repository or token.
 import { createHash } from "node:crypto";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -99,10 +99,43 @@ function fakes(listing: unknown[], downloads: Record<number, Buffer>) {
   const http: GitHubHttp = {
     async get(request) {
       asked.push(request);
-      if (request.path.startsWith(`/repos/${REPO}/actions/artifacts?`)) {
+      const runsAsked = /\/actions\/runs\?head_sha=([0-9a-f]{40})&/.exec(request.path);
+      if (runsAsked) {
+        // GitHub answers with the runs of the commit asked for; one stray run on another commit
+        // is included to show the port drops it.
+        const ids = [
+          ...new Set(
+            listing.map(
+              (a) =>
+                (a as { workflow_run: { id: number; head_sha: string } }).workflow_run,
+            ),
+          ),
+        ].filter((r) => r.head_sha === runsAsked[1]);
         return {
           status: 200,
-          body: Buffer.from(JSON.stringify({ artifacts: listing })),
+          body: Buffer.from(
+            JSON.stringify({
+              workflow_runs: [
+                ...ids,
+                { id: 999, head_sha: OLDER === runsAsked[1] ? HEAD : OLDER },
+              ],
+            }),
+          ),
+        };
+      }
+      const runArtifacts = /\/actions\/runs\/(\d+)\/artifacts\?/.exec(request.path);
+      if (runArtifacts) {
+        const runId = Number(runArtifacts[1]);
+        return {
+          status: 200,
+          body: Buffer.from(
+            JSON.stringify({
+              artifacts: listing.filter(
+                (a) =>
+                  (a as { workflow_run: { id: number } }).workflow_run.id === runId,
+              ),
+            }),
+          ),
         };
       }
       const id = /\/actions\/artifacts\/(\d+)\/zip$/.exec(request.path)?.[1];
@@ -135,13 +168,19 @@ describe("the screenshot bundles from CI's workflow artifacts (unit with fakes, 
     );
     const bundle = await createGitHubScreenshotBundles(f).read(REPO, HEAD, "gallery");
     expect(f.minted).toEqual([{ repository: REPO, permission: "actions" }]);
-    expect(f.asked.map((a) => [a.path, a.accept])).toEqual([
-      [
-        `/repos/${REPO}/actions/artifacts?name=foreman-screenshots-gallery&per_page=100`,
-        "json",
-      ],
-      [`/repos/${REPO}/actions/artifacts/2/zip`, "raw"],
+    const paths = f.asked.map((a) => [a.path, a.accept]);
+    expect(paths[0]).toEqual([
+      `/repos/${REPO}/actions/runs?head_sha=${HEAD}&per_page=20`,
+      "json",
     ]);
+    // Only the commit's own runs are opened, newest first, never another commit's.
+    expect(paths.slice(1, -1)).toEqual(
+      [50, 30, 20, 10].map((id) => [
+        `/repos/${REPO}/actions/runs/${id}/artifacts?name=foreman-screenshots-gallery`,
+        "json",
+      ]),
+    );
+    expect(paths.at(-1)).toEqual([`/repos/${REPO}/actions/artifacts/2/zip`, "raw"]);
     expect(bundle?.manifest).toEqual(MANIFEST_JSON);
     expect(Buffer.from((await bundle?.file("shots/settings-panel.png")) ?? [])).toEqual(
       PNG,
@@ -154,6 +193,7 @@ describe("the screenshot bundles from CI's workflow artifacts (unit with fakes, 
     expect(await createGitHubScreenshotBundles(f).read(REPO, HEAD, "gallery")).toBe(
       null,
     );
+    // The runs listing only: the commit has no run, so no artifact listing is opened.
     expect(f.asked).toHaveLength(1);
   });
 
