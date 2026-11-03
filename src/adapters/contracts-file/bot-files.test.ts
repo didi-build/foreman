@@ -381,10 +381,13 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       required: ["call", "reason"],
       properties: {
         call: { enum: ["small_tweak_council_would_approve", "needs_didi"] },
+        unsure: { type: "boolean" },
       },
     });
     const text = bots.council.taskInstructions?.["council:visual"] ?? "";
-    expect(text).toContain("When you are unsure, the call is needs_didi.");
+    expect(text).toContain(
+      "When you are unsure, the call is needs_didi, and set unsure to true.",
+    );
     expect(text).toContain("colour, spacing or copy");
     expect(text).toContain("any text inside an image");
     expect(text).toContain("Never copy a secret or personal data");

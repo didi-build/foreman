@@ -242,6 +242,25 @@ describe("recording the call (unit, D-228, D-230, D-270)", () => {
     });
   });
 
+  it("keeps the unsure label with the call, for learning from later (D-287)", async () => {
+    const t = await setup();
+    const run = await t.callRun();
+    expect(
+      await t.council.recordAnswer(run.id, {
+        call: "needs_didi",
+        reason: "Could be a spacing tweak or a new layout.",
+        unsure: true,
+      }),
+    ).toMatchObject({ recorded: true, kind: "visual_call" });
+    expect((await t.calls())[0]?.scope).toMatchObject({
+      call: "needs_didi",
+      unsure: true,
+    });
+    expect(await visualCallPairs(t.f.store, [t.v.nodeId])).toMatchObject([
+      { call: "needs_didi", unsure: true, agreement: "no_answer_yet" },
+    ]);
+  });
+
   it("never changes Didi's answer: the guards read Didi's answer even with a later call on the item", async () => {
     for (const choice of ["approve", "changes_requested"] as const) {
       const t = await setup();
@@ -369,8 +388,20 @@ describe("recording the call (unit, D-228, D-230, D-270)", () => {
   it("reads an answer by its own rules, naming the field and never the value", () => {
     expect(readVisualCallAnswer(CALL)).toEqual({ answer: CALL });
     expect(readVisualCallAnswer({ ...CALL, extra: 1 })).toEqual({
-      problem: "the answer must hold exactly call and reason",
+      problem: "the answer must hold call and reason, and optionally unsure",
     });
+    // The unsure label (D-287): a boolean, and true only with needs_didi.
+    const unsure = { call: "needs_didi", reason: "Hard to tell.", unsure: true };
+    expect(readVisualCallAnswer(unsure)).toEqual({ answer: unsure });
+    expect(readVisualCallAnswer({ ...unsure, unsure: false })).toEqual({
+      answer: { ...unsure, unsure: false },
+    });
+    expect(readVisualCallAnswer({ ...unsure, unsure: "yes" })).toEqual({
+      problem: "unsure must be true or false",
+    });
+    expect(
+      readVisualCallAnswer({ ...unsure, call: "small_tweak_council_would_approve" }),
+    ).toEqual({ problem: "unsure may be true only with needs_didi" });
     expect(readVisualCallAnswer({ call: "yes", reason: "secret-value" })).toEqual({
       problem: "call must be small_tweak_council_would_approve or needs_didi",
     });
@@ -442,6 +473,7 @@ describe("pairing each call with Didi's answer (unit, read-only, D-263)", () => 
     });
     const before = await f.store.listDecisionsForNode(items[0]!.nodeId);
     const pairs = await visualCallPairs(f.store);
+    expect(pairs.every((p) => p.unsure === null)).toBe(true);
     expect(pairs.map((p) => [p.call, p.didi?.outcome ?? null, p.agreement])).toEqual([
       ["small_tweak_council_would_approve", "approved", "agree"],
       ["small_tweak_council_would_approve", "changes_requested", "agree"],
