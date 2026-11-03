@@ -6,8 +6,10 @@
 import { describe, expect, it } from "vitest";
 
 import { approvalDecision } from "../src/core/approvals.ts";
+import { createBuilderRuns } from "../src/core/builder-runs.ts";
 import type { GitHub } from "../src/core/github.ts";
 import { mergeCommitKey } from "../src/core/github-ingest.ts";
+import { visualApprovalTopic } from "../src/core/guards/design.ts";
 import { createLibrary } from "../src/core/library.ts";
 import { privilegedPathTopic } from "../src/core/merge.ts";
 import { reconcile } from "../src/core/reconcile.ts";
@@ -377,6 +379,189 @@ describe("a privileged-path PR (unit: M3.3, D-102)", () => {
     await t.passedOn(HEAD);
     expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
       outcome: "applied",
+    });
+  });
+});
+
+describe("option folders Didi did not approve (unit: D-258)", () => {
+  const OPTIONS = "design/app/login/options";
+
+  /** The runner's screenshot of option `a` and Didi's approval naming it. */
+  async function approveOptionA(t: Awaited<ReturnType<typeof setup>>): Promise<void> {
+    await t.evidence(
+      t.node.id,
+      "screenshot",
+      {
+        source: "option",
+        option: "a",
+        path: `${OPTIONS}/a`,
+        file: "a.png",
+        sha256: "0".repeat(64),
+        width: 100,
+        height: 100,
+        regions: [],
+      },
+      { commitSha: NEW },
+    );
+    await t.store.insertDecision({
+      id: "20000000-0000-4000-8000-000000000001",
+      projectId: t.node.projectId,
+      nodeId: t.node.id,
+      kind: "approval",
+      scope: { topicKey: visualApprovalTopic(t.node.id), option: "a" },
+      textVerbatim: "",
+      byActor: "didi",
+      recordedAt: t.clock.now(),
+    });
+  }
+
+  it("refuses a design PR that still carries an unpicked option folder, merging nothing", async () => {
+    const t = await setup({
+      track: "design",
+      paths: [`${OPTIONS}/a/index.html`, `${OPTIONS}/b/index.html`],
+    });
+    await approveOptionA(t);
+    await t.passedOn(HEAD);
+    const result = await t.merges().mergeOnPass(t.node.id, t.trigger);
+    // Refused before GitHub is read, so no merge check is recorded yet either.
+    expect(result).toMatchObject({ outcome: "rejected", reason: "guard_failed" });
+    expect(result.failedGuards).toContain("unpicked_options_removed");
+    expect(t.github.merges).toEqual([]);
+    expect(result.gateRequestId).toBeUndefined();
+    // The existing fallback: the item stays In QA review with the missing condition named.
+    expect(await t.state()).toBe("in_qa_review");
+  });
+
+  it("merges a design PR that keeps only the approved option's folder", async () => {
+    const t = await setup({
+      track: "design",
+      paths: [`${OPTIONS}/a/index.html`, "design/app/login/spec.md"],
+    });
+    await approveOptionA(t);
+    await t.passedOn(HEAD);
+    expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
+      outcome: "applied",
+    });
+  });
+
+  describe("QA's report on such a PR takes QA's fail move (D-259)", () => {
+    const LEFT = [
+      `${OPTIONS}/a/index.html`,
+      `${OPTIONS}/c/x.css`,
+      `${OPTIONS}/b/p.html`,
+    ];
+    const counters = async (t: Awaited<ReturnType<typeof setup>>) => ({
+      qaRound: await t.store.getCounter(t.node.id, "qa_round"),
+      failure: await t.store.getCounter(t.node.id, "failure"),
+    });
+    async function reported() {
+      const t = await setup({ track: "design", paths: LEFT });
+      await approveOptionA(t);
+      const qa = await t.passedOn(HEAD);
+      return { t, qa, reports: createRunReports(t.deps) };
+    }
+
+    it("sends the item back to Building components, counted once for a repeated report", async () => {
+      const { t, qa, reports } = await reported();
+      const move = await reports.requestReportedMove(qa.id);
+      expect(move).toMatchObject({
+        requested: true,
+        outcome: "applied",
+        toState: "building_components",
+      });
+      expect(move.requested && move.failedGuards).toContain("unpicked_options_removed");
+      expect(t.github.merges).toEqual([]);
+      expect(await t.state()).toBe("building_components");
+      expect(await counters(t)).toEqual({ qaRound: 1, failure: 1 });
+      const [back] = await t.transitions(t.node.id);
+      expect(back).toMatchObject({
+        fromState: "in_qa_review",
+        toState: "building_components",
+        triggerKind: "bot_report",
+        triggerRef: `run:${qa.id}`,
+      });
+      expect(await reports.requestReportedMove(qa.id)).toMatchObject({
+        outcome: "noop",
+        reason: "duplicate_trigger",
+      });
+      expect(await counters(t)).toEqual({ qaRound: 1, failure: 1 });
+      expect(await t.transitions(t.node.id)).toHaveLength(1);
+    });
+
+    it("tells the Designer which folders to delete, sorted", async () => {
+      const { t, qa, reports } = await reported();
+      await reports.requestReportedMove(qa.id);
+      const builders = createBuilderRuns(t.deps);
+      expect(await builders.returnReason(t.node.id)).toEqual({
+        kind: "unpicked_options_left",
+        commitSha: HEAD,
+        folders: [`${OPTIONS}/b`, `${OPTIONS}/c`],
+      });
+    });
+
+    it("refuses the Designer's done report on the same head while the folders remain", async () => {
+      const { t, qa, reports } = await reported();
+      await reports.requestReportedMove(qa.id);
+      t.advanceMinutes(10);
+      const designer = await t.run(t.node.id, "designer", 0, {
+        endedAt: t.clock.now(),
+        outcome: "success",
+      });
+      const done = await reports.requestReportedMove(designer.id);
+      expect(done).toMatchObject({ requested: true, outcome: "rejected" });
+      expect(done.requested && done.failedGuards).toContain(
+        "no_failed_qa_verdict_on_head",
+      );
+      expect(await t.state()).toBe("building_components");
+    });
+
+    it("sends the round that reaches the cap to the Council, counted once", async () => {
+      const t = await setup({ track: "design", paths: LEFT });
+      await approveOptionA(t);
+      await t.store.setCounter(t.node.id, "qa_round", 2, t.clock.now());
+      await t.store.setCounter(t.node.id, "failure", 2, t.clock.now());
+      const qa = await t.passedOn(HEAD);
+      const reports = createRunReports(t.deps);
+      expect(await reports.requestReportedMove(qa.id)).toMatchObject({
+        outcome: "rejected",
+        escalation: { outcome: "applied", toState: "escalated_to_council" },
+      });
+      expect(await t.state()).toBe("escalated_to_council");
+      expect(await counters(t)).toEqual({ qaRound: 3, failure: 3 });
+      await reports.requestReportedMove(qa.id);
+      expect(await counters(t)).toEqual({ qaRound: 3, failure: 3 });
+    });
+
+    it("leaves the item In QA review when the check fails closed for missing data", async () => {
+      // Option folders, but no approved option's folder recorded: nothing for the Designer to fix.
+      const t = await setup({ track: "design", paths: LEFT });
+      const qa = await t.passedOn(HEAD);
+      const move = await createRunReports(t.deps).requestReportedMove(qa.id);
+      expect(move).toMatchObject({ outcome: "rejected" });
+      expect(move.requested && move.failedGuards).toEqual(
+        expect.arrayContaining(["unpicked_options_removed", "qa_failed_with_findings"]),
+      );
+      expect(await t.state()).toBe("in_qa_review");
+      expect(await counters(t)).toEqual({ qaRound: 0, failure: 0 });
+    });
+
+    it("leaves the code track alone: QA's pass with option-like paths merges", async () => {
+      const t = await setup({ paths: LEFT });
+      const qa = await t.passedOn(HEAD);
+      expect(await createRunReports(t.deps).requestReportedMove(qa.id)).toMatchObject({
+        outcome: "applied",
+        toState: "verifying_on_staging",
+      });
+      expect(await counters(t)).toEqual({ qaRound: 0, failure: 0 });
+    });
+  });
+
+  it("leaves the code track's merge unchanged: option-like paths do not stop it", async () => {
+    const t = await setup({ paths: [`${OPTIONS}/b/index.html`, "src/a.ts"] });
+    await t.passedOn(HEAD);
+    expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
+      outcome: "applied",
+      failedGuards: [],
     });
   });
 });

@@ -15,7 +15,7 @@ import {
 import { visualRerun } from "../../flows/lib/council-runs.ts";
 import { VISUAL_CANNOT_TELL_REASON } from "../../src/core/run-reports.ts";
 import { HEAD } from "../reconcile-fixture.ts";
-import { answer, setupVisual } from "../visual-fixture.ts";
+import { answer, OPTION_PATH, setupVisual } from "../visual-fixture.ts";
 import { createFlowFixture } from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
@@ -161,7 +161,7 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     const finish = async (
       f: Awaited<ReturnType<typeof createFlowFixture>>,
       runId: string,
-      result: "differs" | "cannot_tell",
+      result: "match" | "differs" | "cannot_tell",
     ) => {
       f.runtime.status.set(runId, {
         state: "finished",
@@ -191,6 +191,36 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
       expect(designer?.input).toContain(
         "> - The primary button is blue with a dark label.",
       );
+    });
+
+    it("a PR that keeps an unpicked option folder: QA's fail move, counted, and the Designer's input names the folders (D-259)", async () => {
+      const { f, v, result } = await started();
+      if (result.outcome !== "started") throw new Error("not started");
+      const unpicked = "design/gallery/example-button/options/b";
+      await f.evidence(
+        v.nodeId,
+        "ci_run",
+        {
+          conclusion: "success",
+          pr: 7,
+          changedPaths: [`${OPTION_PATH}/index.html`, `${unpicked}/index.html`],
+        },
+        { commitSha: HEAD },
+      );
+      const ended = await finish(f, result.runId, "match");
+      expect(ended).toMatchObject({
+        visual: { recorded: true, outcome: "match" },
+        move: { requested: true, outcome: "applied", toState: "building_components" },
+      });
+      expect(await f.store.getCounter(v.nodeId, "qa_round")).toBe(1);
+      expect(await f.store.getCounter(v.nodeId, "failure")).toBe(1);
+      const designer = f.tasksFor.find((t) => t.run.bot === "designer");
+      expect(designer?.input).toContain("## Why the item came back");
+      expect(designer?.input).toContain(
+        "the pull request still carries the folders of exploration options Didi did not approve",
+      );
+      expect(designer?.input).toContain(`> ${unpicked}\n`);
+      expect(designer?.input).not.toContain(`> ${OPTION_PATH}\n`);
     });
 
     it("cannot_tell: one more run on the same head, then the second cannot_tell escalates to the Council", async () => {

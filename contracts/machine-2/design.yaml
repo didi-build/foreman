@@ -131,7 +131,8 @@ transitions:
     tracks: [design]
     trigger: QA reports a pass on the preview branch. The runner then merges the PR.
     # The merge guard (build plan M3.3, D-218), as on the code track, with production protection
-    # too: a design PR merges into the same repo and main (D-224).
+    # too: a design PR merges into the same repo and main (D-224). The PR also no longer carries
+    # the folder of an option Didi did not approve (D-258).
     guards:
       [
         qa_verdict_independent_on_head,
@@ -141,6 +142,7 @@ transitions:
         qa_rounds_below_cap,
         privileged_paths_approved,
         prod_env_protected,
+        unpicked_options_removed,
       ]
     evidence:
       [visual_comparison, ci_run, preview_check, qa_verdict, merge_check, merge_commit]

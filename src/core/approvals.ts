@@ -106,7 +106,18 @@ export const ANSWER_PROBLEMS = {
     "Approve needs exactly one option: pick the option you approve.",
   changesNeedFeedback: "Request changes needs feedback: say what to change.",
   rejectNeedsFeedback: "Reject needs feedback: say why.",
+  approveQuestionNeedsFeedback:
+    "Approve on a question needs feedback: say what you decided, so the work can go on.",
 } as const;
+
+/**
+ * Gate kinds that put a question to Didi, whose answer the item needs in Didi's own words
+ * (`didi_answer_recorded`). On these, Approve needs feedback too (D-257).
+ */
+const QUESTION_KINDS: ReadonlySet<GateRequest["kind"]> = new Set([
+  "escalation",
+  "council_question",
+]);
 
 /**
  * Why an answer breaks the form's rules (D-254), as a one-line note, or null when it keeps them.
@@ -122,9 +133,12 @@ export function approvalAnswerProblem(
   if (new Set(named).size !== named.length) return ANSWER_PROBLEMS.repeatedOption;
   const hasFeedback = answer.words !== null && answer.words.trim() !== "";
   if (answer.choice === "approve") {
-    return listed.length > 0 && named.length !== 1
-      ? ANSWER_PROBLEMS.approveNeedsOneOption
-      : null;
+    if (listed.length > 0 && named.length !== 1)
+      return ANSWER_PROBLEMS.approveNeedsOneOption;
+    if (QUESTION_KINDS.has(gate.kind) && !hasFeedback) {
+      return ANSWER_PROBLEMS.approveQuestionNeedsFeedback;
+    }
+    return null;
   }
   if (hasFeedback) return null;
   return answer.choice === "reject"

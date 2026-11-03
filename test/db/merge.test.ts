@@ -1,18 +1,21 @@
 // Seam: database integration (docs/test-plan.md, build plan M3.3). The runner's merge on the real
 // Postgres store, as the factory_runner role: the `merge_check` row migration 0010 allows, the
 // `merge_commit` under the ingest key GitHub ingestion uses, the move, and a failure after the
-// merge recovered by the merge pass without a second merge, evidence row or move.
+// merge recovered by the merge pass without a second merge, evidence row or move, and QA's report
+// on a design PR that keeps an unpicked option folder taking QA's fail move, counted once (D-259).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { mergeCommitKey } from "../../src/core/github-ingest.ts";
+import { visualApprovalTopic } from "../../src/core/guards/design.ts";
+import { createRunReports } from "../../src/core/run-reports.ts";
 import type { Store } from "../../src/core/store.ts";
 import {
   applyMigrations,
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
-import { PR, setupMerge } from "../merge-fixture.ts";
+import { NEW, PR, setupMerge } from "../merge-fixture.ts";
 import { HEAD, REPO } from "../reconcile-fixture.ts";
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 
@@ -104,5 +107,56 @@ describe.skipIf(!adminUrl)("the merge on Postgres (database integration, M3.3)",
     expect(t.github.merges).toHaveLength(1);
     expect(await t.kinds("merge_commit")).toHaveLength(1);
     expect(await t.transitions(t.node.id)).toHaveLength(1);
+  });
+  it("sends a design PR that keeps an unpicked option folder back through QA's fail move, counted once (D-259)", async () => {
+    const options = "design/app/login/options";
+    const t = await setupMerge({
+      store,
+      idPrefix: "63000000-0000-4000-8000",
+      slug: "c",
+      pr: 9,
+      track: "design",
+      paths: [`${options}/a/index.html`, `${options}/b/index.html`],
+    });
+    await t.evidence(
+      t.node.id,
+      "screenshot",
+      {
+        source: "option",
+        option: "a",
+        path: `${options}/a`,
+        file: "a.png",
+        sha256: "0".repeat(64),
+        width: 100,
+        height: 100,
+        regions: [],
+      },
+      { commitSha: NEW },
+    );
+    await store.insertDecision({
+      id: t.deps.ids.next(),
+      projectId: t.node.projectId,
+      nodeId: t.node.id,
+      kind: "approval",
+      scope: { topicKey: visualApprovalTopic(t.node.id), option: "a" },
+      textVerbatim: "",
+      byActor: "didi",
+      recordedAt: t.clock.now(),
+    });
+    const qa = await t.passedOn(HEAD);
+    const reports = createRunReports(t.deps);
+    expect(await reports.requestReportedMove(qa.id)).toMatchObject({
+      outcome: "applied",
+      toState: "building_components",
+    });
+    expect(await reports.requestReportedMove(qa.id)).toMatchObject({
+      outcome: "noop",
+      reason: "duplicate_trigger",
+    });
+    expect((await store.getNode(t.node.id))?.state).toBe("building_components");
+    expect(await store.getCounter(t.node.id, "qa_round")).toBe(1);
+    expect(await store.getCounter(t.node.id, "failure")).toBe(1);
+    expect(await t.transitions(t.node.id)).toHaveLength(1);
+    expect(t.github.merges).toEqual([]);
   });
 });

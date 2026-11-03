@@ -2,7 +2,7 @@
 // production protection (ADR 0105), and the merge guard's no-conflict and round cap checks
 // (build plan M3.3, D-218).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
-import type { EvidenceKind } from "../store.ts";
+import type { Evidence, EvidenceKind } from "../store.ts";
 import {
   NO_HEAD,
   headCommit,
@@ -17,6 +17,7 @@ import {
   result,
   visualFindingCount,
 } from "./evidence.ts";
+import { optionFoldersAt } from "./options.ts";
 
 /** A linked PR exists and CI passed on its current head commit. */
 export async function ciGreenOnHead(ctx: GuardContext): Promise<GuardCheck> {
@@ -303,8 +304,38 @@ export async function failedVisualComparison(
 }
 
 /**
+ * On the design track, the option folders Didi did not approve that the PR at the head still
+ * carries, once a QA run on that head has reported (D-259): the merge refuses them
+ * (`unpicked_options_removed`), so QA's report failed the head, like a comparison that differs.
+ * `id` is the head `ci_run`, `folders` the leftover folders sorted, and `reportedAt` the latest
+ * end of such a QA run. Null on the code track, with no QA run on the head that ended `success`,
+ * with no such folder, and when the check fails closed for missing data (no changed paths, a
+ * malformed `ci_run`, or no approved option's folder recorded): there is nothing for the Designer
+ * to fix, so those stay at the merge's fallback.
+ */
+export async function unpickedOptionsLeft(
+  ctx: GuardContext,
+  head: { sha: string; ciRun: Evidence },
+): Promise<{ id: string; folders: string[]; reportedAt: Date } | null> {
+  if (ctx.node.track !== "design") return null;
+  const ends = (await ctx.store.listRuns({ nodeId: ctx.node.id }))
+    .filter((r) => r.bot === "qa" && r.headSha === head.sha && r.outcome === "success")
+    .map((r) => r.endedAt?.getTime() ?? null)
+    .filter((t): t is number => t !== null);
+  if (ends.length === 0) return null;
+  const found = await optionFoldersAt(ctx.store, ctx.node.id, head.ciRun);
+  if ("problem" in found || !found.approved || found.unpicked.length === 0) return null;
+  return {
+    id: head.ciRun.id,
+    folders: found.unpicked,
+    reportedAt: new Date(Math.max(...ends)),
+  };
+}
+
+/**
  * A fail verdict on the head commit lists findings, or, on the design track, the latest visual
- * comparison on the head says `differs` with findings (D-252): either is QA failing the head.
+ * comparison on the head says `differs` with findings (D-252), or QA reported on a head whose PR
+ * still carries option folders Didi did not approve (D-259): each is QA failing the head.
  */
 export async function qaFailedWithFindings(ctx: GuardContext): Promise<GuardCheck> {
   const name = "qa_failed_with_findings";
@@ -329,6 +360,15 @@ export async function qaFailedWithFindings(ctx: GuardContext): Promise<GuardChec
       `the visual comparison differs on head ${head.sha}: ${visual.findings} finding(s)`,
     );
   }
+  const left = await unpickedOptionsLeft(ctx, head);
+  if (left) {
+    return result(
+      name,
+      true,
+      [left.id],
+      `option folders Didi did not approve are still in the PR on head ${head.sha}: ${left.folders.length} folder(s)`,
+    );
+  }
   if (!evidence) return result(name, false, [], `no QA verdict on head ${head.sha}`);
   if (!verdict)
     return result(name, false, [evidence.id], "malformed qa_verdict payload");
@@ -340,7 +380,8 @@ export async function qaFailedWithFindings(ctx: GuardContext): Promise<GuardChec
 /**
  * QA has not failed the current head (M3.5, closes O-41's gap): no `qa_verdict` on the head says
  * `fail`, and on the design track the latest `visual_comparison` on it does not say `differs`
- * (D-252). A head QA already failed goes back to QA only as a new commit, so a done report on the
+ * (D-252) and the PR does not still carry unpicked option folders after QA reported on it
+ * (D-259). A head QA already failed goes back to QA only as a new commit, so a done report on the
  * unchanged head is refused (and counted, P-03) instead of paying for QA on code it failed. A
  * malformed verdict on the head fails the guard, since it cannot be read as anything but a fail.
  */
@@ -364,6 +405,9 @@ export async function noFailedQaVerdictOnHead(ctx: GuardContext): Promise<GuardC
   // D-252: a visual comparison that differs on the head fails it too.
   const visual = await failedVisualComparison(ctx, head.sha);
   if (visual) failed.push(visual.id);
+  // D-259: so does a PR QA reported on that still carries unpicked option folders.
+  const left = await unpickedOptionsLeft(ctx, head);
+  if (left) failed.push(left.id);
   if (failed.length > 0) {
     return result(
       name,
