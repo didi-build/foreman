@@ -25,6 +25,9 @@ flows:
     # GitHub credential (D-127) once that App exists (D-178), then the staging pass (M3.4, O-37),
     # whose check needs the deploy adapter's staging target (M3.7), then the builder runs pass,
     # which starts the fix round of an item a failed QA round or staging check sent back (O-41).
+    # Its plan approval pass opens Didi's request for each plan the planning chat submitted and
+    # takes the idea's move on Didi's answer (D-266); its hold release pass releases a held item
+    # Didi approved (D-269).
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
@@ -76,7 +79,9 @@ flows:
     path: f/foreman/approval
     # A Windmill flow of two steps, like the M0.4 spike: `ask` suspends with the form below and
     # sends the approval page to Didi only (D-170), `record` is this entry. `ask` needs the
-    # notification adapter and the gate lifecycle (M4.1), so only `record` is built.
+    # notification adapter and the gate lifecycle (M4.1), so only `record` is built. The same form
+    # answers the planning chat's plan-approval request (D-266) and a held item's release request
+    # (D-269): neither lists options, so the Options field shows none.
     entry: flows/approval-resume.ts
     trigger: approval_resume
     suspend:
@@ -120,6 +125,12 @@ resources:
       holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
     - path: platform/agent-cluster/runner-token
       holds: The runner's cluster token (ADR 0106 section 1, first-hosting runbook step 8)
+    # Read by the state API, not by a flow (D-266): kept here so the vault holds it like every
+    # other secret, and copied into the state API's Secret `state-api-planning-token` (key
+    # `sha256`) at first hosting. The token itself is kept only in the planning chat's settings.
+    - path: platform/state-api/planning-token-sha256
+      holds: The SHA-256 of the planning chat's state API token (D-266). New credential at first hosting
+      read_by: state API
   values:
     - name: spec_version
       holds: The git commit of docs/spec.md and contracts/ the bundle was built from

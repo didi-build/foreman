@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { loadContractFiles } from "../src/adapters/contracts-file/load.ts";
+import { loadAllContractFiles } from "../src/adapters/contracts-file/load.ts";
 import { validateContracts } from "../src/core/contracts.ts";
 import { GUARD_NAMES, GUARDS } from "../src/core/guards/index.ts";
 
@@ -16,8 +16,8 @@ function adrGuardNames(): string[] {
 }
 
 describe("guard registry (unit: registry against ADR 0105 and the contract files)", () => {
-  it("reads 29 names from the ADR table (24 from M2.2, two from M3.3, one from M3.5, one from D-231, one from D-258), so the comparison below is not empty", () => {
-    expect(adrGuardNames()).toHaveLength(29);
+  it("reads 31 names from the ADR table (24 from M2.2, two from M3.3, one from M3.5, one from D-231, one from D-258, two from D-266), so the comparison below is not empty", () => {
+    expect(adrGuardNames()).toHaveLength(31);
   });
 
   it("holds exactly the ADR's guards", () => {
@@ -28,9 +28,9 @@ describe("guard registry (unit: registry against ADR 0105 and the contract files
     for (const name of GUARD_NAMES) expect(typeof GUARDS[name], name).toBe("function");
   });
 
-  it("validates the real contracts with no problems, and every guard is used", () => {
+  it("validates the real contracts of both machines with no problems, and every guard is used", () => {
     const { contracts, problems } = validateContracts(
-      loadContractFiles("c".repeat(40)).raw,
+      loadAllContractFiles("c".repeat(40)).raw,
       GUARD_NAMES,
     );
     expect(problems).toEqual([]);

@@ -118,6 +118,9 @@ function ops(state: State): StoreOps {
     async getProject(id) {
       return copy(state.projects.get(id) ?? null);
     },
+    async getProjectBySlug(slug) {
+      return copy([...state.projects.values()].find((p) => p.slug === slug) ?? null);
+    },
 
     async insertNode(n) {
       insertUnique(state.nodes, n.id, n, "nodes_pkey");

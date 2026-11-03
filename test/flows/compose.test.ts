@@ -10,6 +10,7 @@ import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
 import {
   compose,
   NotBuiltError,
+  unregisteredRunnerAppTokens,
   unregisteredInstallationTokens,
   type RunToStart,
 } from "../../flows/lib/compose.ts";
@@ -142,6 +143,20 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(deps.stagingChecker.check({} as never)).rejects.toThrow(
         /deploy adapter's staging target/,
       );
+      // The repo map and the screenshot bundles wait on the runner App's read tokens (D-267).
+      await expect(deps.repoMaps.read("didi-build/x", "b".repeat(40))).rejects.toThrow(
+        NotBuiltError,
+      );
+      await expect(deps.repoMaps.read("didi-build/x")).rejects.toThrow(/runner App/);
+      await expect(
+        deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
+      ).rejects.toThrow(NotBuiltError);
+      await expect(
+        unregisteredRunnerAppTokens().mint({
+          repository: "didi-build/x",
+          permission: "contents",
+        }),
+      ).rejects.toThrow(/contents read and actions read/);
     } finally {
       await deps.close();
     }

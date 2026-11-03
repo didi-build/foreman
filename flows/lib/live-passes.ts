@@ -14,12 +14,21 @@
 // the start of its track, cancelling its runs first (D-231), or opens a merged item's rework item
 // (D-233). The Triage pass then takes each idea in Plan accepted to Triage and gives each idea in
 // Triage its run, its re-run, or the Council after two runs with no usable answer (M3.6,
-// ./triage-runs.ts). Last, the builder runs pass starts the fix round of each item a failed
+// ./triage-runs.ts). The hold release pass then clears the hold flag of each held item whose
+// release request Didi approved, when the approval step could not (a switch held it, or it was cut
+// short; D-269, src/core/hold-release.ts). The plan approval pass runs before the Triage pass: for
+// each idea in Submitted or Council planning with a plan from the planning chat, it opens Didi's
+// plan-approval request for the latest plan, or takes the move Didi's answer calls for (D-266,
+// src/core/plans.ts), so an idea Didi approved goes on to Triage in the same pass. Last, the builder runs pass starts the fix round of each item a failed
 // QA round, a staging check, a refused done report or an answered escalation sent back, and
 // resumes a builder run queued after `usage_exhausted` (O-41, O-43). It runs after the staging and
 // escalation passes, so an escalation that pass recovers is taken first. Under any other stop,
 // none runs.
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
+import {
+  createHoldReleases,
+  type HoldReleaseStep,
+} from "../../src/core/hold-release.ts";
 import { createMerges, type MergeResult } from "../../src/core/merge.ts";
 import type { ReconcileReport } from "../../src/core/reconcile.ts";
 import {
@@ -29,6 +38,7 @@ import {
 } from "../../src/core/staging.ts";
 import { startBuilderRuns, type BuilderRunStart } from "./builder-runs.ts";
 import { triagePass, type TriagePassStep } from "./triage-runs.ts";
+import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans.ts";
 import type { FlowDeps } from "./compose.ts";
 import type { FollowUpStep } from "../../src/core/council.ts";
 import {
@@ -52,8 +62,12 @@ export interface LivePasses {
   councilRuns: CouncilPassStep[] | null;
   /** What the redo pass did for each stale item with a Council redo standing (D-231). */
   redos: RedoPassStep[] | null;
+  /** What the plan approval pass did for each idea with a plan from the planning chat (D-266). */
+  plans: PlanApprovalStep[] | null;
   /** What the Triage pass did for each idea in Plan accepted or Triage (M3.6). */
   triage: TriagePassStep[] | null;
+  /** What the hold release pass did for each held item with an answered release request (D-269). */
+  holdReleases: HoldReleaseStep[] | null;
   /** The builder runs due with no move, and what their dispatch did. */
   builderRuns: BuilderRunStart[] | null;
   /** Settings the passes needed and could not read. */
@@ -73,7 +87,9 @@ export async function runLivePasses(
       followUps: null,
       councilRuns: null,
       redos: null,
+      plans: null,
       triage: null,
+      holdReleases: null,
       builderRuns: null,
       problems: [],
     };
@@ -86,7 +102,17 @@ export async function runLivePasses(
   const followUps = await followUpPass(deps);
   const councilRuns = await councilPass(deps);
   const redos = await redoPass(deps);
+  const planApprovals = createPlanApprovals(deps);
+  const plans: PlanApprovalStep[] = [];
+  for (const ideaId of await planApprovals.pending()) {
+    plans.push(await planApprovals.step(ideaId));
+  }
   const triage = await triagePass(deps);
+  const releases = createHoldReleases(deps);
+  const holdReleases: HoldReleaseStep[] = [];
+  for (const nodeId of await releases.pending()) {
+    holdReleases.push(await releases.release(nodeId));
+  }
   const builderRuns = await startBuilderRuns(deps);
   return {
     merged,
@@ -96,7 +122,9 @@ export async function runLivePasses(
     followUps,
     councilRuns,
     redos,
+    plans,
     triage,
+    holdReleases,
     builderRuns,
     problems: problem ? [problem] : [],
   };

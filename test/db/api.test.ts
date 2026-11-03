@@ -1,6 +1,8 @@
 // Seam: API against the database (docs/test-plan.md, build plan M1.4). The state API on the real
 // Postgres store, connected as the factory_api role, so ADR 0104's grants and row level security
 // back up the API's own checks (ADR 0102, essentials 1 and 6).
+import { randomBytes } from "node:crypto";
+
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -21,6 +23,8 @@ import { startService, type RunningService } from "../../src/service-kit/server.
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 
 const DB = `foreman_api_test_${process.pid}`;
+/** The planning chat's token for this test run only (D-266); never asserted on or logged. */
+const PLANNING_TOKEN = randomBytes(32).toString("base64url");
 const NOW = new Date("2026-10-29T12:00:00Z");
 const HEAD = "c".repeat(40);
 const PROJECT = "00000000-0000-4000-8000-0000000000b1";
@@ -186,7 +190,16 @@ describe.skipIf(!adminUrl)(
         name: "state-api-db-test",
         port: 0,
         logger: createLogger("state-api-db-test", () => undefined),
-        handle: createApiHandler({ store, library, clock }),
+        handle: createApiHandler({
+          store,
+          library,
+          clock,
+          planning: {
+            tokenSha256: hashToken(PLANNING_TOKEN),
+            ids: { next: nextId },
+            store,
+          },
+        }),
       });
       base = `http://127.0.0.1:${service.port}`;
     });
@@ -319,6 +332,40 @@ describe.skipIf(!adminUrl)(
       expect((await call("GET", `/nodes/${item}`, expired)).status).toBe(401);
       const token = await issue("council");
       expect((await call("GET", `/nodes/${foreignItem}`, token)).status).toBe(404);
+    });
+
+    it("records the planning chat's plan as factory_api, and nothing a guard trusts (D-266)", async () => {
+      const result = await call("POST", "/plans", PLANNING_TOKEN, {
+        projectSlug: "rehearsal",
+        title: "Settings page",
+        plan: "Plan: a settings page.",
+        productDirection: "Settings stay on one page.",
+        answers: [{ question: "One page?", answer: "Yes." }],
+      });
+      expect(result.status).toBe(201);
+      const ideaId = result.body.ideaId as string;
+      const idea = await runner.getNode(ideaId);
+      expect(idea).toMatchObject({
+        projectId: PROJECT,
+        type: "idea",
+        state: "submitted",
+      });
+      const decisions = await runner.listDecisionsForNode(ideaId);
+      expect(decisions.map((d) => [d.kind, d.byActor]).sort()).toEqual([
+        ["interview_answer", "planning"],
+        ["product_direction", "planning"],
+      ]);
+      expect(
+        (await runner.listEvidence({ nodeId: ideaId })).map((e) => [
+          e.kind,
+          e.recordedBy,
+          e.runId,
+        ]),
+      ).toEqual([["agent_report", "planning", null]]);
+      expect(await runner.listTransitions(ideaId)).toEqual([]);
+      expect(await runner.listOpenGateRequests(PROJECT)).toEqual([]);
+      // The planning chat's token is refused everywhere else.
+      expect((await call("GET", `/nodes/${item}`, PLANNING_TOKEN)).status).toBe(403);
     });
 
     it("is backed by the database: factory_api cannot write a ci_run or move a node", async () => {

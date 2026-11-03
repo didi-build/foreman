@@ -362,6 +362,8 @@ export class StoreConflictError extends Error {
 export interface StoreOps {
   insertProject(project: Project): Promise<void>;
   getProject(id: string): Promise<Project | null>;
+  /** The project with this slug (unique, schema), or null. */
+  getProjectBySlug(slug: string): Promise<Project | null>;
 
   insertNode(node: Node): Promise<void>;
   getNode(id: string): Promise<Node | null>;

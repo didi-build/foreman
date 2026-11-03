@@ -4,13 +4,23 @@
 // a synthetic accepted plan run through Triage gives the expected items, links and tracks; the bad
 // answers are rejected; the re-run gets the reason; a second bad answer goes to the Council, whose
 // decision returns the idea to Triage. The answer rules themselves are in test/triage.test.ts.
+import { gzipSync } from "node:zlib";
+
 import { describe, expect, it } from "vitest";
 
+import { run as resume } from "../../flows/approval-resume.ts";
+import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import { createGitHubRepoMaps } from "../../src/adapters/repo-map/github.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
+import {
+  createHoldReleases,
+  HOLD_RELEASE_QUESTION,
+  holdReleaseTopic,
+} from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import {
   needsDidiTopic,
@@ -20,6 +30,7 @@ import {
 } from "../../src/core/triage.ts";
 import type { DecisionPointRecord, Node, Store } from "../../src/core/store.ts";
 import {
+  answerWith,
   BAD_ANSWERS,
   DIRECTION,
   goodAnswer,
@@ -215,7 +226,8 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
     expect(await edges("split_into")).toEqual(
       items.map((n) => `${idea.id}>${n.id}`).sort(),
     );
-    // The needsDidi item has its gate request for Didi, and nothing else has one.
+    // The needsDidi item has its gate request for Didi, the held item its release request
+    // (D-269), and nothing else has one.
     const gates = await f.store.listOpenGateRequests(f.projectId);
     expect(gates).toMatchObject([
       {
@@ -225,7 +237,23 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
         owner: "didi",
         blocking: true,
       },
+      {
+        nodeId: id("old-settings"),
+        topicKey: holdReleaseTopic(id("old-settings")),
+        kind: "scope",
+        owner: "didi",
+        blocking: false,
+        payload: {
+          question: HOLD_RELEASE_QUESTION,
+          title: "Item old-settings",
+          description: "The old-settings work.",
+          ideaId: idea.id,
+          note: goodAnswer().note,
+        },
+      },
     ]);
+    // The release request uses the approval form with no options (D-254).
+    expect((gates[1]?.payload as { options?: unknown }).options).toBeUndefined();
     // The plan and the product direction are on every item, so plan_attached passes.
     for (const item of items) {
       expect(
@@ -259,6 +287,193 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
       outcome: "already_recorded",
     });
     expect(await f.footprint(idea.id, ...items.map((n) => n.id))).toBe(before);
+  });
+});
+
+describe("a design item Triage marks as blocked (flow: fake model, D-268)", () => {
+  it("waits for its blocker, and starts once the blocker is Done", async () => {
+    const f = await createFlowFixture();
+    const { start } = await startedTriage(f);
+    // The design item now waits on the DNS item too.
+    const answer = answerWith((a) => {
+      const design = a.items.find((i) => i.key === "settings-design");
+      design?.blockedBy.push("settings-dns");
+    });
+    expect(await finish(f, start.run.id, answer)).toMatchObject({
+      triageAnswer: { recorded: true },
+    });
+    const items = (await f.store.listNodes({ projectId: f.projectId })).filter(
+      (n) => n.type === "work_item",
+    );
+    const byKey = (key: string) =>
+      items.find((n) => (n.body as { triageKey: string }).triageKey === key) as Node;
+    const design = byKey("settings-design");
+    const dns = byKey("settings-dns");
+    // The design track's only start state is Ready for design exploration, blocked or not.
+    expect(design.state).toBe("ready_for_design_exploration");
+
+    const waiting = await dispatch(f.deps, { nodeId: design.id, role: "designer" });
+    expect(waiting).toMatchObject({
+      outcome: "not_started",
+      failedGuards: ["blockers_done"],
+    });
+    expect(await f.store.listRuns({ nodeId: design.id })).toEqual([]);
+
+    // The blocker reaches Done (written directly: its own track is not under test here).
+    const blocker = (await f.store.getNode(dns.id)) as Node;
+    const at = f.clock.now();
+    await f.store.changeNodeState(dns.id, blocker.version, {
+      state: "done",
+      substate: null,
+      ownerRole: "runner",
+      blockedReason: null,
+      stateSince: at,
+      updatedAt: at,
+    });
+    const started = await dispatch(f.deps, { nodeId: design.id, role: "designer" });
+    expect(started).toMatchObject({ outcome: "started" });
+    expect((await f.store.getNode(design.id))?.state).toBe("in_design_exploration");
+  });
+});
+
+/** A handoff whose held item waits on nothing else, with its release request (D-269). */
+async function heldItem(f: FlowFixture) {
+  const { start } = await startedTriage(f);
+  const answer = answerWith((a) => {
+    const old = a.items.find((i) => i.key === "old-settings");
+    if (old) old.blockedBy = [];
+  });
+  expect(await finish(f, start.run.id, answer)).toMatchObject({
+    triageAnswer: { recorded: true },
+  });
+  const held = (await f.store.listNodes({ projectId: f.projectId })).find(
+    (n) => (n.body as { triageKey?: string }).triageKey === "old-settings",
+  ) as Node;
+  expect(held).toMatchObject({ state: "ready_for_dev", hold: true });
+  const request = await f.store.findOpenGateRequest(
+    f.projectId,
+    holdReleaseTopic(held.id),
+  );
+  if (!request) throw new Error("no release request");
+  return { held, request };
+}
+
+const answerPage = (
+  f: FlowFixture,
+  gateRequestId: string,
+  decision: string,
+  feedback = "",
+) =>
+  resume(f.deps, {
+    gateRequestId,
+    resume: { decision, options: [], feedback },
+    approvers: ["anonymous"],
+  });
+
+describe("a held item's release request (flow: fake model, D-269)", () => {
+  it("keeps the held item from starting; Didi's Approve releases it once and it starts", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    const waiting = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
+    expect(waiting).toMatchObject({ outcome: "not_started" });
+    expect((waiting as { failedGuards: string[] }).failedGuards).toContain(
+      "agent_ready_not_on_hold",
+    );
+    expect(await f.store.listRuns({ nodeId: held.id })).toEqual([]);
+
+    // Approve needs no feedback here: a release request is not a question (D-254, D-257).
+    const approved = await answerPage(f, request.id, "Approve");
+    expect(approved).toMatchObject({
+      outcome: "recorded",
+      heldBy: null,
+      holdRelease: { nodeId: held.id, step: "released" },
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(false);
+    const decisions = (await f.store.listDecisionsForNode(held.id)).filter(
+      (d) => d.kind === "approval",
+    );
+    expect(decisions).toMatchObject([
+      {
+        byActor: "didi",
+        scope: { topicKey: holdReleaseTopic(held.id), gateKind: "scope" },
+      },
+    ]);
+
+    // A repeated answer records nothing more, and the release is not taken again.
+    const before = await f.footprint(held.id);
+    expect(await answerPage(f, request.id, "Approve")).toEqual({
+      outcome: "already_closed",
+    });
+    expect(await createHoldReleases(f.deps).release(held.id)).toEqual({
+      nodeId: held.id,
+      step: "not_held",
+    });
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
+    expect(await f.footprint(held.id)).toBe(before);
+
+    const started = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
+    expect(started).toMatchObject({ outcome: "started" });
+  });
+
+  it("keeps the item held on Reject, with Didi's words recorded", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    const words = "Not yet.\nWait until the new page has run for a week.";
+    expect(await answerPage(f, request.id, "Reject", words)).toMatchObject({
+      outcome: "recorded",
+      holdRelease: { nodeId: held.id, step: "kept_held" },
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+    expect(await f.store.listDecisionsForNode(held.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "answer",
+          textVerbatim: words,
+          scope: expect.objectContaining({ outcome: "rejected" }),
+        }),
+      ]),
+    );
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
+    expect(
+      await dispatch(f.deps, { nodeId: held.id, role: "developer" }),
+    ).toMatchObject({
+      outcome: "not_started",
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+  });
+
+  it("keeps it held on Request changes, and a Reject with no feedback records nothing", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    const reopened = await answerPage(f, request.id, "Reject");
+    expect(reopened).toMatchObject({
+      outcome: "reopened",
+      note: "Reject needs feedback: say why.",
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+    const fresh = (reopened as { gateRequestId: string }).gateRequestId;
+    expect(
+      await answerPage(f, fresh, "Request changes", "Split it first."),
+    ).toMatchObject({ outcome: "recorded", holdRelease: { step: "kept_held" } });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+  });
+
+  it("records Didi's Approve under dry run and releases the item once the runner is live", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    await f.setting("dry_run", true);
+    expect(await answerPage(f, request.id, "Approve")).toMatchObject({
+      outcome: "recorded",
+      heldBy: "dry_run",
+      holdRelease: { step: "dry_run" },
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+    await f.live();
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([
+      { nodeId: held.id, step: "released" },
+    ]);
+    expect((await f.store.getNode(held.id))?.hold).toBe(false);
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
   });
 });
 
@@ -400,6 +615,57 @@ describe("Triage's switches and refusals (flow: fake model, D-201)", () => {
       { step: "start", result: { outcome: "start_failed" } },
     ]);
     expect(await f.store.listRuns({ nodeId: idea.id })).toEqual([]);
+  });
+
+  it("builds the brief from GitHub's archive at the default branch's head through the runner App's read token (D-267)", async () => {
+    const f = await createFlowFixture();
+    const idea = await acceptedIdea(f);
+    const minted: unknown[] = [];
+    const top = `rehearsal-${MAP_COMMIT.slice(0, 7)}`;
+    const tar = (path: string, text: string) => {
+      const header = Buffer.alloc(512);
+      header.write(`${top}/${path}`, 0);
+      header.write(`${text.length.toString(8).padStart(11, "0")}\0`, 124);
+      header.write("0", 156);
+      header.write("ustar\0", 257);
+      const body = Buffer.alloc(Math.ceil(text.length / 512) * 512);
+      body.write(text);
+      return Buffer.concat([header, body]);
+    };
+    const archive = gzipSync(
+      Buffer.concat([
+        tar("package.json", '{"scripts":{"check":"vitest run"}}'),
+        tar("src/settings/store.ts", "export function readSettings() {}"),
+        Buffer.alloc(1024),
+      ]),
+    );
+    const repoMaps = createGitHubRepoMaps({
+      tokens: {
+        async mint(request) {
+          minted.push(request);
+          return "fake-token-for-tests";
+        },
+      },
+      http: {
+        async get({ path }) {
+          if (path === `/repos/${REPO}`)
+            return { status: 200, body: Buffer.from('{"default_branch":"main"}') };
+          if (path === `/repos/${REPO}/commits/main`)
+            return { status: 200, body: Buffer.from(MAP_COMMIT) };
+          if (path === `/repos/${REPO}/tarball/${MAP_COMMIT}`)
+            return { status: 200, body: archive };
+          return { status: 404, body: new Uint8Array() };
+        },
+      },
+    });
+    const steps = await triagePass({ ...f.deps, repoMaps }, [idea.id]);
+    expect(steps).toMatchObject([{ step: "start", result: { outcome: "started" } }]);
+    expect(minted).toEqual([{ repository: REPO, permission: "contents" }]);
+    const start = lastTriageStart(f);
+    expect(start.run.headSha).toBe(MAP_COMMIT);
+    expect(start.input).toContain(`at commit ${MAP_COMMIT}`);
+    expect(start.input).toContain("src/settings/store.ts");
+    expect(start.input).toContain("- check: vitest run");
   });
 
   it("the schema the run is given is Triage's answer schema", () => {

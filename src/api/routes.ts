@@ -1,9 +1,18 @@
 // The state API's routes (build plan M1.4, ADR 0102). A thin shell over the library: it checks
 // who is calling and what that role may do, then records what the caller reports. No route
 // changes a node's state; only the runner moves nodes, through the library (essential 1).
+//
+// The planning chat's identity (D-266, ./auth.ts) may call `POST /plans` and nothing else, and no
+// run token may call `POST /plans`. Every other route refuses a planning caller with 403.
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { LibraryError, type Clock, type Library } from "../core/library.ts";
+import {
+  LibraryError,
+  type Clock,
+  type IdSource,
+  type Library,
+} from "../core/library.ts";
+import { createPlanSubmissions, readPlanSubmission } from "../core/plans.ts";
 import {
   OUT_OF_SCOPE_FINDINGS,
   readOutOfScopeFindings,
@@ -16,11 +25,12 @@ import {
   type EdgeType,
   type Json,
   type Node,
+  type Store,
   type StoreOps,
 } from "../core/store.ts";
 import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
-import { authenticate, type Caller } from "./auth.ts";
-import { IDEA_ENTRY } from "./entry.ts";
+import { authenticate, isPlanningCaller, type Caller } from "./auth.ts";
+import { ENTRY_CONTRACTS, IDEA_ENTRY } from "./entry.ts";
 
 /** Request bodies above this size are refused before parsing. */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -207,13 +217,55 @@ export interface ApiOptions {
   store: StoreOps;
   library: Library;
   clock: Clock;
+  /**
+   * The planning chat's identity (D-266): the SHA-256 of its token, and the id source its
+   * submissions are recorded with. Left out, no planning token is accepted.
+   */
+  planning?: { tokenSha256: string; ids: IdSource; store: Store };
 }
+
+/** The planning chat's only route (D-266). */
+const PLANS_PATH = /^\/plans$/;
+
+const SUBMIT_REFUSALS = {
+  no_project: { status: 404, error: "project not found" },
+  no_idea: { status: 404, error: "idea not found" },
+  not_submittable: {
+    status: 409,
+    error: "the idea is not waiting for a plan (Submitted or Council planning)",
+  },
+} as const;
 
 export function createApiHandler({
   store,
   library,
   clock,
+  planning,
 }: ApiOptions): RequestHandler {
+  const submissions = planning
+    ? createPlanSubmissions({
+        store: planning.store,
+        contracts: ENTRY_CONTRACTS,
+        clock,
+        ids: planning.ids,
+      })
+    : null;
+
+  /** `POST /plans` for the planning chat: one checked submission, recorded once (D-266). */
+  async function submitPlan(request: IncomingMessage) {
+    if (!submissions) throw new HttpError(401, "unauthorized");
+    const read = readPlanSubmission(await readBody(request));
+    if ("problem" in read) throw new HttpError(400, read.problem);
+    const recorded = await submissions.submit(read.submission);
+    if (!recorded.recorded) {
+      const refusal = SUBMIT_REFUSALS[recorded.reason];
+      throw new HttpError(refusal.status, refusal.error);
+    }
+    return {
+      status: 201,
+      body: { ideaId: recorded.ideaId, created: recorded.created },
+    };
+  }
   /** A node the caller may see: it exists and belongs to the caller's project, or 404. */
   async function nodeInProject(caller: Caller, nodeId: string): Promise<Node> {
     const node = await store.getNode(nodeId);
@@ -410,9 +462,33 @@ export function createApiHandler({
     response: ServerResponse,
   ): Promise<boolean> => {
     const path = pathOnly(request.url);
+    const plans = request.method === "POST" && PLANS_PATH.test(path);
     const route = routes.find((r) => r.method === request.method && r.path.test(path));
-    if (!route) return false;
+    if (!route && !plans) return false;
     try {
+      const planningCaller = isPlanningCaller(
+        request.headers.authorization,
+        planning?.tokenSha256 ?? null,
+      );
+      if (plans) {
+        if (planningCaller) {
+          const result = await submitPlan(request);
+          sendJson(response, result.status, result.body);
+          return true;
+        }
+        // A run token is never the planning chat (D-266).
+        const agent = await authenticate(
+          store,
+          request.headers.authorization,
+          clock.now(),
+        );
+        throw agent
+          ? new HttpError(403, "this role may not do that")
+          : new HttpError(401, "unauthorized");
+      }
+      if (!route) return false;
+      // The planning chat may call nothing but `POST /plans` (D-266).
+      if (planningCaller) throw new HttpError(403, "this role may not do that");
       const caller = await authenticate(
         store,
         request.headers.authorization,

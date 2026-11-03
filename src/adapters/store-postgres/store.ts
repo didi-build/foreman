@@ -96,6 +96,10 @@ function ops(db: Queryable): StoreOps {
       const r = await one("select * from factory.projects where id = $1", [id]);
       return r && toProject(r);
     },
+    async getProjectBySlug(slug) {
+      const r = await one("select * from factory.projects where slug = $1", [slug]);
+      return r && toProject(r);
+    },
 
     async insertNode(n) {
       await exec(

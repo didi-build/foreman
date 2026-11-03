@@ -35,6 +35,7 @@ import type {
   VolumeMount,
 } from "../../src/adapters/agent-runtime/kubernetes/objects.ts";
 import { WEBHOOK_PATH } from "../../src/github-receiver/handler.ts";
+import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
 import { secretEnvName } from "../../src/service-kit/config.ts";
 
 export const PLATFORM_NAMESPACE = "foreman-platform";
@@ -80,6 +81,11 @@ export const PLATFORM_SECRETS = {
   receiverDatabase: { name: "github-receiver-database", key: "url" },
   receiverWebhookSecret: { name: "github-receiver-webhook-secret", key: "value" },
   tunnelToken: { name: "cloudflared-tunnel-token", key: "token" },
+  /**
+   * The SHA-256 of the planning chat's token (D-266). Optional: the state API starts without it
+   * and then accepts no planning token, until Didi creates the credential at first hosting.
+   */
+  stateApiPlanningToken: { name: "state-api-planning-token", key: "sha256" },
 } as const;
 
 /** The receiver's webhook secret path (src/github-receiver/main.ts). */
@@ -357,6 +363,12 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
       env: [
         { name: "PORT", value: String(STATE_API.port) },
         secretEnv("DATABASE_URL", PLATFORM_SECRETS.stateApiDatabase),
+        {
+          name: secretEnvName(PLANNING_TOKEN_SHA256_PATH),
+          valueFrom: {
+            secretKeyRef: { ...PLATFORM_SECRETS.stateApiPlanningToken, optional: true },
+          },
+        },
       ],
       port: STATE_API.port,
       probe: health(STATE_API.port, "/health"),

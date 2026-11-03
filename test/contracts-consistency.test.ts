@@ -228,6 +228,28 @@ describe("every merging move carries the merge guard (contract consistency, D-21
   });
 });
 
+describe("every track's dispatch out of its start state waits for blockers (contract consistency, D-268)", () => {
+  // A design item Triage marks as blocked by another item waits for it like a code item, so the
+  // dispatch moves of both tracks check blockers_done, and the spec's design row says so.
+  it.each([
+    { file: "code.yaml", move: "ready_for_dev->in_development" },
+    {
+      file: "design.yaml",
+      move: "ready_for_design_exploration->in_design_exploration",
+    },
+  ])("$file $move checks blockers_done", ({ file, move }) => {
+    const found = fileTransitions(file).find((t) => `${t.from}->${t.to}` === move);
+    expect(found?.guards).toContain("blockers_done");
+  });
+
+  it("the spec's design dispatch row names the blockers", () => {
+    const row = tableRows("Design track").find(
+      (r) => r[0] === "Ready for design exploration to In design exploration",
+    );
+    expect(row?.[1]).toMatch(/every item blocking it is Done/);
+  });
+});
+
 describe("runner-only moves are the ones a runner step owns (contract consistency, O-54)", () => {
   // The guards of the moves whose writes only their runner step makes: the Council's redo
   // (cancel, flag, counters, D-231) and the escalation's way back (counters, O-46, D-227).
@@ -301,8 +323,24 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       );
     }
     expect(parsed.transitions.map((t) => `${t.from}->${t.to}`)).toEqual([
+      "submitted->plan_accepted",
+      "council_planning->plan_accepted",
+      "submitted->council_planning",
       "plan_accepted->triage",
       "triage->handed_off",
+    ]);
+  });
+
+  it("only the runner takes the planning chat's moves, on Didi's answer (D-266, D-230)", () => {
+    const planning = parsed.transitions.filter((t) =>
+      (t.guards ?? []).some((g) => g.startsWith("plan_") && g !== "plan_attached"),
+    );
+    expect(
+      planning.map((t) => [`${t.from}->${t.to}`, t.guards, t.runner_only]),
+    ).toEqual([
+      ["submitted->plan_accepted", ["plan_approval_recorded"], true],
+      ["council_planning->plan_accepted", ["plan_approval_recorded"], true],
+      ["submitted->council_planning", ["plan_return_recorded"], true],
     ]);
   });
 });

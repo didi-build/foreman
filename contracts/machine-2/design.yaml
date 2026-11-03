@@ -84,7 +84,8 @@ transitions:
     to: in_design_exploration
     tracks: [design]
     trigger: The item enters the state, or the reconcile pass finds it ready and not running.
-    guards: [plan_attached, no_pending_gate, agent_ready_not_on_hold]
+    # A design item Triage marks as blocked by another item waits for it like a code item (D-268).
+    guards: [plan_attached, blockers_done, no_pending_gate, agent_ready_not_on_hold]
     evidence: [dispatch_record]
     timeout: Next reconcile cycle.
     fallback: Stays ready and the loop retries.

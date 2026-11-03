@@ -31,26 +31,26 @@ These three are proposals that need Didi's confirmation with the rest of the sch
 
 ## nodes
 
-| Column                 | Type        | Notes                                                                                                                                                |
-| ---------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| id                     | uuid pk     |                                                                                                                                                      |
-| project_id             | uuid fk     | Required on every node                                                                                                                               |
-| type                   | text        | `idea` or `work_item`                                                                                                                                |
-| track                  | text null   | `design`, `code`, `infra`, `docs`. Null for ideas                                                                                                    |
-| state                  | text        | Current state name from the contracts                                                                                                                |
-| substate               | text null   | For example `writing_spec`, `building_components`, `verifying_on_staging`. Needed because Linear shares statuses across substates                    |
-| owner_role             | text        | One owner role per state                                                                                                                             |
-| title                  | text        |                                                                                                                                                      |
-| body                   | jsonb       | Description, acceptance criteria, links                                                                                                              |
-| hold                   | boolean     | A hold flag replaces hard-coded exclusions                                                                                                           |
-| agent_ready            | boolean     | Only items marked agent-ready are dispatched                                                                                                         |
-| stale                  | boolean     | Set when a decision the node depended on is reversed. A stale node is not dispatched (O-45). The Council's verdict on the reversal clears it (D-229) |
-| blocked_reason         | text null   | Required whenever the state is Blocked or an escalated state                                                                                         |
-| state_since            | timestamptz | For stall detection                                                                                                                                  |
-| linear_issue_id        | text null   |                                                                                                                                                      |
-| linear_status_synced   | text null   | Last status the mirror wrote                                                                                                                         |
-| version                | integer     | Optimistic lock. Starts at 0 and increments on every state change                                                                                    |
-| created_at, updated_at | timestamptz |                                                                                                                                                      |
+| Column                 | Type        | Notes                                                                                                                                                    |
+| ---------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id                     | uuid pk     |                                                                                                                                                          |
+| project_id             | uuid fk     | Required on every node                                                                                                                                   |
+| type                   | text        | `idea` or `work_item`                                                                                                                                    |
+| track                  | text null   | `design`, `code`, `infra`, `docs`. Null for ideas                                                                                                        |
+| state                  | text        | Current state name from the contracts                                                                                                                    |
+| substate               | text null   | For example `writing_spec`, `building_components`, `verifying_on_staging`. Needed because Linear shares statuses across substates                        |
+| owner_role             | text        | One owner role per state                                                                                                                                 |
+| title                  | text        |                                                                                                                                                          |
+| body                   | jsonb       | Description, acceptance criteria, links                                                                                                                  |
+| hold                   | boolean     | A hold flag replaces hard-coded exclusions. Only the runner clears it, on Didi's Approve of the item's release request (`hold-release:<node id>`, D-269) |
+| agent_ready            | boolean     | Only items marked agent-ready are dispatched                                                                                                             |
+| stale                  | boolean     | Set when a decision the node depended on is reversed. A stale node is not dispatched (O-45). The Council's verdict on the reversal clears it (D-229)     |
+| blocked_reason         | text null   | Required whenever the state is Blocked or an escalated state                                                                                             |
+| state_since            | timestamptz | For stall detection                                                                                                                                      |
+| linear_issue_id        | text null   |                                                                                                                                                          |
+| linear_status_synced   | text null   | Last status the mirror wrote                                                                                                                             |
+| version                | integer     | Optimistic lock. Starts at 0 and increments on every state change                                                                                        |
+| created_at, updated_at | timestamptz |                                                                                                                                                          |
 
 Index: (project_id, state), (state, state_since).
 
@@ -149,7 +149,7 @@ Rule: a guard reads only evidence whose `commit_sha` equals the PR's current hea
 | supersedes_id  | uuid null   |                                                                                   |
 | reversed_by_id | uuid null   |                                                                                   |
 
-A visual approval that names the approved option keeps it as `scope.option` (the option's folder name), only when the visual-approval request's payload lists it in `options` (D-242, O-66). A Request changes or Reject answer keeps the options it names as `scope.options`, a list of names from the same list (D-254, O-68). A gate request reopened because an answer broke one of the approval form's rules carries the old payload plus `note`, the one-line reason (D-254).
+A visual approval that names the approved option keeps it as `scope.option` (the option's folder name), only when the visual-approval request's payload lists it in `options` (D-242, O-66). A Request changes or Reject answer keeps the options it names as `scope.options`, a list of names from the same list (D-254, O-68). A gate request reopened because an answer broke one of the approval form's rules carries the old payload plus `note`, the one-line reason (D-254). The planning chat's submission records the product direction and each of Didi's answers with `by_actor` `planning` (`scope.source` `planning_chat`; an answer's scope also holds its `question` and `index`), and only the runner records the accepted plan, as a `council_decision` with `scope.kind` `plan_accepted` and `scope.recordedBy` `runner`, when Didi approves the plan-approval request (D-230, D-266, O-78).
 
 Note: because rows are append-only, a reversal inserts a new `decisions` row and records its id in `reversed_by_id` through a controlled path. The implementing agent proposes the exact mechanism in the M1 ADR (for example, a separate `decision_events` table).
 
@@ -182,6 +182,8 @@ When a decision is reversed, every node in this table for that decision is marke
 | created_at, answered_at, last_notified_at | timestamptz |                                                                                                                                                                                                     |
 
 Constraint: a unique partial index on (topic_key) where status = `open`.
+
+The `scope` kind is also used for a held work item's release request (D-269, O-77): not blocking, on `hold-release:<node id>`, payload `{question, title, description, ideaId, note?}` and no options; and for the planning chat's plan-approval request (D-266, O-78): blocking, on `plan-approval:<idea id>`, payload `{question, title, plan, productDirection, answers, ideaId, submissionId}` and no options.
 
 ## runs
 

@@ -167,6 +167,8 @@ export function createLibrary({
     getProject: (id) => store.getProject(id),
     findOpenGateRequest: (projectId, topicKey) =>
       store.findOpenGateRequest(projectId, topicKey),
+    listGateRequests: (projectId, topicKey) =>
+      store.listGateRequests(projectId, topicKey),
   };
 
   async function evaluateGuards(node: Node, names: string[]): Promise<GuardCheck[]> {

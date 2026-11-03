@@ -22,6 +22,12 @@ import {
 } from "../../src/adapters/contracts-file/load.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import type { InstallationTokens } from "../../src/adapters/github/installation-tokens.ts";
+import {
+  createGitHubHttp,
+  type RunnerAppTokens,
+} from "../../src/adapters/github/runner-app-tokens.ts";
+import { createGitHubRepoMaps } from "../../src/adapters/repo-map/github.ts";
+import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
@@ -86,9 +92,15 @@ export interface FlowDeps extends ReconcileDeps {
   /** The runner's staging smoke check (ADR 0107), from the deploy adapter (M3.7). */
   stagingChecker: StagingChecker;
   tasks: TaskSource;
-  /** CI's screenshot bundles for the visual comparison (D-242). Not built yet: it refuses. */
+  /**
+   * CI's screenshot bundles for the visual comparison (D-242), read as workflow artifacts with the
+   * runner App's `actions: read` token (D-267). Refuses until the runner App exists (D-178).
+   */
   screenshots: ScreenshotBundles;
-  /** The repo map per commit for Triage (D-251). Not built yet: it refuses (N-62). */
+  /**
+   * The repo map per commit for Triage (D-251), from the code GitHub serves with the runner App's
+   * `contents: read` token (D-267). Refuses until the runner App exists (D-178).
+   */
   repoMaps: RepoMaps;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
@@ -142,33 +154,33 @@ function unbuiltStagingChecker(): StagingChecker {
 }
 
 /**
- * CI's screenshot bundles (D-242). How CI hands its screenshots to the runner is not decided yet
- * (N-52): until then every read refuses, so no visual comparison starts and nothing is recorded.
+ * The runner App's read-only tokens for the repo map and the screenshot bundles (D-267). The runner
+ * App is registered at first hosting through the new-credentials gate (D-178), with `contents:
+ * read` and `actions: read`; until then every request refuses, so no repo map is read (no Triage
+ * run starts) and no screenshot bundle is read (no visual comparison starts).
  */
-export function unbuiltScreenshotBundles(): ScreenshotBundles {
+export function unregisteredRunnerAppTokens(): RunnerAppTokens {
   return {
-    read: async () => {
+    mint: async () => {
       throw new NotBuiltError(
-        "The screenshot bundles need the path from CI to the runner, which is not decided yet (N-52)",
+        "The runner App's read-only token needs the runner App, registered at first hosting through the new-credentials gate with contents read and actions read (D-178, D-267)",
       );
     },
   };
 }
 
-/**
- * The repo map at a commit (D-251). The runner builds it in a step with no network over a
- * checkout at that commit (src/adapters/repo-map/typescript.ts); where that checkout comes from,
- * and which job runs the build, is not built yet (N-62). Until then every read refuses, so no
- * Triage run starts and no answer is checked.
- */
-export function unbuiltRepoMaps(): RepoMaps {
-  return {
-    read: async () => {
-      throw new NotBuiltError(
-        "The repo map needs a checkout of the project at a commit in a job with no network, which is not built yet (N-62)",
-      );
-    },
-  };
+/** CI's screenshot bundles as workflow artifacts (D-242, D-267); refuses on the token today. */
+export function runnerScreenshotBundles(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): ScreenshotBundles {
+  return createGitHubScreenshotBundles({ tokens, http: createGitHubHttp() });
+}
+
+/** The repo map from the code at a commit (D-251, D-267); refuses on the token today. */
+export function runnerRepoMaps(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): RepoMaps {
+  return createGitHubRepoMaps({ tokens, http: createGitHubHttp() });
 }
 
 /** Built on first use, so a flow that never starts an agent never reads the cluster token. */
@@ -279,8 +291,8 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
       }),
     ),
     stagingChecker: unbuiltStagingChecker(),
-    screenshots: unbuiltScreenshotBundles(),
-    repoMaps: unbuiltRepoMaps(),
+    screenshots: runnerScreenshotBundles(),
+    repoMaps: runnerRepoMaps(),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>
