@@ -11,6 +11,7 @@ import { parse } from "yaml";
 
 import { outputProblem } from "../../core/output-schema.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../core/runs.ts";
+import { OPTION_MARKERS } from "../../core/visual-comparison.ts";
 import {
   BOT_FILES_DIR,
   BOT_ROLES,
@@ -98,6 +99,19 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
       "reversal",
     ]);
     expect(Object.keys(bots.triage.outputSchemas ?? {})).toEqual(["answer"]);
+  });
+
+  it("tell the Designer to mark option components and to delete the options Didi did not pick (D-255, D-253)", () => {
+    const text = readBotFiles().designer.instructions.replace(/\s+/g, " ");
+    expect(text).toContain(
+      'Wrap each component on an option page in an element with data-component="<name>" and, where it has variants, data-variant="<name>"',
+    );
+    expect(text).toContain(
+      "Delete the folders of the options Didi did not pick; the approved option's folder stays.",
+    );
+    // The markers are the ones the runner's region lookup reads.
+    expect(text).toContain(OPTION_MARKERS.component);
+    expect(text).toContain(OPTION_MARKERS.variant);
   });
 
   it("carry D-185's caps, equal to the copy the tests use, and name no model", () => {

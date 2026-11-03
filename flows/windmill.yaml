@@ -74,8 +74,8 @@ flows:
 
   - name: approval
     path: f/foreman/approval
-    # A Windmill flow of two steps, like the M0.4 spike: `ask` suspends with the M0.4 reply form
-    # and sends the approval page to Didi only (D-170), `record` is this entry. `ask` needs the
+    # A Windmill flow of two steps, like the M0.4 spike: `ask` suspends with the form below and
+    # sends the approval page to Didi only (D-170), `record` is this entry. `ask` needs the
     # notification adapter and the gate lifecycle (M4.1), so only `record` is built.
     entry: flows/approval-resume.ts
     trigger: approval_resume
@@ -84,16 +84,30 @@ flows:
       # D-170: every approval expires after a short time. One day, as in M0.4, until M4.1 sets it.
       timeout_seconds: 86400
       continue_on_disapprove_timeout: true
-      # D-200: the three answers are the form's `answer` field, so the page's own cancel button is
-      # hidden and a resume can only be an answer or a timeout. Checked against Windmill's
-      # OpenFlow spec at deploy (first-hosting runbook, step 15).
+      # D-200, D-254: the three answers are the form's `decision` field, so the page's own cancel
+      # button is hidden and a resume can only be an answer or a timeout. Checked against
+      # Windmill's OpenFlow spec at deploy (first-hosting runbook, step 15).
       hide_cancel: true
+      # D-254: one form with three fields. The rules (Approve names exactly one option on a
+      # request that lists options; Request changes and Reject need feedback) are checked by the
+      # runner after the form is sent (src/core/approvals.ts); an answer that breaks one records
+      # nothing and a fresh request opens with a one-line note saying why.
       resume_form:
-        answer:
+        decision:
           type: string
           required: true
-          enum: [Approve, Reject, Changes requested]
-        reply: { type: string, required: true }
+          enum: [Approve, Request changes, Reject]
+        # A multi-select of the request's own options. The list is empty here and filled per
+        # request: `ask` returns Windmill's dynamic enums for the form, `{enums: {options:
+        # [...]}}`, from `approvalFormEnums(gate)` (the request's `payload.options`). Checked at
+        # deploy (first-hosting runbook, step 15): that Windmill fills the choices from `enums`,
+        # that an array of strings with enum items renders as a multi-select, and how it looks
+        # on Didi's phone. A request that lists no options shows an empty field.
+        options:
+          type: array
+          required: false
+          items: { type: string, enum: [] }
+        feedback: { type: string, required: false }
 
 # GitHub webhooks go to the receiver service (ADR 0113), not to Windmill, so no flow ingests
 # them and none is listed here.

@@ -8,9 +8,10 @@
 // Credentials: the model key is read by its secret path for the route's provider only, and goes to
 // the run's egress proxy only (D-143, ADR 0106 section 5). The GitHub installation token is minted
 // per run and repository from the role's App, through the `InstallationTokens` port (D-156, D-159,
-// D-178); it is minted last, so a run that would be refused for another reason mints none. Neither
-// value is kept, logged, or put in the task file or the run's spec: `buildKubernetesTask` passes
-// them to `start` in `credentials` only.
+// D-178); it is minted last, so a run that would be refused for another reason mints none. QA's
+// visual comparison gets neither the token nor the fetch step's hosts, since it reads only the
+// images in its task file (N-57). Neither value is kept, logged, or put in the task file or the
+// run's spec: `buildKubernetesTask` passes them to `start` in `credentials` only.
 import {
   buildKubernetesTask,
   type KubernetesBotFile,
@@ -119,7 +120,8 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         instructions,
         allowedHosts,
         ...(bot.allowedTools ? { allowedTools: [...bot.allowedTools] } : {}),
-        ...(bot.fetchAllowedHosts
+        // The visual comparison has no fetch step (N-57): it reads only its images.
+        ...(bot.fetchAllowedHosts && !visual
           ? { fetchAllowedHosts: [...bot.fetchAllowedHosts] }
           : {}),
         ...(outputSchema ? { outputSchema: structuredClone(outputSchema) } : {}),
@@ -131,7 +133,10 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
           provider.secretPath,
         );
       }
-      const tokenRole = TOKEN_ROLES.find((r) => r === role) as TokenRole | undefined;
+      // QA's visual comparison reads no repository, so no token is minted for it (N-57).
+      const tokenRole = visual
+        ? undefined
+        : (TOKEN_ROLES.find((r) => r === role) as TokenRole | undefined);
       const githubToken = tokenRole
         ? await options.githubTokens.mint({
             role: tokenRole,

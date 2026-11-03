@@ -113,8 +113,14 @@ export interface KubernetesRunSpec {
   prNumber?: number;
   /** CONNECT hosts for the agent's proxy. Empty for QA, Council and Triage (ADR 0106 section 3). */
   allowedHosts: string[];
-  /** QA only: the GitHub hosts its fetch step may reach. */
+  /** QA's review only: the GitHub hosts its fetch step may reach. */
   fetchAllowedHosts?: string[];
+  /**
+   * QA's visual comparison (task type `qa:visual`, D-242): it reads only the images in its task
+   * file, so it has no fetch step, no workspace and no GitHub token (least privilege, N-57). A
+   * handle kept before this field existed is a QA review.
+   */
+  visual?: true;
   providers: ModelProviderSetting[];
   /** The tier the run's route asked for (ADR 0114 section 8). */
   serviceTier: ServiceTier;
@@ -212,16 +218,25 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
   if (NEEDS_REPOSITORY.includes(spec.role) && !REPOSITORY.test(spec.repository ?? "")) {
     throw new Error(`a ${spec.role} run needs its repository as owner/name`);
   }
+  if (spec.visual !== undefined && (spec.role !== "qa" || spec.visual !== true)) {
+    throw new Error("only a QA run can be a visual comparison");
+  }
   if (spec.role === "qa") {
     if (!SHA.test(spec.headSha ?? ""))
       throw new Error("a QA run needs its head commit");
     if (!Number.isInteger(spec.prNumber) || (spec.prNumber ?? 0) < 1) {
       throw new Error("a QA run needs its pull request number");
     }
-    if (!spec.fetchAllowedHosts || spec.fetchAllowedHosts.length === 0) {
-      throw new Error("a QA run needs its fetch step's GitHub hosts");
+    if (spec.visual) {
+      if (spec.fetchAllowedHosts !== undefined) {
+        throw new Error("a visual comparison run has no fetch step");
+      }
+    } else {
+      if (!spec.fetchAllowedHosts || spec.fetchAllowedHosts.length === 0) {
+        throw new Error("a QA run needs its fetch step's GitHub hosts");
+      }
+      parseAllowedHosts(spec.fetchAllowedHosts.join(","));
     }
-    parseAllowedHosts(spec.fetchAllowedHosts.join(","));
   } else if (spec.fetchAllowedHosts !== undefined) {
     throw new Error("only a QA run has a fetch step");
   }
@@ -296,7 +311,8 @@ export function runSecrets(
     secret(names.stateTokenSecret, { token: credentials.stateApiToken }),
   ];
   if (Object.keys(models).length > 0) secrets.push(secret(names.modelSecret, models));
-  const needsGitHub = NEEDS_REPOSITORY.includes(spec.role);
+  // QA's visual comparison reads no repository, so it holds no GitHub token (N-57).
+  const needsGitHub = NEEDS_REPOSITORY.includes(spec.role) && !hasNoFetch(spec);
   if (needsGitHub !== Boolean(credentials.githubToken)) {
     throw new Error(
       needsGitHub
@@ -396,12 +412,20 @@ export function agentStage(
   });
 }
 
+/** Whether a QA run starts with its fetch step: its review does, its visual comparison does not. */
+export const hasFetchStep = (
+  spec: Pick<KubernetesRunSpec, "role" | "visual">,
+): boolean => spec.role === "qa" && spec.visual !== true;
+
+const hasNoFetch = (spec: Pick<KubernetesRunSpec, "role" | "visual">): boolean =>
+  spec.role === "qa" && spec.visual === true;
+
 /** QA's fetch stage: its own proxy that reaches GitHub only, and the fetch Job. */
 export function fetchStage(
   spec: KubernetesRunSpec,
   settings: KubernetesRunSettings,
 ): ProxyStage {
-  if (spec.role !== "qa") throw new Error("only a QA run has a fetch step");
+  if (!hasFetchStep(spec)) throw new Error("only a QA review run has a fetch step");
   const names = runNames(spec.runId);
   const deadline = settings.fetchMaxMinutes * 60;
   return proxyStage(spec, settings, {
@@ -619,7 +643,7 @@ function agentEnv(
   if (spec.role === "qa") {
     plain.FOREMAN_HEAD_SHA = spec.headSha ?? "";
     plain.FOREMAN_PR_NUMBER = String(spec.prNumber ?? "");
-    plain.FOREMAN_WORKSPACE = "/workspace";
+    if (hasFetchStep(spec)) plain.FOREMAN_WORKSPACE = "/workspace";
   }
   for (const provider of spec.providers) {
     if (provider.baseUrlEnv)
@@ -660,7 +684,7 @@ function agentVolumes(
     mountPath: TASK_MOUNT_PATH,
     readOnly: true,
   };
-  if (spec.role !== "qa") {
+  if (!hasFetchStep(spec)) {
     return {
       volumes: [...scratchVolumes(settings), task],
       volumeMounts: [...scratchMounts(), taskMount],

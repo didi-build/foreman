@@ -5,15 +5,23 @@
 import { describe, expect, it } from "vitest";
 
 import { decodePng, pngCodec } from "../src/adapters/screenshots/png.ts";
-import { qaVerdictIndependentOnHead } from "../src/core/guards/review.ts";
+import { escalationTriggerMet } from "../src/core/guards/escalation.ts";
+import {
+  noFailedQaVerdictOnHead,
+  qaFailedWithFindings,
+  qaVerdictIndependentOnHead,
+} from "../src/core/guards/review.ts";
 import {
   approvedOption,
   approvedOptionRecord,
   createVisualComparisons,
   readScreenshotManifest,
+  OPTION_MARKERS,
   readVisualAnswer,
+  regionFromMarker,
   specSection,
   visualOutcome,
+  visualRerunCheck,
 } from "../src/core/visual-comparison.ts";
 import { createReconcileFixture, HEAD } from "./reconcile-fixture.ts";
 import {
@@ -232,6 +240,57 @@ describe("the plan and the run's input", () => {
     expect(plan.pairs[0]?.summary?.changedPixels).toBe(0);
   });
 
+  it("crops by the page's markers: the component's region for the variant first, then the component's own (D-255)", async () => {
+    const { f, v, visual } = await setup();
+    const [shot] = await f.store.listEvidence({ nodeId: v.nodeId, kind: "screenshot" });
+    const payload = shot?.payload as { regions: Record<string, unknown>[] };
+    const marked = (variant: string | null, x: number, y: number) =>
+      regionFromMarker(
+        variant === null
+          ? { "data-component": "example-button" }
+          : { "data-component": "example-button", "data-variant": variant },
+        { x, y, width: 100, height: 50 },
+      );
+    // The element marked for any variant sits on white page; the one for Primary on the button.
+    await f.evidence(
+      v.nodeId,
+      "screenshot",
+      {
+        ...payload,
+        regions: [marked(null, 150, 120), marked("Primary", 30, 40)],
+      } as never,
+      { commitSha: OPTION_COMMIT },
+    );
+    const plan = await visual.plan(v.nodeId, HEAD);
+    if (!plan.ready) throw new Error(plan.reason);
+    expect(plan.pairs[0]?.located).toBe(true);
+    expect(plan.pairs[0]?.summary?.changedPixels).toBe(0);
+  });
+
+  it("reads a marked element as a region, and no other element", () => {
+    const box = { x: 1, y: 2, width: 3, height: 4 };
+    expect(OPTION_MARKERS).toEqual({
+      component: "data-component",
+      variant: "data-variant",
+    });
+    expect(regionFromMarker({ "data-component": "example-button" }, box)).toEqual({
+      component: "example-button",
+      variant: null,
+      ...box,
+    });
+    expect(
+      regionFromMarker(
+        { "data-component": "example-button", "data-variant": "Primary" },
+        box,
+      ),
+    ).toMatchObject({ variant: "Primary" });
+    expect(regionFromMarker({ "data-variant": "Primary" }, box)).toBeNull();
+    expect(regionFromMarker({ "data-component": "Example Button" }, box)).toBeNull();
+    expect(
+      regionFromMarker({ "data-component": "a", "data-variant": "x\n## y" }, box),
+    ).toBeNull();
+  });
+
   it("locates a planted colour change", async () => {
     const { v, visual } = await setup();
     v.putGallery({ differs: true });
@@ -425,5 +484,102 @@ describe("recordAnswer", () => {
       expect(check.pass).toBe(false);
       expect(check.detail).toMatch(detail);
     }
+  });
+});
+
+describe("a comparison that does not pass, as the guards read it (D-252)", () => {
+  async function recorded(results: ("match" | "differs" | "cannot_tell")[]) {
+    const { f, v, visual } = await setup();
+    await f.evidence(
+      v.nodeId,
+      "ci_run",
+      { conclusion: "success", pr: 7 },
+      { commitSha: HEAD },
+    );
+    for (const result of results) {
+      const run = await v.visualRun();
+      await visual.recordAnswer(run.id, answer(result));
+      await f.store.endRun(run.id, {
+        endedAt: f.clock.now(),
+        outcome: "success",
+        turns: 1,
+        minutes: 1,
+        costUsd: null,
+        tokens: null,
+        transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
+        serviceTierServed: null,
+        capacityRetries: null,
+        capacityWaitSeconds: null,
+        firstTokenMs: null,
+        reportedCostUsd: null,
+      });
+    }
+    const node = await f.store.getNode(v.nodeId);
+    if (!node) throw new Error("no node");
+    return { f, v, ctx: { store: f.store, node } as never };
+  }
+
+  it("differs with findings passes QA's fail guard and fails the head for a done report, like a fail verdict", async () => {
+    const { ctx } = await recorded(["differs"]);
+    expect(await qaFailedWithFindings(ctx)).toMatchObject({
+      pass: true,
+      detail: `the visual comparison differs on head ${HEAD}: 1 finding(s)`,
+    });
+    expect(await noFailedQaVerdictOnHead(ctx)).toMatchObject({ pass: false });
+  });
+
+  it("match and cannot_tell do not pass QA's fail guard", async () => {
+    for (const result of ["match", "cannot_tell"] as const) {
+      const { ctx } = await recorded([result]);
+      expect((await qaFailedWithFindings(ctx)).pass, result).toBe(false);
+      expect((await noFailedQaVerdictOnHead(ctx)).pass, result).toBe(true);
+    }
+  });
+
+  it("is read only on the design track", async () => {
+    const { f, v } = await recorded(["differs"]);
+    const node = await f.store.getNode(v.nodeId);
+    const code = { store: f.store, node: { ...node, track: "code" } } as never;
+    expect((await qaFailedWithFindings(code)).pass).toBe(false);
+    expect((await noFailedQaVerdictOnHead(code)).pass).toBe(true);
+  });
+
+  it("the first cannot_tell makes one more run due; the second meets the escalation trigger instead", async () => {
+    const once = await recorded(["cannot_tell"]);
+    expect(await visualRerunCheck(once.f.store, once.v.nodeId)).toEqual({
+      due: true,
+      nodeId: once.v.nodeId,
+      headSha: HEAD,
+      prNumber: 7,
+    });
+    expect((await escalationTriggerMet(once.ctx)).pass).toBe(false);
+
+    const twice = await recorded(["cannot_tell", "cannot_tell"]);
+    expect(await visualRerunCheck(twice.f.store, twice.v.nodeId)).toMatchObject({
+      due: false,
+      reason: "attempts_used",
+    });
+    expect(await escalationTriggerMet(twice.ctx)).toMatchObject({
+      pass: true,
+      detail: `the visual comparison could not tell 2 times on head ${HEAD}`,
+    });
+  });
+
+  it("no more run is due after a match or a differs, or while a run on the item is active", async () => {
+    for (const result of ["match", "differs"] as const) {
+      const { f, v } = await recorded([result]);
+      expect(await visualRerunCheck(f.store, v.nodeId)).toMatchObject({
+        due: false,
+        reason: "not_due",
+      });
+    }
+    const { f, v } = await recorded(["cannot_tell"]);
+    await f.run(v.nodeId, "qa", 0, { headSha: HEAD, prNumber: 7 });
+    expect(await visualRerunCheck(f.store, v.nodeId)).toMatchObject({
+      due: false,
+      reason: "active_run",
+    });
   });
 });

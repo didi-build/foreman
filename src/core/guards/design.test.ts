@@ -59,6 +59,11 @@ describe("design guards (unit: guards on the memory store, ADR 0105)", () => {
       await f.decision("approval", "didi", { topicKey: topic }, "   ");
       expect((await f.check("approval_recorded")).detail).toMatch(/no verbatim text/);
     });
+    it("passes an approval with no words that names the approved option (D-254)", async () => {
+      const f = await fixture({ track: "design" });
+      await f.decision("approval", "didi", { topicKey: topic, option: "a" }, "");
+      expect((await f.check("approval_recorded")).pass).toBe(true);
+    });
     it("uses the latest answer: changes requested after an approval wins", async () => {
       const f = await fixture({ track: "design" });
       await f.decision("approval", "didi", { topicKey: topic }, "yes");

@@ -147,7 +147,7 @@ Rule: a guard reads only evidence whose `commit_sha` equals the PR's current hea
 | supersedes_id  | uuid null   |                                                                                   |
 | reversed_by_id | uuid null   |                                                                                   |
 
-A visual approval that names the approved option keeps it as `scope.option` (the option's folder name), only when the visual-approval request's payload lists it in `options` (D-242, O-66).
+A visual approval that names the approved option keeps it as `scope.option` (the option's folder name), only when the visual-approval request's payload lists it in `options` (D-242, O-66). A Request changes or Reject answer keeps the options it names as `scope.options`, a list of names from the same list (D-254, O-68). A gate request reopened because an answer broke one of the approval form's rules carries the old payload plus `note`, the one-line reason (D-254).
 
 Note: because rows are append-only, a reversal inserts a new `decisions` row and records its id in `reversed_by_id` through a controlled path. The implementing agent proposes the exact mechanism in the M1 ADR (for example, a separate `decision_events` table).
 

@@ -35,7 +35,11 @@
 // the runner validates its answer and records `visual_comparison` itself
 // (src/core/visual-comparison.ts), and an answer it cannot record ends the run `fail`. Its report
 // then asks for QA's moves like any QA run: the merge guard decides, so the merge happens once the
-// review's verdict and the visual comparison both pass on the head.
+// review's verdict and the visual comparison both pass on the head. A comparison that differs
+// sends the item back to Building components through QA's fail move (D-252). After a
+// `cannot_tell`, the report asks for the escalation, which the guards allow on the second one on
+// the head; after the first, `visualRerun` starts the one more run on the same head, at the end
+// of that run or of the review run still active on the head, whichever ends last.
 //
 // The follow-up pass (`followUpPass`, D-234) opens the follow-up Council question on a reversal
 // whose gate request Didi has answered, and the Council pass then starts its run. The approval
@@ -56,6 +60,7 @@ import { createFindingIdeas, type FindingIdeas } from "../../src/core/finding-id
 import {
   createVisualComparisons,
   VISUAL_TASK_TYPE,
+  visualRerunCheck,
   type VisualRecord,
 } from "../../src/core/visual-comparison.ts";
 import { pngCodec } from "../../src/adapters/screenshots/png.ts";
@@ -251,7 +256,45 @@ export type AfterRunEnd = AfterReport &
     findingIdeas?: FindingIdeas;
     /** A visual comparison run's answer as the runner recorded it, or why not (D-242). */
     visual?: VisualRecord;
+    /** After a QA run: the visual comparison's one more run after a `cannot_tell` (D-252). */
+    visualRerun?: VisualRerunStart;
   };
+
+/** The one more visual run after a `cannot_tell`, when it was due (D-252). */
+export interface VisualRerunStart {
+  nodeId: string;
+  /** The dispatch's result, or `start_failed` when it threw (the error is not kept). */
+  result: StartRunResult | { outcome: "start_failed" };
+}
+
+/**
+ * Starts the visual comparison's one more run on the same head after a `cannot_tell` (D-252),
+ * when it is due (src/core/visual-comparison.ts). It goes through the dispatch, so admission
+ * decides as for every run: one QA run per pull request and head at a time, the kill switch and
+ * dry run. Null when it is not due.
+ */
+export async function visualRerun(
+  deps: FlowDeps,
+  nodeId: string,
+): Promise<VisualRerunStart | null> {
+  const check = await visualRerunCheck(deps.store, nodeId);
+  if (!check.due) return null;
+  try {
+    return {
+      nodeId,
+      result: await startRun(deps, {
+        nodeId,
+        role: "qa",
+        headSha: check.headSha,
+        prNumber: check.prNumber,
+        taskType: VISUAL_TASK_TYPE,
+      }),
+    };
+  } catch {
+    // The run ended `fail` before it started (./start-run.ts); the next QA run's end asks again.
+    return { nodeId, result: { outcome: "start_failed" } };
+  }
+}
 
 /**
  * The run-end flow's steps around recording one run's end. `record` checks and records a finished
@@ -327,11 +370,18 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       const node = run.nodeId ? await deps.store.getNode(run.nodeId) : null;
       const escalated =
         node !== null && node.state === createEscalations(deps).councilState;
+      // After any QA run on an item still in review: the visual comparison's one more run after
+      // a `cannot_tell`, once no other run on the item is active (D-252).
+      const rerun =
+        run.bot === "qa" && node !== null && !escalated
+          ? await visualRerun(deps, node.id)
+          : null;
       return {
         ...reported,
         ...(escalated
           ? { councilRuns: await councilPass(deps, [escalationTopic(node.id)]) }
           : {}),
+        ...(rerun ? { visualRerun: rerun } : {}),
       };
     },
   };

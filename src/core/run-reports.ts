@@ -33,6 +33,11 @@
 // alone (a scope change, which the contract sends to the Council, not to the counter). A QA run's
 // report never counts: a merge waiting on a condition is not a failure.
 //
+// QA's visual comparison (D-252): a `differs` record passes `qa_failed_with_findings`, so the
+// visual run's report takes QA's fail move like a fail verdict. A visual run that could not tell
+// asks for the escalation after its moves are refused; the guards allow it only on the second
+// `cannot_tell` on the head in the current state, and refuse it, writing nothing, on the first.
+//
 // A builder that stopped because the item needs a decision (D-237, O-63): the run ended `success`
 // with its reason, and the run-end flow records that reason with `recordNeedsDecision` before the
 // end, as an `agent_report` asking to escalate, the form `escalation_trigger_met` already reads
@@ -52,11 +57,12 @@ import {
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import { createFailures, type FailureCount } from "./failures.ts";
 import { REDO_GUARD } from "./guards/council.ts";
-import { headCommit, readCiRun } from "./guards/evidence.ts";
+import { headCommit, readCiRun, readVisualComparison } from "./guards/evidence.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import type { AgentRole, CounterKind, Evidence, Node, Run, Store } from "./store.ts";
 import { PUSHING_ROLES } from "./task-input.ts";
+import { VISUAL_TASK_TYPE } from "./visual-comparison.ts";
 
 export { MERGE_MOVE_GUARD };
 
@@ -122,6 +128,10 @@ export const NEEDS_DECISION_REASON_CHARS = 1000;
 /** The `ref` of the `agent_report` the runner records for a builder's stop: one per run. */
 export const needsDecisionRef = (runId: string): string =>
   `runner:needs_decision:run-${runId}`;
+
+/** The runner's reason on the escalation after a second `cannot_tell` on the head (D-252). */
+export const VISUAL_CANNOT_TELL_REASON =
+  "the visual comparison could not tell twice on the same head";
 
 /** The runner's own reason on the escalation move; the bot's words stay in its report. */
 export const NEEDS_DECISION_ESCALATION_REASON =
@@ -233,6 +243,15 @@ export function createRunReports(options: RunReportsOptions) {
     return (await store.listEvidence({ nodeId: node.id, kind: "agent_report" })).find(
       (e) => e.runId === run.id && e.ref === ref,
     );
+  }
+
+  /** Whether this run is a visual comparison whose recorded outcome is `cannot_tell` (D-252). */
+  async function couldNotTell(node: Node, run: Run): Promise<boolean> {
+    if (run.bot !== "qa" || run.taskType !== VISUAL_TASK_TYPE) return false;
+    const row = (
+      await store.listEvidence({ nodeId: node.id, kind: "visual_comparison" })
+    ).find((e) => e.runId === run.id);
+    return row ? readVisualComparison(row.payload)?.outcome === "cannot_tell" : false;
   }
 
   return {
@@ -426,6 +445,19 @@ export function createRunReports(options: RunReportsOptions) {
         };
         // Only a move the guards refused leaves room for the next one.
         if (result.outcome !== "rejected") break;
+      }
+      // D-252: a visual run that could not tell asks for the escalation. The guards allow it on
+      // the second `cannot_tell` on the head (`escalation_trigger_met`); on the first they refuse
+      // it, nothing is written, and the run-end flow starts the one more run instead.
+      if (
+        last?.requested &&
+        last.outcome === "rejected" &&
+        !last.escalation &&
+        (await couldNotTell(node, run))
+      ) {
+        const escalation = await escalate(node.id, trigger, VISUAL_CANNOT_TELL_REASON);
+        if (escalation && escalation.outcome !== "rejected")
+          last = { ...last, escalation };
       }
       // Every move the report triggers was refused by its guards: the done report failed (P-03).
       if (

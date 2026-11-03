@@ -169,7 +169,7 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
   });
 
   it("builds QA's visual comparison task: its own instructions, its answer schema and the images, no evidence ids (D-242)", async () => {
-    const { tasks } = source();
+    const { tasks, minted } = source();
     const start = startFor("qa", { outputSchema: BOTS.qa.outputSchemas?.visual });
     (start.run as { taskType: string }).taskType = "qa:visual";
     start.evidenceIds = [];
@@ -178,7 +178,12 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
       { label: "Image 2: the built component", png: new Uint8Array([137, 80, 78, 72]) },
     ];
     const task = (await tasks.taskFor(start)) as KubernetesAgentTask;
-    const { file } = acceptedByRuntime("qa", task);
+    const { file, spec, credentials } = acceptedByRuntime("qa", task);
+    // Least privilege (N-57): no fetch step, no GitHub hosts and no token minted.
+    expect(spec.visual).toBe(true);
+    expect(spec.fetchAllowedHosts).toBeUndefined();
+    expect(credentials.githubToken).toBeUndefined();
+    expect(minted).toEqual([]);
     expect(file.instructions).toBe(BOTS.qa.taskInstructions?.["qa:visual"]);
     expect(file.instructions).not.toBe(BOTS.qa.instructions);
     expect(file.outputSchema).toEqual(BOTS.qa.outputSchemas?.visual);
@@ -202,9 +207,14 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     );
   });
 
-  it("keeps QA's review task as it was: no images, no schema, the review instructions", async () => {
-    const { tasks } = source();
+  it("keeps QA's review task as it was: no images, no schema, the review instructions, its fetch step and read token", async () => {
+    const { tasks, minted } = source();
     const task = (await tasks.taskFor(startFor("qa"))) as KubernetesAgentTask;
+    const { spec, credentials } = acceptedByRuntime("qa", task);
+    expect(spec.visual).toBeUndefined();
+    expect(spec.fetchAllowedHosts).toEqual(BOTS.qa.fetchAllowedHosts);
+    expect(credentials.githubToken).toBe(GITHUB_TOKEN);
+    expect(minted).toMatchObject([{ role: "qa", access: "read" }]);
     expect(task.task.images).toBeUndefined();
     expect(task.task.outputSchema).toBeUndefined();
     expect(task.task.instructions).toBe(BOTS.qa.instructions);

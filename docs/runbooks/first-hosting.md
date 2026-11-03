@@ -130,6 +130,16 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 
+Then check the approval form on Didi's phone with a throwaway request, as the M0.4 spike did (D-170, D-254). Use a test request with made-up option names and no real data. Record with the date:
+
+- The form shows three fields: Decision (Approve, Request changes, Reject, required), Options and Feedback, and the page's own cancel button is hidden (`hide_cancel`). Check the keys against Windmill's OpenFlow spec.
+- The Options field's choices come from the request: the `ask` step returns Windmill's dynamic enums (`{enums: {options: [...]}}` from `approvalFormEnums`), and the page shows exactly the test request's option names, not an empty list and not another request's.
+- How the Options field renders: as checkboxes, radio buttons or a dropdown, and whether it lets Didi pick more than one option (an array of strings with enum items should be a multi-select).
+- Whether the page can show the option screenshots. The screenshots are linked in the approval message either way (D-254).
+- An answer that breaks a rule (Approve with no option, Request changes with no feedback) records nothing and a fresh request opens with its one-line note.
+
+If Windmill cannot fill the choices per request, stop and record what it does instead: the form's shape is Didi's decision (D-254), so a different form goes back to Didi.
+
 ## Verification
 
 Run the remaining checks in ADR 0106 "How success is judged" on the real cluster, and record their output and date in the M3.2 PR. Never paste a secret value, `plan.json` or `state.json`.

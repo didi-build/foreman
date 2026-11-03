@@ -64,7 +64,11 @@ export async function optionsAttached(ctx: GuardContext): Promise<GuardCheck> {
   );
 }
 
-/** Didi's latest answer on the visual-approval request is an approval, verbatim. */
+/**
+ * Didi's latest answer on the visual-approval request is an approval, verbatim. The approval page
+ * makes feedback optional for Approve and requires one option instead (D-254), so an approval
+ * with no words passes when it names the approved option (`scope.option`).
+ */
 export async function approvalRecorded(ctx: GuardContext): Promise<GuardCheck> {
   const answer = await visualAnswer(ctx);
   if (!answer) return result("approval_recorded", false, [], "no answer recorded");
@@ -76,8 +80,14 @@ export async function approvalRecorded(ctx: GuardContext): Promise<GuardCheck> {
       "the latest answer is not Didi's approval",
     );
   }
-  if (answer.textVerbatim.trim() === "") {
-    return result("approval_recorded", false, [], "the approval has no verbatim text");
+  const option = scopeOf(answer).option;
+  if (answer.textVerbatim.trim() === "" && typeof option !== "string") {
+    return result(
+      "approval_recorded",
+      false,
+      [],
+      "the approval has no verbatim text and names no option",
+    );
   }
   return result(
     "approval_recorded",

@@ -212,6 +212,64 @@ describe("QA (adapter contract: the fetch step first, ADR 0106 section 5)", () =
   });
 });
 
+describe("QA's visual comparison (adapter contract: no fetch step, D-242, N-57)", () => {
+  const VISUAL: KubernetesRunSpec = { ...QA, visual: true };
+  delete VISUAL.fetchAllowedHosts;
+  const n = runNames(VISUAL.runId);
+  const visualTask = () => {
+    const credentials = credentialsFor(QA);
+    delete credentials.githubToken;
+    return {
+      ...VISUAL,
+      credentials,
+      task: {
+        ...taskFor(QA),
+        evidenceIds: [],
+        outputSchema: { type: "object" },
+        images: [
+          {
+            label: "Image 1: fixture",
+            mediaType: "image/png" as const,
+            data: "iVBORw==",
+          },
+        ],
+      },
+    };
+  };
+
+  it("starts the QA pod at once, with no fetch step, workspace or GitHub token", async () => {
+    const handle = await runtime.start(visualTask(), QA_LIMITS);
+    expect(created()).not.toContain(`create Secret/${n.githubTokenSecret}`);
+    expect(created()).not.toContain(`create PersistentVolumeClaim/${n.workspaceClaim}`);
+    expect(created()).not.toContain(`create Job/${n.fetchJob}`);
+    const agent = fake.get<Job>("Job", NS, n.agentJob);
+    expect(agent).toBeDefined();
+    expect(envValue(agent, "FOREMAN_WORKSPACE")).toBeUndefined();
+    expect(JSON.stringify(agent)).not.toContain("workspace");
+    fake.finishJob(NS, n.agentJob, {
+      condition: "Complete",
+      log: result({ status: "success", structured: { components: [] } }),
+    });
+    expect(await finished(handle)).toMatchObject({ outcome: "success" });
+  });
+
+  it("refuses a GitHub token, fetch hosts, or images on the wrong kind of run", async () => {
+    const withToken = { ...visualTask(), credentials: credentialsFor(QA) };
+    await expect(runtime.start(withToken, QA_LIMITS)).rejects.toThrow(
+      "a qa run holds no GitHub token",
+    );
+    const withHosts = { ...visualTask(), fetchAllowedHosts: QA.fetchAllowedHosts };
+    await expect(runtime.start(withHosts, QA_LIMITS)).rejects.toThrow(
+      "a visual comparison run has no fetch step",
+    );
+    const reviewWithImages = { ...task(QA), task: visualTask().task };
+    await expect(runtime.start(reviewWithImages, QA_LIMITS)).rejects.toThrow(
+      "only a visual comparison run carries images",
+    );
+    expect(created()).toEqual([]);
+  });
+});
+
 describe("poll (adapter contract: outcome mapping, ADR 0106 section 6)", () => {
   const n = runNames(DEVELOPER.runId);
   let handle: KubernetesRunHandle;

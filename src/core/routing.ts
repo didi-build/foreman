@@ -513,22 +513,29 @@ export function parseOutputNeeds(
 
 // ---- The hard rules (ADR 0114 section 5) ------------------------------------------------------
 
-/** Hard rule 1: QA's model differs from every Developer run's on the item, by id or by family. */
+/** The roles whose runs build the work, so QA's model must differ from theirs (ADR 0112, D-158). */
+const BUILDER_ROLES: readonly string[] = ["developer", "designer"];
+
+const builderLabel = (run: EarlierRun): string =>
+  run.bot === "designer" ? "a Designer run" : "a Developer run";
+
+/**
+ * Hard rule 1: QA's model differs from every builder run's on the item (Developer and Designer,
+ * as the merge guard and the visual record check, D-158), by id or by family.
+ */
 function qaIndependenceProblem(
   policy: RoutingPolicy,
   candidate: RouteCandidate,
   model: CatalogModel | undefined,
-  developerRuns: readonly EarlierRun[],
+  builderRuns: readonly EarlierRun[],
 ): string | null {
   if (policy.qaIndependence === "model_id") {
-    return developerRuns.some((run) => run.model === candidate.model)
-      ? "the same model id as a Developer run on the item"
-      : null;
+    const same = builderRuns.find((run) => run.model === candidate.model);
+    return same ? `the same model id as ${builderLabel(same)} on the item` : null;
   }
-  if (!model) return "no catalog family to compare with the Developer runs";
-  return developerRuns.some((run) => run.modelFamily === model.family)
-    ? "the same model family as a Developer run on the item"
-    : null;
+  if (!model) return "no catalog family to compare with the builder runs";
+  const same = builderRuns.find((run) => run.modelFamily === model.family);
+  return same ? `the same model family as ${builderLabel(same)} on the item` : null;
 }
 
 /**
@@ -588,7 +595,9 @@ export function chooseRoute(input: RouteInput): RouteChoice {
     return { routed: false, noRoute: { settingsProblems: problems, rejected: [] } };
   }
 
-  const developerRuns = input.earlierRuns.filter((run) => run.bot === "developer");
+  const builderRuns = input.earlierRuns.filter((run) =>
+    BUILDER_ROLES.includes(run.bot),
+  );
   const rejected: CandidateRejection[] = [];
   /** The first candidate from `from` on that passes every hard rule, or null. */
   const firstPassing = (from: number, keepRejections: boolean): Route | null => {
@@ -604,7 +613,7 @@ export function chooseRoute(input: RouteInput): RouteChoice {
       if (input.role === "qa") {
         check(
           "qa_independence",
-          qaIndependenceProblem(policy, candidate, model, developerRuns),
+          qaIndependenceProblem(policy, candidate, model, builderRuns),
         );
       }
       check("known_price", priceProblem(candidate, model));
@@ -702,20 +711,24 @@ function canonicalJson(value: unknown): string {
 
 /**
  * The SHA-256 of everything the choice reads: the role, the task type, the model and family of
- * each Developer run on the item (in order), the four settings as stored, and the capacity end
+ * each Developer run and each Designer run on the item (in order), the four settings as stored, and the capacity end
  * when there is one. An input without a capacity end hashes as it did before capacity ends
  * were read.
  */
 export function routeInputHash(input: RouteInput): string {
-  const developerRuns = input.earlierRuns
-    .filter((run) => run.bot === "developer")
-    .map((run) => ({ model: run.model, modelFamily: run.modelFamily }));
+  const runsOf = (bot: string) =>
+    input.earlierRuns
+      .filter((run) => run.bot === bot)
+      .map((run) => ({ model: run.model, modelFamily: run.modelFamily }));
+  const designerRuns = runsOf("designer");
   return createHash("sha256")
     .update(
       canonicalJson({
         role: input.role,
         taskType: input.taskType,
-        developerRuns,
+        developerRuns: runsOf("developer"),
+        // Left out when there are none, so an input with no Designer run hashes as before.
+        designerRuns: designerRuns.length > 0 ? designerRuns : undefined,
         settings: input.settings,
         capacityEnd: input.capacityEnd,
       }),
