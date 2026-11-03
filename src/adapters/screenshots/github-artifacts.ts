@@ -1,6 +1,6 @@
 // The runner's screenshot bundles port (src/core/visual-comparison.ts `ScreenshotBundles`, D-242,
 // D-267, N-52 option a). CI uploads each bundle as a workflow artifact named
-// `foreman-screenshots-<kind>` (`gallery` or `options`), holding `manifest.json` and the files the
+// `foreman-screenshots-<kind>` (`gallery`, `options` or `head-options`, D-281), holding `manifest.json` and the files the
 // manifest names. With a read-only installation token of the runner App that carries only
 // `actions: read` for that one repository, the runner looks the bundle up by commit: it lists the
 // workflow runs of the commit asked for (`head_sha`), then each run's artifacts of that name, and

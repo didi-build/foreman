@@ -1,7 +1,8 @@
 // Broader: the render step end to end (scripts/render-screenshots.ts) with a real headless browser,
-// against this repo's own gallery (components/example-button) and a synthetic option page in a
-// throwaway git repository (test/fixtures/screenshots/option-page). The bundles it writes must
-// pass the runner's manifest check. Skipped when no Playwright browser is installed, which is the
+// against this repo's own gallery (components/example-button) and synthetic option pages
+// (test/fixtures/screenshots/option-page) in a throwaway git repository, for the options a pull
+// request changes and for every option at the head (D-281). The bundles it writes must pass the
+// runner's manifest check. Skipped when no Playwright browser is installed, which is the
 // case in CI's normal test job; the screenshots workflow runs the script in CI instead.
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -186,6 +187,62 @@ describe.skipIf(!browserInstalled)(
       expect(quiet.status).toBe(0);
       expect(quiet.stdout).toContain("no option folders to render");
       expect(existsSync(none)).toBe(false);
+    }, 120_000);
+
+    it("renders every option folder at the head, unchanged ones and same names included, as head-options (D-281)", () => {
+      const repo = scratch();
+      git(repo, "init", "-q", "-b", "main");
+      mkdirSync(join(repo, "design/billing/plans/options/bold"), { recursive: true });
+      writeFileSync(
+        join(repo, "design/billing/plans/options/bold/index.html"),
+        "<p>approved earlier</p>\n",
+      );
+      cpSync(
+        "test/fixtures/screenshots/option-page",
+        join(repo, "design/auth/sign-in/options/bold"),
+        { recursive: true },
+      );
+      git(repo, "add", ".");
+      git(repo, "commit", "-q", "-m", "head");
+      const head = git(repo, "rev-parse", "HEAD");
+
+      const out = join(scratch(), "head-options");
+      const args = ["--kind", "head-options", "--commit", head, "--root", repo];
+      const result = render([...args, "--out", out]);
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        "2 option pages, 3 marked regions; manifest validated",
+      );
+      const manifest = JSON.parse(readFileSync(join(out, "manifest.json"), "utf8"));
+      expect("manifest" in readScreenshotManifest(manifest, head, "head-options")).toBe(
+        true,
+      );
+      expect(manifest.options.map((o: { path: string }) => o.path)).toEqual([
+        "design/auth/sign-in/options/bold",
+        "design/billing/plans/options/bold",
+      ]);
+
+      // Rendered twice, the same commit gives the same pixels.
+      const again = join(scratch(), "head-options");
+      expect(render([...args, "--out", again]).status).toBe(0);
+      const hashes = (dir: string) =>
+        JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).options.map(
+          (o: { sha256: string }) => o.sha256,
+        );
+      expect(hashes(again)).toEqual(hashes(out));
+
+      const refused = render([
+        ...args,
+        "--changed-since",
+        head,
+        "--out",
+        join(scratch(), "x"),
+      ]);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain(
+        "--changed-since applies to --kind options only",
+      );
     }, 120_000);
 
     it("refuses a commit that is not the one checked out", () => {

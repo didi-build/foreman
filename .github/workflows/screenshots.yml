@@ -1,10 +1,13 @@
 name: Screenshots
 
 # CI's render step for the visual comparison (D-242, D-275 point 1, ADR 0112). On each pull request
-# commit it renders the gallery, and the exploration options the pull request changes, at the PR
-# head and uploads each bundle as the workflow artifact the runner reads by commit (D-276,
-# src/adapters/screenshots/github-artifacts.ts). No secrets; the browser is the Google Chrome on
-# GitHub's Ubuntu runners, driven by playwright-core at the exact version in package.json.
+# commit it renders the gallery, the exploration options the pull request changes, and every option
+# folder at the head, and uploads each bundle as the workflow artifact the runner reads by commit
+# (D-276, src/adapters/screenshots/github-artifacts.ts). The last one (`head-options`) is rendered
+# in this same job, on the same machine with the same browser and fonts as the gallery, so the
+# visual comparison crops the approved option from it and a difference left is a design difference,
+# not a change of runner image (D-281). No secrets; the browser is the Google Chrome on GitHub's
+# Ubuntu runners, driven by playwright-core at the exact version in package.json.
 
 on:
   pull_request:
@@ -53,4 +56,13 @@ jobs:
         with:
           name: foreman-screenshots-options
           path: screenshots/options/
+          if-no-files-found: error
+      - name: Render every option folder at the head, for the visual comparison
+        run: node scripts/render-screenshots.ts --kind head-options --commit "$HEAD_SHA" --out screenshots/head-options --browser chrome
+      - name: Upload the head options bundle
+        if: hashFiles('screenshots/head-options/manifest.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foreman-screenshots-head-options
+          path: screenshots/head-options/
           if-no-files-found: error

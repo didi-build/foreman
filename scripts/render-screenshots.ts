@@ -1,4 +1,4 @@
-// CI's render step for the screenshot bundles (D-242, D-255, D-275 point 1). Given the commit
+// CI's render step for the screenshot bundles (D-242, D-255, D-275 point 1, D-281). Given the commit
 // checked out and a kind, it renders with a headless browser and writes one bundle folder that the
 // screenshots workflow uploads as the artifact the runner reads (`foreman-screenshots-<kind>`,
 // src/adapters/screenshots/github-artifacts.ts):
@@ -9,6 +9,11 @@
 //   options  renders `index.html` of each option folder `design/<area>/<feature>/options/<name>/`
 //            (with --changed-since, only folders the pull request changes), screenshots the whole
 //            page, and records the box of each element marked `data-component` (D-255).
+//   head-options
+//            renders every option folder tracked at the commit the same way, in the same job as
+//            the gallery, so the visual comparison crops the approved option from a render made
+//            on the same machine with the same browser and fonts as the built components (D-281).
+//            After a feature's spec step only its approved option's folder stays (D-253).
 //
 // Every page is rendered at a fixed viewport and device scale, in light mode with reduced motion,
 // UTC and en-US, animations disabled for the screenshot, and every request that leaves the local
@@ -16,8 +21,8 @@
 // (scripts/lib/screenshot-bundle.ts `checkBundle`); any mismatch fails the step.
 //
 // Usage:
-//   node scripts/render-screenshots.ts --kind gallery|options --commit <sha> --out <dir>
-//     [--root <dir>] [--changed-since <base sha>] [--browser chrome]
+//   node scripts/render-screenshots.ts --kind gallery|options|head-options --commit <sha>
+//     --out <dir> [--root <dir>] [--changed-since <base sha>, options only] [--browser chrome]
 //
 // --browser chrome drives the Google Chrome GitHub's Ubuntu runners carry; without it, the
 // Chromium of the installed Playwright browsers is used (local runs).
@@ -37,12 +42,14 @@ import {
   OPTION_PAGE,
   checkBundle,
   galleryBundle,
+  headOptionFolders,
   optionFolders,
   optionRegions,
   optionsBundle,
   writeBundle,
   type BundleSummary,
   type MarkedElement,
+  type OptionFolder,
   type RenderedOption,
   type RenderedShot,
 } from "./lib/screenshot-bundle.ts";
@@ -270,12 +277,35 @@ export async function renderOptions(
   const found = optionFolders(tracked, changed);
   if ("problem" in found) throw new RenderError(found.problem);
   if (found.folders.length === 0) return null;
+  return renderOptionPages(browser, root, commit, out, found.folders, "options");
+}
 
+/** Every option folder at the commit, for the visual comparison (D-281). */
+export async function renderHeadOptions(
+  browser: Browser,
+  root: string,
+  commit: string,
+  out: string,
+): Promise<BundleSummary | null> {
+  const found = headOptionFolders(gitLines(root, ["ls-files"]));
+  if ("problem" in found) throw new RenderError(found.problem);
+  if (found.folders.length === 0) return null;
+  return renderOptionPages(browser, root, commit, out, found.folders, "head-options");
+}
+
+async function renderOptionPages(
+  browser: Browser,
+  root: string,
+  commit: string,
+  out: string,
+  folders: readonly OptionFolder[],
+  kind: "options" | "head-options",
+): Promise<BundleSummary> {
   const { origin, server } = await serve(root);
   try {
     const context = await newContext(browser, origin);
     const rendered: RenderedOption[] = [];
-    for (const folder of found.folders) {
+    for (const folder of folders) {
       const page = await context.newPage();
       await page.goto(`${origin}/${folder.path}/${OPTION_PAGE}`, {
         waitUntil: "load",
@@ -313,11 +343,11 @@ export async function renderOptions(
       rendered.push({ ...folder, png, regions: regions.regions });
     }
     await context.close();
-    writeBundle(out, optionsBundle(commit, rendered));
+    writeBundle(out, optionsBundle(commit, rendered, kind));
   } finally {
     server.close();
   }
-  return checked(out, commit, "options");
+  return checked(out, commit, kind);
 }
 
 /** Width and height from a PNG's header. */
@@ -329,7 +359,7 @@ function pngSize(png: Uint8Array): { width: number; height: number } {
 function checked(
   out: string,
   commit: string,
-  kind: "gallery" | "options",
+  kind: "gallery" | "options" | "head-options",
 ): BundleSummary {
   const result = checkBundle(out, commit, kind);
   if ("problem" in result) {
@@ -368,8 +398,8 @@ async function main(argv: string[]): Promise<void> {
     strict: true,
   });
   const kind = values.kind;
-  if (kind !== "gallery" && kind !== "options")
-    throw new RenderError("--kind must be gallery or options");
+  if (kind !== "gallery" && kind !== "options" && kind !== "head-options")
+    throw new RenderError("--kind must be gallery, options or head-options");
   const commit = values.commit ?? "";
   if (!COMMIT.test(commit))
     throw new RenderError("--commit must be a full 40-character commit sha");
@@ -380,6 +410,9 @@ async function main(argv: string[]): Promise<void> {
   const changedSince = values["changed-since"];
   if (changedSince !== undefined && !COMMIT.test(changedSince)) {
     throw new RenderError("--changed-since must be a full 40-character commit sha");
+  }
+  if (changedSince !== undefined && kind !== "options") {
+    throw new RenderError("--changed-since applies to --kind options only");
   }
   const root = resolve(values.root ?? process.cwd());
   const out = resolve(values.out);
@@ -393,11 +426,13 @@ async function main(argv: string[]): Promise<void> {
     const summary =
       kind === "gallery"
         ? await renderGallery(browser, root, commit, out)
-        : await renderOptions(browser, root, commit, out, changedSince);
+        : kind === "options"
+          ? await renderOptions(browser, root, commit, out, changedSince)
+          : await renderHeadOptions(browser, root, commit, out);
     console.log(
       summary
         ? describeSummary(summary, commit, out)
-        : "render-screenshots: no option folders to render; no options bundle written",
+        : `render-screenshots: no option folders to render; no ${kind} bundle written`,
     );
   } finally {
     await browser.close();

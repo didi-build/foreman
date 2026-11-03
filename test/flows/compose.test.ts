@@ -152,6 +152,13 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
       ).rejects.toThrow(NotBuiltError);
       await expect(
+        deps.repoFolders.folderId(
+          "didi-build/x",
+          "b".repeat(40),
+          "design/a/b/options/c",
+        ),
+      ).rejects.toThrow(NotBuiltError);
+      await expect(
         unregisteredRunnerAppTokens().mint({
           repository: "didi-build/x",
           permission: "contents",

@@ -1,10 +1,12 @@
-// Unit seam: the visual comparison (D-242, D-250) on the memory store, the real machine-2
-// contracts and QA's real bot file schema, with CI's bundles in a fake port and synthetic PNGs.
-// Covers the manifest check, the spec section, the plan and input, the answer's check, the
-// outcome, and the record the runner writes, which the merge guard then reads.
+// Unit seam: the visual comparison (D-242, D-250, D-281) on the memory store, the real machine-2
+// contracts and QA's real bot file schema, with CI's bundles and the repo's folder ids in fake
+// ports and synthetic PNGs. Covers the manifest check, the spec section, the plan and input (the
+// approved option's image from the head's render, and the check that its folder is unchanged
+// since capture), the answer's check, the outcome, and the record the runner writes, which the
+// merge guard then reads.
 import { describe, expect, it } from "vitest";
 
-import { decodePng, pngCodec } from "../src/adapters/screenshots/png.ts";
+import { decodePng, encodePng, pngCodec } from "../src/adapters/screenshots/png.ts";
 import { escalationTriggerMet } from "../src/core/guards/escalation.ts";
 import {
   noFailedQaVerdictOnHead,
@@ -12,6 +14,7 @@ import {
   qaVerdictIndependentOnHead,
 } from "../src/core/guards/review.ts";
 import {
+  APPROVED_OPTION_CHANGED_REASON,
   approvedOption,
   approvedOptionRecord,
   createVisualComparisons,
@@ -23,7 +26,8 @@ import {
   visualOutcome,
   visualRerunCheck,
 } from "../src/core/visual-comparison.ts";
-import { createReconcileFixture, HEAD } from "./reconcile-fixture.ts";
+import { solidRaster } from "../src/core/visual-diff.ts";
+import { createReconcileFixture, HEAD, REPO } from "./reconcile-fixture.ts";
 import {
   answer,
   HEAD_CHANGED_PATHS,
@@ -40,6 +44,7 @@ async function setup() {
   const visual = createVisualComparisons({
     ...f.deps,
     screenshots: v.screenshots,
+    repoFolders: v.repoFolders,
     png: pngCodec,
   });
   return { f, v, visual };
@@ -136,6 +141,42 @@ describe("readScreenshotManifest", () => {
         "options",
       ),
     ).toHaveProperty("problem");
+  });
+
+  it("reads a head-options manifest unique by folder, so two features may each keep an option of one name (D-281)", () => {
+    const entry = (path: string) => ({
+      option: "a",
+      path,
+      file: `pages/${path}.png`,
+      sha256: "0".repeat(64),
+      width: 50,
+      height: 50,
+      regions: [],
+    });
+    const manifest = (kind: string, paths: string[]) => ({
+      foremanScreenshots: 1,
+      kind,
+      commit: HEAD,
+      options: paths.map(entry),
+    });
+    const two = [OPTION_PATH, "design/gallery/other-feature/options/a"];
+    expect(
+      readScreenshotManifest(manifest("head-options", two), HEAD, "head-options"),
+    ).toMatchObject({ manifest: { kind: "head-options", options: [{}, {}] } });
+    // The options bundle stays unique by name, as before.
+    expect(readScreenshotManifest(manifest("options", two), HEAD, "options")).toEqual({
+      problem: "the manifest lists an option twice",
+    });
+    expect(
+      readScreenshotManifest(
+        manifest("head-options", [OPTION_PATH, OPTION_PATH]),
+        HEAD,
+        "head-options",
+      ),
+    ).toEqual({ problem: "the manifest lists an option twice" });
+    expect(
+      readScreenshotManifest(manifest("options", [OPTION_PATH]), HEAD, "head-options"),
+    ).toEqual({ problem: "the manifest is of the other kind" });
   });
 });
 
@@ -241,27 +282,20 @@ describe("the plan and the run's input", () => {
     expect(plan.pairs[0]?.summary?.changedPixels).toBe(0);
   });
 
-  it("crops by the page's markers: the component's region for the variant first, then the component's own (D-255)", async () => {
-    const { f, v, visual } = await setup();
-    const [shot] = await f.store.listEvidence({ nodeId: v.nodeId, kind: "screenshot" });
-    const payload = shot?.payload as { regions: Record<string, unknown>[] };
-    const marked = (variant: string | null, x: number, y: number) =>
-      regionFromMarker(
+  it("crops by the head render's markers: the component's region for the variant first, then the component's own (D-255, D-281)", async () => {
+    const { v, visual } = await setup();
+    const marked = (variant: string | null, x: number, y: number) => {
+      const region = regionFromMarker(
         variant === null
           ? { "data-component": "example-button" }
           : { "data-component": "example-button", "data-variant": variant },
         { x, y, width: 100, height: 50 },
       );
+      if (!region) throw new Error("not a marker");
+      return region;
+    };
     // The element marked for any variant sits on white page; the one for Primary on the button.
-    await f.evidence(
-      v.nodeId,
-      "screenshot",
-      {
-        ...payload,
-        regions: [marked(null, 150, 120), marked("Primary", 30, 40)],
-      } as never,
-      { commitSha: OPTION_COMMIT },
-    );
+    v.putHeadOption({ regions: [marked(null, 150, 120), marked("Primary", 30, 40)] });
     const plan = await visual.plan(v.nodeId, HEAD);
     if (!plan.ready) throw new Error(plan.reason);
     expect(plan.pairs[0]?.located).toBe(true);
@@ -316,16 +350,106 @@ describe("the plan and the run's input", () => {
     expect(task.outputSchema).toHaveProperty("properties.components");
   });
 
-  it("refuses when the option file changed since it was captured, or a component was not captured", async () => {
+  it("compares with the head's render of the approved option, not the screenshot captured at exploration (D-281)", async () => {
     const { v, visual } = await setup();
-    const bundle = await v.screenshots.read(
-      "didi-build/rehearsal",
-      OPTION_COMMIT,
-      "options",
+    // The captured page is replaced by a red one in its bundle; the comparison never reads it.
+    const red = encodePng(solidRaster(300, 200, [200, 40, 40, 255]));
+    v.screenshots.put(REPO, OPTION_COMMIT, "options", {
+      manifest: (await v.screenshots.read(REPO, OPTION_COMMIT, "options"))?.manifest,
+      files: new Map([["options/a.png", red]]),
+    });
+    v.screenshots.reads.length = 0;
+    const plan = await visual.plan(v.nodeId, HEAD);
+    if (!plan.ready) throw new Error(plan.reason);
+    expect(plan.option).toEqual({ name: "a", commitSha: OPTION_COMMIT });
+    expect(plan.pairs[0]?.summary?.changedPixels).toBe(0);
+    // Both images come from the head: the option render and the gallery, nothing else.
+    expect(v.screenshots.reads).toEqual([
+      `${REPO}@${HEAD}:head-options`,
+      `${REPO}@${HEAD}:gallery`,
+    ]);
+    const task = await visual.taskFor(v.nodeId, HEAD);
+    if ("refused" in task) throw new Error(task.refused);
+    expect(task.input).toContain(
+      `a, captured at commit ${OPTION_COMMIT}, unchanged since and rendered again at the head commit`,
     );
-    v.screenshots.put("didi-build/rehearsal", OPTION_COMMIT, "options", {
-      manifest: bundle?.manifest,
-      files: new Map([["options/a.png", new Uint8Array([1, 2, 3])]]),
+  });
+
+  it("refuses when the approved option's folder changed since capture, or is gone at either commit, reading no bundle (D-281)", async () => {
+    expect(APPROVED_OPTION_CHANGED_REASON).toBe(
+      "can't compare: the approved option changed since Didi approved it",
+    );
+    for (const change of ["edited", "gone at head", "gone at capture"] as const) {
+      const { v, visual } = await setup();
+      if (change === "edited") v.putHeadOption({ tree: "8".repeat(40) });
+      if (change === "gone at head") v.putHeadOption({ tree: null });
+      if (change === "gone at capture")
+        v.repoFolders.put(REPO, OPTION_COMMIT, OPTION_PATH, null);
+      v.screenshots.reads.length = 0;
+      expect(await visual.taskFor(v.nodeId, HEAD), change).toEqual({
+        refused: "approved_option_changed",
+      });
+      expect(v.screenshots.reads, change).toEqual([]);
+      expect(v.repoFolders.reads).toContain(`${REPO}@${HEAD}:${OPTION_PATH}`);
+    }
+  });
+
+  it("records nothing for a run that ends after the approved option changed (D-281)", async () => {
+    const { f, v, visual } = await setup();
+    const run = await v.visualRun();
+    v.putHeadOption({ tree: "8".repeat(40) });
+    expect(await visual.recordAnswer(run.id, answer("match"))).toEqual({
+      recorded: false,
+      reason: "plan_unavailable",
+      planRefusal: "approved_option_changed",
+    });
+    expect(
+      await f.store.listEvidence({ nodeId: v.nodeId, kind: "visual_comparison" }),
+    ).toEqual([]);
+  });
+
+  it("refuses with no head render, a bad one, one without the approved option, or a changed file", async () => {
+    const none = await setup();
+    const empty = createVisualComparisons({
+      ...none.f.deps,
+      screenshots: {
+        read: async (repo, sha, kind) =>
+          kind === "head-options" ? null : none.v.screenshots.read(repo, sha, kind),
+      },
+      repoFolders: none.v.repoFolders,
+      png: pngCodec,
+    });
+    expect(await empty.taskFor(none.v.nodeId, HEAD)).toEqual({
+      refused: "option_bundle_missing",
+    });
+
+    const bad = await setup();
+    bad.v.screenshots.put(REPO, HEAD, "head-options", {
+      manifest: { foremanScreenshots: 1, kind: "options", commit: HEAD, options: [] },
+      files: new Map(),
+    });
+    expect(await bad.visual.taskFor(bad.v.nodeId, HEAD)).toEqual({
+      refused: "option_bundle_invalid",
+    });
+
+    const other = await setup();
+    const read = await other.v.screenshots.read(REPO, HEAD, "head-options");
+    const manifest = read?.manifest as { options: { path: string }[] };
+    other.v.screenshots.put(REPO, HEAD, "head-options", {
+      manifest: {
+        ...manifest,
+        options: manifest.options.filter((o) => o.path !== OPTION_PATH),
+      },
+      files: new Map(),
+    });
+    expect(await other.visual.taskFor(other.v.nodeId, HEAD)).toEqual({
+      refused: "option_not_rendered",
+    });
+
+    const { v, visual } = await setup();
+    v.screenshots.put(REPO, HEAD, "head-options", {
+      manifest: (await v.screenshots.read(REPO, HEAD, "head-options"))?.manifest,
+      files: new Map([[`pages/${OPTION_PATH}.png`, new Uint8Array([1, 2, 3])]]),
     });
     expect(await visual.taskFor(v.nodeId, HEAD)).toEqual({
       refused: "option_file_changed",
@@ -348,6 +472,7 @@ describe("the plan and the run's input", () => {
     const { f, v, visual } = await setup();
     const ci = { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS };
     await f.evidence(v.nodeId, "ci_run", ci, { commitSha: "e".repeat(40) });
+    v.putHeadOption({ sha: "e".repeat(40) });
     expect(await visual.taskFor(v.nodeId, "e".repeat(40))).toEqual({
       refused: "gallery_bundle_missing",
     });

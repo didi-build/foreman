@@ -28,6 +28,7 @@ import {
 } from "../../src/adapters/github/runner-app-tokens.ts";
 import { createGitHubRepoMaps } from "../../src/adapters/repo-map/github.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
+import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
@@ -39,6 +40,7 @@ import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { Node, Project, Run } from "../../src/core/store.ts";
 import type {
+  RepoFolders,
   ScreenshotBundles,
   VisualImage,
 } from "../../src/core/visual-comparison.ts";
@@ -97,6 +99,11 @@ export interface FlowDeps extends ReconcileDeps {
    * runner App's `actions: read` token (D-267). Refuses until the runner App exists (D-178).
    */
   screenshots: ScreenshotBundles;
+  /**
+   * The approved option's folder at a commit, for the visual comparison's integrity check (D-281),
+   * read with the runner App's `contents: read` token (D-267). Refuses until the runner App exists.
+   */
+  repoFolders: RepoFolders;
   /**
    * The repo map per commit for Triage (D-251), from the code GitHub serves with the runner App's
    * `contents: read` token (D-267). Refuses until the runner App exists (D-178).
@@ -174,6 +181,13 @@ export function runnerScreenshotBundles(
   tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
 ): ScreenshotBundles {
   return createGitHubScreenshotBundles({ tokens, http: createGitHubHttp() });
+}
+
+/** A folder's git tree id at a commit (D-281, D-267); refuses on the token today. */
+export function runnerRepoFolders(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): RepoFolders {
+  return createGitHubRepoFolders({ tokens, http: createGitHubHttp() });
 }
 
 /** The repo map from the code at a commit (D-251, D-267); refuses on the token today. */
@@ -292,6 +306,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     ),
     stagingChecker: unbuiltStagingChecker(),
     screenshots: runnerScreenshotBundles(),
+    repoFolders: runnerRepoFolders(),
     repoMaps: runnerRepoMaps(),
     tasks: createTaskSource({
       bots: botFiles,

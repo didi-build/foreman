@@ -1,12 +1,16 @@
-// Test support for the visual comparison (D-242, D-250): a design item in In QA review on the
-// reconcile fixture, with CI's runs at the option's commit and the head (with the PR's changed
+// Test support for the visual comparison (D-242, D-250, D-281): a design item in In QA review on
+// the reconcile fixture, with CI's runs at the option's commit and the head (with the PR's changed
 // paths, for D-279), spec paths, Didi's approval naming option `a`, the runner's screenshot of
-// that option, and CI's bundles at the option's commit and the head in a fake port. Synthetic
-// images only: a white page with a blue button and a dark label, drawn in code.
+// that option, CI's options bundle at the option's commit and its gallery and `head-options`
+// bundles at the head in a fake port, and the option folder's tree id, the same at both commits,
+// in a fake repo folders port. Synthetic images only: a white page with a blue button and a dark
+// label, drawn in code.
 import { createHash } from "node:crypto";
 
 import {
+  createFakeRepoFolders,
   createFakeScreenshotBundles,
+  type FakeRepoFolders,
   type FakeScreenshotBundles,
 } from "../src/adapters/screenshots/fake.ts";
 import { encodePng } from "../src/adapters/screenshots/png.ts";
@@ -14,6 +18,7 @@ import { visualApprovalTopic } from "../src/core/guards/design.ts";
 import type { Run } from "../src/core/store.ts";
 import {
   optionScreenshotPayload,
+  type OptionRegion,
   type OptionShot,
 } from "../src/core/visual-comparison.ts";
 import { paintBox, solidRaster, type Raster } from "../src/core/visual-diff.ts";
@@ -21,6 +26,8 @@ import { HEAD, REPO, type ReconcileFixture } from "./reconcile-fixture.ts";
 
 export const OPTION_COMMIT = "c".repeat(40);
 export const OPTION_PATH = "design/gallery/example-button/options/a";
+/** The option folder's git tree id, the same at the capture commit and the head. */
+export const OPTION_TREE = "7".repeat(40);
 export const SPEC_PATH = "design/gallery/example-button/spec.md";
 /** What the item's PR changes at the head: a design item's usual files (D-279 reads them). */
 export const HEAD_CHANGED_PATHS = [
@@ -64,17 +71,29 @@ const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 
 export interface VisualSetup {
   screenshots: FakeScreenshotBundles;
+  repoFolders: FakeRepoFolders;
   nodeId: string;
   designerRun: Run;
   /** Starts the QA visual run on the head, on a model other than the designer's by default. */
   visualRun(model?: string): Promise<Run>;
   /** Puts the head's gallery bundle, with a red button when `differs`. */
   putGallery(options?: { differs?: boolean; sha?: string }): void;
+  /**
+   * Puts the head's render of the approved option (`head-options`, D-281) and the option folder's
+   * tree id at that head, unchanged unless `tree` says otherwise; `regions` replaces the marked
+   * regions.
+   */
+  putHeadOption(options?: {
+    sha?: string;
+    tree?: string | null;
+    regions?: OptionRegion[];
+  }): void;
 }
 
 export async function setupVisual(
   f: ReconcileFixture,
   screenshots: FakeScreenshotBundles = createFakeScreenshotBundles(),
+  repoFolders: FakeRepoFolders = createFakeRepoFolders(),
 ): Promise<VisualSetup> {
   const node = await f.node("in_qa_review", {
     track: "design",
@@ -154,6 +173,49 @@ export async function setupVisual(
   await f.evidence(node.id, "screenshot", optionScreenshotPayload(shot), {
     commitSha: OPTION_COMMIT,
   });
+  repoFolders.put(REPO, OPTION_COMMIT, OPTION_PATH, OPTION_TREE);
+
+  // The same option page rendered again at the head, next to another feature's option of the
+  // same name, which a `head-options` bundle may hold (unique by folder, D-281).
+  function putHeadOption(
+    options: { sha?: string; tree?: string | null; regions?: OptionRegion[] } = {},
+  ) {
+    const sha = options.sha ?? HEAD;
+    const fresh: OptionShot = {
+      ...shot,
+      file: `pages/${OPTION_PATH}.png`,
+      regions: options.regions ?? shot.regions,
+    };
+    const otherPng = encodePng(solidRaster(40, 30, RED));
+    const other: OptionShot = {
+      option: "a",
+      path: "design/gallery/other-feature/options/a",
+      file: "pages/design/gallery/other-feature/options/a.png",
+      sha256: sha256(otherPng),
+      width: 40,
+      height: 30,
+      regions: [],
+    };
+    screenshots.put(REPO, sha, "head-options", {
+      manifest: {
+        foremanScreenshots: 1,
+        kind: "head-options",
+        commit: sha,
+        options: [other, fresh],
+      },
+      files: new Map<string, Uint8Array>([
+        [other.file, otherPng],
+        [fresh.file, pagePng],
+      ]),
+    });
+    repoFolders.put(
+      REPO,
+      sha,
+      OPTION_PATH,
+      options.tree === undefined ? OPTION_TREE : options.tree,
+    );
+  }
+  putHeadOption();
 
   function putGallery(options: { differs?: boolean; sha?: string } = {}) {
     const sha = options.sha ?? HEAD;
@@ -193,9 +255,11 @@ export async function setupVisual(
   });
   return {
     screenshots,
+    repoFolders,
     nodeId: node.id,
     designerRun,
     putGallery,
+    putHeadOption,
     visualRun: (model = "claude-opus-5-5") =>
       f.run(node.id, "qa", 1, {
         model,

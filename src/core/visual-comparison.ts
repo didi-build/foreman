@@ -1,7 +1,9 @@
 // The visual comparison of a design item's components with the option Didi approved (D-242,
-// D-250, D-249). CI renders the gallery components at the PR head and saves PNGs with a manifest;
-// the exploration options were rendered the same way when they were captured. The runner, never
-// an agent, reads both through the `ScreenshotBundles` port, crops the approved option to each
+// D-250, D-249). CI renders the gallery components at the PR head and saves PNGs with a manifest,
+// and in the same job, on the same machine with the same browser and fonts, renders every option
+// folder still at the head again (the `head-options` bundle, D-281), so a difference left is a
+// design difference and not a change of runner image. The runner, never an agent, reads both
+// through the `ScreenshotBundles` port, crops the head's render of the approved option to each
 // component, locates the differences (./visual-diff.ts) and starts a QA run of task type
 // `qa:visual` on a model that reads images, with per component the approved crop, the built crop,
 // the difference summary and the spec section. The run answers per component `match`, `differs`
@@ -21,9 +23,15 @@
 // records nothing either, since the plan is built again then.
 //
 // Which option Didi approved is read from Didi's approval on the item's visual-approval request
-// (`scope.option`, src/core/approvals.ts). Its screenshot is the `screenshot` evidence the runner
-// recorded for that option, with the commit it was captured at and the file's SHA-256; the file
-// read again must have the same hash, or nothing is compared.
+// (`scope.option`, src/core/approvals.ts). The `screenshot` evidence the runner recorded for that
+// option at exploration gives its folder and the commit it was captured at; that screenshot stays
+// what Didi's approval page and the Council's visual call show (./visual-call.ts), but the
+// comparison's image is the head's render of the same folder (D-281). Because the head is the
+// build PR's own commit, the folder must be unchanged since capture: the runner compares the
+// folder's git tree id at the capture commit and at the head through the `RepoFolders` port, and
+// refuses with `approved_option_changed`, recording nothing, when they differ or either is
+// missing (`APPROVED_OPTION_CHANGED_REASON`). Every file read from a bundle must match the
+// SHA-256 its manifest gives, or nothing is compared.
 //
 // Plain logic over an injected store, clock, id source, screenshot port and PNG codec (D-162).
 // Refusals and problems are fixed text and never quote a file, an answer or an id.
@@ -146,9 +154,15 @@ export interface SpecFile {
   sha256: string;
 }
 
+/**
+ * The bundle kinds. `options`: the option folders a pull request changes, rendered at its head, for
+ * option capture and the Council's visual call. `head-options`: every option folder at the head,
+ * rendered in the same job as the gallery, for the visual comparison (D-281). Option names repeat
+ * across features, so a `head-options` manifest is unique by folder, not by name.
+ */
 export type ScreenshotManifest =
   | { kind: "gallery"; commit: string; shots: GalleryShot[]; specs: SpecFile[] }
-  | { kind: "options"; commit: string; options: OptionShot[] };
+  | { kind: "options" | "head-options"; commit: string; options: OptionShot[] };
 
 export type BundleKind = ScreenshotManifest["kind"];
 
@@ -157,6 +171,17 @@ export interface ScreenshotBundle {
   manifest: unknown;
   /** A file of the bundle by its path, or null when it is not there. */
   file(path: string): Promise<Uint8Array | null>;
+}
+
+/**
+ * The port to a folder of the project's repository at a commit, for the approved option's
+ * integrity check (D-281). `folderId` gives the folder's git tree id at the commit, which is the
+ * same at two commits exactly when every file under the folder is the same; null when the folder
+ * is not there. The adapter reads it with the runner App's `contents: read` token
+ * (src/adapters/screenshots/github-folders.ts, D-267). Tests pass a fake.
+ */
+export interface RepoFolders {
+  folderId(repo: string, commitSha: string, path: string): Promise<string | null>;
 }
 
 /**
@@ -259,7 +284,7 @@ export function readScreenshotManifest(
   if (!Array.isArray(list) || list.length === 0) {
     return { problem: "the manifest lists no screenshots" };
   }
-  if (kind === "options") {
+  if (kind === "options" || kind === "head-options") {
     const options: OptionShot[] = [];
     for (const raw of list) {
       if (
@@ -314,7 +339,9 @@ export function readScreenshotManifest(
         regions,
       });
     }
-    if (new Set(options.map((o) => o.option)).size !== options.length) {
+    const unique =
+      kind === "options" ? (o: OptionShot) => o.option : (o: OptionShot) => o.path;
+    if (new Set(options.map(unique)).size !== options.length) {
       return { problem: "the manifest lists an option twice" };
     }
     return { manifest: { kind, commit, options } };
@@ -578,8 +605,13 @@ export type PlanRefusal =
   | "no_spec_paths"
   | "no_approved_option"
   | "no_option_screenshot"
+  /** A file under the approved option's folder changed since its capture commit (D-281). */
+  | "approved_option_changed"
+  /** No `head-options` bundle at the head. */
   | "option_bundle_missing"
   | "option_bundle_invalid"
+  /** The head's bundle has no render of the approved option's folder. */
+  | "option_not_rendered"
   | "option_file_changed"
   | "gallery_bundle_missing"
   | "gallery_bundle_invalid"
@@ -587,6 +619,10 @@ export type PlanRefusal =
   | "spec_file_missing"
   | "too_many_components"
   | "image_unreadable";
+
+/** The fixed text of the `approved_option_changed` refusal (D-281). */
+export const APPROVED_OPTION_CHANGED_REASON =
+  "can't compare: the approved option changed since Didi approved it";
 
 export type VisualPlan =
   | {
@@ -754,7 +790,7 @@ export function visualTaskInput(
     section("Title", quoted(node.title.replace(/\s*\r?\n\s*/g, " "))),
     section(
       "Approved option",
-      `${plan.option.name}, captured at commit ${plan.option.commitSha}`,
+      `${plan.option.name}, captured at commit ${plan.option.commitSha}, unchanged since and rendered again at the head commit`,
     ),
     section("Head commit", plan.headSha),
   ];
@@ -792,6 +828,8 @@ export interface VisualComparisonOptions {
   clock: Clock;
   ids: IdSource;
   screenshots: ScreenshotBundles;
+  /** The approved option's folder at a commit, for its integrity check (D-281). */
+  repoFolders: RepoFolders;
   png: PngCodec;
   /** QA's bot profile gives the answer schema (`output_schemas.visual`). */
   bots: Readonly<
@@ -829,7 +867,7 @@ const sha256 = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
 
 export function createVisualComparisons(options: VisualComparisonOptions) {
-  const { store, clock, ids, screenshots, png } = options;
+  const { store, clock, ids, screenshots, repoFolders, png } = options;
 
   function schema(): OutputSchema {
     const found = options.bots.qa.outputSchemas?.[VISUAL_SCHEMA];
@@ -880,19 +918,39 @@ export function createVisualComparisons(options: VisualComparisonOptions) {
       return { ready: false, reason: "no_option_screenshot" };
     const atCapture = await screenshotPipelineAt(store, nodeId, optionShot.commitSha);
     if (!atCapture.trusted) return { ready: false, reason: atCapture.reason };
-    const optionBundle = await screenshots.read(
+    // D-281: the head is the build PR's own commit, so the approved option's folder must be the
+    // one Didi saw: the same git tree at the capture commit and at the head, or no comparison.
+    const capturedId = await repoFolders.folderId(
       project.repo,
       optionShot.commitSha,
-      "options",
+      option.path,
     );
+    const headId = await repoFolders.folderId(project.repo, headSha, option.path);
+    if (capturedId === null || headId === null || capturedId !== headId) {
+      return { ready: false, reason: "approved_option_changed" };
+    }
+    // The approved option as rendered at the head, in the same job as the gallery (D-281).
+    const optionBundle = await screenshots.read(project.repo, headSha, "head-options");
     if (!optionBundle) return { ready: false, reason: "option_bundle_missing" };
-    const optionBytes = await readChecked(optionBundle, option.file, option.sha256);
+    const rendered = readScreenshotManifest(
+      optionBundle.manifest,
+      headSha,
+      "head-options",
+    );
+    if ("problem" in rendered || rendered.manifest.kind !== "head-options") {
+      return { ready: false, reason: "option_bundle_invalid" };
+    }
+    const fresh = rendered.manifest.options.find(
+      (o) => o.path === option.path && o.option === name,
+    );
+    if (!fresh) return { ready: false, reason: "option_not_rendered" };
+    const optionBytes = await readChecked(optionBundle, fresh.file, fresh.sha256);
     if (!optionBytes) return { ready: false, reason: "option_file_changed" };
     const optionPage = decode(optionBytes);
     if (
       !optionPage ||
-      optionPage.width !== option.width ||
-      optionPage.height !== option.height
+      optionPage.width !== fresh.width ||
+      optionPage.height !== fresh.height
     ) {
       return { ready: false, reason: "image_unreadable" };
     }
@@ -930,12 +988,10 @@ export function createVisualComparisons(options: VisualComparisonOptions) {
         return { ready: false, reason: "image_unreadable" };
       }
       const region =
-        option.regions.find(
+        fresh.regions.find(
           (r) => r.component === shot.component && r.variant === shot.variant,
         ) ??
-        option.regions.find(
-          (r) => r.component === shot.component && r.variant === null,
-        );
+        fresh.regions.find((r) => r.component === shot.component && r.variant === null);
       const sectionText = specSection(
         specTexts.get(shot.specPath) as string,
         shot.component,

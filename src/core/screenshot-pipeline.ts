@@ -25,7 +25,8 @@ export const SCREENSHOT_PIPELINE_PATHS: readonly string[] = [
   // The Screenshots workflow, and every other workflow: the runner takes the newest artifact of
   // the bundle's name from any workflow run on the commit (D-276), so any workflow could upload one.
   ".github/workflows/",
-  // The render script and its plain parts.
+  // The render script and its plain parts, which make all three bundles (the `head-options` one
+  // the comparison crops the approved option from included, D-281).
   "scripts/render-screenshots.ts",
   "scripts/lib/screenshot-bundle.ts",
   // The gallery's render mode: its constants, its frame, the switch into it, and its styles.

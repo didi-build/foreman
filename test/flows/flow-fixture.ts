@@ -10,7 +10,10 @@ import type {
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
 import { createFakeRepoMaps } from "../../src/adapters/repo-map/fake.ts";
-import { createFakeScreenshotBundles } from "../../src/adapters/screenshots/fake.ts";
+import {
+  createFakeRepoFolders,
+  createFakeScreenshotBundles,
+} from "../../src/adapters/screenshots/fake.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
@@ -78,6 +81,7 @@ export function flowDepsFor(
 ) {
   const runtime = createFakeRuntime();
   const screenshots = createFakeScreenshotBundles();
+  const repoFolders = createFakeRepoFolders();
   const repoMaps = createFakeRepoMaps();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
@@ -87,6 +91,7 @@ export function flowDepsFor(
     runtime,
     stagingChecker,
     screenshots,
+    repoFolders,
     repoMaps,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
@@ -116,6 +121,7 @@ export function flowDepsFor(
     deps,
     runtime,
     screenshots,
+    repoFolders,
     repoMaps,
     tasksFor,
     tokens,
@@ -128,8 +134,16 @@ export function flowDepsFor(
 export async function createFlowFixture() {
   const f = await createReconcileFixture();
   const stagingChecker = createFakeStagingChecker();
-  const { deps, runtime, screenshots, repoMaps, tasksFor, tokens, setExecutions } =
-    flowDepsFor(f.deps, stagingChecker);
+  const {
+    deps,
+    runtime,
+    screenshots,
+    repoFolders,
+    repoMaps,
+    tasksFor,
+    tokens,
+    setExecutions,
+  } = flowDepsFor(f.deps, stagingChecker);
 
   /** What a flow could have written for these nodes, to compare before and after. */
   async function footprint(...nodeIds: string[]) {
@@ -150,6 +164,7 @@ export async function createFlowFixture() {
     runtime,
     stagingChecker,
     screenshots,
+    repoFolders,
     repoMaps,
     tasksFor,
     tokens,
