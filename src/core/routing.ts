@@ -697,7 +697,7 @@ function providerProblem(
 // ---- The decision record (P-11) ---------------------------------------------------------------
 
 /** JSON with object keys sorted, so equal inputs always hash the same. */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (isRecord(value)) {
     const entries = Object.keys(value)

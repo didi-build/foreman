@@ -553,7 +553,8 @@ export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
     profiles[role] = {
       runtime: bot.image,
       botVersion: bot.version,
-      ...((role === "council" || role === "qa") && bot.outputSchemas
+      ...((role === "council" || role === "qa" || role === "triage") &&
+      bot.outputSchemas
         ? { outputSchemas: bot.outputSchemas }
         : {}),
     };

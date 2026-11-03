@@ -244,8 +244,12 @@ export function createLibrary({
     return undefined;
   }
 
-  /** True when adding from -> to would close a loop of `blocks` edges. */
-  async function createsBlocksCycle(from: string, to: string): Promise<boolean> {
+  /** True when adding from -> to would close a loop of `blocks` edges, read through `ops`. */
+  async function createsBlocksCycle(
+    ops: Pick<StoreOps, "listEdges">,
+    from: string,
+    to: string,
+  ): Promise<boolean> {
     const seen = new Set<string>();
     const stack = [to];
     while (stack.length > 0) {
@@ -253,11 +257,78 @@ export function createLibrary({
       if (current === from) return true;
       if (seen.has(current)) continue;
       seen.add(current);
-      for (const edge of await store.listEdges({ fromNode: current, type: "blocks" })) {
+      for (const edge of await ops.listEdges({ fromNode: current, type: "blocks" })) {
         stack.push(edge.toNode);
       }
     }
     return false;
+  }
+
+  /** `createNode` through `ops`: the store, or a transaction's writes (`createNodeWith`). */
+  async function insertNodeThrough(ops: StoreOps, input: NewNode): Promise<Node> {
+    // Every node has a project (schema invariant 7).
+    if (!(await ops.getProject(input.projectId))) {
+      throw new LibraryError(`No project ${input.projectId}`);
+    }
+    const state = stateOf(input.state);
+    if (!state?.initial)
+      throw new LibraryError(`${input.state} is not a state a node can start in`);
+    if (state.requiresBlockedReason && !input.blockedReason) {
+      throw new LibraryError(`${input.state} needs a blocked reason`);
+    }
+    // A work item starts only where its own track has a way forward, not in another track's
+    // entry state with no legal move out (escalation's `from: any` does not count).
+    const track = input.track;
+    if (
+      track !== null &&
+      !contracts.transitions.some(
+        (move) =>
+          move.from === input.state && (!move.tracks || move.tracks.includes(track)),
+      )
+    ) {
+      throw new LibraryError(`${input.state} has no move for the ${track} track`);
+    }
+    const at = clock.now();
+    const node: Node = {
+      id: ids.next(),
+      substate: null,
+      body: {},
+      hold: false,
+      agentReady: false,
+      blockedReason: null,
+      ...input,
+      stale: false,
+      stateSince: at,
+      linearIssueId: null,
+      linearStatusSynced: null,
+      version: 0,
+      createdAt: at,
+      updatedAt: at,
+    };
+    await ops.insertNode(node);
+    return node;
+  }
+
+  /** `addEdge` through `ops`: the store, or a transaction's writes (`addEdgeWith`). */
+  async function insertEdgeThrough(
+    ops: StoreOps,
+    fromNode: string,
+    toNode: string,
+    type: EdgeType,
+  ): Promise<Edge> {
+    if (fromNode === toNode) throw new LibraryError("A node cannot link to itself");
+    if (type === "blocks" && (await createsBlocksCycle(ops, fromNode, toNode))) {
+      throw new LibraryError("That blocks edge would create a cycle");
+    }
+    const edge: Edge = {
+      id: ids.next(),
+      fromNode,
+      toNode,
+      type,
+      createdAt: clock.now(),
+    };
+    await ops.insertEdge(edge);
+    return edge;
   }
 
   async function insertGateRequest(
@@ -416,65 +487,29 @@ export function createLibrary({
   }
 
   return {
-    async createNode(input: NewNode): Promise<Node> {
-      // Every node has a project (schema invariant 7).
-      if (!(await store.getProject(input.projectId))) {
-        throw new LibraryError(`No project ${input.projectId}`);
-      }
-      const state = stateOf(input.state);
-      if (!state?.initial)
-        throw new LibraryError(`${input.state} is not a state a node can start in`);
-      if (state.requiresBlockedReason && !input.blockedReason) {
-        throw new LibraryError(`${input.state} needs a blocked reason`);
-      }
-      // A work item starts only where its own track has a way forward, not in another track's
-      // entry state with no legal move out (escalation's `from: any` does not count).
-      const track = input.track;
-      if (
-        track !== null &&
-        !contracts.transitions.some(
-          (move) =>
-            move.from === input.state && (!move.tracks || move.tracks.includes(track)),
-        )
-      ) {
-        throw new LibraryError(`${input.state} has no move for the ${track} track`);
-      }
-      const at = clock.now();
-      const node: Node = {
-        id: ids.next(),
-        substate: null,
-        body: {},
-        hold: false,
-        agentReady: false,
-        blockedReason: null,
-        ...input,
-        stale: false,
-        stateSince: at,
-        linearIssueId: null,
-        linearStatusSynced: null,
-        version: 0,
-        createdAt: at,
-        updatedAt: at,
-      };
-      await store.insertNode(node);
-      return node;
-    },
+    createNode: (input: NewNode): Promise<Node> => insertNodeThrough(store, input),
 
-    async addEdge(fromNode: string, toNode: string, type: EdgeType): Promise<Edge> {
-      if (fromNode === toNode) throw new LibraryError("A node cannot link to itself");
-      if (type === "blocks" && (await createsBlocksCycle(fromNode, toNode))) {
-        throw new LibraryError("That blocks edge would create a cycle");
-      }
-      const edge: Edge = {
-        id: ids.next(),
-        fromNode,
-        toNode,
-        type,
-        createdAt: clock.now(),
-      };
-      await store.insertEdge(edge);
-      return edge;
-    },
+    /**
+     * `createNode` inside a transaction the caller holds, such as a move's `alsoWrite`: the node
+     * commits with the caller's other writes or not at all (the Triage handoff, M3.6). It takes
+     * no lock.
+     */
+    createNodeWith: (tx: StoreOps, input: NewNode): Promise<Node> =>
+      insertNodeThrough(tx, input),
+
+    addEdge: (fromNode: string, toNode: string, type: EdgeType): Promise<Edge> =>
+      insertEdgeThrough(store, fromNode, toNode, type),
+
+    /**
+     * `addEdge` inside a transaction the caller holds: the cycle check reads the edges through
+     * the same transaction, so it sees the edges the caller wrote before (the Triage handoff).
+     */
+    addEdgeWith: (
+      tx: StoreOps,
+      fromNode: string,
+      toNode: string,
+      type: EdgeType,
+    ): Promise<Edge> => insertEdgeThrough(tx, fromNode, toNode, type),
 
     async recordEvidence(
       input: Omit<Evidence, "id" | "recordedAt" | "supersedesId"> & {
@@ -570,6 +605,12 @@ export function createLibrary({
       const at = clock.now();
       return store.transaction((tx) => insertGateRequest(tx, request, at));
     },
+
+    /** `openGateRequest` inside a transaction the caller holds (the Triage handoff, M3.6). */
+    openGateRequestWith: (
+      tx: StoreOps,
+      request: NewGateRequest,
+    ): Promise<GateRequest> => insertGateRequest(tx, request, clock.now()),
 
     async answerGateRequest(
       requestId: string,

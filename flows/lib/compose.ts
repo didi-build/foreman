@@ -17,7 +17,7 @@ import {
   runLimits,
 } from "../../src/adapters/contracts-file/bot-files.ts";
 import {
-  loadContractFiles,
+  loadAllContractFiles,
   loadTaskTypesFile,
 } from "../../src/adapters/contracts-file/load.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
@@ -27,6 +27,7 @@ import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
+import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
@@ -87,6 +88,8 @@ export interface FlowDeps extends ReconcileDeps {
   tasks: TaskSource;
   /** CI's screenshot bundles for the visual comparison (D-242). Not built yet: it refuses. */
   screenshots: ScreenshotBundles;
+  /** The repo map per commit for Triage (D-251). Not built yet: it refuses (N-62). */
+  repoMaps: RepoMaps;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
   executionsThisMonth(): Promise<number>;
@@ -152,6 +155,22 @@ export function unbuiltScreenshotBundles(): ScreenshotBundles {
   };
 }
 
+/**
+ * The repo map at a commit (D-251). The runner builds it in a step with no network over a
+ * checkout at that commit (src/adapters/repo-map/typescript.ts); where that checkout comes from,
+ * and which job runs the build, is not built yet (N-62). Until then every read refuses, so no
+ * Triage run starts and no answer is checked.
+ */
+export function unbuiltRepoMaps(): RepoMaps {
+  return {
+    read: async () => {
+      throw new NotBuiltError(
+        "The repo map needs a checkout of the project at a commit in a job with no network, which is not built yet (N-62)",
+      );
+    },
+  };
+}
+
 /** Built on first use, so a flow that never starts an agent never reads the cluster token. */
 function lazyRuntime(build: () => Promise<FlowRuntime>): FlowRuntime {
   let made: Promise<FlowRuntime> | undefined;
@@ -205,7 +224,7 @@ function parseAgentImages(raw: string): Record<string, string> {
 export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
   const specVersion = await env.value(VALUE_NAMES.specVersion);
   const { contracts, problems } = validateContracts(
-    loadContractFiles(specVersion).raw,
+    loadAllContractFiles(specVersion).raw,
     GUARD_NAMES,
   );
   if (!contracts) throw new Error(`The contracts are invalid: ${problems.join("; ")}`);
@@ -261,6 +280,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     ),
     stagingChecker: unbuiltStagingChecker(),
     screenshots: unbuiltScreenshotBundles(),
+    repoMaps: unbuiltRepoMaps(),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

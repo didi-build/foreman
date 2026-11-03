@@ -12,7 +12,7 @@ Essential 3: contracts (guards, evidence, timeouts, fallbacks) are data loaded a
 
 ### Format and place
 
-- **YAML files in `contracts/`**, one per part of Machine 2: `contracts/machine-2/code.yaml` (the code, infrastructure and docs tracks, which share one path), `design.yaml` and `escalation.yaml`. Machine 1 gets its own files when M3.6 needs them.
+- **YAML files in `contracts/`**, one per part of Machine 2: `contracts/machine-2/code.yaml` (the code, infrastructure and docs tracks, which share one path), `design.yaml` and `escalation.yaml`. Machine 1 gets its own files when M3.6 needs them: `contracts/machine-1/idea.yaml` (M3.6) declares its states and the two moves the minimum Machine 1 automates, and the runner loads both folders as one contract set (`loadAllContractFiles`).
 - YAML, not JSON, because Didi and the agents read and review these files, and YAML allows comments. The `yaml` package is already pinned in the repo. It moves from a development dependency to a runtime one, because the runner and the API load contracts.
 - **Parsing stays out of the core.** A small adapter (`src/adapters/contracts-file/`) reads and parses the files. The core gets a plain object and validates it with its own function (`validateContracts`), which returns every problem at once: an unknown state, a guard name that is not registered, a duplicate move, a missing required field.
 - **The spec version** is the git commit of `docs/spec.md` and `contracts/`, as the architecture already says. The content hash is a SHA-256 of the loaded files, so two loads of the same commit are provably the same.
