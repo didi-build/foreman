@@ -262,7 +262,7 @@ describe("receiver tunnel (unit: D-195)", () => {
     );
   });
 
-  it("forwards exactly /plans to the state API's public Service, on the receiver's host name, only after Didi's tunnel gate (D-271)", () => {
+  it("forwards exactly the planning chat's paths to the state API's public Service, on the receiver's host name, only after Didi's tunnel gate (D-271, D-282)", () => {
     const config = only(
       cfCode,
       /resource\s+"cloudflare_zero_trust_tunnel_cloudflared_config"\s+"receiver"/,
@@ -271,7 +271,7 @@ describe("receiver tunnel (unit: D-195)", () => {
     const paths = [...config.matchAll(/path\s*=\s*([^\n]+)/g)].map((m) => m[1]?.trim());
     expect(paths).toEqual([
       "var.receiver_tunnel.path",
-      `"^${STATE_API_PUBLIC.path}$"`,
+      `"${STATE_API_PUBLIC.tunnelPath}"`,
       "null",
     ]);
     expect(config).toMatch(/var\.planning_service_url == null \? \[\] :/);
@@ -291,6 +291,38 @@ describe("receiver tunnel (unit: D-195)", () => {
     expect(blocks(cfCode, /resource\s+"cloudflare_dns_record"\s+"\w+"/)).toHaveLength(
       2,
     );
+  });
+
+  it("matches the planning chat's four paths and nothing else (D-282)", () => {
+    const tunnelPath = new RegExp(STATE_API_PUBLIC.tunnelPath);
+    for (const path of [
+      "/plans",
+      "/planning/projects/rehearsal/submissions",
+      "/planning/projects/rehearsal/feedback",
+      "/planning/projects/a-1/accepted",
+    ]) {
+      expect(tunnelPath.test(path), path).toBe(true);
+    }
+    for (const path of [
+      "/",
+      "/health",
+      "/ideas",
+      "/decisions",
+      "/attention",
+      "/plans/",
+      "/plans/extra",
+      "/xplans",
+      "/planning/projects/rehearsal",
+      "/planning/projects/rehearsal/runs",
+      "/planning/projects/rehearsal/submissions/extra",
+      "/planning/projects/Rehearsal/submissions",
+      "/planning/projects/-x/submissions",
+      "/planning/projects/a/b/submissions",
+      "/planning/projects/../submissions",
+      `/planning/projects/${"a".repeat(101)}/submissions`,
+    ]) {
+      expect(tunnelPath.test(path), path).toBe(false);
+    }
   });
 
   it("publishes the host name as a proxied CNAME to the tunnel", () => {

@@ -1,8 +1,9 @@
-// Seam: API (docs/test-plan.md, D-271). The state API's public listener, the one the Cloudflare
-// Tunnel forwards the planning chat's `/plans` to, over the in-memory store through real HTTP on
-// the loopback address: it serves `POST /plans` and nothing else, refuses a declared body over the
-// size limit and requests past the rate limit before the API reads them, and otherwise behaves
-// exactly as `POST /plans` on the internal port. The token is generated per test run and never
+// Seam: API (docs/test-plan.md, D-271, D-282). The state API's public listener, the one the
+// Cloudflare Tunnel forwards the planning chat's paths to, over the in-memory store through real
+// HTTP on the loopback address: it serves the planning chat's routes (`POST /plans` and the three
+// planning reads) and nothing else, refuses a declared body over the size limit and requests past
+// the rate limit before the API reads them, and otherwise behaves exactly as those routes on the
+// internal port. The token is generated per test run and never
 // asserted on or logged.
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -140,13 +141,35 @@ describe("the public listener (API seam, D-271)", () => {
     ).toBe(401);
   });
 
+  it("serves the three planning reads exactly as the internal port does (D-282)", async () => {
+    nowMs += 120_000;
+    for (const read of ["submissions", "feedback", "accepted"]) {
+      // A fresh window per read: the test's limit is 3 requests a minute.
+      nowMs += 120_000;
+      const path = `/planning/projects/rehearsal/${read}`;
+      const result = await send("GET", path, planningToken);
+      expect(result.status, path).toBe(200);
+      expect(result.body.read, path).toBe(read);
+      expect(result.body.project, path).toBe("rehearsal");
+      // The planning token's own checks still apply behind the listener.
+      expect((await send("GET", path, null)).status, path).toBe(401);
+    }
+    nowMs += 120_000;
+    expect(
+      (await send("GET", "/planning/projects/unknown/submissions", planningToken))
+        .status,
+    ).toBe(404);
+  });
+
   it("serves no other route, whatever the token, so nothing else is reachable through the tunnel", async () => {
     nowMs += 120_000;
     const before = await ideaCount();
     for (const [method, path] of [
       ["GET", "/plans"],
       ["PUT", "/plans"],
-      ["GET", "/planning/projects/rehearsal/submissions"],
+      ["POST", "/planning/projects/rehearsal/submissions"],
+      ["PUT", "/planning/projects/rehearsal/feedback"],
+      ["GET", "/planning/projects/rehearsal/runs"],
       ["POST", "/ideas"],
       ["POST", "/decisions"],
       ["GET", "/attention"],

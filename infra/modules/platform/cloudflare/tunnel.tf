@@ -2,12 +2,12 @@
 # cluster's platform pool dials out to Cloudflare, so the cluster opens no inbound port. The tunnel
 # routes one host name and one path to the receiver's internal Service, and nothing else.
 #
-# D-271 adds one more path on the same tunnel and host name, set only when Didi passes the tunnel
-# gate at first hosting: `/plans` to the state API's public Service, whose port serves the planning
-# chat's `POST /plans` and nothing else, with a size and a rate limit (src/api/public.ts). The
-# tunnel's ingress rules match host name and path only, not the method, so the method, size and
-# rate checks live on that port. The path is fixed here, not a setting, so it cannot be widened by
-# a variable.
+# D-271 adds one more rule on the same tunnel and host name, set only when Didi passes the tunnel
+# gate at first hosting: the planning chat's paths to the state API's public Service, whose port
+# serves the planning chat's routes and nothing else (`POST /plans` and, since D-282, the three
+# planning reads), with a size and a rate limit (src/api/public.ts). The tunnel's ingress rules
+# match host name and path only, not the method, so the method, size and rate checks live on that
+# port. The path pattern is fixed here, not a setting, so it cannot be widened by a variable.
 #
 # Gates at first hosting (D-195): the tunnel token is a new credential, and the DNS record is a DNS
 # change. The token is kept in (encrypted) state and is a sensitive output. It is piped straight
@@ -32,7 +32,7 @@ variable "receiver_tunnel" {
 }
 
 variable "planning_service_url" {
-  description = "The state API's public in-cluster Service the tunnel forwards the planning chat's /plans to (D-271), on the receiver's host name. Null adds no route: set only after Didi's tunnel gate."
+  description = "The state API's public in-cluster Service the tunnel forwards the planning chat's paths to (D-271, D-282), on the receiver's host name. Null adds no route: set only after Didi's tunnel gate."
 
   type    = string
   default = null
@@ -65,11 +65,13 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "receiver" {
           service  = var.receiver_tunnel.service_url
         },
       ],
-      # The planning chat's one path (D-271): exactly /plans, on the receiver's host name.
+      # The planning chat's paths (D-271, D-282): exactly /plans and its three reads under
+      # /planning/projects/<slug>/, on the receiver's host name. The slug pattern is the state
+      # API's own (src/api/routes.ts); the public port also checks the method (src/api/public.ts).
       var.planning_service_url == null ? [] : [
         {
           hostname = var.receiver_tunnel.hostname
-          path     = "^/plans$"
+          path     = "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$"
           service  = var.planning_service_url
         },
       ],

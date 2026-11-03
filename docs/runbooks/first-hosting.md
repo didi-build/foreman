@@ -107,11 +107,11 @@ The webhook secret is the one the runner App will use in step 13.
 
 Set `TF_VAR_publish_receiver_dns=true`, plan, and check the plan adds exactly one `cloudflare_dns_record` and changes nothing else. Then apply it.
 
-## 11a. The planning chat's path on the tunnel (tunnel gate, D-271)
+## 11a. The planning chat's paths on the tunnel (tunnel gate, D-271, D-282)
 
-This changes the tunnel's routing only: one more rule on the receiver's host name, for the path `/plans` exactly, to the state API's public Service (`http://state-api-public.foreman-platform.svc.cluster.local:8081`). That port serves `POST /plans` and nothing else, with a 64 KiB size limit and 20 requests a minute (ADR 0102, O-83). No DNS record is added.
+This changes the tunnel's routing only: one more rule on the receiver's host name, for the planning chat's paths exactly (`/plans` and `/planning/projects/<slug>/{submissions,feedback,accepted}`), to the state API's public Service (`http://state-api-public.foreman-platform.svc.cluster.local:8081`). That port serves `POST /plans` and those three reads as `GET` and nothing else, with a 64 KiB size limit and 20 requests a minute (ADR 0102, O-83, D-282). No DNS record is added.
 
-Set `TF_VAR_expose_planning_route=true`, plan, and check the plan changes only `cloudflare_zero_trust_tunnel_cloudflared_config.receiver`, adding exactly one ingress rule with `path = "^/plans$"` before the 404 rule, and nothing else. Then apply it. Check from outside: `POST https://<receiver host name>/plans` with no token answers 401, and `GET` on the same path and any other path answers 404. Only after step 15 creates the planning token does a submission go through.
+Set `TF_VAR_expose_planning_route=true`, plan, and check the plan changes only `cloudflare_zero_trust_tunnel_cloudflared_config.receiver`, adding exactly one ingress rule with `path = "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$"` before the 404 rule, and nothing else. Then apply it. Check from outside: `POST https://<receiver host name>/plans` and `GET https://<receiver host name>/planning/projects/<slug>/submissions` with no token answer 401, and `GET /plans`, `POST` on a read path and any other path answer 404. Only after step 15 creates the planning token does a submission go through.
 
 ## 12. The model key with a spend cap (new-credentials gate)
 
@@ -135,7 +135,7 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
 - The runner's database login, a user in the `factory_runner` role (ADR 0104), stored at `platform/state-store/runner-database-url` in Windmill resources.
 - A Windmill token that can list the workspace's jobs, for the monthly execution count (D-167). Until it exists, the reconcile flow skips the alert check and says so.
-- The planning chat's state API token (D-266). It lets the Council's planning chat submit a plan with `POST /plans` and nothing else (ADR 0102). Generate a long random value (at least 32 characters of letters, digits, `-` and `_`) in the password manager and keep it there. Put the value itself only into the planning chat's own settings. The state API holds only its SHA-256: store the hash at `platform/state-api/planning-token-sha256` in Windmill resources, and in the state API's Secret, piped straight in so neither value lands in a file or the shell history:
+- The planning chat's state API token (D-266). It lets the Council's planning chat submit a plan with `POST /plans` and read its submissions' status, Didi's feedback and the accepted plans, and nothing else (ADR 0102, D-282). Generate a long random value (at least 32 characters of letters, digits, `-` and `_`) in the password manager and keep it there. Put the value itself only into the planning chat's own settings. The state API holds only its SHA-256: store the hash at `platform/state-api/planning-token-sha256` in Windmill resources, and in the state API's Secret, piped straight in so neither value lands in a file or the shell history:
 
   ```bash
   # The token comes from the password manager's command line on stdin, with no trailing newline

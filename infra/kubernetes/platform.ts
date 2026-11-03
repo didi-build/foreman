@@ -57,13 +57,19 @@ export const STATE_API = {
 
 /**
  * The state API's public port (D-271): its own Service, so the tunnel's route can only ever reach
- * this port, which serves `POST /plans` and nothing else (src/api/public.ts, `PUBLIC_PORT`).
+ * this port, which serves the planning chat's routes and nothing else (src/api/public.ts, D-282).
  */
 export const STATE_API_PUBLIC = {
   name: "state-api-public",
   port: 8081,
   podLabels: STATE_API.podLabels,
-  path: "/plans",
+  /**
+   * The tunnel's path pattern for this Service (D-271, D-282): exactly `/plans` and the three
+   * planning reads, with the state API's own slug rule (src/api/routes.ts). The tunnel cannot
+   * match the method; the public port checks it.
+   */
+  tunnelPath:
+    "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$",
 } as const;
 
 export const RECEIVER = {
