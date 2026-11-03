@@ -2,6 +2,14 @@
 // ids of the runner's evidence it relied on. The shape is the state API's `POST /qa-verdicts`
 // body (src/api/routes.ts). The image checks it before posting, and the API and the runner check
 // it again: a pass must cite at least one evidence id the runner supplied, and nothing else.
+// A pass or a fail may also list `outOfScopeFindings` (D-244, O-65): at most 3 problems the pull
+// request did not introduce, each a title and a detail. They never fail the PR and are not
+// `findings`; the runner submits each as a new idea for the Council.
+import {
+  OUT_OF_SCOPE_FINDINGS,
+  readOutOfScopeFindings,
+  type OutOfScopeFinding,
+} from "../../core/out-of-scope-findings.ts";
 
 export interface Finding {
   path: string;
@@ -14,6 +22,8 @@ export interface QaVerdict {
   verdict: "pass" | "fail";
   findings: Finding[];
   evidenceIds: string[];
+  /** Left out when there are none. */
+  outOfScopeFindings?: OutOfScopeFinding[];
 }
 
 /** The structured-output schema the model's final answer must follow. */
@@ -38,6 +48,19 @@ export const VERDICT_SCHEMA: Record<string, unknown> = {
       },
     },
     evidenceIds: { type: "array", items: { type: "string" } },
+    [OUT_OF_SCOPE_FINDINGS]: {
+      // No maxItems: structured outputs take no array bounds; parseVerdict checks the cap.
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "detail"],
+        properties: {
+          title: { type: "string" },
+          detail: { type: "string" },
+        },
+      },
+    },
   },
 };
 
@@ -92,6 +115,8 @@ export function parseVerdict(
   if (verdict === "pass" && evidenceIds.length === 0) {
     return { problem: "a pass must cite the runner's evidence" };
   }
+  const found = readOutOfScopeFindings(value[OUT_OF_SCOPE_FINDINGS]);
+  if ("problem" in found) return found;
   return {
     verdict: {
       verdict,
@@ -102,6 +127,7 @@ export function parseVerdict(
         note: f.note as string,
       })),
       evidenceIds: [...new Set(evidenceIds as string[])],
+      ...(found.findings.length === 0 ? {} : { outOfScopeFindings: found.findings }),
     },
   };
 }

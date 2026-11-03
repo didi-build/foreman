@@ -15,10 +15,20 @@
 //   {"stopped": "needs_decision", "reason": "The item asks for a new screen the plan does not have."}
 //   ```
 //
+// The first form may also carry `outOfScopeFindings` (D-244, O-65): at most 3 bugs the run
+// noticed outside its item, each `{"title": "<one line>", "detail": "<what was seen>"}`, checked
+// by ../../core/out-of-scope-findings.ts. The runner submits each as a new idea for the Council;
+// they change nothing about the item. The stopped form has no findings: it is exactly two fields.
+//
 // The check is strict: no block, two blocks, text that is not one of those objects, a mix of the
 // two forms, an unknown field, or a field of the wrong shape is a problem the run fails on.
 // Nothing is guessed or filled in. The rest of the final message, without the block, becomes the
 // PR's description; a stopped run opens no PR.
+import {
+  OUT_OF_SCOPE_FINDINGS,
+  readOutOfScopeFindings,
+  type OutOfScopeFinding,
+} from "../../core/out-of-scope-findings.ts";
 
 export interface DocsNote {
   impact: "updated" | "none";
@@ -28,6 +38,8 @@ export interface DocsNote {
 export interface RunReport {
   pullRequestTitle: string;
   docsNote: DocsNote;
+  /** Bugs seen outside the item, trimmed; empty when the block has none (D-244). */
+  outOfScopeFindings: OutOfScopeFinding[];
   /** The final message without the block, trimmed. */
   summary: string;
 }
@@ -44,7 +56,7 @@ const MAX_TITLE = 200;
 const MAX_NOTE = 2000;
 /** The runner reads the same bound (NEEDS_DECISION_MAX_REASON in the runtime's result.ts). */
 export const MAX_STOP_REASON = 1000;
-const REPORT_KEYS = ["pullRequestTitle", "docsNote"];
+const REPORT_KEYS = ["pullRequestTitle", "docsNote", OUT_OF_SCOPE_FINDINGS];
 const STOPPED_KEYS = ["stopped", "reason"];
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -81,7 +93,7 @@ export function parseRunReport(
   if (!isObject(value) || !onlyKeys(value, REPORT_KEYS)) {
     return {
       problem:
-        "the foreman-report block must be an object with pullRequestTitle and docsNote only, or with stopped and reason only",
+        "the foreman-report block must be an object with pullRequestTitle, docsNote and an optional outOfScopeFindings only, or with stopped and reason only",
     };
   }
   const title = value.pullRequestTitle;
@@ -115,6 +127,8 @@ export function parseRunReport(
   if (note.impact === "updated" && note.note === undefined) {
     return { problem: "docsNote.note must say what changed when impact is updated" };
   }
+  const found = readOutOfScopeFindings(value[OUT_OF_SCOPE_FINDINGS]);
+  if ("problem" in found) return found;
   const summary = [...lines.slice(0, start), ...lines.slice(end + 1)].join("\n").trim();
   return {
     report: {
@@ -123,6 +137,7 @@ export function parseRunReport(
         impact: note.impact,
         ...(typeof note.note === "string" ? { note: note.note } : {}),
       },
+      outOfScopeFindings: found.findings,
       summary,
     },
   };

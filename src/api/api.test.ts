@@ -521,6 +521,69 @@ describe("state API QA verdicts (API seam, ADR 0112)", () => {
     expect((await call("POST", "/qa-verdicts", token, verdict())).status).toBe(403);
   });
 
+  it.each(["pass", "fail"])(
+    "keeps the bugs the PR did not introduce with a %s, apart from its findings (D-244, O-65)",
+    async (outcome) => {
+      const { token } = await issue("qa", { nodeId: item.id, headSha: HEAD });
+      const outside = [{ title: " Old bug ", detail: " src/b.ts double counts. " }];
+      const ok = await call(
+        "POST",
+        "/qa-verdicts",
+        token,
+        verdict({ verdict: outcome, outOfScopeFindings: outside }),
+      );
+      expect(ok.status).toBe(201);
+      const saved = (
+        await store.listEvidence({ nodeId: item.id, kind: "qa_verdict" })
+      ).at(-1);
+      expect(saved?.payload).toMatchObject({
+        verdict: outcome,
+        findings: [{ path: "src/a.ts" }],
+        outOfScopeFindings: [{ title: "Old bug", detail: "src/b.ts double counts." }],
+      });
+    },
+  );
+
+  it("stores no outOfScopeFindings when the verdict has none", async () => {
+    const { token } = await issue("qa", { nodeId: item.id, headSha: HEAD });
+    const ok = await call(
+      "POST",
+      "/qa-verdicts",
+      token,
+      verdict({ outOfScopeFindings: [] }),
+    );
+    expect(ok.status).toBe(201);
+    const saved = (
+      await store.listEvidence({ nodeId: item.id, kind: "qa_verdict" })
+    ).at(-1);
+    expect(saved?.payload).not.toHaveProperty("outOfScopeFindings");
+  });
+
+  it.each([
+    ["four of them", Array(4).fill({ title: "t", detail: "d" })],
+    ["a title too long", [{ title: "t".repeat(121), detail: "d" }]],
+    ["a two-line title", [{ title: "a\nb", detail: "d" }]],
+    ["an empty detail", [{ title: "t", detail: " " }]],
+    ["an extra field", [{ title: "t", detail: "d", path: "src/a.ts" }]],
+    ["not a list", { title: "t", detail: "d" }],
+  ])("refuses outOfScopeFindings with %s and stores nothing", async (_case, list) => {
+    const { token } = await issue("qa", { nodeId: item.id, headSha: HEAD });
+    const before = (await store.listEvidence({ nodeId: item.id, kind: "qa_verdict" }))
+      .length;
+    for (const outcome of ["pass", "fail"]) {
+      const result = await call(
+        "POST",
+        "/qa-verdicts",
+        token,
+        verdict({ verdict: outcome, outOfScopeFindings: list }),
+      );
+      expect(result.status).toBe(400);
+    }
+    expect(
+      (await store.listEvidence({ nodeId: item.id, kind: "qa_verdict" })).length,
+    ).toBe(before);
+  });
+
   it("rejects findings without a valid line range", async () => {
     const { token } = await issue("qa", { nodeId: item.id, headSha: HEAD });
     const result = await call(

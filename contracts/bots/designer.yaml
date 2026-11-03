@@ -96,7 +96,11 @@ instructions: |
     ```
     `pullRequestTitle` is one line of at most 200 characters. `docsNote` is
     {"impact": "none"} when the docs need no change, or {"impact": "updated", "note": "..."}
-    saying which docs you changed. A missing or malformed block fails the run.
+    saying which docs you changed. A missing or malformed block fails the run. If you noticed a
+    bug outside your item, do not fix it here: add "outOfScopeFindings" to the object, a list of
+    at most 3 items like {"title": "<one line, at most 120 characters>", "detail": "<what you
+    saw and where, at most 1000 characters>"}, with no secrets or personal data. The runner
+    gives each to the Council as a new idea.
   - Whenever these rules tell you to stop, end the same way, but put this object in the block
     instead, and nothing else:
     {"stopped": "needs_decision", "reason": "<what stopped you, what you tried, what decision is needed>"}

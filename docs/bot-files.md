@@ -81,6 +81,20 @@ The instructions keep the rule "if the item needs a product decision or a new fe
 
 The run-end flow then records the reason as an `agent_report` asking to escalate (`{"escalate": true, "reason": "..."}`, written by the runner, once per run), the form `escalation_trigger_met` already reads, and the run's report asks for the escalation to Escalated to Council instead of the done move. Nothing is counted toward `failure` and no fix round starts. The Council's run gets the reason, quoted as data, in its question, and sends the item on to Escalated to Didi when it decides Didi is needed (D-177, O-46). Details in O-63.
 
+### Bugs found outside the item (D-244)
+
+A Developer, Designer or QA run that notices a bug outside its item does not fix it in the current PR and does not escalate the item. It reports it, and the runner turns each report into a new idea for the Council. The field is `outOfScopeFindings`, so it is never confused with QA's `findings` (the file and line citations that fail a PR). The Developer and Designer add it to the first form of the block:
+
+````text
+```foreman-report
+{"pullRequestTitle": "Add the login form", "docsNote": {"impact": "none"}, "outOfScopeFindings": [{"title": "Help page has a typo", "detail": "docs/help.md line 4 says 'teh'."}]}
+```
+````
+
+QA adds the same list to its verdict, on a pass or a fail. The list is optional and holds at most 3 items, each with exactly `title` (one line, 1 to 120 characters) and `detail` (1 to 1,000 characters), both trimmed (`src/core/out-of-scope-findings.ts`, one check used by both images, the state API and the runner). The stopped form takes no findings: it stays exactly two fields. A list of the wrong shape fails the run with "the final message has no usable report", or makes QA's verdict unusable, and the state API's `POST /qa-verdicts` refuses it with 400. Each image removes credential values from the list and cuts it back to the bounds; the OpenCode wrapper sends it nowhere and puts it in the result's `structured`, and QA's image posts it with the verdict, which keeps it, and puts it in `structured` too.
+
+When a Developer, Designer or QA run ends with success, the run-end flow, before it records the end, creates one idea per finding in Machine 1's entry state (Submitted, owned by the runner), the front door the Scanner will use (D-150). The title is the finding's title, and the body holds the detail as `description` and `foundBy` with the role, the item and the run (`src/core/finding-ideas.ts`). It is done once per run, under a lock on the item, so a repeated or concurrent run end creates nothing more; dry run and the kill switch create nothing. The item's own move, counters and fix round are unchanged. The runner creates the ideas, never the agent (essential 6). Details in O-65.
+
 ### The Designer's step (D-238)
 
 A Designer run's input has a section "The item's state": the item's state as the contracts name it, with its label, when the run's input was built (for example `writing_spec (Writing spec)`). The Designer's instructions map it to a step: Ready for design exploration or In design exploration is exploring, Writing spec is writing the spec, Building components is building components. Any other state is a stop. No other role's input changes (O-64).

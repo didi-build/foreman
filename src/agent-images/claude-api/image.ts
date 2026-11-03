@@ -8,10 +8,12 @@ import type { ServiceTier } from "../../core/store.ts";
 import { readConfig, type Setting } from "../../service-kit/config.ts";
 import { createLogger } from "../../service-kit/logger.ts";
 import { parseRunPrice } from "../shared/price.ts";
+import { withinFindingBounds } from "../../core/out-of-scope-findings.ts";
 import {
   errorResult,
   exitCode,
   printResult,
+  redact,
   type AgentResult,
 } from "../shared/result.ts";
 import {
@@ -145,6 +147,7 @@ async function qaRun(
   client: MessagesClient,
   deps: ApiImageDeps,
   common: Common,
+  secrets: readonly string[],
 ): Promise<AgentResult> {
   const qa = readConfig(qaSettings, env);
   const logger = createLogger("agent-qa", deps.write);
@@ -177,12 +180,23 @@ async function qaRun(
       errorText: `the verdict is unusable: ${parsed.problem}`,
     };
   }
+  // The bugs QA saw outside the PR go to the state API and the runner without any credential
+  // value, cut back to the bounds the API and the runner check (D-244, O-65).
+  const { outOfScopeFindings, ...rest } = parsed.verdict;
+  const verdict = outOfScopeFindings
+    ? {
+        ...rest,
+        outOfScopeFindings: redact(outOfScopeFindings, secrets).map(
+          withinFindingBounds,
+        ),
+      }
+    : rest;
   const posted = await postVerdict({
     stateApiUrl: settings.stateApiUrl,
     token: settings.stateApiToken,
     nodeId: task.nodeId ?? "",
     headSha: qa.headSha,
-    verdict: parsed.verdict,
+    verdict,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   });
   if (!posted.ok) {
@@ -198,7 +212,7 @@ async function qaRun(
   return {
     ...result,
     structured: {
-      ...parsed.verdict,
+      ...verdict,
       commitSha: qa.headSha,
       evidenceId: posted.evidenceId,
     },
@@ -248,7 +262,7 @@ export async function runClaudeApiImage(
     const client = (deps.client ?? sdkClient)(settings);
     result =
       settings.role === "qa"
-        ? await qaRun(settings, task, env, client, deps, common)
+        ? await qaRun(settings, task, env, client, deps, common, secrets)
         : await structuredRun(settings, task, client, common, deps);
   } catch (error) {
     // Setting and task errors name the problem, never a value.

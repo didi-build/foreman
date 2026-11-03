@@ -1037,7 +1037,12 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       [
         "an unknown field",
         '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "merge": true}\n```',
-        "the foreman-report block must be an object with pullRequestTitle and docsNote only, or with stopped and reason only",
+        "the foreman-report block must be an object with pullRequestTitle, docsNote and an optional outOfScopeFindings only, or with stopped and reason only",
+      ],
+      [
+        "four out-of-scope findings",
+        `\`\`\`foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "outOfScopeFindings": ${JSON.stringify(Array(4).fill({ title: "t", detail: "d" }))}}\n\`\`\``,
+        "outOfScopeFindings must be a list of at most 3 items",
       ],
       [
         "the two forms mixed",
@@ -1147,6 +1152,58 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         stopped: "needs_decision",
         reason: "Saw [redacted] and [redacted]",
       });
+      expect(github.calls).toEqual([]);
+      expect(proxy.stateApiRequests).toEqual([]);
+    });
+
+    it("carries the bugs seen outside the item in the result, with no token in them, for the runner (D-244)", async () => {
+      const found = [
+        {
+          title: `Token ${GITHUB_TOKEN}`,
+          detail: `The login page 500s; saw ${STATE_TOKEN}.`,
+        },
+        { title: "Typo on the help page", detail: "docs/help.md says 'teh'." },
+      ];
+      writeTask(
+        withFinal(
+          `Done.\n\`\`\`foreman-report\n${JSON.stringify({ pullRequestTitle: "Add the form", docsNote: { impact: "none" }, outOfScopeFindings: found })}\n\`\`\``,
+        ),
+      );
+      const { code, result } = await run();
+      expect(code).toBe(0);
+      expect(lines.join("\n")).not.toContain(GITHUB_TOKEN);
+      expect(lines.join("\n")).not.toContain(STATE_TOKEN);
+      const expected = [
+        { title: "Token [redacted]", detail: "The login page 500s; saw [redacted]." },
+        found[1],
+      ];
+      expect(result?.structured).toMatchObject({
+        pullRequest: { number: 101 },
+        outOfScopeFindings: expected,
+      });
+      // The wrapper sends them nowhere: only the docs note goes to the state API.
+      expect(proxy.stateApiRequests).toHaveLength(1);
+      expect(JSON.stringify(proxy.stateApiRequests[0]?.body)).not.toContain(
+        "login page",
+      );
+      expect(github.pulls[0]?.body).toBe("Done.");
+      expect(mapRunEnd("complete", null, result, "m")).toMatchObject({
+        outcome: "success",
+        structured: { outOfScopeFindings: expected },
+      });
+    });
+
+    it("fails clearly on malformed findings, opening no PR", async () => {
+      writeTask(
+        withFinal(
+          '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "outOfScopeFindings": [{"title": "t"}]}\n```',
+        ),
+      );
+      const { code, result } = await run();
+      expect(code).toBe(1);
+      expect(result?.errorText).toBe(
+        `${FINISH_FAILURES.report}: each of outOfScopeFindings must have title and detail only`,
+      );
       expect(github.calls).toEqual([]);
       expect(proxy.stateApiRequests).toEqual([]);
     });
@@ -1265,6 +1322,7 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
       report: {
         pullRequestTitle: "Add the form",
         docsNote: { impact: "none", note: "no docs" },
+        outOfScopeFindings: [],
         summary: "Changed the form.\n\n\nThanks.",
       },
     });
@@ -1279,6 +1337,7 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
       report: {
         pullRequestTitle: "t",
         docsNote: { impact: "updated", note: "docs/a.md" },
+        outOfScopeFindings: [],
         summary: "",
       },
     });
@@ -1333,6 +1392,76 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
       ).toMatchObject({ stopped: { stopped: "needs_decision" } });
     },
   );
+
+  describe("bugs seen outside the item (unit: outOfScopeFindings, D-244, O-65)", () => {
+    const block = (findings: unknown) =>
+      `Done.\n\`\`\`foreman-report\n${JSON.stringify({ pullRequestTitle: "t", docsNote: { impact: "none" }, outOfScopeFindings: findings })}\n\`\`\``;
+    const problem = (findings: unknown) =>
+      (parseRunReport(block(findings)) as { problem?: string }).problem;
+
+    it("reads none, one and three findings, trimmed", () => {
+      expect(parseRunReport(block([]))).toMatchObject({
+        report: { outOfScopeFindings: [] },
+      });
+      expect(
+        parseRunReport(
+          block([{ title: " Login 500s ", detail: " Seen in src/a.ts. " }]),
+        ),
+      ).toMatchObject({
+        report: {
+          outOfScopeFindings: [{ title: "Login 500s", detail: "Seen in src/a.ts." }],
+        },
+      });
+      const three = [1, 2, 3].map((n) => ({ title: `bug ${n}`, detail: `seen ${n}` }));
+      expect(parseRunReport(block(three))).toMatchObject({
+        report: { outOfScopeFindings: three },
+      });
+    });
+
+    it("refuses a fourth finding, so a run reports at most three", () => {
+      const four = [1, 2, 3, 4].map((n) => ({ title: `bug ${n}`, detail: "d" }));
+      expect(problem(four)).toBe(
+        "outOfScopeFindings must be a list of at most 3 items",
+      );
+    });
+
+    it("holds each finding to its bounds", () => {
+      expect(
+        parseRunReport(block([{ title: "t".repeat(120), detail: "d".repeat(1000) }])),
+      ).toHaveProperty("report");
+      const title = "a finding's title must be one line of 1 to 120 characters";
+      const detail = "a finding's detail must be text of 1 to 1000 characters";
+      expect(problem([{ title: "t".repeat(121), detail: "d" }])).toBe(title);
+      expect(problem([{ title: "a\nb", detail: "d" }])).toBe(title);
+      expect(problem([{ title: " ", detail: "d" }])).toBe(title);
+      expect(problem([{ title: "t", detail: "d".repeat(1001) }])).toBe(detail);
+      expect(problem([{ title: "t", detail: "" }])).toBe(detail);
+    });
+
+    it.each([
+      ["not a list", { title: "t", detail: "d" }],
+      ["a text", "a bug"],
+      ["a finding with an extra field", [{ title: "t", detail: "d", path: "a.ts" }]],
+      ["a finding with no detail", [{ title: "t" }]],
+      ["a finding that is not an object", ["a bug"]],
+      ["a title that is not text", [{ title: 1, detail: "d" }]],
+    ])("fails on %s", (_case, findings) => {
+      expect(problem(findings)).toMatch(
+        /^(outOfScopeFindings must be|each of outOfScopeFindings)/,
+      );
+    });
+
+    it("keeps the stopped form to its two fields", () => {
+      expect(
+        parseRunReport(
+          '```foreman-report\n{"stopped": "needs_decision", "reason": "r", "outOfScopeFindings": []}\n```',
+        ),
+      ).toEqual({
+        problem:
+          "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
+      });
+    });
+  });
 
   it("does not take a block with another info string", () => {
     expect(

@@ -46,6 +46,7 @@ import {
   type RedoStep,
 } from "../../src/core/council.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
+import { createFindingIdeas, type FindingIdeas } from "../../src/core/finding-ideas.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { createRunReports } from "../../src/core/run-reports.ts";
@@ -232,39 +233,61 @@ export interface CouncilAfter {
 }
 
 /** What follows a recorded end in the run-end flow's result. */
-export type AfterRunEnd = AfterReport & CouncilAfter;
+export type AfterRunEnd = AfterReport &
+  CouncilAfter & {
+    /** When the end was recorded now: the ideas made from the run's findings (D-244, O-65). */
+    findingIdeas?: FindingIdeas;
+  };
 
 /**
  * The run-end flow's steps around recording one run's end. `record` checks and records a finished
  * Council run's answer and returns the report to record its end with (`fail` for an unusable
  * answer); for a builder that stopped because the item needs a decision it records the reason
- * first (O-63); any other report is returned as it is. `after` runs once the end is recorded:
+ * first (O-63); any other report is returned as it is. Then, for a successful Developer, Designer
+ * or QA run, it submits each bug the run reported outside its item as a new idea (D-244, O-65),
+ * still before the end is recorded: the runtime's result is not kept, so a flow cut short after
+ * the end would lose them, while one cut short before it polls again and finds the ideas made.
+ * The ideas never change the report or the item's move. `after` runs once the end is recorded:
  * the reported move and fix round (./builder-runs.ts), then for a Council run `afterCouncilRun`.
  */
 export function runEndSteps(deps: FlowDeps, run: Run) {
   let answer: CouncilAnswer | undefined;
+  let findingIdeas: FindingIdeas | undefined;
   const isCouncil = run.bot === "council";
+  async function reportToRecord(
+    result: AgentRunResult,
+    report: RunReport,
+  ): Promise<RunReport> {
+    if (result.detail === "needs_decision" && report.outcome === "success") {
+      // A builder stopped because the item needs a decision (D-237, O-63): its reason is
+      // recorded as its request to escalate, and its report then asks for the escalation. Any
+      // other role, or a reason the runner cannot record, ends the run `fail`.
+      const reason = result.needsDecision?.reason;
+      const recorded =
+        reason === undefined
+          ? null
+          : await createRunReports(deps).recordNeedsDecision(run.id, reason);
+      return recorded?.recorded ? report : { ...report, outcome: "fail" };
+    }
+    if (!isCouncil || report.outcome !== "success") return report;
+    answer = await createCouncil(deps).recordAnswer(run.id, result.structured);
+    return answer.recorded === false && answer.reason === "invalid"
+      ? { ...report, outcome: "fail" }
+      : report;
+  }
   return {
     async record(result: AgentRunResult, report: RunReport): Promise<RunReport> {
-      if (result.detail === "needs_decision" && report.outcome === "success") {
-        // A builder stopped because the item needs a decision (D-237, O-63): its reason is
-        // recorded as its request to escalate, and its report then asks for the escalation. Any
-        // other role, or a reason the runner cannot record, ends the run `fail`.
-        const reason = result.needsDecision?.reason;
-        const recorded =
-          reason === undefined
-            ? null
-            : await createRunReports(deps).recordNeedsDecision(run.id, reason);
-        return recorded?.recorded ? report : { ...report, outcome: "fail" };
+      const recorded = await reportToRecord(result, report);
+      if (recorded.outcome === "success" && result.detail !== "needs_decision") {
+        findingIdeas = await createFindingIdeas(deps).submit(run.id, result.structured);
       }
-      if (!isCouncil || report.outcome !== "success") return report;
-      answer = await createCouncil(deps).recordAnswer(run.id, result.structured);
-      return answer.recorded === false && answer.reason === "invalid"
-        ? { ...report, outcome: "fail" }
-        : report;
+      return recorded;
     },
     async after(): Promise<AfterRunEnd> {
-      const reported = await reportedMoveAndFixRound(deps, run.id);
+      const reported = {
+        ...(await reportedMoveAndFixRound(deps, run.id)),
+        ...(findingIdeas ? { findingIdeas } : {}),
+      };
       if (isCouncil) {
         return { ...reported, council: await afterCouncilRun(deps, run, answer) };
       }

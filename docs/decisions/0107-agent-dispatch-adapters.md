@@ -95,6 +95,10 @@ The model pushes its branch with git. After a successful run, the OpenCode image
 
 A run that stops because the item needs a product decision or a new feature (D-237) ends with the block's second form, `{"stopped": "needs_decision", "reason": "..."}`. The wrapper then reads no branch, opens no PR and posts no note, and the result line has the new status `needs_decision` with the reason in `structured`. The runtime maps it to `success` with detail `needs_decision`; the run-end flow records the reason as the bot's `agent_report` asking to escalate and asks for the escalation to the Council with the run's trigger, not the done move. No count and no retry. No new state, move, permission or run outcome: the existing escalation contract and guard carry it (O-63).
 
+### Bugs found outside the item (D-244)
+
+A Developer, Designer or QA run may report up to 3 bugs it noticed outside its item, as `outOfScopeFindings` (each a one-line title and what was seen): the Developer and Designer in the first form of the `foreman-report` block, QA in its verdict on a pass or a fail. One plain check with no imports (`src/core/out-of-scope-findings.ts`) is used by both images, the state API's verdict route and the runner, and each image copies that one file. A list of the wrong shape fails the run. The images remove credential values and carry the list in the result's `structured`. The run-end flow, before it records the end of a successful run of those roles, creates one Machine 1 idea per finding (Submitted, owned by the runner), marked in its body with the role, the item and the run, once per run under a lock on the item. The ideas never change the item's move or counters, and dry run and the kill switch create nothing. No new state, move, permission, migration or run outcome (O-65).
+
 ## Depends on
 
 [ADR 0106](./0106-agent-execution-environment.md) (agent execution environment and budget enforcement, M3) is accepted (D-191). It decides where agents run and how their network access is limited. This ADR sets only the adapter interface and the QA rules, and is finished together with 0106 in M3.2.
