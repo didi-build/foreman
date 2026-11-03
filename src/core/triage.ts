@@ -28,7 +28,8 @@
 // library's cycle check, read through the same transaction), a `split_into` edge from the idea and
 // a `design_for` edge from each design item to its counterparts, the accepted plan and product
 // direction linked to each item (so `plan_attached` passes on it), one open gate request owned by
-// Didi for each needsDidi item, the hold flag, and one P-11 decision record per item's track. The
+// Didi for each needsDidi item, the hold flag with a release request for Didi on each held item
+// (D-269), and one P-11 decision record per item's track. The
 // idea's version check is its only lock; the new rows are inserted, never locked. Dry run and the
 // kill switch write nothing.
 import { createHash } from "node:crypto";
@@ -36,6 +37,11 @@ import { createHash } from "node:crypto";
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import { escalationTopic } from "./guards/escalation.ts";
+import {
+  HOLD_RELEASE_KIND,
+  holdReleasePayload,
+  holdReleaseTopic,
+} from "./hold-release.ts";
 import { latest } from "./guards/evidence.ts";
 import {
   createLibrary,
@@ -752,6 +758,24 @@ export function createTriage(options: TriageOptions) {
               gate: item.gate,
               ideaId: idea.id,
             },
+          });
+          created.gateRequestIds.push(request.id);
+        }
+        if (item.hold) {
+          // The plan holds this item back: Didi's release request (D-269, src/core/hold-release.ts).
+          const request = await library.openGateRequestWith(tx, {
+            projectId: idea.projectId,
+            nodeId: node.id,
+            topicKey: holdReleaseTopic(node.id),
+            kind: HOLD_RELEASE_KIND,
+            owner: "didi",
+            blocking: false,
+            payload: holdReleasePayload({
+              title: item.title,
+              description: item.description,
+              ideaId: idea.id,
+              note: answer.note,
+            }),
           });
           created.gateRequestIds.push(request.id);
         }

@@ -2,7 +2,8 @@
 // store as the factory_runner role: one transaction that moves the idea to Handed off and writes
 // the work items, their edges, the decision links, the needsDidi gate request and the track
 // decision records; two run ends for the same run at once hand off once; a write that fails part
-// way leaves nothing behind; and a rejected answer is recorded once.
+// way leaves nothing behind; a held item's release after Didi's Approve is taken once when two
+// calls race (D-269); and a rejected answer is recorded once.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -11,6 +12,8 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { approvalDecision } from "../../src/core/approvals.ts";
+import { createHoldReleases, holdReleaseTopic } from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import type { Store } from "../../src/core/store.ts";
 import { createTriage, TRACK_DECISION_POINT } from "../../src/core/triage.ts";
@@ -153,11 +156,13 @@ describe.skipIf(!adminUrl)(
         ),
       ).toBe(5);
       const gates = await pool.query(
-        "select kind, owner, blocking, status from factory.gate_requests where node_id = any($1)",
+        "select kind, owner, blocking, status from factory.gate_requests where node_id = any($1) order by kind",
         [ids],
       );
       expect(gates.rows).toEqual([
         { kind: "dns", owner: "didi", blocking: true, status: "open" },
+        // The held item's release request (D-269).
+        { kind: "scope", owner: "didi", blocking: false, status: "open" },
       ]);
       const moves = await pool.query(
         "select from_state, to_state, mode from factory.transitions where node_id = $1",
@@ -205,6 +210,43 @@ describe.skipIf(!adminUrl)(
       ).toMatchObject({
         recorded: true,
       });
+    });
+
+    it("releases a held item once when two releases race after Didi's Approve (D-269)", async () => {
+      const { t, run, triage } = await ideaWithRun("9d000000-0000-4000-8000", "tr4");
+      expect(await triage.recordAnswer(run.id, goodAnswer(), REPO_MAP)).toMatchObject({
+        recorded: true,
+      });
+      const held = (await store.listNodes({ projectId: t.projectId })).find(
+        (n) => n.hold,
+      );
+      if (!held) throw new Error("no held item");
+      const request = await store.findOpenGateRequest(
+        t.projectId,
+        holdReleaseTopic(held.id),
+      );
+      if (!request) throw new Error("no release request");
+      const releases = createHoldReleases(t.deps);
+      expect(await releases.release(held.id)).toEqual({
+        nodeId: held.id,
+        step: "waiting",
+      });
+      await createLibrary(t.deps).answerGateRequest(
+        request.id,
+        approvalDecision(request, {
+          choice: "approve",
+          words: null,
+          approvers: ["anonymous"],
+        }),
+      );
+      expect(await releases.pending()).toEqual([held.id]);
+      const steps = await Promise.all([
+        releases.release(held.id),
+        releases.release(held.id),
+      ]);
+      expect(steps.map((s) => s.step).sort()).toEqual(["not_held", "released"]);
+      expect((await store.getNode(held.id))?.hold).toBe(false);
+      expect(await releases.pending()).toEqual([]);
     });
 
     it("records a rejected answer once, on the idea, by the runner", async () => {

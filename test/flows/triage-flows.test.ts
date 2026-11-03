@@ -6,12 +6,18 @@
 // decision returns the idea to Triage. The answer rules themselves are in test/triage.test.ts.
 import { describe, expect, it } from "vitest";
 
+import { run as resume } from "../../flows/approval-resume.ts";
 import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
+import {
+  createHoldReleases,
+  HOLD_RELEASE_QUESTION,
+  holdReleaseTopic,
+} from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import {
   needsDidiTopic,
@@ -217,7 +223,8 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
     expect(await edges("split_into")).toEqual(
       items.map((n) => `${idea.id}>${n.id}`).sort(),
     );
-    // The needsDidi item has its gate request for Didi, and nothing else has one.
+    // The needsDidi item has its gate request for Didi, the held item its release request
+    // (D-269), and nothing else has one.
     const gates = await f.store.listOpenGateRequests(f.projectId);
     expect(gates).toMatchObject([
       {
@@ -227,7 +234,23 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
         owner: "didi",
         blocking: true,
       },
+      {
+        nodeId: id("old-settings"),
+        topicKey: holdReleaseTopic(id("old-settings")),
+        kind: "scope",
+        owner: "didi",
+        blocking: false,
+        payload: {
+          question: HOLD_RELEASE_QUESTION,
+          title: "Item old-settings",
+          description: "The old-settings work.",
+          ideaId: idea.id,
+          note: goodAnswer().note,
+        },
+      },
     ]);
+    // The release request uses the approval form with no options (D-254).
+    expect((gates[1]?.payload as { options?: unknown }).options).toBeUndefined();
     // The plan and the product direction are on every item, so plan_attached passes.
     for (const item of items) {
       expect(
@@ -307,6 +330,147 @@ describe("a design item Triage marks as blocked (flow: fake model, D-268)", () =
     const started = await dispatch(f.deps, { nodeId: design.id, role: "designer" });
     expect(started).toMatchObject({ outcome: "started" });
     expect((await f.store.getNode(design.id))?.state).toBe("in_design_exploration");
+  });
+});
+
+/** A handoff whose held item waits on nothing else, with its release request (D-269). */
+async function heldItem(f: FlowFixture) {
+  const { start } = await startedTriage(f);
+  const answer = answerWith((a) => {
+    const old = a.items.find((i) => i.key === "old-settings");
+    if (old) old.blockedBy = [];
+  });
+  expect(await finish(f, start.run.id, answer)).toMatchObject({
+    triageAnswer: { recorded: true },
+  });
+  const held = (await f.store.listNodes({ projectId: f.projectId })).find(
+    (n) => (n.body as { triageKey?: string }).triageKey === "old-settings",
+  ) as Node;
+  expect(held).toMatchObject({ state: "ready_for_dev", hold: true });
+  const request = await f.store.findOpenGateRequest(
+    f.projectId,
+    holdReleaseTopic(held.id),
+  );
+  if (!request) throw new Error("no release request");
+  return { held, request };
+}
+
+const answerPage = (
+  f: FlowFixture,
+  gateRequestId: string,
+  decision: string,
+  feedback = "",
+) =>
+  resume(f.deps, {
+    gateRequestId,
+    resume: { decision, options: [], feedback },
+    approvers: ["anonymous"],
+  });
+
+describe("a held item's release request (flow: fake model, D-269)", () => {
+  it("keeps the held item from starting; Didi's Approve releases it once and it starts", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    const waiting = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
+    expect(waiting).toMatchObject({ outcome: "not_started" });
+    expect((waiting as { failedGuards: string[] }).failedGuards).toContain(
+      "agent_ready_not_on_hold",
+    );
+    expect(await f.store.listRuns({ nodeId: held.id })).toEqual([]);
+
+    // Approve needs no feedback here: a release request is not a question (D-254, D-257).
+    const approved = await answerPage(f, request.id, "Approve");
+    expect(approved).toMatchObject({
+      outcome: "recorded",
+      heldBy: null,
+      holdRelease: { nodeId: held.id, step: "released" },
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(false);
+    const decisions = (await f.store.listDecisionsForNode(held.id)).filter(
+      (d) => d.kind === "approval",
+    );
+    expect(decisions).toMatchObject([
+      {
+        byActor: "didi",
+        scope: { topicKey: holdReleaseTopic(held.id), gateKind: "scope" },
+      },
+    ]);
+
+    // A repeated answer records nothing more, and the release is not taken again.
+    const before = await f.footprint(held.id);
+    expect(await answerPage(f, request.id, "Approve")).toEqual({
+      outcome: "already_closed",
+    });
+    expect(await createHoldReleases(f.deps).release(held.id)).toEqual({
+      nodeId: held.id,
+      step: "not_held",
+    });
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
+    expect(await f.footprint(held.id)).toBe(before);
+
+    const started = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
+    expect(started).toMatchObject({ outcome: "started" });
+  });
+
+  it("keeps the item held on Reject, with Didi's words recorded", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    const words = "Not yet.\nWait until the new page has run for a week.";
+    expect(await answerPage(f, request.id, "Reject", words)).toMatchObject({
+      outcome: "recorded",
+      holdRelease: { nodeId: held.id, step: "kept_held" },
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+    expect(await f.store.listDecisionsForNode(held.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "answer",
+          textVerbatim: words,
+          scope: expect.objectContaining({ outcome: "rejected" }),
+        }),
+      ]),
+    );
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
+    expect(
+      await dispatch(f.deps, { nodeId: held.id, role: "developer" }),
+    ).toMatchObject({
+      outcome: "not_started",
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+  });
+
+  it("keeps it held on Request changes, and a Reject with no feedback records nothing", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    const reopened = await answerPage(f, request.id, "Reject");
+    expect(reopened).toMatchObject({
+      outcome: "reopened",
+      note: "Reject needs feedback: say why.",
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+    const fresh = (reopened as { gateRequestId: string }).gateRequestId;
+    expect(
+      await answerPage(f, fresh, "Request changes", "Split it first."),
+    ).toMatchObject({ outcome: "recorded", holdRelease: { step: "kept_held" } });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+  });
+
+  it("records Didi's Approve under dry run and releases the item once the runner is live", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    await f.setting("dry_run", true);
+    expect(await answerPage(f, request.id, "Approve")).toMatchObject({
+      outcome: "recorded",
+      heldBy: "dry_run",
+      holdRelease: { step: "dry_run" },
+    });
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+    await f.live();
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([
+      { nodeId: held.id, step: "released" },
+    ]);
+    expect((await f.store.getNode(held.id))?.hold).toBe(false);
+    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
   });
 });
 

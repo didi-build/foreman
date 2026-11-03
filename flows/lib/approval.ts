@@ -17,6 +17,11 @@ import {
 import { REVERSAL_PREFIX, type FollowUpStep } from "../../src/core/council.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
+import {
+  createHoldReleases,
+  HOLD_RELEASE_PREFIX,
+  type HoldReleaseStep,
+} from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import type { GateRequest, Json } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
@@ -142,6 +147,12 @@ export interface AfterAnswer {
    * and the Council pass on the topic, which starts the follow-up run.
    */
   reversal?: { followUp: FollowUpStep[]; council: CouncilPassStep[] };
+  /**
+   * For a held item's release request (D-269): whether the runner cleared the hold flag. Only
+   * Didi's Approve releases it; the reconcile flow's hold release pass asks again if this step
+   * is held by a switch or cut short.
+   */
+  holdRelease?: HoldReleaseStep;
 }
 
 /**
@@ -150,8 +161,9 @@ export interface AfterAnswer {
  * kill switch and dry run hold it as for every move; the reconcile flow's escalation pass asks
  * again if this step is cut short. For a reversal's question to Didi (an `escalation` request on
  * a `decision-reversed:` topic), the follow-up Council question opens and its run starts
- * (D-234), in live mode only; the reconcile flow's follow-up pass opens it later otherwise. Any
- * other gate kind asks for nothing.
+ * (D-234), in live mode only; the reconcile flow's follow-up pass opens it later otherwise. For a
+ * held item's release request (D-269), the runner clears the hold flag on Didi's Approve
+ * (src/core/hold-release.ts). Any other gate kind asks for nothing.
  */
 export async function afterAnswer(
   deps: FlowDeps,
@@ -176,9 +188,14 @@ export async function afterAnswer(
       council: opened ? await councilPass(deps, [gate.topicKey]) : [],
     };
   }
+  const holdRelease =
+    gate.nodeId && gate.topicKey === `${HOLD_RELEASE_PREFIX}${gate.nodeId}`
+      ? await createHoldReleases(deps).release(gate.nodeId)
+      : undefined;
   return {
     heldBy: await heldBy(deps.store),
     ...(escalation ? { escalation } : {}),
     ...(reversal ? { reversal } : {}),
+    ...(holdRelease ? { holdRelease } : {}),
   };
 }
