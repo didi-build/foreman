@@ -183,6 +183,22 @@ describe("the approval form's rules (unit, D-254)", () => {
     ).toEqual({ options: ["a"] });
   });
 
+  it("Approve on a question for Didi needs feedback (D-257)", () => {
+    for (const kind of ["escalation", "council_question"] as const) {
+      const question = { ...GATE, kind };
+      expect(problem(question, "approve", [], null)).toBe(
+        ANSWER_PROBLEMS.approveQuestionNeedsFeedback,
+      );
+      expect(problem(question, "approve", [], "  ")).toBe(
+        ANSWER_PROBLEMS.approveQuestionNeedsFeedback,
+      );
+      expect(
+        problem(question, "approve", [], "Go with the Council's option B."),
+      ).toBeNull();
+    }
+    expect(problem({ ...GATE, kind: "spend" }, "approve", [], null)).toBeNull();
+  });
+
   it("Approve needs exactly one listed option, and no feedback", () => {
     expect(problem(listing, "approve", ["b"], null)).toBeNull();
     expect(problem(listing, "approve", ["b"], "")).toBeNull();
