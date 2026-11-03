@@ -1,5 +1,8 @@
+import { useSearchParams } from "react-router-dom";
 import { GALLERY_PROBE_MARKER } from "./gallery-probe-marker.js";
+import { GalleryShot } from "./GalleryShot.js";
 import { galleryEntries } from "./registry.js";
+import { SHOT_ATTRIBUTES, SHOT_PARAMS } from "./shot-mode.js";
 import "./gallery.css";
 
 function PropsTable({ props }: { props: Record<string, unknown> }) {
@@ -32,6 +35,12 @@ function PropsTable({ props }: { props: Record<string, unknown> }) {
 }
 
 export function App() {
+  const [params] = useSearchParams();
+  const shotEntry = params.get(SHOT_PARAMS.entry);
+  const shotVariant = params.get(SHOT_PARAMS.variant);
+  if (shotEntry !== null && shotVariant !== null) {
+    return <GalleryShot entryId={shotEntry} variantName={shotVariant} />;
+  }
   return (
     <div className="gallery-root">
       <span className="gallery-probe-marker" hidden>
@@ -49,7 +58,15 @@ export function App() {
         {galleryEntries.map((entry) => {
           const Component = entry.component;
           return (
-            <section key={entry.id} className="gallery-card" id={entry.id}>
+            <section
+              key={entry.id}
+              className="gallery-card"
+              id={entry.id}
+              {...{
+                [SHOT_ATTRIBUTES.entry]: entry.id,
+                [SHOT_ATTRIBUTES.spec]: entry.specPath,
+              }}
+            >
               <div className="gallery-card-head">
                 <h2>{entry.title}</h2>
                 <p className="gallery-muted">
@@ -62,7 +79,11 @@ export function App() {
               </details>
               <div className="gallery-variants">
                 {entry.variants.map((variant) => (
-                  <div key={variant.name} className="gallery-variant">
+                  <div
+                    key={variant.name}
+                    className="gallery-variant"
+                    {...{ [SHOT_ATTRIBUTES.variant]: variant.name }}
+                  >
                     <h3>{variant.name}</h3>
                     <div className="gallery-preview">
                       <Component {...variant.props} />

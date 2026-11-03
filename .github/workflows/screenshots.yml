@@ -1,0 +1,56 @@
+name: Screenshots
+
+# CI's render step for the visual comparison (D-242, D-275 point 1, ADR 0112). On each pull request
+# commit it renders the gallery, and the exploration options the pull request changes, at the PR
+# head and uploads each bundle as the workflow artifact the runner reads by commit (D-276,
+# src/adapters/screenshots/github-artifacts.ts). No secrets; the browser is the Google Chrome on
+# GitHub's Ubuntu runners, driven by playwright-core at the exact version in package.json.
+
+on:
+  pull_request:
+
+concurrency:
+  group: screenshots-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  render-screenshots:
+    name: render-screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: Render the gallery
+        run: node scripts/render-screenshots.ts --kind gallery --commit "$HEAD_SHA" --out screenshots/gallery --browser chrome
+      - name: Upload the gallery bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foreman-screenshots-gallery
+          path: screenshots/gallery/
+          if-no-files-found: error
+      - name: Render the options this pull request changes
+        run: node scripts/render-screenshots.ts --kind options --commit "$HEAD_SHA" --changed-since "$BASE_SHA" --out screenshots/options --browser chrome
+      - name: Upload the options bundle
+        if: hashFiles('screenshots/options/manifest.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foreman-screenshots-options
+          path: screenshots/options/
+          if-no-files-found: error

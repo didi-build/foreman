@@ -90,3 +90,22 @@ body {
   padding: 0.35rem 0.5rem;
   text-align: left;
 }
+
+/* Render mode for CI's screenshots (gallery/shot-mode.ts): one variant in a plain frame. */
+html.gallery-shot-mode body {
+  background: #fff;
+}
+
+html.gallery-shot-mode *,
+html.gallery-shot-mode *::before,
+html.gallery-shot-mode *::after {
+  animation: none !important;
+  transition: none !important;
+  caret-color: transparent !important;
+}
+
+.gallery-shot {
+  display: inline-block;
+  padding: 16px;
+  background: #fff;
+}

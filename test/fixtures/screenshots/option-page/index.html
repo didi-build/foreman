@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Synthetic option page (render step fixture)</title>
+    <link rel="stylesheet" href="option.css" />
+    <!-- Leaves the local server, so the render step refuses it. -->
+    <link rel="stylesheet" href="https://fonts.example.invalid/blocked.css" />
+  </head>
+  <body>
+    <h1>Bold option</h1>
+    <div class="row">
+      <div data-component="example-button" data-variant="Primary">
+        <button class="primary" type="button">Save changes</button>
+      </div>
+      <div data-component="example-button" data-variant="Secondary">
+        <button class="secondary" type="button">Cancel</button>
+      </div>
+    </div>
+    <div class="card" data-component="example-card">
+      <p>A component with no variants.</p>
+    </div>
+  </body>
+</html>

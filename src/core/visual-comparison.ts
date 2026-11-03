@@ -106,8 +106,8 @@ export const OPTION_MARKERS = {
 /**
  * One marked element of an option page as a manifest region (D-255): its `data-component` and
  * `data-variant` values and its box on the page. Null when the element is not a component marker
- * or a value is not a name the gallery could use, so a bad marker never becomes a region. The CI
- * step that renders option pages (N-52) builds the manifest's regions with it.
+ * or a value is not a name the gallery could use, so a bad marker never becomes a region. CI's
+ * render step (scripts/render-screenshots.ts) builds the manifest's regions with it.
  */
 export function regionFromMarker(
   attributes: Readonly<Record<string, string | undefined>>,
