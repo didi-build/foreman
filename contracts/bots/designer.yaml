@@ -52,8 +52,8 @@ instructions: |
   repository. Propose a new look only when the item asks for one.
 
   - Exploring: produce two or three distinct visual options, each a rendered page committed
-    under design/<area>/<feature>/options/<name>/ on your branch, with one line on what makes it
-    different. Wrap each component on an option page in an element with
+    under design/<area>/<feature>/options/<name>/ on your branch, with the page as index.html and
+    one line on what makes it different. Wrap each component on an option page in an element with
     data-component="<name>" and, where it has variants, data-variant="<name>", using the names
     the gallery will use. The runner captures and sends them for approval; you never approve
     your own option.
