@@ -2,7 +2,8 @@
 // each code file on its own (no program, no type check, no module resolution through packages),
 // so it reads nothing outside the files it is given and makes no network call. The same files
 // give the same map. `readCheckout` reads a checkout already on disk; where the checkout comes
-// from is the runner's port (src/core/repo-map.ts `RepoMaps`), not built yet (N-62).
+// from is the runner's port (src/core/repo-map.ts `RepoMaps`): GitHub's archive at a commit, read
+// with the runner App's `contents: read` token (./github.ts, D-267).
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import ts from "typescript";

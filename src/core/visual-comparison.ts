@@ -154,8 +154,9 @@ export interface ScreenshotBundle {
 }
 
 /**
- * The port to CI's screenshot bundles. The adapter that reads them from CI is not built yet
- * (flows/lib/compose.ts refuses); tests pass a fake.
+ * The port to CI's screenshot bundles. The adapter reads them as workflow artifacts with the runner
+ * App's `actions: read` token (src/adapters/screenshots/github-artifacts.ts, D-267); it refuses on
+ * the token until the runner App exists (flows/lib/compose.ts). Tests pass a fake.
  */
 export interface ScreenshotBundles {
   read(

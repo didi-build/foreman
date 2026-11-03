@@ -4,6 +4,8 @@
 // a synthetic accepted plan run through Triage gives the expected items, links and tracks; the bad
 // answers are rejected; the re-run gets the reason; a second bad answer goes to the Council, whose
 // decision returns the idea to Triage. The answer rules themselves are in test/triage.test.ts.
+import { gzipSync } from "node:zlib";
+
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
@@ -12,6 +14,7 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import { createGitHubRepoMaps } from "../../src/adapters/repo-map/github.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import {
   createHoldReleases,
@@ -612,6 +615,57 @@ describe("Triage's switches and refusals (flow: fake model, D-201)", () => {
       { step: "start", result: { outcome: "start_failed" } },
     ]);
     expect(await f.store.listRuns({ nodeId: idea.id })).toEqual([]);
+  });
+
+  it("builds the brief from GitHub's archive at the default branch's head through the runner App's read token (D-267)", async () => {
+    const f = await createFlowFixture();
+    const idea = await acceptedIdea(f);
+    const minted: unknown[] = [];
+    const top = `rehearsal-${MAP_COMMIT.slice(0, 7)}`;
+    const tar = (path: string, text: string) => {
+      const header = Buffer.alloc(512);
+      header.write(`${top}/${path}`, 0);
+      header.write(`${text.length.toString(8).padStart(11, "0")}\0`, 124);
+      header.write("0", 156);
+      header.write("ustar\0", 257);
+      const body = Buffer.alloc(Math.ceil(text.length / 512) * 512);
+      body.write(text);
+      return Buffer.concat([header, body]);
+    };
+    const archive = gzipSync(
+      Buffer.concat([
+        tar("package.json", '{"scripts":{"check":"vitest run"}}'),
+        tar("src/settings/store.ts", "export function readSettings() {}"),
+        Buffer.alloc(1024),
+      ]),
+    );
+    const repoMaps = createGitHubRepoMaps({
+      tokens: {
+        async mint(request) {
+          minted.push(request);
+          return "fake-token-for-tests";
+        },
+      },
+      http: {
+        async get({ path }) {
+          if (path === `/repos/${REPO}`)
+            return { status: 200, body: Buffer.from('{"default_branch":"main"}') };
+          if (path === `/repos/${REPO}/commits/main`)
+            return { status: 200, body: Buffer.from(MAP_COMMIT) };
+          if (path === `/repos/${REPO}/tarball/${MAP_COMMIT}`)
+            return { status: 200, body: archive };
+          return { status: 404, body: new Uint8Array() };
+        },
+      },
+    });
+    const steps = await triagePass({ ...f.deps, repoMaps }, [idea.id]);
+    expect(steps).toMatchObject([{ step: "start", result: { outcome: "started" } }]);
+    expect(minted).toEqual([{ repository: REPO, permission: "contents" }]);
+    const start = lastTriageStart(f);
+    expect(start.run.headSha).toBe(MAP_COMMIT);
+    expect(start.input).toContain(`at commit ${MAP_COMMIT}`);
+    expect(start.input).toContain("src/settings/store.ts");
+    expect(start.input).toContain("- check: vitest run");
   });
 
   it("the schema the run is given is Triage's answer schema", () => {
