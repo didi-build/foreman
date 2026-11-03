@@ -1496,8 +1496,11 @@ export function createCouncil(options: CouncilOptions) {
         return { recorded: false, reason: "not_a_council_run" };
       }
       const run = found as Run & { nodeId: string };
-      const earlier = await decisionOfRun(run);
+      // The question first, then this run's own record: a run end racing another end of the same
+      // run that records the answer (and so closes the question) in between then still finds that
+      // record and reports `already_recorded`, never `question_closed`.
       const q = await question(found.questionTopic);
+      const earlier = await decisionOfRun(run);
       if (earlier) {
         return {
           recorded: "already_recorded",
