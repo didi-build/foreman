@@ -19,7 +19,7 @@ export function createFakeRepoMaps(): FakeRepoMaps {
       maps.set(`${repo}@${map.commitSha}`, structuredClone(map));
       heads.set(repo, map.commitSha);
     },
-    async read(repo, commitSha) {
+    async read({ repo }, commitSha) {
       fake.reads.push(`${repo}@${commitSha ?? "head"}`);
       const sha = commitSha ?? heads.get(repo);
       const map = sha ? maps.get(`${repo}@${sha}`) : undefined;

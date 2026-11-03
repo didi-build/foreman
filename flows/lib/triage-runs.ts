@@ -83,6 +83,6 @@ export async function recordTriageAnswer(
   const project = node ? await deps.store.getProject(node.projectId) : null;
   if (!node || !project) return { recorded: false, reason: "no_node" };
   if (!run.headSha) return { recorded: false, reason: "no_commit" };
-  const map = await deps.repoMaps.read(project.repo, run.headSha);
+  const map = await deps.repoMaps.read(project, run.headSha);
   return createTriage(deps).recordAnswer(run.id, structured, map);
 }

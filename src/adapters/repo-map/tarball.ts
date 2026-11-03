@@ -1,5 +1,6 @@
 // Reads the repository archive GitHub serves for a commit (`/repos/{owner}/{repo}/tarball/{sha}`, a
-// gzip'd tar made by `git archive`) in memory, for the repo map (D-251, D-267). Nothing is written
+// gzip'd tar made by `git archive`) in memory, for the repo map (D-251, D-267), inside the repo map
+// Job (src/agent-images/repo-map/, D-275 (2)). Nothing is written
 // to disk and nothing in the archive is run: the map only parses code files' text. Only regular
 // files are read; links, devices and folders are skipped. Every path loses the archive's top
 // folder (`<owner>-<repo>-<short sha>/`), and a path that is absolute, has a `.` or `..` part, a

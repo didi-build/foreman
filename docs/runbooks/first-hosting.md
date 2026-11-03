@@ -129,6 +129,8 @@ In each project repository, protect builder branches against force pushes (a bra
 
 Size it to the agents pool: the node's allocatable CPU and memory divided by one run's requests (agent, proxy and, for QA, fetch pods together). Write it as the setting in the store. While it is unset, every dispatch is refused.
 
+The repo map's Job (D-275 (2), O-87) is not a run and this setting does not count it: each map read for Triage adds two short-lived pods (the repo map Job and its proxy) in the project's agent namespace, bounded by the namespace's ResourceQuota. Leave room for them in the quota and on the node.
+
 ## 15. The Windmill workspace and the runner's credentials (new-credentials gate)
 
 The flows (build plan M3.1) are written but not deployed. Each item is its own approval:
@@ -157,6 +159,8 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
   Then write the Windmill call in `src/adapters/windmill/plan-approval-flow.ts` against Windmill's own API. Until then every start is refused, the API logs `plan approval flow not started` with the error's type, and the reconcile pass opens the request.
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
+
+The `agent_run_settings` value names the repo map Job's image (D-275 (2), O-87): build `src/agent-images/repo-map/Dockerfile` from the repo root, push it to the registry the agent images use, and put its reference pinned by digest in `repoMapImage`, with `resources.repoMap` (it unpacks an archive of up to 200 MiB in memory, so give it at least 1 GiB of memory) and `repoMapMaxMinutes` (5 to start). No new credential: the Job's only token is the runner App's `contents: read` token of step 13, minted per read.
 
 Then check the approval form on Didi's phone with a throwaway request, as the M0.4 spike did (D-170, D-254). Use a test request with made-up option names and no real data. Record with the date:
 

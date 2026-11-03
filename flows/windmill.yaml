@@ -168,7 +168,7 @@ resources:
     - name: agent_cluster_ca_certificate
       holds: The cluster's CA certificate (first-hosting runbook step 8)
     - name: agent_run_settings
-      holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106)
+      holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106), the repo map Job's image, resources and deadline included (D-275 (2))
     - name: agent_images
       holds: The agent image references by image kind as JSON, each pinned by digest. Each bot file (contracts/bots/) names its kind
   # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is

@@ -14,7 +14,11 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
-import { createGitHubRepoMaps } from "../../src/adapters/repo-map/github.ts";
+import { createFakeKubernetes } from "../../src/adapters/agent-runtime/kubernetes/fake.ts";
+import { SETTINGS } from "../../src/adapters/agent-runtime/kubernetes/fixtures.ts";
+import { repoMapNames } from "../../src/adapters/agent-runtime/kubernetes/names.ts";
+import { createKubernetesRepoMaps } from "../../src/adapters/agent-runtime/kubernetes/repo-maps.ts";
+import { runRepoMapImage } from "../../src/agent-images/repo-map/image.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import {
   createHoldReleases,
@@ -617,7 +621,7 @@ describe("Triage's switches and refusals (flow: fake model, D-201)", () => {
     expect(await f.store.listRuns({ nodeId: idea.id })).toEqual([]);
   });
 
-  it("builds the brief from GitHub's archive at the default branch's head through the runner App's read token (D-267)", async () => {
+  it("builds the brief from the repo map Job's map at the default branch's head, through the runner App's read token (D-267, D-275 (2))", async () => {
     const f = await createFlowFixture();
     const idea = await acceptedIdea(f);
     const minted: unknown[] = [];
@@ -639,28 +643,56 @@ describe("Triage's switches and refusals (flow: fake model, D-201)", () => {
         Buffer.alloc(1024),
       ]),
     );
-    const repoMaps = createGitHubRepoMaps({
+    const cluster = createFakeKubernetes();
+    const mapId = "4d3c2b1a-0f9e-4d8c-8b7a-6f5e4d3c2b1a";
+    const mapJob = repoMapNames(mapId).job;
+    const repoMaps = createKubernetesRepoMaps({
       tokens: {
         async mint(request) {
           minted.push(request);
           return "fake-token-for-tests";
         },
       },
+      // The runner reads only the default branch's head; the archive is the Job's to read.
       http: {
         async get({ path }) {
           if (path === `/repos/${REPO}`)
             return { status: 200, body: Buffer.from('{"default_branch":"main"}') };
           if (path === `/repos/${REPO}/commits/main`)
             return { status: 200, body: Buffer.from(MAP_COMMIT) };
-          if (path === `/repos/${REPO}/tarball/${MAP_COMMIT}`)
-            return { status: 200, body: archive };
           return { status: 404, body: new Uint8Array() };
         },
+      },
+      cluster: async () => ({ client: cluster, settings: SETTINGS }),
+      ids: { next: () => mapId },
+      // The Job runs the image's own code over the archive, as the pod would.
+      wait: async () => {
+        const lines: string[] = [];
+        await runRepoMapImage(
+          {
+            FOREMAN_RUN_ID: mapId,
+            FOREMAN_REPOSITORY: REPO,
+            FOREMAN_COMMIT_SHA: MAP_COMMIT,
+            GITHUB_TOKEN: "fake-token-for-tests",
+            HTTPS_PROXY: "http://10.245.0.10:8080",
+            NODE_USE_ENV_PROXY: "1",
+          },
+          {
+            http: { get: async () => ({ status: 200, body: archive }) },
+            write: (line) => lines.push(line),
+          },
+        );
+        cluster.finishJob("agents-rehearsal", mapJob, {
+          condition: "Complete",
+          log: `${lines.join("\n")}\n`,
+        });
       },
     });
     const steps = await triagePass({ ...f.deps, repoMaps }, [idea.id]);
     expect(steps).toMatchObject([{ step: "start", result: { outcome: "started" } }]);
     expect(minted).toEqual([{ repository: REPO, permission: "contents" }]);
+    expect(cluster.calls).toContain(`create Job/${mapJob}`);
+    expect(cluster.objects.size).toBe(0);
     const start = lastTriageStart(f);
     expect(start.run.headSha).toBe(MAP_COMMIT);
     expect(start.input).toContain(`at commit ${MAP_COMMIT}`);
