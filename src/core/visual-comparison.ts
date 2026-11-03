@@ -15,6 +15,11 @@
 // (D-252). A `cannot_tell` gets one more run on the same head (`visualRerunCheck`), and a second
 // one escalates the item to the Council (`escalation_trigger_met`).
 //
+// Neither bundle is read when the item's PR changes the screenshot pipeline at the head or at the
+// option's capture commit (D-279, ./screenshot-pipeline.ts): the plan refuses with a fixed
+// reason, so no run starts and nothing is recorded, and a run that ends after such a change
+// records nothing either, since the plan is built again then.
+//
 // Which option Didi approved is read from Didi's approval on the item's visual-approval request
 // (`scope.option`, src/core/approvals.ts). Its screenshot is the `screenshot` evidence the runner
 // recorded for that option, with the commit it was captured at and the file's SHA-256; the file
@@ -39,6 +44,7 @@ import {
   readOutOfScopeFindings,
   type OutOfScopeFinding,
 } from "./out-of-scope-findings.ts";
+import { screenshotPipelineAt } from "./screenshot-pipeline.ts";
 import type { AgentRole, Json, Node, Store, StoreOps } from "./store.ts";
 import { cut, quoted, section, type ApprovedOption } from "./task-input.ts";
 import {
@@ -106,8 +112,8 @@ export const OPTION_MARKERS = {
 /**
  * One marked element of an option page as a manifest region (D-255): its `data-component` and
  * `data-variant` values and its box on the page. Null when the element is not a component marker
- * or a value is not a name the gallery could use, so a bad marker never becomes a region. The CI
- * step that renders option pages (N-52) builds the manifest's regions with it.
+ * or a value is not a name the gallery could use, so a bad marker never becomes a region. CI's
+ * render step (scripts/render-screenshots.ts) builds the manifest's regions with it.
  */
 export function regionFromMarker(
   attributes: Readonly<Record<string, string | undefined>>,
@@ -565,6 +571,10 @@ export interface VisualPair {
 }
 
 export type PlanRefusal =
+  /** The PR at the head or at the option's capture commit changes the screenshot pipeline (D-279). */
+  | "screenshot_pipeline_changed"
+  /** No `changedPaths` on that commit's `ci_run`, so the pipeline cannot be checked (D-279). */
+  | "changed_paths_unknown"
   | "no_spec_paths"
   | "no_approved_option"
   | "no_option_screenshot"
@@ -850,6 +860,9 @@ export function createVisualComparisons(options: VisualComparisonOptions) {
     const node = await store.getNode(nodeId);
     const project = node && (await store.getProject(node.projectId));
     if (!node || !project) return { ready: false, reason: "no_spec_paths" };
+    // D-279: CI's bundles from a PR that changes how they are made are never read.
+    const atHead = await screenshotPipelineAt(store, nodeId, headSha);
+    if (!atHead.trusted) return { ready: false, reason: atHead.reason };
     const spec = latest(await store.listEvidence({ nodeId, kind: "spec_paths" }));
     const specPaths = spec ? readSpecPaths(spec.payload) : null;
     if (!specPaths || specPaths.components.length === 0)
@@ -865,6 +878,8 @@ export function createVisualComparisons(options: VisualComparisonOptions) {
     const option = optionShot ? readOptionScreenshot(optionShot.payload) : null;
     if (!optionShot?.commitSha || !option)
       return { ready: false, reason: "no_option_screenshot" };
+    const atCapture = await screenshotPipelineAt(store, nodeId, optionShot.commitSha);
+    if (!atCapture.trusted) return { ready: false, reason: atCapture.reason };
     const optionBundle = await screenshots.read(
       project.repo,
       optionShot.commitSha,

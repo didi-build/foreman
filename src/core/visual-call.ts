@@ -12,6 +12,8 @@
 // and each option's screenshot as an image: the `screenshot` evidence the runner recorded for that
 // option, read from CI's options bundle at its capture commit through the `ScreenshotBundles` port
 // and checked against its SHA-256 (as QA's visual comparison reads it, ./visual-comparison.ts).
+// A bundle from a PR that changes the screenshot pipeline is never read (D-279), so the call does
+// not start on it.
 //
 // The runner checks the answer against `output_schemas.visual_call` in the Council's bot file and
 // the rules below (D-228), and records it itself (D-230) as a `council_decision` on the item with
@@ -30,6 +32,7 @@ import { createHash } from "node:crypto";
 
 import { visualApprovalTopic } from "./guards/design.ts";
 import { latest } from "./guards/evidence.ts";
+import { screenshotPipelineAt } from "./screenshot-pipeline.ts";
 import type { CurrentDecision, GateRequest, Json, StoreOps } from "./store.ts";
 import {
   readOptionScreenshot,
@@ -89,7 +92,11 @@ export type VisualCallRefusal =
   | "no_screenshots_port"
   | "no_option_screenshot"
   | "option_bundle_missing"
-  | "option_file_changed";
+  | "option_file_changed"
+  /** The PR at an option's capture commit changes the screenshot pipeline (D-279). */
+  | "screenshot_pipeline_changed"
+  /** That commit's `ci_run` lists no changed paths, so the pipeline cannot be checked (D-279). */
+  | "changed_paths_unknown";
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -176,7 +183,9 @@ const sha256 = (bytes: Uint8Array): string =>
  * The option screenshots for the call, one per option in the request's order, each labelled by
  * the runner: the latest `screenshot` evidence the runner recorded for the option (with its
  * capture commit), read from CI's options bundle at that commit and checked against its hash.
- * Any missing piece refuses, so the run is not started.
+ * A capture commit whose PR changes the screenshot pipeline, or whose changed paths are not
+ * recorded, refuses before its bundle is read (D-279). Any missing piece refuses, so the run is
+ * not started.
  */
 export async function visualCallImages(
   store: Pick<StoreOps, "listEvidence" | "getNode" | "getProject">,
@@ -201,6 +210,8 @@ export async function visualCallImages(
     );
     const payload = shot ? readOptionScreenshot(shot.payload) : null;
     if (!shot?.commitSha || !payload) return { refused: "no_option_screenshot" };
+    const pipeline = await screenshotPipelineAt(store, q.nodeId, shot.commitSha);
+    if (!pipeline.trusted) return { refused: pipeline.reason };
     if (!bundles.has(shot.commitSha)) {
       bundles.set(
         shot.commitSha,

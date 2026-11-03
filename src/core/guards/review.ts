@@ -18,6 +18,7 @@ import {
   visualFindingCount,
 } from "./evidence.ts";
 import { optionFoldersAt } from "./options.ts";
+import { pipelineCheckOf, pipelineReasonText } from "../screenshot-pipeline.ts";
 
 /** A linked PR exists and CI passed on its current head commit. */
 export async function ciGreenOnHead(ctx: GuardContext): Promise<GuardCheck> {
@@ -107,8 +108,10 @@ const BUILDER_BOTS = new Set(["developer", "designer"]);
  * ADR 0112: CI green and a preview check on the head commit (and, on the design track, a passing
  * visual comparison against the spec), a pass verdict on the head commit whose cited evidence is
  * runner evidence for this node and commit, and QA's model differs from every builder model for
- * the item (the independence rule while QA runs on Claude, D-158). Checking that cited files and
- * line ranges exist at the head commit is the runner's job when it records the verdict (M3.2).
+ * the item (the independence rule while QA runs on Claude, D-158). With no visual comparison on a
+ * PR that changes the screenshot pipeline, or whose changed paths are not recorded, the detail says
+ * why none can be made (D-279). Checking that cited files and line ranges exist at the head commit
+ * is the runner's job when it records the verdict (M3.2).
  */
 export async function qaVerdictIndependentOnHead(
   ctx: GuardContext,
@@ -127,6 +130,13 @@ export async function qaVerdictIndependentOnHead(
     checks.push(["visual_comparison", "visual comparison"]);
   for (const [kind, label] of checks) {
     const check = latest(await onCommit(ctx, kind, head.sha));
+    if (!check && kind === "visual_comparison") {
+      // D-279: the comparison is refused on a PR that changes the screenshot pipeline, so the
+      // item stays In QA review with that reason named.
+      const pipeline = pipelineCheckOf(ci.changedPaths);
+      const why = pipeline.trusted ? "" : `: ${pipelineReasonText(pipeline.reason)}`;
+      return result(name, false, ids, `no ${label} on head ${head.sha}${why}`);
+    }
     if (!check) return result(name, false, ids, `no ${label} on head ${head.sha}`);
     ids.push(check.id);
     const payload = readCheck(check.payload);

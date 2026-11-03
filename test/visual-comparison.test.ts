@@ -26,6 +26,7 @@ import {
 import { createReconcileFixture, HEAD } from "./reconcile-fixture.ts";
 import {
   answer,
+  HEAD_CHANGED_PATHS,
   OPTION_COMMIT,
   OPTION_PATH,
   setupVisual,
@@ -345,10 +346,13 @@ describe("the plan and the run's input", () => {
 
   it("refuses with no gallery bundle at the head and no approved option", async () => {
     const { f, v, visual } = await setup();
+    const ci = { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS };
+    await f.evidence(v.nodeId, "ci_run", ci, { commitSha: "e".repeat(40) });
     expect(await visual.taskFor(v.nodeId, "e".repeat(40))).toEqual({
       refused: "gallery_bundle_missing",
     });
     const other = await f.node("in_qa_review", { track: "design" });
+    await f.evidence(other.id, "ci_run", ci, { commitSha: HEAD });
     await f.evidence(other.id, "spec_paths", {
       paths: ["design/x/y/spec.md"],
       components: ["example-button"],
@@ -472,7 +476,7 @@ describe("recordAnswer", () => {
       await f.evidence(
         v.nodeId,
         "ci_run",
-        { conclusion: "success", pr: 7 },
+        { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
         { commitSha: HEAD },
       );
       await f.evidence(v.nodeId, "preview_check", { pass: true }, { commitSha: HEAD });
@@ -493,7 +497,7 @@ describe("a comparison that does not pass, as the guards read it (D-252)", () =>
     await f.evidence(
       v.nodeId,
       "ci_run",
-      { conclusion: "success", pr: 7 },
+      { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
       { commitSha: HEAD },
     );
     for (const result of results) {

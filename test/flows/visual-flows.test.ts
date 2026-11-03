@@ -15,7 +15,12 @@ import {
 import { visualRerun } from "../../flows/lib/council-runs.ts";
 import { VISUAL_CANNOT_TELL_REASON } from "../../src/core/run-reports.ts";
 import { HEAD } from "../reconcile-fixture.ts";
-import { answer, OPTION_PATH, setupVisual } from "../visual-fixture.ts";
+import {
+  answer,
+  HEAD_CHANGED_PATHS,
+  OPTION_PATH,
+  setupVisual,
+} from "../visual-fixture.ts";
 import { createFlowFixture } from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
@@ -77,6 +82,12 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     await f.live();
     await routeVisual(f);
     const v = await setupVisual(f, f.screenshots);
+    await f.evidence(
+      v.nodeId,
+      "ci_run",
+      { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
+      { commitSha: "e".repeat(40) },
+    );
     const result = await dispatch(f.deps, {
       nodeId: v.nodeId,
       role: "qa",
@@ -91,6 +102,41 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     });
     const runs = await f.store.listRuns({ nodeId: v.nodeId });
     expect(runs.filter((r) => r.bot === "qa")).toEqual([]);
+  });
+
+  it("refuses to start on a PR that changes the screenshot pipeline, writing no run and nothing passing (D-279)", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    await routeVisual(f);
+    const v = await setupVisual(f, f.screenshots);
+    await f.evidence(
+      v.nodeId,
+      "ci_run",
+      {
+        conclusion: "success",
+        pr: 7,
+        changedPaths: [...HEAD_CHANGED_PATHS, "scripts/lib/screenshot-bundle.ts"],
+      },
+      { commitSha: HEAD },
+    );
+    const result = await dispatch(f.deps, {
+      nodeId: v.nodeId,
+      role: "qa",
+      prNumber: 7,
+      headSha: HEAD,
+      taskType: "qa:visual",
+    });
+    expect(result).toEqual({
+      outcome: "not_started",
+      reason: "screenshot_pipeline_changed",
+      failedGuards: [],
+    });
+    const runs = await f.store.listRuns({ nodeId: v.nodeId });
+    expect(runs.filter((r) => r.bot === "qa")).toEqual([]);
+    expect(
+      await f.store.listEvidence({ nodeId: v.nodeId, kind: "visual_comparison" }),
+    ).toEqual([]);
+    expect((await f.store.getNode(v.nodeId))?.state).toBe("in_qa_review");
   });
 
   it("finds no route while the routing policy names no model for qa:visual (D-249)", async () => {
@@ -108,18 +154,18 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     ).toMatchObject({ outcome: "not_admitted", reason: "no_route" });
   });
 
-  it("records the answer at the run's end; with no head on record nothing moves", async () => {
+  it("records the answer at the run's end; a match with no QA verdict moves nothing", async () => {
     const { f, v, result } = await started();
     if (result.outcome !== "started") throw new Error("not started");
     f.runtime.status.set(result.runId, {
       state: "finished",
-      result: { ...RESULT, structured: answer("differs") },
+      result: { ...RESULT, structured: answer("match") },
     });
     const ended = await recordRunEnd(f.deps, { runId: result.runId });
     expect(ended).toMatchObject({
       outcome: "recorded",
       report: { outcome: "success" },
-      visual: { recorded: true, pass: false, outcome: "differs" },
+      visual: { recorded: true, pass: true, outcome: "match" },
     });
     const rows = await f.store.listEvidence({
       nodeId: v.nodeId,
@@ -153,7 +199,7 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
       await setup.f.evidence(
         setup.v.nodeId,
         "ci_run",
-        { conclusion: "success", pr: 7 },
+        { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
         { commitSha: HEAD },
       );
       return setup;

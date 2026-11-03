@@ -10,7 +10,7 @@
 // returned as parsed JSON, or null when it is missing or not JSON; the visual comparison checks
 // its shape and every file's SHA-256 strictly.
 //
-// CI's render step that makes the bundles needs a browser and is not built (N-52); until the
+// CI's Screenshots workflow makes the bundles (scripts/render-screenshots.ts, O-81); until the
 // runner App is registered (D-178) the token port refuses with `NotBuiltError`
 // (flows/lib/compose.ts). Tests pass fakes.
 import type {
