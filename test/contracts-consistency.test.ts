@@ -228,6 +228,28 @@ describe("every merging move carries the merge guard (contract consistency, D-21
   });
 });
 
+describe("every track's dispatch out of its start state waits for blockers (contract consistency, D-268)", () => {
+  // A design item Triage marks as blocked by another item waits for it like a code item, so the
+  // dispatch moves of both tracks check blockers_done, and the spec's design row says so.
+  it.each([
+    { file: "code.yaml", move: "ready_for_dev->in_development" },
+    {
+      file: "design.yaml",
+      move: "ready_for_design_exploration->in_design_exploration",
+    },
+  ])("$file $move checks blockers_done", ({ file, move }) => {
+    const found = fileTransitions(file).find((t) => `${t.from}->${t.to}` === move);
+    expect(found?.guards).toContain("blockers_done");
+  });
+
+  it("the spec's design dispatch row names the blockers", () => {
+    const row = tableRows("Design track").find(
+      (r) => r[0] === "Ready for design exploration to In design exploration",
+    );
+    expect(row?.[1]).toMatch(/every item blocking it is Done/);
+  });
+});
+
 describe("runner-only moves are the ones a runner step owns (contract consistency, O-54)", () => {
   // The guards of the moves whose writes only their runner step makes: the Council's redo
   // (cancel, flag, counters, D-231) and the escalation's way back (counters, O-46, D-227).

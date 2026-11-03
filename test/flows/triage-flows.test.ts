@@ -6,6 +6,7 @@
 // decision returns the idea to Triage. The answer rules themselves are in test/triage.test.ts.
 import { describe, expect, it } from "vitest";
 
+import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
@@ -20,6 +21,7 @@ import {
 } from "../../src/core/triage.ts";
 import type { DecisionPointRecord, Node, Store } from "../../src/core/store.ts";
 import {
+  answerWith,
   BAD_ANSWERS,
   DIRECTION,
   goodAnswer,
@@ -259,6 +261,52 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
       outcome: "already_recorded",
     });
     expect(await f.footprint(idea.id, ...items.map((n) => n.id))).toBe(before);
+  });
+});
+
+describe("a design item Triage marks as blocked (flow: fake model, D-268)", () => {
+  it("waits for its blocker, and starts once the blocker is Done", async () => {
+    const f = await createFlowFixture();
+    const { start } = await startedTriage(f);
+    // The design item now waits on the DNS item too.
+    const answer = answerWith((a) => {
+      const design = a.items.find((i) => i.key === "settings-design");
+      design?.blockedBy.push("settings-dns");
+    });
+    expect(await finish(f, start.run.id, answer)).toMatchObject({
+      triageAnswer: { recorded: true },
+    });
+    const items = (await f.store.listNodes({ projectId: f.projectId })).filter(
+      (n) => n.type === "work_item",
+    );
+    const byKey = (key: string) =>
+      items.find((n) => (n.body as { triageKey: string }).triageKey === key) as Node;
+    const design = byKey("settings-design");
+    const dns = byKey("settings-dns");
+    // The design track's only start state is Ready for design exploration, blocked or not.
+    expect(design.state).toBe("ready_for_design_exploration");
+
+    const waiting = await dispatch(f.deps, { nodeId: design.id, role: "designer" });
+    expect(waiting).toMatchObject({
+      outcome: "not_started",
+      failedGuards: ["blockers_done"],
+    });
+    expect(await f.store.listRuns({ nodeId: design.id })).toEqual([]);
+
+    // The blocker reaches Done (written directly: its own track is not under test here).
+    const blocker = (await f.store.getNode(dns.id)) as Node;
+    const at = f.clock.now();
+    await f.store.changeNodeState(dns.id, blocker.version, {
+      state: "done",
+      substate: null,
+      ownerRole: "runner",
+      blockedReason: null,
+      stateSince: at,
+      updatedAt: at,
+    });
+    const started = await dispatch(f.deps, { nodeId: design.id, role: "designer" });
+    expect(started).toMatchObject({ outcome: "started" });
+    expect((await f.store.getNode(design.id))?.state).toBe("in_design_exploration");
   });
 });
 
