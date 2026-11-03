@@ -18,6 +18,7 @@ import {
   checkRunSpec,
   checkSettings,
   fetchStage,
+  hasFetchStep,
   runSecrets,
   taskSecret,
   workspaceClaim,
@@ -209,13 +210,16 @@ export function createKubernetesRuntime(options: {
     async start(task, limits) {
       const { credentials, task: taskFile, ...spec } = task;
       checkRunSpec(spec, limits);
+      // The visual comparison's images are in its task file, and only it carries them (D-242).
+      if ((spec.visual === true) !== (taskFile.images !== undefined)) {
+        throw new Error("only a visual comparison run carries images");
+      }
       const namespace = agentNamespace(spec.projectSlug);
       // Build everything first, so a bad input fails before anything is created.
       const secrets = [...runSecrets(spec, credentials), taskSecret(spec, taskFile)];
-      const firstStage =
-        spec.role === "qa"
-          ? fetchStage(spec, settings)
-          : agentStage(spec, limits, settings);
+      const firstStage = hasFetchStep(spec)
+        ? fetchStage(spec, settings)
+        : agentStage(spec, limits, settings);
       const handle: KubernetesRunHandle = {
         runtime: "kubernetes",
         runId: spec.runId,
@@ -229,7 +233,7 @@ export function createKubernetesRuntime(options: {
           await client.create(secret);
           made.push(["Secret", secret.metadata.name]);
         }
-        if (spec.role === "qa") {
+        if (hasFetchStep(spec)) {
           const claim = workspaceClaim(spec, settings);
           await client.create(claim);
           made.push(["PersistentVolumeClaim", claim.metadata.name]);
@@ -246,7 +250,7 @@ export function createKubernetesRuntime(options: {
     async poll(handle) {
       const n = runNames(handle.runId);
       const agentJob = await client.getJob(handle.namespace, n.agentJob);
-      if (agentJob === null && handle.spec.role === "qa") {
+      if (agentJob === null && hasFetchStep(handle.spec)) {
         const fetchJob = await client.getJob(handle.namespace, n.fetchJob);
         const fetch = jobState(fetchJob);
         if (fetch === "running" || fetch === "stopping") return { state: "running" };

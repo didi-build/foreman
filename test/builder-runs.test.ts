@@ -176,6 +176,7 @@ describe("a builder run due after QA's fail (unit, O-41)", () => {
       kind: "changes_requested",
       outcome: "changes_requested",
       words: "Make the button green.",
+      options: [],
     });
   });
 

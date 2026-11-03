@@ -9,7 +9,8 @@
 //
 // Which states and moves count comes from the contracts, never from a list of state names: the
 // building state is one whose owner is a role that pushes a branch (Developer, Designer), and a
-// fail move is a move into it guarded by `qa_failed_with_findings` (QA's fail),
+// fail move is a move into it guarded by `qa_failed_with_findings` (QA's fail, from a fail
+// verdict or a visual comparison that differs, D-252),
 // `staging_check_failed` (the staging fail path) or `changes_requested_recorded` (Didi asked for
 // changes to, or rejected, the design options: the move back to In design exploration, which the
 // contract says carries Didi's words back into exploration, D-243 rule 5). Plain logic over an injected store, contracts,
@@ -18,7 +19,7 @@
 // switch, the limits and the usage-exhausted wait.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
-import { readQaVerdict } from "./guards/evidence.ts";
+import { readQaVerdict, readVisualComparison } from "./guards/evidence.ts";
 import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
 import { failureCountKey } from "./failures.ts";
 import { createLibrary, type Clock, type IdSource } from "./library.ts";
@@ -247,6 +248,8 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
       })
       .at(-1);
     if (!answer) return { kind: "not_recorded" };
+    // The options the answer named (D-254); two or more ask for one combined option.
+    const named = field(answer.scope, "options");
     return {
       kind: "changes_requested",
       outcome:
@@ -254,6 +257,9 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
           ? "rejected"
           : "changes_requested",
       words: answer.textVerbatim,
+      options: Array.isArray(named)
+        ? named.filter((o): o is string => typeof o === "string")
+        : [],
     };
   }
 
@@ -267,6 +273,7 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     const rows: Evidence[] = [];
     for (const kind of [
       "qa_verdict",
+      "visual_comparison",
       "staging_check",
       "staging_deploy_failed",
     ] as const) {
@@ -287,6 +294,24 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
         kind: "qa_fail",
         commitSha: evidence.commitSha,
         findings: verdict.findings,
+      };
+    }
+    if (evidence.kind === "visual_comparison") {
+      // D-252: QA's visual run found the components differ from the approved option.
+      const visual = readVisualComparison(evidence.payload);
+      if (!visual || visual.outcome !== "differs") return { kind: "not_recorded" };
+      return {
+        kind: "visual_differs",
+        commitSha: evidence.commitSha,
+        option: visual.option,
+        components: visual.components
+          .filter((c) => c.result !== "match")
+          .map((c) => ({
+            component: c.component,
+            variant: c.variant,
+            result: c.result,
+            findings: c.findings,
+          })),
       };
     }
     if (evidence.kind === "staging_check") {

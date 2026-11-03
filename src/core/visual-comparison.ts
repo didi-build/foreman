@@ -10,8 +10,10 @@
 // model differs from every builder run's model on the item (D-158), and only then records
 // `visual_comparison` on the run's head commit. It passes only when every component is `match`;
 // any `differs` or `cannot_tell` is recorded as not passing (docs/guards.md), so the merge guard
-// `qa_verdict_independent_on_head` refuses and the item stays In QA review with the condition
-// named, the contract's fallback.
+// `qa_verdict_independent_on_head` refuses. A `differs` is QA failing the head: QA's fail move
+// (`qa_failed_with_findings`) sends the item back to Building components with the findings
+// (D-252). A `cannot_tell` gets one more run on the same head (`visualRerunCheck`), and a second
+// one escalates the item to the Council (`escalation_trigger_met`).
 //
 // Which option Didi approved is read from Didi's approval on the item's visual-approval request
 // (`scope.option`, src/core/approvals.ts). Its screenshot is the `screenshot` evidence the runner
@@ -24,7 +26,12 @@ import { createHash } from "node:crypto";
 
 import type { OutputSchema } from "./output-schema.ts";
 import { outputProblem } from "./output-schema.ts";
+import type { GuardContext } from "./contracts.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
+import {
+  VISUAL_CANNOT_TELL_ATTEMPTS,
+  visualCannotTellOnHead,
+} from "./guards/escalation.ts";
 import { latest, readSpecPaths } from "./guards/evidence.ts";
 import type { Clock, IdSource } from "./library.ts";
 import {
@@ -77,10 +84,40 @@ export interface GalleryShot {
   specPath: string;
 }
 
-/** Where a component sits in an option page. `variant` null: any variant of it. */
+/**
+ * Where a component sits in an option page (D-255). The option page wraps each component in an
+ * element marked `data-component="<name>"` and, where it has variants, `data-variant="<name>"`
+ * (the Designer's exploring rule); the screenshot step records each marked element's box, with
+ * `component` from `data-component` and `variant` from `data-variant`, or null when the element
+ * has none, which means any variant of it. The names are the gallery's: the component as the spec
+ * lists it, and the variant as its gallery entry names it.
+ */
 export interface OptionRegion extends Region {
   component: string;
   variant: string | null;
+}
+
+/** The option page's marker attributes (D-255) and the region field each one fills. */
+export const OPTION_MARKERS = {
+  component: "data-component",
+  variant: "data-variant",
+} as const;
+
+/**
+ * One marked element of an option page as a manifest region (D-255): its `data-component` and
+ * `data-variant` values and its box on the page. Null when the element is not a component marker
+ * or a value is not a name the gallery could use, so a bad marker never becomes a region. The CI
+ * step that renders option pages (N-52) builds the manifest's regions with it.
+ */
+export function regionFromMarker(
+  attributes: Readonly<Record<string, string | undefined>>,
+  box: Region,
+): OptionRegion | null {
+  const component = attributes[OPTION_MARKERS.component];
+  const variant = attributes[OPTION_MARKERS.variant];
+  if (!text(component, COMPONENT)) return null;
+  if (variant !== undefined && !text(variant, VARIANT)) return null;
+  return { component, variant: variant ?? null, ...box };
 }
 
 /** One exploration option page (D-243), rendered from `design/<area>/<feature>/options/<name>/`. */
@@ -1031,3 +1068,58 @@ export function createVisualComparisons(options: VisualComparisonOptions) {
 }
 
 export type VisualComparisons = ReturnType<typeof createVisualComparisons>;
+
+// ---- One more run after `cannot_tell` (D-252) --------------------------------------------------
+
+/** Whether the item's visual comparison gets its one more run on the same head now. */
+export type VisualRerun =
+  | { due: true; nodeId: string; headSha: string; prNumber: number }
+  | {
+      due: false;
+      nodeId: string;
+      reason:
+        | "no_node"
+        /** The latest comparison on the head, in the current state, is not `cannot_tell`. */
+        | "not_due"
+        /** Two `cannot_tell` on the head: the escalation takes it (`escalation_trigger_met`). */
+        | "attempts_used"
+        /** A run on the item is active: the one more run waits until it ends. */
+        | "active_run";
+    };
+
+/**
+ * D-252: after a `cannot_tell`, the comparison runs once more on the same head. Due when the
+ * latest `visual_comparison` on the item's current head was recorded in the item's current state
+ * and says `cannot_tell`, it is the only one on that head in this state, and no run on the item
+ * is active. The run starts through the dispatch, so admission still decides. Reads only.
+ */
+export async function visualRerunCheck(
+  store: GuardContext["store"] & Pick<StoreOps, "listRuns" | "getRun">,
+  nodeId: string,
+): Promise<VisualRerun> {
+  const node = await store.getNode(nodeId);
+  if (!node) return { due: false, nodeId, reason: "no_node" };
+  const ctx = { node, store };
+  const unsure = await visualCannotTellOnHead(ctx);
+  const head = unsure.headSha;
+  const latestOnHead = head
+    ? latest(
+        (
+          await store.listEvidence({
+            nodeId,
+            kind: "visual_comparison",
+            commitSha: head,
+          })
+        ).filter((e) => e.recordedAt.getTime() >= node.stateSince.getTime()),
+      )
+    : undefined;
+  if (!head || !latestOnHead || !unsure.ids.includes(latestOnHead.id))
+    return { due: false, nodeId, reason: "not_due" };
+  if (unsure.ids.length >= VISUAL_CANNOT_TELL_ATTEMPTS)
+    return { due: false, nodeId, reason: "attempts_used" };
+  if ((await store.listRuns({ nodeId })).some((r) => r.endedAt === null))
+    return { due: false, nodeId, reason: "active_run" };
+  const earlier = latestOnHead.runId ? await store.getRun(latestOnHead.runId) : null;
+  if (!earlier?.prNumber) return { due: false, nodeId, reason: "not_due" };
+  return { due: true, nodeId, headSha: head, prNumber: earlier.prNumber };
+}

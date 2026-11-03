@@ -13,7 +13,9 @@ import {
   readDocsNote,
   readMergeCheck,
   readQaVerdict,
+  readVisualComparison,
   result,
+  visualFindingCount,
 } from "./evidence.ts";
 
 /** A linked PR exists and CI passed on its current head commit. */
@@ -283,32 +285,62 @@ export async function prodEnvProtected(ctx: GuardContext): Promise<GuardCheck> {
   return result("prod_env_protected", true, [], "production requires Didi's approval");
 }
 
-/** A fail verdict on the head commit lists findings. */
+/**
+ * On the design track, the latest `visual_comparison` on the head when it says `differs` and lists
+ * at least one finding (D-252): QA's visual run failed the head, like a fail verdict. Null on the
+ * code track, with no comparison on the head, or when the latest one is not such a fail.
+ */
+export async function failedVisualComparison(
+  ctx: GuardContext,
+  headSha: string,
+): Promise<{ id: string; findings: number } | null> {
+  if (ctx.node.track !== "design") return null;
+  const evidence = latest(await onCommit(ctx, "visual_comparison", headSha));
+  const payload = evidence ? readVisualComparison(evidence.payload) : null;
+  if (!evidence || payload?.outcome !== "differs") return null;
+  const findings = visualFindingCount(payload);
+  return findings > 0 ? { id: evidence.id, findings } : null;
+}
+
+/**
+ * A fail verdict on the head commit lists findings, or, on the design track, the latest visual
+ * comparison on the head says `differs` with findings (D-252): either is QA failing the head.
+ */
 export async function qaFailedWithFindings(ctx: GuardContext): Promise<GuardCheck> {
   const name = "qa_failed_with_findings";
   const head = await headCommit(ctx);
   if (!head) return result(name, false, [], NO_HEAD);
   const evidence = latest(await onCommit(ctx, "qa_verdict", head.sha));
+  const verdict = evidence ? readQaVerdict(evidence.payload) : null;
+  if (evidence && verdict?.verdict === "fail" && verdict.findings.length > 0) {
+    return result(
+      name,
+      true,
+      [evidence.id],
+      `${verdict.findings.length} finding(s) on head ${head.sha}`,
+    );
+  }
+  const visual = await failedVisualComparison(ctx, head.sha);
+  if (visual) {
+    return result(
+      name,
+      true,
+      [visual.id],
+      `the visual comparison differs on head ${head.sha}: ${visual.findings} finding(s)`,
+    );
+  }
   if (!evidence) return result(name, false, [], `no QA verdict on head ${head.sha}`);
-  const verdict = readQaVerdict(evidence.payload);
   if (!verdict)
     return result(name, false, [evidence.id], "malformed qa_verdict payload");
   if (verdict.verdict !== "fail")
     return result(name, false, [evidence.id], "the QA verdict is a pass");
-  if (verdict.findings.length === 0) {
-    return result(name, false, [evidence.id], "the fail verdict lists no findings");
-  }
-  return result(
-    name,
-    true,
-    [evidence.id],
-    `${verdict.findings.length} finding(s) on head ${head.sha}`,
-  );
+  return result(name, false, [evidence.id], "the fail verdict lists no findings");
 }
 
 /**
  * QA has not failed the current head (M3.5, closes O-41's gap): no `qa_verdict` on the head says
- * `fail`. A head QA already failed goes back to QA only as a new commit, so a done report on the
+ * `fail`, and on the design track the latest `visual_comparison` on it does not say `differs`
+ * (D-252). A head QA already failed goes back to QA only as a new commit, so a done report on the
  * unchanged head is refused (and counted, P-03) instead of paying for QA on code it failed. A
  * malformed verdict on the head fails the guard, since it cannot be read as anything but a fail.
  */
@@ -326,12 +358,17 @@ export async function noFailedQaVerdictOnHead(ctx: GuardContext): Promise<GuardC
       "malformed qa_verdict payload",
     );
   }
-  const failed = verdicts.filter((e) => readQaVerdict(e.payload)?.verdict === "fail");
+  const failed = verdicts
+    .filter((e) => readQaVerdict(e.payload)?.verdict === "fail")
+    .map((e) => e.id);
+  // D-252: a visual comparison that differs on the head fails it too.
+  const visual = await failedVisualComparison(ctx, head.sha);
+  if (visual) failed.push(visual.id);
   if (failed.length > 0) {
     return result(
       name,
       false,
-      failed.map((e) => e.id),
+      failed,
       `QA failed head ${head.sha}: it goes back to QA only as a new commit`,
     );
   }

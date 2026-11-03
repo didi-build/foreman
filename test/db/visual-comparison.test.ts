@@ -1,7 +1,9 @@
 // Seam: database integration (docs/test-plan.md, D-242). The runner records a visual comparison
 // answer on the real Postgres store as the factory_runner role: one `visual_comparison` row on
 // the run's head commit, and two run ends for the same run at once write one, since the item's
-// row is locked first. Synthetic images in a fake screenshot port; no network.
+// row is locked first. A comparison that differs sends the item back through QA's fail move, and
+// two `cannot_tell` on the head escalate it (D-252). Synthetic images in a fake screenshot port;
+// no network.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -12,6 +14,7 @@ import {
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import type { Store } from "../../src/core/store.ts";
+import { createRunReports } from "../../src/core/run-reports.ts";
 import { createVisualComparisons } from "../../src/core/visual-comparison.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
 import { answer, setupVisual } from "../visual-fixture.ts";
@@ -75,6 +78,65 @@ describe.skipIf(!adminUrl)(
           outcome: "differs",
         },
       ]);
+    });
+
+    const ended = {
+      outcome: "success" as const,
+      turns: 1,
+      minutes: 1,
+      costUsd: null,
+      tokens: null,
+      transcriptRef: null,
+      usageExhaustedCause: null,
+      retryAfterSeconds: null,
+      serviceTierServed: null,
+      capacityRetries: null,
+      capacityWaitSeconds: null,
+      firstTokenMs: null,
+      reportedCostUsd: null,
+    };
+
+    it("a differs record sends the item back through QA's fail move, counted, and two cannot_tell escalate it (D-252)", async () => {
+      for (const [prefix, results, state] of [
+        ["8e100000-0000-4000-8000", ["differs"], "building_components"],
+        [
+          "8e200000-0000-4000-8000",
+          ["cannot_tell", "cannot_tell"],
+          "escalated_to_council",
+        ],
+      ] as const) {
+        const t = await createReconcileFixture({
+          store,
+          idPrefix: prefix,
+          slug: prefix.slice(0, 4),
+        });
+        await t.setting("dry_run", false);
+        const v = await setupVisual(t);
+        await t.evidence(
+          v.nodeId,
+          "ci_run",
+          { conclusion: "success", pr: 7 },
+          { commitSha: HEAD },
+        );
+        const visual = createVisualComparisons({
+          ...t.deps,
+          screenshots: v.screenshots,
+          png: pngCodec,
+        });
+        for (const result of results) {
+          const run = await v.visualRun();
+          expect(await visual.recordAnswer(run.id, answer(result))).toMatchObject({
+            recorded: true,
+          });
+          await store.endRun(run.id, { ...ended, endedAt: t.clock.now() });
+          await createRunReports(t.deps).requestReportedMove(run.id);
+        }
+        const node = await store.getNode(v.nodeId);
+        expect(node?.state, state).toBe(state);
+        expect(await store.getCounter(v.nodeId, "qa_round")).toBe(
+          state === "building_components" ? 1 : 0,
+        );
+      }
     });
   },
 );

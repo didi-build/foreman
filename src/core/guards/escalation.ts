@@ -8,8 +8,10 @@ import {
   onCommit,
   readAgentReport,
   readQaVerdict,
+  readVisualComparison,
   result,
 } from "./evidence.ts";
+import { failedVisualComparison } from "./review.ts";
 import { STAGING_CHECK_ATTEMPTS, stagingNoResults } from "./staging.ts";
 
 export const escalationTopic = (nodeId: string): string => `escalation:${nodeId}`;
@@ -46,17 +48,51 @@ async function cappedFailedRound(
   const head = await headCommit(ctx);
   if (!head) return null;
   const verdict = latest(await onCommit(ctx, "qa_verdict", head.sha));
-  if (!verdict || !sinceState(ctx, verdict.recordedAt)) return null;
-  const payload = readQaVerdict(verdict.payload);
-  if (payload?.verdict !== "fail" || payload.findings.length === 0) return null;
-  return { id: verdict.id, round };
+  const payload = verdict ? readQaVerdict(verdict.payload) : null;
+  if (
+    verdict &&
+    sinceState(ctx, verdict.recordedAt) &&
+    payload?.verdict === "fail" &&
+    payload.findings.length > 0
+  ) {
+    return { id: verdict.id, round };
+  }
+  // D-252: a visual comparison that differs is a failed round too.
+  const visual = await failedVisualComparison(ctx, head.sha);
+  if (!visual) return null;
+  const row = (await onCommit(ctx, "visual_comparison", head.sha)).find(
+    (e) => e.id === visual.id,
+  );
+  return row && sinceState(ctx, row.recordedAt) ? { id: visual.id, round } : null;
+}
+
+/** How many `cannot_tell` visual comparisons on one head escalate the item (D-252). */
+export const VISUAL_CANNOT_TELL_ATTEMPTS = 2;
+
+/**
+ * The `visual_comparison` rows on the head, recorded in the current state, that say
+ * `cannot_tell` (D-252): the first gets one more run on the same head, and the second escalates.
+ */
+export async function visualCannotTellOnHead(
+  ctx: GuardContext,
+): Promise<{ headSha: string | null; ids: string[] }> {
+  const head = await headCommit(ctx);
+  if (!head || ctx.node.track !== "design") return { headSha: null, ids: [] };
+  const rows = (await onCommit(ctx, "visual_comparison", head.sha)).filter(
+    (e) =>
+      sinceState(ctx, e.recordedAt) &&
+      readVisualComparison(e.payload)?.outcome === "cannot_tell",
+  );
+  return { headSha: head.sha, ids: rows.map((e) => e.id) };
 }
 
 /**
  * The failure counter or the QA round count reached its limit, QA failed the round that reaches
- * the cap in the current state, a run went over budget in the current state, the staging check ended without a result on its first try and its one
- * re-dispatch in the current state (M3.4), or a bot asked to escalate with a written reason in
- * the current state.
+ * the cap in the current state (a fail verdict, or a visual comparison that differs), a run went
+ * over budget in the current state, the staging check ended without a result on its first try
+ * and its one re-dispatch in the current state (M3.4), the visual comparison said `cannot_tell`
+ * twice on the head in the current state (D-252), or a bot asked to escalate with a written
+ * reason in the current state.
  */
 export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardCheck> {
   const reasons: string[] = [];
@@ -87,6 +123,13 @@ export async function escalationTriggerMet(ctx: GuardContext): Promise<GuardChec
       `the staging check ended without a result ${noResults.rows.length} times for merge ${noResults.mergeSha}`,
     );
     ids.push(...noResults.rows.map((e) => e.id));
+  }
+  const unsure = await visualCannotTellOnHead(ctx);
+  if (unsure.ids.length >= VISUAL_CANNOT_TELL_ATTEMPTS) {
+    reasons.push(
+      `the visual comparison could not tell ${unsure.ids.length} times on head ${unsure.headSha}`,
+    );
+    ids.push(...unsure.ids);
   }
   for (const report of await ctx.store.listEvidence({
     nodeId: ctx.node.id,

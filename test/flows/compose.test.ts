@@ -218,35 +218,76 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
   });
 });
 
-describe("approval page reply (unit: flow layer, M0.4, D-200)", () => {
+describe("approval page reply (unit: flow layer, M0.4, D-200, D-254)", () => {
+  it.each([
+    ["Approve", "approve"],
+    ["Request changes", "changes_requested"],
+    ["Reject", "reject"],
+  ] as const)(
+    "reads the form's %s with its options and Didi's feedback exactly as typed",
+    (label, choice) => {
+      expect(
+        readApprovalReply(
+          { decision: label, options: ["a", "b"], feedback: " as typed " },
+          ["anonymous", 3],
+        ),
+      ).toEqual({
+        answered: true,
+        choice,
+        words: " as typed ",
+        approvers: ["anonymous"],
+        options: ["a", "b"],
+      });
+    },
+  );
+
+  it("reads a form with no options or no feedback, and refuses options that are not names", () => {
+    expect(readApprovalReply({ decision: "Approve" }, [])).toEqual({
+      answered: true,
+      choice: "approve",
+      words: null,
+      approvers: [],
+      options: [],
+    });
+    expect(
+      readApprovalReply({ decision: "Approve", options: "a", feedback: "x" }, []),
+    ).toMatchObject({ answered: false, reason: "bad_options", replyVerbatim: "x" });
+    expect(readApprovalReply({ decision: "Approve", options: [3] }, [])).toMatchObject({
+      answered: false,
+      reason: "bad_options",
+    });
+    // The older form's label is not one of the Decision field's.
+    expect(
+      readApprovalReply({ decision: "Changes requested", feedback: "x" }, []),
+    ).toMatchObject({ answered: false, reason: "no_choice" });
+  });
+
   it.each([
     ["Approve", "approve"],
     ["Reject", "reject"],
     ["Changes requested", "changes_requested"],
-  ] as const)("reads %s with Didi's words exactly as typed", (label, choice) => {
-    expect(
-      readApprovalReply({ answer: label, reply: " as typed " }, ["anonymous", 3]),
-    ).toEqual({
-      answered: true,
-      choice,
-      words: " as typed ",
-      approvers: ["anonymous"],
-    });
-  });
+  ] as const)(
+    "still reads the older form's %s for a request opened before D-254",
+    (label, choice) => {
+      expect(
+        readApprovalReply({ answer: label, reply: " as typed " }, ["anonymous", 3]),
+      ).toEqual({
+        answered: true,
+        choice,
+        words: " as typed ",
+        approvers: ["anonymous"],
+        options: [],
+      });
+    },
+  );
 
-  it("reads an option name when the page sends one, and adds nothing when it does not (D-242, N-53)", () => {
+  it("reads the older form's option name as its one option (D-242, O-66)", () => {
     expect(
       readApprovalReply({ answer: "Approve", reply: "a", option: "a" }, ["anonymous"]),
-    ).toEqual({
-      answered: true,
-      choice: "approve",
-      words: "a",
-      approvers: ["anonymous"],
-      option: "a",
-    });
+    ).toMatchObject({ answered: true, options: ["a"] });
     expect(
       readApprovalReply({ answer: "Approve", reply: "a", option: 3 }, []),
-    ).not.toHaveProperty("option");
+    ).toMatchObject({ answered: true, options: [] });
   });
 
   it("reads a timeout, and a form with no known answer, as no answer, keeping any words", () => {

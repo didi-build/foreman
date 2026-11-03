@@ -272,7 +272,36 @@ describe("hard rule 1: QA independence", () => {
     expect(failed).toContain("qa_independence");
   });
 
-  it("reads only Developer runs, and does not apply to other roles", () => {
+  it("refuses a QA model a Designer run on the item used, by id and by family (D-158, N-57)", () => {
+    const designer: EarlierRun[] = [
+      { bot: "designer", model: "claude-opus-5-5", modelFamily: "claude" },
+    ];
+    expect(
+      refused(qa(designer, [candidate("claude-opus-5-5")])).rejected[0]?.failed,
+    ).toEqual([
+      {
+        rule: "qa_independence",
+        detail: "the same model id as a Designer run on the item",
+      },
+    ]);
+    expect(
+      refused(qa(designer, [candidate("claude-sonnet-5-5")], "family")).rejected[0]
+        ?.failed,
+    ).toEqual([
+      {
+        rule: "qa_independence",
+        detail: "the same model family as a Designer run on the item",
+      },
+    ]);
+    // The visual run skips the Designer's model for the next candidate.
+    expect(
+      routed(
+        qa(designer, [candidate("claude-opus-5-5"), candidate("claude-sonnet-5-5")]),
+      ).model,
+    ).toBe("claude-sonnet-5-5");
+  });
+
+  it("reads only builder runs, and does not apply to other roles", () => {
     const earlier: EarlierRun[] = [
       { bot: "qa", model: "claude-opus-5-5", modelFamily: "claude" },
     ];
@@ -595,7 +624,7 @@ describe("onCapacity and failFast are parsed and kept on the route", () => {
 });
 
 describe("the input hash", () => {
-  it("is a SHA-256 that ignores key order and non-Developer runs, and changes with what the rule reads", () => {
+  it("is a SHA-256 that ignores key order and runs that are not a builder's, and changes with what the rule reads", () => {
     const base = input({ role: "qa", taskType: "qa:review" });
     const hash = routeInputHash(base);
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
@@ -617,6 +646,13 @@ describe("the input hash", () => {
       earlierRuns: [developerRun("claude-sonnet-5-5", "claude")],
     };
     expect(routeInputHash(withDeveloper)).not.toBe(hash);
+    const withDesigner = {
+      ...base,
+      earlierRuns: [
+        { bot: "designer", model: "claude-opus-5-5", modelFamily: "claude" },
+      ],
+    };
+    expect(routeInputHash(withDesigner)).not.toBe(hash);
     expect(routeInputHash({ ...base, taskType: "triage" })).not.toBe(hash);
     const capacityEnd = {
       provider: "anthropic",

@@ -1,9 +1,16 @@
-// Seam: unit. What each of the approval page's three answers records (D-170, D-200), as
+// Seam: unit. What each of the approval page's three answers records (D-170, D-200, D-254), as
 // docs/guards.md's decision conventions read it. The flow around it is in
 // test/flows/transition-flows.test.ts.
 import { describe, expect, it } from "vitest";
 
-import { APPROVAL_CHOICE_LABELS, approvalDecision } from "./approvals.ts";
+import {
+  ANSWER_PROBLEMS,
+  APPROVAL_CHOICE_LABELS,
+  OLDER_FORM_CHOICE_LABELS,
+  approvalAnswerProblem,
+  approvalDecision,
+  approvalFormEnums,
+} from "./approvals.ts";
 import type { GateRequest } from "./store.ts";
 
 const GATE: GateRequest = {
@@ -56,27 +63,35 @@ describe("an approval page answer (unit, D-200)", () => {
     },
   );
 
-  it("records the approved option only when the visual-approval request lists it (D-242)", () => {
+  it("records the approved option only when the visual-approval request lists it (D-242, D-254)", () => {
     const listing = { ...GATE, payload: { options: ["a", "b"] } };
     const scope = (
       gate: GateRequest,
-      option: string | null,
-      choice: "approve" | "reject" = "approve",
+      options: string[],
+      choice: "approve" | "reject" | "changes_requested" = "approve",
     ) =>
       approvalDecision(gate, {
         choice,
         words: "Option a.",
         approvers: ["anonymous"],
-        option,
+        options,
       }).scope;
-    expect(scope(listing, "a")).toMatchObject({ option: "a" });
-    expect(scope(listing, "c")).not.toHaveProperty("option");
-    expect(scope(listing, null)).not.toHaveProperty("option");
-    expect(scope(GATE, "a")).not.toHaveProperty("option");
-    expect(scope(listing, "a", "reject")).not.toHaveProperty("option");
-    expect(scope({ ...listing, kind: "new_credentials" }, "a")).not.toHaveProperty(
+    expect(scope(listing, ["a"])).toMatchObject({ option: "a" });
+    expect(scope(listing, ["a"])).not.toHaveProperty("options");
+    expect(scope(listing, ["c"])).not.toHaveProperty("option");
+    expect(scope(listing, [])).not.toHaveProperty("option");
+    expect(scope(GATE, ["a"])).not.toHaveProperty("option");
+    expect(scope({ ...listing, kind: "new_credentials" }, ["a"])).not.toHaveProperty(
       "option",
     );
+    // Request changes and Reject keep the options they name, for the Designer's input.
+    expect(scope(listing, ["a", "b"], "changes_requested")).toMatchObject({
+      outcome: "changes_requested",
+      options: ["a", "b"],
+    });
+    expect(scope(listing, ["a"], "reject")).toMatchObject({ options: ["a"] });
+    expect(scope(listing, ["a"], "reject")).not.toHaveProperty("option");
+    expect(scope(listing, [], "changes_requested")).not.toHaveProperty("options");
   });
 
   it("records no words as empty text, which approval_recorded never accepts", () => {
@@ -137,11 +152,78 @@ describe("an approval page answer (unit, D-200)", () => {
     });
   });
 
-  it("names the three labels the page shows", () => {
-    expect(Object.keys(APPROVAL_CHOICE_LABELS)).toEqual([
-      "Approve",
-      "Reject",
-      "Changes requested",
-    ]);
+  it("names the Decision field's three labels, and reads the older form's (D-254, D-200)", () => {
+    expect(APPROVAL_CHOICE_LABELS).toEqual({
+      Approve: "approve",
+      "Request changes": "changes_requested",
+      Reject: "reject",
+    });
+    expect(OLDER_FORM_CHOICE_LABELS).toEqual({
+      Approve: "approve",
+      Reject: "reject",
+      "Changes requested": "changes_requested",
+    });
+  });
+});
+
+describe("the approval form's rules (unit, D-254)", () => {
+  const listing: GateRequest = { ...GATE, payload: { options: ["a", "b", "c"] } };
+  const problem = (
+    gate: GateRequest,
+    choice: "approve" | "reject" | "changes_requested",
+    options: string[],
+    words: string | null = "Feedback.",
+  ) => approvalAnswerProblem(gate, { choice, words, approvers: [], options });
+
+  it("fills the Options field per request with the request's own options", () => {
+    expect(approvalFormEnums(listing)).toEqual({ options: ["a", "b", "c"] });
+    expect(approvalFormEnums(GATE)).toEqual({ options: [] });
+    expect(
+      approvalFormEnums({ ...GATE, payload: { options: ["a", 3, null] } }),
+    ).toEqual({ options: ["a"] });
+  });
+
+  it("Approve needs exactly one listed option, and no feedback", () => {
+    expect(problem(listing, "approve", ["b"], null)).toBeNull();
+    expect(problem(listing, "approve", ["b"], "")).toBeNull();
+    expect(problem(listing, "approve", [])).toBe(ANSWER_PROBLEMS.approveNeedsOneOption);
+    expect(problem(listing, "approve", ["a", "b"])).toBe(
+      ANSWER_PROBLEMS.approveNeedsOneOption,
+    );
+  });
+
+  it("Request changes may name any number of options, and needs feedback", () => {
+    expect(problem(listing, "changes_requested", [])).toBeNull();
+    expect(problem(listing, "changes_requested", ["a", "c"])).toBeNull();
+    expect(problem(listing, "changes_requested", ["a"], "  ")).toBe(
+      ANSWER_PROBLEMS.changesNeedFeedback,
+    );
+    expect(problem(listing, "changes_requested", [], null)).toBe(
+      ANSWER_PROBLEMS.changesNeedFeedback,
+    );
+  });
+
+  it("Reject needs feedback", () => {
+    expect(problem(listing, "reject", [])).toBeNull();
+    expect(problem(listing, "reject", [], "")).toBe(
+      ANSWER_PROBLEMS.rejectNeedsFeedback,
+    );
+  });
+
+  it("refuses an option the request does not show, or one named twice", () => {
+    expect(problem(listing, "approve", ["z"])).toBe(ANSWER_PROBLEMS.unknownOption);
+    expect(problem(listing, "changes_requested", ["a", "a"])).toBe(
+      ANSWER_PROBLEMS.repeatedOption,
+    );
+    // A request that lists no options: Approve needs none, and any named is unknown.
+    expect(problem(GATE, "approve", [], null)).toBeNull();
+    expect(problem(GATE, "approve", ["a"])).toBe(ANSWER_PROBLEMS.unknownOption);
+  });
+
+  it("says why in one line of fixed text", () => {
+    for (const note of Object.values(ANSWER_PROBLEMS)) {
+      expect(note).not.toContain("\n");
+      expect(note.length).toBeLessThanOrEqual(120);
+    }
   });
 });

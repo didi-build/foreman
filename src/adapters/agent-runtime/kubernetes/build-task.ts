@@ -22,7 +22,7 @@ export interface KubernetesBotFile {
   allowedTools?: string[];
   /** CONNECT hosts for the agent's proxy. Empty for QA, Council and Triage. */
   allowedHosts: string[];
-  /** QA only. */
+  /** QA's review only; the visual comparison has no fetch step. */
   fetchAllowedHosts?: string[];
   /** Council and Triage, and QA's visual comparison. */
   outputSchema?: Record<string, unknown>;
@@ -55,7 +55,10 @@ export interface KubernetesTaskParts {
   /** QA's visual comparison: the image pairs, in order (D-242). */
   images?: TaskImage[];
   stateApiToken: string;
-  /** Developer and Designer: the agent pod. QA: the fetch pod. Council and Triage: none. */
+  /**
+   * Developer and Designer: the agent pod. QA's review: the fetch pod. QA's visual comparison,
+   * Council and Triage: none.
+   */
   githubToken?: string;
   /** Model credential values by secret path. Only the route's provider's is passed on. */
   modelCredentials: Readonly<Record<string, string>>;
@@ -118,7 +121,11 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
       ? {
           headSha: run.headSha ?? undefined,
           prNumber: run.prNumber ?? undefined,
-          fetchAllowedHosts: [...(bot.fetchAllowedHosts ?? [])],
+          // The visual comparison reads only its images: no fetch step and no GitHub token
+          // (least privilege, N-57). The review fetches the PR's tree.
+          ...(parts.images !== undefined
+            ? { visual: true as const }
+            : { fetchAllowedHosts: [...(bot.fetchAllowedHosts ?? [])] }),
         }
       : {}),
     allowedHosts: [...bot.allowedHosts],

@@ -24,7 +24,15 @@ interface Description {
     schedule?: { every_minutes: number; cron: string };
     suspend?: {
       hide_cancel?: boolean;
-      resume_form: Record<string, { type: string; required: boolean; enum?: string[] }>;
+      resume_form: Record<
+        string,
+        {
+          type: string;
+          required: boolean;
+          enum?: string[];
+          items?: unknown;
+        }
+      >;
     };
   }[];
   resources: { secrets: { path: string }[]; values: { name: string }[] };
@@ -67,15 +75,23 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     });
   });
 
-  it("offers the approval page's three answers, exactly the labels the core reads (D-200)", () => {
+  it("is one form: a decision of the three labels the core reads, the request's options, and feedback (D-254)", () => {
     const approval = description.flows.find((f) => f.name === "approval");
     expect(approval?.suspend?.hide_cancel).toBe(true);
-    expect(approval?.suspend?.resume_form.answer).toEqual({
+    const form = approval?.suspend?.resume_form ?? {};
+    expect(Object.keys(form)).toEqual(["decision", "options", "feedback"]);
+    expect(form.decision).toEqual({
       type: "string",
       required: true,
       enum: Object.keys(APPROVAL_CHOICE_LABELS),
     });
-    expect(approval?.suspend?.resume_form.reply).toMatchObject({ type: "string" });
+    // A multi-select whose choices are filled per request, never fixed in the file.
+    expect(form.options).toEqual({
+      type: "array",
+      required: false,
+      items: { type: "string", enum: [] },
+    });
+    expect(form.feedback).toEqual({ type: "string", required: false });
   });
 
   it("lists exactly the secrets and values the composition module reads", () => {

@@ -76,6 +76,27 @@ export interface QaVerdictPayload {
   evidenceIds: string[];
 }
 
+/** One finding of a visual comparison: what differs, and the spec line it breaks (or empty). */
+export interface VisualFindingPayload {
+  what: string;
+  specLine: string;
+}
+
+/**
+ * A `visual_comparison` as the runner records it (src/core/visual-comparison.ts, O-66). Only the
+ * fields the guards and the Designer's input read are checked here.
+ */
+export interface VisualComparisonPayload extends CheckPayload {
+  outcome: "match" | "differs" | "cannot_tell";
+  option: string;
+  components: {
+    component: string;
+    variant: string;
+    result: "match" | "differs" | "cannot_tell";
+    findings: VisualFindingPayload[];
+  }[];
+}
+
 export interface SpecPathsPayload {
   /** Files under the spec directory, for example `design/<area>/<feature>/spec.md`. */
   paths: string[];
@@ -216,6 +237,45 @@ export function readQaVerdict(payload: Json): QaVerdictPayload | null {
   }
   return { verdict, findings: parsed, evidenceIds };
 }
+
+const VISUAL_RESULTS: readonly string[] = ["match", "differs", "cannot_tell"];
+
+export function readVisualComparison(payload: Json): VisualComparisonPayload | null {
+  if (!isRecord(payload) || typeof payload.pass !== "boolean") return null;
+  const { outcome, option, components } = payload;
+  if (typeof outcome !== "string" || !VISUAL_RESULTS.includes(outcome)) return null;
+  if (typeof option !== "string" || !Array.isArray(components)) return null;
+  const parsed: VisualComparisonPayload["components"] = [];
+  for (const raw of components) {
+    if (!isRecord(raw)) return null;
+    const { component, variant, result: answer, findings } = raw;
+    if (typeof component !== "string" || typeof variant !== "string") return null;
+    if (typeof answer !== "string" || !VISUAL_RESULTS.includes(answer)) return null;
+    if (!Array.isArray(findings)) return null;
+    const read: VisualFindingPayload[] = [];
+    for (const f of findings) {
+      if (!isRecord(f) || typeof f.what !== "string" || typeof f.specLine !== "string")
+        return null;
+      read.push({ what: f.what, specLine: f.specLine });
+    }
+    parsed.push({
+      component,
+      variant,
+      result: answer as VisualComparisonPayload["outcome"],
+      findings: read,
+    });
+  }
+  return {
+    pass: payload.pass,
+    outcome: outcome as VisualComparisonPayload["outcome"],
+    option,
+    components: parsed,
+  };
+}
+
+/** The number of findings a visual comparison lists over all its components. */
+export const visualFindingCount = (payload: VisualComparisonPayload): number =>
+  payload.components.reduce((n, c) => n + c.findings.length, 0);
 
 export function readSpecPaths(payload: Json): SpecPathsPayload | null {
   if (!isRecord(payload)) return null;

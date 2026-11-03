@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
 import { run as requestTransition } from "../../flows/request-transition.ts";
+import { ANSWER_PROBLEMS } from "../../src/core/approvals.ts";
 import { createCouncil } from "../../src/core/council.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
@@ -101,7 +102,7 @@ describe("transition flow (flow: fake adapters, build plan M3.1)", () => {
   });
 });
 
-describe("approval resume step (flow: fake adapters, M0.4, D-170, D-200, D-201)", () => {
+describe("approval resume step (flow: fake adapters, M0.4, D-170, D-200, D-201, D-254)", () => {
   const PAGE = "https://approvals.example.test/page/not-a-real-link";
 
   /** A design item waiting for Didi, with its visual-approval request open on a page. */
@@ -237,6 +238,122 @@ describe("approval resume step (flow: fake adapters, M0.4, D-170, D-200, D-201)"
       outcome: "already_closed",
     });
     expect(await f.store.listDecisionsForNode(node.id)).toHaveLength(1);
+  });
+
+  describe("the one form (D-254)", () => {
+    /** The visual-approval request lists options a, b and c (fixtures, N-52). */
+    async function withOptions() {
+      const f = await createFlowFixture();
+      await f.live();
+      const node = await f.node("waiting_for_didi", {
+        track: "design",
+        ownerRole: "operator",
+      });
+      const gate = await f.openGate(node.id, visualApprovalTopic(node.id), {
+        kind: "visual_approval",
+        owner: "didi",
+        approvalUrl: PAGE,
+        payload: { options: ["a", "b", "c"] },
+      });
+      const form = (fields: Record<string, unknown>) => ({
+        gateRequestId: gate.id,
+        resume: fields,
+        approvers: ["anonymous"],
+      });
+      return { f, node, gate, form };
+    }
+
+    it("Approve with one option and no feedback records it as the approved option, and the move follows", async () => {
+      const { f, node, gate, form } = await withOptions();
+      expect(
+        await resume(f.deps, form({ decision: "Approve", options: ["b"] })),
+      ).toMatchObject({ outcome: "recorded" });
+      expect(await f.store.listDecisionsForNode(node.id)).toMatchObject([
+        {
+          kind: "approval",
+          textVerbatim: "",
+          scope: { option: "b", outcome: "approved" },
+        },
+      ]);
+      const moved = await requestTransition(f.deps, {
+        nodeId: node.id,
+        toState: "writing_spec",
+        trigger: { kind: "human", ref: `gate:${gate.id}` },
+        actor: { kind: "operator", id: "didi" },
+      });
+      expect(moved.outcome).toBe("applied");
+    });
+
+    it("Request changes naming two options records a combine request with Didi's feedback", async () => {
+      const { f, node, form } = await withOptions();
+      await resume(
+        f.deps,
+        form({
+          decision: "Request changes",
+          options: ["a", "c"],
+          feedback: "The header of a with the cards of c.",
+        }),
+      );
+      expect(await f.store.listDecisionsForNode(node.id)).toMatchObject([
+        {
+          kind: "answer",
+          textVerbatim: "The header of a with the cards of c.",
+          scope: { outcome: "changes_requested", options: ["a", "c"] },
+        },
+      ]);
+    });
+
+    it.each([
+      [{ decision: "Approve", options: [] }, ANSWER_PROBLEMS.approveNeedsOneOption],
+      [
+        { decision: "Approve", options: ["a", "b"] },
+        ANSWER_PROBLEMS.approveNeedsOneOption,
+      ],
+      [
+        { decision: "Request changes", options: ["a"] },
+        ANSWER_PROBLEMS.changesNeedFeedback,
+      ],
+      [{ decision: "Reject", feedback: "  " }, ANSWER_PROBLEMS.rejectNeedsFeedback],
+      [{ decision: "Approve", options: ["z"] }, ANSWER_PROBLEMS.unknownOption],
+    ])(
+      "an answer that breaks a rule records nothing and opens a fresh request with the note (%j)",
+      async (fields, note) => {
+        const { f, node, gate, form } = await withOptions();
+        const result = await resume(f.deps, form(fields));
+        expect(result).toMatchObject({ outcome: "reopened", note });
+        expect(await f.store.listDecisionsForNode(node.id)).toEqual([]);
+        const fresh = await f.store.findOpenGateRequest(f.projectId, gate.topicKey);
+        expect(fresh).toMatchObject({
+          kind: "visual_approval",
+          owner: "didi",
+          nodeId: node.id,
+          payload: { options: ["a", "b", "c"], note },
+          approvalUrl: null,
+        });
+        expect(fresh?.id).not.toBe(gate.id);
+        expect(await f.store.getGateRequest(gate.id)).toMatchObject({
+          status: "superseded",
+          supersededBy: fresh?.id,
+        });
+        // The answered page is closed; another resume on it records nothing.
+        expect(
+          await resume(f.deps, form({ decision: "Reject", feedback: "x" })),
+        ).toEqual({
+          outcome: "already_closed",
+        });
+      },
+    );
+
+    it("still records an answer from the older form on a request opened before D-254", async () => {
+      const { f, node, form } = await withOptions();
+      await resume(
+        f.deps,
+        form({ answer: "Approve", reply: "Option a.", option: "a" }),
+      );
+      expect(await f.store.listDecisionsForNode(node.id)).toMatchObject([
+        { kind: "approval", textVerbatim: "Option a.", scope: { option: "a" } },
+      ]);
+    });
   });
 
   it("writes nothing for a request that does not exist", async () => {

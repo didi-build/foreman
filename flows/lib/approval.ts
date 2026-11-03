@@ -1,29 +1,36 @@
-// The reply an approval page sends back when a suspended flow resumes (M0.4, D-170, D-200).
-// Windmill hands the step after a `suspend` two values: `resume`, the form's fields, or an error
-// object when the request timed out or was cancelled; and `approvers`, which is `["anonymous"]`
-// on the free plan. The form (flows/windmill.yaml) has two fields: `answer`, one of the page's
-// three labels, and `reply`, Didi's words. An `option` field, the approved option's name on a
-// visual approval, is read when present; the form does not ask for it yet (N-53). This reads that shape and nothing more; what an answer
-// records is `approvalDecision` in the core.
+// The reply an approval page sends back when a suspended flow resumes (M0.4, D-170, D-200,
+// D-254). Windmill hands the step after a `suspend` two values: `resume`, the form's fields, or an
+// error object when the request timed out or was cancelled; and `approvers`, which is
+// `["anonymous"]` on the free plan. The form (flows/windmill.yaml) has three fields: `decision`,
+// one of the page's three labels; `options`, the request's options Didi picked (a multi-select
+// whose choices the approval step fills per request, `approvalFormEnums`); and `feedback`, Didi's
+// words. A request opened before D-254 shows the older form, `answer` (Approve, Reject or Changes
+// requested), `reply` and, on a visual approval, an `option` field; that shape is still read.
+// This reads the shape and nothing more; whether the answer keeps the form's rules is
+// `approvalAnswerProblem` in the core, and what an answer records is `approvalDecision`.
 import {
   APPROVAL_CHOICE_LABELS,
+  OLDER_FORM_CHOICE_LABELS,
+  approvalAnswerProblem,
   type ApprovalPageAnswer,
 } from "../../src/core/approvals.ts";
 import { REVERSAL_PREFIX, type FollowUpStep } from "../../src/core/council.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
-import type { GateRequest } from "../../src/core/store.ts";
+import { createLibrary } from "../../src/core/library.ts";
+import type { GateRequest, Json } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
 import { councilPass, followUpPass, type CouncilPassStep } from "./council-runs.ts";
 import { heldBy } from "./switches.ts";
 
 /**
- * An answer, or why there is none: Windmill's error name for a timeout or a cancel, or
- * `no_choice` when the form came back without one of the three labels. `replyVerbatim` keeps any
- * words that came back without an answer, so the flow's result holds them.
+ * An answer, or why there is none: Windmill's error name for a timeout or a cancel, `no_choice`
+ * when the form came back without one of the three labels, or `bad_options` when its options are
+ * not a list of names. `replyVerbatim` keeps any words that came back without an answer, so the
+ * flow's result holds them.
  */
 export type ApprovalReply =
-  | ({ answered: true } & ApprovalPageAnswer)
+  | ({ answered: true } & ApprovalPageAnswer & { options: string[] })
   | {
       answered: false;
       reason: string;
@@ -48,11 +55,15 @@ export function readApprovalReply(resume: unknown, approvers: unknown): Approval
     };
   }
   const fields = isObject(resume) ? resume : {};
-  const words = typeof fields.reply === "string" ? fields.reply : null;
-  const label = fields.answer;
+  // The form's shape since D-254, or the older form's for a request opened before it.
+  const current = Object.hasOwn(fields, "decision");
+  const labels = current ? APPROVAL_CHOICE_LABELS : OLDER_FORM_CHOICE_LABELS;
+  const label = current ? fields.decision : fields.answer;
+  const text = current ? fields.feedback : fields.reply;
+  const words = typeof text === "string" ? text : null;
   const choice =
-    typeof label === "string" && Object.hasOwn(APPROVAL_CHOICE_LABELS, label)
-      ? APPROVAL_CHOICE_LABELS[label]
+    typeof label === "string" && Object.hasOwn(labels, label)
+      ? labels[label]
       : undefined;
   if (!choice) {
     return {
@@ -62,16 +73,62 @@ export function readApprovalReply(resume: unknown, approvers: unknown): Approval
       approvers: names,
     };
   }
-  // A visual approval's option name, when the page sends one (N-53: the page has no such field
-  // yet). The core records it only when the request lists that option.
-  const option = typeof fields.option === "string" ? fields.option : undefined;
-  return {
-    answered: true,
-    choice,
-    words,
-    approvers: names,
-    ...(option !== undefined ? { option } : {}),
-  };
+  let options: string[];
+  if (current) {
+    const picked = fields.options ?? [];
+    if (!Array.isArray(picked) || !picked.every((o) => typeof o === "string")) {
+      return {
+        answered: false,
+        reason: "bad_options",
+        replyVerbatim: words,
+        approvers: names,
+      };
+    }
+    options = picked as string[];
+  } else {
+    // The older form's one option name, when its page sent one (O-66).
+    options = typeof fields.option === "string" ? [fields.option] : [];
+  }
+  return { answered: true, choice, words, approvers: names, options };
+}
+
+/** A fresh request opened because an answer broke one of the form's rules (D-254). */
+export interface ReopenedRequest {
+  /** The fresh request on the same topic; the answered one is superseded and records nothing. */
+  gateRequestId: string;
+  /** The one-line note on the fresh request saying why, fixed text. */
+  note: string;
+}
+
+/**
+ * The form's rules, checked after it was sent (D-254). An answer that keeps them returns null.
+ * One that breaks a rule records nothing: a fresh request opens on the same topic, with the same
+ * kind, owner and payload and the one-line note as `payload.note`, through the library's
+ * `openGateRequest`, which supersedes the answered one (schema invariant 5). Windmill closed the
+ * old page with that answer, so this is the only way the question stays open; like recording an
+ * answer (D-201), it is done whatever the kill switch and dry run say. The approval step sends
+ * the fresh request's page as it sends any (M4.1).
+ */
+export async function reopenIfAnswerBreaksRules(
+  deps: FlowDeps,
+  gate: GateRequest,
+  answer: ApprovalPageAnswer,
+): Promise<ReopenedRequest | null> {
+  const note = approvalAnswerProblem(gate, answer);
+  if (note === null) return null;
+  const payload: { [key: string]: Json } = isObject(gate.payload)
+    ? { ...(gate.payload as { [key: string]: Json }) }
+    : {};
+  const fresh = await createLibrary(deps).openGateRequest({
+    projectId: gate.projectId,
+    nodeId: gate.nodeId,
+    topicKey: gate.topicKey,
+    kind: gate.kind,
+    owner: gate.owner,
+    blocking: gate.blocking,
+    payload: { ...payload, note },
+  });
+  return { gateRequestId: fresh.id, note };
 }
 
 /** What the step reports after an answer is recorded. */
