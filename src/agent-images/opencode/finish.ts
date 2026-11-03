@@ -8,7 +8,10 @@
 // When the report is the stopped form (the item needs a product decision or a new feature, D-237),
 // the wrapper reads no branch, opens no PR and posts no note: the result is `needs_decision` with
 // the reason in `structured`, and the runner asks for the escalation (O-63). Commits the model
-// pushed, if any, stay on the branch as they are.
+// pushed, if any, stay on the branch as they are. A success result also carries the bugs the run
+// noticed outside its item, with credential values removed (D-244, O-65): the runner submits each
+// as a new idea; the wrapper itself sends them nowhere.
+import { withinFindingBounds } from "../../core/out-of-scope-findings.ts";
 import type { AgentResult } from "../shared/result.ts";
 import { redact } from "../shared/result.ts";
 import type { GitHubApi } from "./github.ts";
@@ -109,6 +112,13 @@ export async function finishRun(
         reused: pullRequest.reused,
       },
       docsNote: { impact: report.docsNote.impact },
+      ...(report.outOfScopeFindings.length === 0
+        ? {}
+        : {
+            outOfScopeFindings: redact(report.outOfScopeFindings, context.secrets).map(
+              withinFindingBounds,
+            ),
+          }),
     },
   };
 }

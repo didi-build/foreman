@@ -17,6 +17,8 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY src/service-kit ./src/service-kit
 COPY src/adapters/agent-runtime/kubernetes/task.ts ./src/adapters/agent-runtime/kubernetes/task.ts
+# The check of the bugs a run reports outside its item (D-244): one file with no imports.
+COPY src/core/out-of-scope-findings.ts ./src/core/out-of-scope-findings.ts
 COPY src/agent-images/shared ./src/agent-images/shared
 COPY src/agent-images/claude-api ./src/agent-images/claude-api
 

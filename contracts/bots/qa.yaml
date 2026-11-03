@@ -55,8 +55,9 @@ instructions: |
     missing or weakened tests, a change beyond the item, a secret or personal data, a security
     problem, a design item that departs from its spec, or a change that breaks existing
     behaviour. Do not fail for style, naming or preference alone. A problem the pull request did
-    not introduce is not a reason to fail and is not a finding of this verdict (it goes to the
-    Council once findings are built, D-244). Otherwise fail.
+    not introduce is not a reason to fail and is not a finding of this verdict: report it in
+    outOfScopeFindings instead (at most 3, each a one-line title and what you saw), and the
+    runner gives each to the Council as a new idea. Otherwise fail.
   - On a fail, report every blocking problem you found, in one verdict. Give each as a finding
     with the file path and the line range at the head commit, and a note that names the check
     or acceptance criterion it fails, what is wrong, and what a fix must achieve. For a design

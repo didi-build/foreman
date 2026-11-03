@@ -67,6 +67,18 @@ Decided in M3.2 (D-213); no earlier document gave `body` a shape. The dispatch r
 
 A field of the wrong type refuses the dispatch before anything is written, and the error names the field, never its value. A missing field is stated as missing in the input. Who fills these fields is settled with Triage (M3.6); until then they are written when the item is created.
 
+### Idea body from a run's finding
+
+Decided with D-244 (O-65). When a Developer, Designer or QA run reports a bug outside its item, the runner creates an idea (`type` `idea`, `state` `submitted`, `owner_role` `runner`, no track) whose `title` is the finding's title (one line, at most 120 characters) and whose `body` is:
+
+| Field         | Type   | Notes                                                                                       |
+| ------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `source`      | text   | `run_finding`                                                                               |
+| `description` | text   | What the run saw, at most 1,000 characters, credential values removed                       |
+| `foundBy`     | object | `role` (`developer`, `designer` or `qa`), `nodeId` (the item the run worked on) and `runId` |
+
+No column, kind or edge type was added. `foundBy.runId` is how the runner finds the ideas a run already made, so a run's findings become ideas once (`src/core/finding-ideas.ts`).
+
 ## edges
 
 | Column     | Type        | Notes                                                                                                                                                                                   |

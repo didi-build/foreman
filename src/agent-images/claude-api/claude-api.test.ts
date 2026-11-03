@@ -237,6 +237,109 @@ describe("QA run (integration: tool loop over the fetched tree, ADR 0112)", () =
     expect(proxy.stateApiRequests).toEqual([]);
   });
 
+  describe("bugs the PR did not introduce (outOfScopeFindings, D-244, O-65)", () => {
+    const outside = [
+      {
+        title: " Old bug in sub ",
+        detail: " src/sub.ts adds instead of subtracting. ",
+      },
+    ];
+
+    it.each(["pass", "fail"] as const)(
+      "keeps them apart from the findings on a %s, posts them and carries them to the runner",
+      async (verdict) => {
+        const answer = {
+          ...VERDICT,
+          verdict,
+          findings: verdict === "pass" ? [] : VERDICT.findings,
+          outOfScopeFindings: outside,
+        };
+        proxy.replies.push(reply.text(JSON.stringify(answer)));
+        const { code, result } = await run(envFor("qa", qaTask));
+        expect(code).toBe(0);
+        const trimmed = [
+          {
+            title: "Old bug in sub",
+            detail: "src/sub.ts adds instead of subtracting.",
+          },
+        ];
+        expect(proxy.stateApiRequests[0]?.body).toMatchObject({
+          verdict,
+          findings: answer.findings,
+          outOfScopeFindings: trimmed,
+        });
+        expect(result?.structured).toMatchObject({
+          verdict,
+          findings: answer.findings,
+          outOfScopeFindings: trimmed,
+        });
+        expect(mapRunEnd("complete", null, result, "m")).toMatchObject({
+          outcome: "success",
+          structured: { outOfScopeFindings: trimmed },
+        });
+      },
+    );
+
+    it("removes the run's token from them before they leave the image", async () => {
+      proxy.replies.push(
+        reply.text(
+          JSON.stringify({
+            ...VERDICT,
+            outOfScopeFindings: [
+              { title: "Leak", detail: `Saw ${STATE_TOKEN} in a log.` },
+            ],
+          }),
+        ),
+      );
+      await run(envFor("qa", qaTask));
+      expect(JSON.stringify(proxy.stateApiRequests[0]?.body)).not.toContain(
+        STATE_TOKEN,
+      );
+      expect(lines.join("\n")).not.toContain(STATE_TOKEN);
+      expect(proxy.stateApiRequests[0]?.body).toMatchObject({
+        outOfScopeFindings: [{ title: "Leak", detail: "Saw [redacted] in a log." }],
+      });
+    });
+
+    it("leaves them out of the post and the result when there are none", async () => {
+      proxy.replies.push(
+        reply.text(JSON.stringify({ ...VERDICT, outOfScopeFindings: [] })),
+      );
+      const { result } = await run(envFor("qa", qaTask));
+      expect(proxy.stateApiRequests[0]?.body).not.toHaveProperty("outOfScopeFindings");
+      expect(result?.structured).not.toHaveProperty("outOfScopeFindings");
+    });
+
+    it.each([
+      ["four of them", Array(4).fill({ title: "t", detail: "d" })],
+      ["a two-line title", [{ title: "a\nb", detail: "d" }]],
+      ["a detail too long", [{ title: "t", detail: "d".repeat(1001) }]],
+      [
+        "a file citation instead",
+        [{ path: "src/a.ts", startLine: 1, endLine: 1, note: "n" }],
+      ],
+    ])("refuses a verdict with %s and posts nothing", async (_case, list) => {
+      proxy.replies.push(
+        reply.text(JSON.stringify({ ...VERDICT, outOfScopeFindings: list })),
+      );
+      const { code, result } = await run(envFor("qa", qaTask));
+      expect(code).toBe(1);
+      expect(result?.errorText).toMatch(
+        /^the verdict is unusable: .*(outOfScopeFindings|a finding's)/,
+      );
+      expect(proxy.stateApiRequests).toEqual([]);
+    });
+
+    it("tells the model the shape and that they never fail the PR", async () => {
+      proxy.replies.push(reply.text(JSON.stringify(VERDICT)));
+      await run(envFor("qa", qaTask));
+      expect(system(0)[0]?.text).toContain("outOfScopeFindings is optional: at most 3");
+      expect(JSON.stringify(proxy.modelRequests[0]?.body.output_config)).toContain(
+        "outOfScopeFindings",
+      );
+    });
+  });
+
   it("is an error when the state API refuses the verdict", async () => {
     proxy.replies.push(reply.text(JSON.stringify(VERDICT)));
     proxy.verdictReply = { status: 422, body: { error: "commitSha does not match" } };

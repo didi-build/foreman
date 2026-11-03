@@ -5,6 +5,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { LibraryError, type Clock, type Library } from "../core/library.ts";
 import {
+  OUT_OF_SCOPE_FINDINGS,
+  readOutOfScopeFindings,
+  type OutOfScopeFinding,
+} from "../core/out-of-scope-findings.ts";
+import {
   StoreConflictError,
   type AgentRole,
   type DecisionKind,
@@ -176,6 +181,16 @@ function findings(body: Body): Finding[] {
   });
 }
 
+/**
+ * QA's optional bugs seen outside the PR (D-244, O-65), checked strictly. They are kept with the
+ * verdict as QA gave them; the runner creates ideas from the run's result, not from this row.
+ */
+function outOfScopeFindings(body: Body): OutOfScopeFinding[] {
+  const read = readOutOfScopeFindings(body[OUT_OF_SCOPE_FINDINGS]);
+  if ("problem" in read) throw new HttpError(400, read.problem);
+  return read.findings;
+}
+
 function ids(body: Body, key: string): string[] {
   const value = body[key] ?? [];
   if (
@@ -308,6 +323,7 @@ export function createApiHandler({
         }
         const verdict = oneOf(input, "verdict", ["pass", "fail"] as const);
         const cited = ids(input, "evidenceIds");
+        const outside = outOfScopeFindings(input);
         if (verdict === "pass" && cited.length === 0) {
           throw new HttpError(
             422,
@@ -336,6 +352,7 @@ export function createApiHandler({
             verdict,
             findings: findings(input),
             evidenceIds: cited,
+            ...(outside.length === 0 ? {} : { [OUT_OF_SCOPE_FINDINGS]: outside }),
           } as unknown as Json,
           recordedBy: caller.role,
         });

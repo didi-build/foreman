@@ -11,6 +11,7 @@ const QA_FRAME = [
   "You can read the repository at that commit with the list_files, read_file and search_files tools. They are read-only. You cannot run code.",
   DATA_RULE,
   "When you are done, answer only with your verdict as JSON: verdict is pass or fail; findings lists each problem with its file path, startLine, endLine and a note; evidenceIds lists the ids of the runner's evidence you relied on, chosen only from the ids given in the input. A pass must cite at least one of them.",
+  "outOfScopeFindings is optional: at most 3 problems you noticed that this pull request did not introduce, each with a one-line title of at most 120 characters and a detail of at most 1000 characters saying what you saw, with no secrets or personal data. They never fail the pull request and are not findings; the runner gives each to the Council as a new idea.",
 ].join("\n");
 
 const STRUCTURED_FRAME = [

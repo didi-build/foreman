@@ -51,6 +51,7 @@ Form (D-160): after the runner validates a verdict, the runner posts one check r
 - The API takes the commit from the run's dispatch record (new column `runs.head_sha`) and stores it as `evidence.commit_sha`. A commit supplied by the agent is ignored, or the verdict is rejected if it differs.
 - One verdict per run.
 - The payload holds pass or fail, findings with file path and line range, and the ids of the evidence relied on.
+- On a pass or a fail it may also hold `outOfScopeFindings` (D-244, O-65): at most 3 problems the PR did not introduce, each exactly a one-line `title` of 1 to 120 characters and a `detail` of 1 to 1,000 characters. They are not findings, never fail the PR, and no guard reads them. The API refuses a list of the wrong shape with 400 and stores the list with the verdict when it is not empty. The runner makes one Machine 1 idea per item from the run's result, not from this row.
 - The API validates the shape, and that each evidence id belongs to this node and this commit.
 - The runner checks that every cited file and line range exists at the head commit. A citation it cannot check makes the verdict unusable.
 - A QA token can write only `qa_verdict` and `agent_report`, and cannot reach another project.
