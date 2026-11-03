@@ -75,6 +75,10 @@ The rule that QA uses a different model family from the Developer (P-04, D-119) 
 - The runner tracks "QA escapes": items that passed QA and later failed preview or staging, or were reopened.
 - The waiver is reviewed when the escape trigger fires (D-161: 3 or more escapes in the last 30 QA passes, any single security, data-loss or privileged-path escape, or once a few weeks after cutover), and when a second family is approved. This is separate from the per-item escalation to the Council after 3 failed QA rounds.
 
+### The visual comparison on the design track (D-242, D-250)
+
+On the design track the guard also needs a passing `visual_comparison` on the head commit. It comes from a second QA run, task type `qa:visual`, that compares CI's screenshots of the built components with the option Didi approved, per component, after the runner has located the differences in pixels. The run never writes evidence: the runner checks its answer against `output_schemas.visual` in QA's bot file and records `visual_comparison` itself, with `pass` true only when every component is `match`. `differs` and `cannot_tell` are recorded as not passing, so the guard refuses (O-66). The same independence rule applies: the runner records nothing from a visual run whose model id equals any Developer or Designer run's model id on the item. The review run and the visual run are separate runs on the same head; admission allows one QA run per pull request and head at a time, so they run one after the other.
+
 ### Provider terms (D-159, D-154)
 
 Before the first QA run, Anthropic's API terms are checked against D-154: no training on our data, and a data processing agreement.

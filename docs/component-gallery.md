@@ -42,4 +42,8 @@ npm run build         # Production asset build (also runs in npm run check)
 
 Same-repo pull requests get a **gallery preview** comment from CI. When repository secrets `CLOUDFLARE_API_TOKEN_PREVIEW` and `CLOUDFLARE_ACCOUNT_ID` are set, the comment links to `/gallery` on the preview Worker (`launchpad-preview` in the template; `<slug>-preview` after `init-project`). The preview token must be **Workers Scripts Edit** only on that preview Worker; do not grant D1 or R2 Edit because PR-branch code can reach this token. Without those secrets, the Preview job is **neutral** and the comment explains that previews are not configured (expected for a fresh template until you opt in). Fork PRs never run preview deploy.
 
+## Screenshots for the visual comparison (D-242, D-250)
+
+In the factory, QA's visual comparison reads screenshots of each gallery entry and variant, taken by CI at the PR head, and of each exploration option page under `design/<area>/<feature>/options/<name>/`. Each bundle is one commit's PNGs with a `manifest.json` (version 1): for the gallery, each entry's `id` as `component`, the variant `name`, the file, its SHA-256, its size and the entry's `specPath`, plus a copy of each spec file; for options, each option's name and folder, the page's file, hash and size, and the boxes of the components the page marks. The runner checks the manifest strictly (`src/core/visual-comparison.ts`). The CI step that renders them and the path from CI to the runner are not built yet (N-52), and how an option page marks its components is open (N-56).
+
 See [ADR 0004](./decisions/0004-component-gallery.md) for hosting choices and [ADR 0005](./decisions/0005-preview-worker-isolation.md) for preview Worker isolation.

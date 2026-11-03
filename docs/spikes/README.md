@@ -4,12 +4,13 @@ Spikes answer one question each with a recorded yes or no and evidence (`docs/bu
 
 ## Status
 
-| Spike | Question                                                          | Result now                                                           | Record                                                   |
-| ----- | ----------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------- |
-| M0.2  | Can the runner start each agent and read its result? (V-01, V-04) | **Claude Code run 2026-10-29: yes** (D-172). Grok and Cursor not run | [m0.2-agent-dispatch.md](./m0.2-agent-dispatch.md)       |
-| M0.3  | Can Linear's API create statuses and act as an app? (V-02)        | Desk result only. Moved to the start of Milestone 5 (D-147)          | [m0.3-linear-api.md](./m0.3-linear-api.md)               |
-| M0.4  | Do Windmill approval pages work on a phone? (V-03)                | **Run 2026-10-29: yes**, with three rules for link safety (D-170)    | [m0.4-windmill-approval.md](./m0.4-windmill-approval.md) |
-| D-222 | Can OpenCode replace Claude Code for the Developer and Designer?  | **Run 2026-10-31 on fakes: yes, with a wrapper-enforced dollar cap** | [opencode-runtime.md](./opencode-runtime.md)             |
+| Spike | Question                                                          | Result now                                                                          | Record                                                                 |
+| ----- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| M0.2  | Can the runner start each agent and read its result? (V-01, V-04) | **Claude Code run 2026-10-29: yes** (D-172). Grok and Cursor not run                | [m0.2-agent-dispatch.md](./m0.2-agent-dispatch.md)                     |
+| M0.3  | Can Linear's API create statuses and act as an app? (V-02)        | Desk result only. Moved to the start of Milestone 5 (D-147)                         | [m0.3-linear-api.md](./m0.3-linear-api.md)                             |
+| M0.4  | Do Windmill approval pages work on a phone? (V-03)                | **Run 2026-10-29: yes**, with three rules for link safety (D-170)                   | [m0.4-windmill-approval.md](./m0.4-windmill-approval.md)               |
+| D-222 | Can OpenCode replace Claude Code for the Developer and Designer?  | **Run 2026-10-31 on fakes: yes, with a wrapper-enforced dollar cap**                | [opencode-runtime.md](./opencode-runtime.md)                           |
+| D-242 | Which smallest model passes the visual comparison bar? (D-249)    | Harness built on fakes, 2026-11-03. Not run on a real model: Didi's credential gate | [docs/costs.md section 7](../costs.md#how-to-run-the-test-d-242-d-249) |
 
 A desk result comes from current documentation and public open-source examples. It is not a verdict. The build plan needs each spike to be run, and the run's output pasted into its record.
 

@@ -29,4 +29,8 @@ Spec files live at `design/<area>/<feature>/spec.md` (see [component gallery](./
 - **(c)** When a design needs no gallery change (a copy-only spec), skip rows 5 and 6. The ticket goes **Done** when the spec PR merges.
 - **(d)** This v2 flow (approved by Diadem Oct 25, 2026, 10:50 PM ET on [DIDI-848](https://linear.app/didi-build/issue/DIDI-848)) replaces the earlier Oct 22 rule on when the design ticket goes **Done**.
 
+### The visual comparison at QA (Project Factory v2, D-242, D-250)
+
+In the factory's design track, QA's check of the gallery components against the approved option is a run of its own (`qa:visual`). The runner gives it, per component and variant, the approved option's crop, CI's screenshot of the built component at the PR head, where the two differ in pixels, and the spec section. It answers match, differs or cannot tell per component, and the runner records the result; the PR merges only when every component matches and QA's review passes. The approved option is the one Didi's visual approval names. How CI's screenshots reach the runner, and how the approval page names the option, are open (N-52, N-53). See [docs/guards.md](./guards.md) and [docs/bot-files.md](./bot-files.md).
+
 Related: [component gallery](./component-gallery.md) directories, local dev, and previews. Decision record: [ADR 0004](./decisions/0004-component-gallery.md).
