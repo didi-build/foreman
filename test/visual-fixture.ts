@@ -1,6 +1,7 @@
 // Test support for the visual comparison (D-242, D-250): a design item in In QA review on the
-// reconcile fixture, with spec paths, Didi's approval naming option `a`, the runner's screenshot
-// of that option, and CI's bundles at the option's commit and the head in a fake port. Synthetic
+// reconcile fixture, with CI's runs at the option's commit and the head (with the PR's changed
+// paths, for D-279), spec paths, Didi's approval naming option `a`, the runner's screenshot of
+// that option, and CI's bundles at the option's commit and the head in a fake port. Synthetic
 // images only: a white page with a blue button and a dark label, drawn in code.
 import { createHash } from "node:crypto";
 
@@ -21,6 +22,13 @@ import { HEAD, REPO, type ReconcileFixture } from "./reconcile-fixture.ts";
 export const OPTION_COMMIT = "c".repeat(40);
 export const OPTION_PATH = "design/gallery/example-button/options/a";
 export const SPEC_PATH = "design/gallery/example-button/spec.md";
+/** What the item's PR changes at the head: a design item's usual files (D-279 reads them). */
+export const HEAD_CHANGED_PATHS = [
+  "components/example-button/ExampleButton.tsx",
+  SPEC_PATH,
+  "gallery/registry.ts",
+  `${OPTION_PATH}/index.html`,
+];
 export const SPEC = [
   "# Example button",
   "",
@@ -73,6 +81,20 @@ export async function setupVisual(
     ownerRole: "qa",
     title: "Example button",
   });
+  // CI's runs at the option's capture commit and at the head, with the PR's changed paths, so
+  // the screenshot pipeline check (D-279) can read them.
+  await f.evidence(
+    node.id,
+    "ci_run",
+    { conclusion: "success", pr: 7, changedPaths: [`${OPTION_PATH}/index.html`] },
+    { commitSha: OPTION_COMMIT },
+  );
+  await f.evidence(
+    node.id,
+    "ci_run",
+    { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
+    { commitSha: HEAD },
+  );
   await f.evidence(node.id, "spec_paths", {
     paths: [SPEC_PATH],
     components: ["example-button"],

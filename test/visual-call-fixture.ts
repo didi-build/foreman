@@ -1,7 +1,7 @@
 // Test support for the Council's call on a visual approval (D-263, D-270): a design item in
-// Waiting for Didi on the reconcile fixture, with the runner's screenshot of each option, CI's
-// options bundle at the capture commit in a fake port, and an open `visual_approval` request owned
-// by Didi that lists the options. Synthetic images only, drawn in code.
+// Waiting for Didi on the reconcile fixture, with CI's run at the capture commit, the runner's
+// screenshot of each option, CI's options bundle at the capture commit in a fake port, and an open
+// `visual_approval` request owned by Didi that lists the options. Synthetic images only.
 import { createHash } from "node:crypto";
 
 import {
@@ -76,6 +76,18 @@ export async function setupVisualCall(
     },
     files: new Map(shots.map((s) => [s.file, pages.get(s.option) as Uint8Array])),
   });
+  // CI's run at the capture commit, with the PR's changed paths: the option folders only, so the
+  // screenshot pipeline check (D-279) trusts the bundle.
+  await f.evidence(
+    node.id,
+    "ci_run",
+    {
+      conclusion: "success",
+      pr: 7,
+      changedPaths: shots.map((s) => `${s.path}/index.html`),
+    },
+    { commitSha: CALL_OPTION_COMMIT },
+  );
   for (const shot of shots) {
     await f.evidence(node.id, "screenshot", optionScreenshotPayload(shot), {
       commitSha: CALL_OPTION_COMMIT,

@@ -15,7 +15,7 @@ import {
   FIRST_ROUTING_POLICY,
 } from "../../src/core/routing-testing.ts";
 import { visualCallTopic } from "../../src/core/visual-call.ts";
-import { CALL, setupVisualCall } from "../visual-call-fixture.ts";
+import { CALL, CALL_OPTION_COMMIT, setupVisualCall } from "../visual-call-fixture.ts";
 import { createFlowFixture } from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
@@ -75,6 +75,34 @@ describe("the Council's visual call through the flows (flow: fake adapters, D-27
     expect(await f.footprint(v.nodeId)).toBe(before);
     expect(f.runtime.started).toEqual([]);
     // Didi's approval is unaffected: the request stays open as it was.
+    expect(await f.store.getGateRequest(v.gate.id)).toEqual(v.gate);
+  });
+
+  it("is refused on options from a PR that changes the screenshot pipeline, and nothing changes (D-279)", async () => {
+    const { f, v, callSteps } = await setup();
+    await f.evidence(
+      v.nodeId,
+      "ci_run",
+      {
+        conclusion: "success",
+        pr: 7,
+        changedPaths: [
+          "design/gallery/example-button/options/a/index.html",
+          "gallery/App.tsx",
+        ],
+      },
+      { commitSha: CALL_OPTION_COMMIT },
+    );
+    const before = await f.footprint(v.nodeId);
+    expect(await callSteps()).toMatchObject([
+      {
+        kind: "visual_call",
+        step: "start",
+        result: { outcome: "not_started", reason: "screenshot_pipeline_changed" },
+      },
+    ]);
+    expect(await f.footprint(v.nodeId)).toBe(before);
+    expect(f.runtime.started).toEqual([]);
     expect(await f.store.getGateRequest(v.gate.id)).toEqual(v.gate);
   });
 

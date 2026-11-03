@@ -17,7 +17,7 @@ import type { Store } from "../../src/core/store.ts";
 import { createRunReports } from "../../src/core/run-reports.ts";
 import { createVisualComparisons } from "../../src/core/visual-comparison.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
-import { answer, setupVisual } from "../visual-fixture.ts";
+import { answer, HEAD_CHANGED_PATHS, setupVisual } from "../visual-fixture.ts";
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 
 const DB = `foreman_visual_comparison_test_${process.pid}`;
@@ -115,7 +115,7 @@ describe.skipIf(!adminUrl)(
         await t.evidence(
           v.nodeId,
           "ci_run",
-          { conclusion: "success", pr: 7 },
+          { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
           { commitSha: HEAD },
         );
         const visual = createVisualComparisons({
