@@ -144,10 +144,12 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         /deploy adapter's staging target/,
       );
       // The repo map and the screenshot bundles wait on the runner App's read tokens (D-267).
-      await expect(deps.repoMaps.read("didi-build/x", "b".repeat(40))).rejects.toThrow(
+      // The repo map's Job (D-275 (2)) refuses on the token, before the cluster is read.
+      const project = { slug: "x", repo: "didi-build/x" };
+      await expect(deps.repoMaps.read(project, "b".repeat(40))).rejects.toThrow(
         NotBuiltError,
       );
-      await expect(deps.repoMaps.read("didi-build/x")).rejects.toThrow(/runner App/);
+      await expect(deps.repoMaps.read(project)).rejects.toThrow(/runner App/);
       await expect(
         deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
       ).rejects.toThrow(NotBuiltError);

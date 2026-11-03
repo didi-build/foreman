@@ -44,7 +44,12 @@ const ignoresMajor = (update: DependabotUpdate | undefined) =>
 
 describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section 4)", () => {
   it("finds every agent image, so the checks below cannot pass on an empty list", () => {
-    expect(images.sort()).toEqual(["claude-api", "claude-code", "opencode"]);
+    expect(images.sort()).toEqual([
+      "claude-api",
+      "claude-code",
+      "opencode",
+      "repo-map",
+    ]);
   });
 
   it.each(images)("%s pins every base image by digest", (image) => {
@@ -151,6 +156,32 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
     expect(text).toContain("chmod -R a-w /opt/opencode/xdg-config");
     expect(text).toContain("ENV FOREMAN_OPENCODE_CONFIG_HOME=/opt/opencode/xdg-config");
     expect(ignoresMajor(entry("npm", "/src/agent-images/opencode/cli"))).toBe(true);
+  });
+
+  it("pins the repo map image's TypeScript compiler in its own lockfile, sends fetch through the proxy and holds no model SDK (D-275 (2))", () => {
+    const deps = JSON.parse(
+      readFileSync(join(ROOT, "repo-map", "deps", "package.json"), "utf8"),
+    ) as { type: string; dependencies: Record<string, string> };
+    expect(deps.type).toBe("module");
+    expect(Object.keys(deps.dependencies)).toEqual(["typescript"]);
+    expect(deps.dependencies.typescript).toMatch(/^\d+\.\d+\.\d+$/);
+    const lock = JSON.parse(
+      readFileSync(join(ROOT, "repo-map", "deps", "package-lock.json"), "utf8"),
+    ) as { packages: Record<string, { version?: string; integrity?: string }> };
+    expect(Object.keys(lock.packages).sort()).toEqual(["", "node_modules/typescript"]);
+    expect(lock.packages["node_modules/typescript"]?.version).toBe(
+      deps.dependencies.typescript,
+    );
+    expect(lock.packages["node_modules/typescript"]?.integrity).toMatch(/^sha512-/);
+    const text = dockerfile("repo-map");
+    expect(text).toContain("npm ci --omit=dev --ignore-scripts");
+    expect(text).toContain("ENV NODE_USE_ENV_PROXY=1");
+    const instructionsOnly = text
+      .split("\n")
+      .filter((line) => !line.startsWith("#"))
+      .join("\n");
+    expect(instructionsOnly).not.toMatch(/anthropic|opencode|claude-code|\bgit\b/i);
+    expect(ignoresMajor(entry("npm", "/src/agent-images/repo-map/deps"))).toBe(true);
   });
 
   it("copies into each image only folders whose values it imports", () => {

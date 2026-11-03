@@ -5,7 +5,9 @@
 // runner mints for these reads names one repository and exactly one of the two permissions, read
 // only (GitHub lets an installation token ask for fewer permissions than the App has), so a token
 // minted for the repo map cannot read artifacts, and neither can write, merge or deploy. GitHub
-// caps a token at one hour; the runner uses it for one read and never keeps or logs it.
+// caps a token at one hour; the runner uses it for one read and never keeps or logs it. The repo
+// map's token is the one token that leaves the runner: it goes into the repo map Job's own Secret,
+// deleted when the Job ends (D-275 (2), O-87).
 //
 // The real implementation needs the runner App and its private key, which the runner holds, so
 // until the App is registered through the new-credentials gate (D-178) the runner's port refuses
@@ -72,7 +74,9 @@ const ACCEPT: Record<GitHubGetRequest["accept"], string> = {
 const READ_TIMEOUT_MS = 120_000;
 
 /**
- * The real HTTP port: GitHub's REST API with the token as a bearer token. A redirect (the archive
+ * The real HTTP port, used by the runner and inside the repo map Job, where `fetch` goes through
+ * the Job's egress proxy (NODE_USE_ENV_PROXY, src/agent-images/repo-map/image.ts). GitHub's REST
+ * API with the token as a bearer token. A redirect (the archive
  * and artifact downloads answer with one to a signed address) is followed by `fetch`, which drops
  * the `Authorization` header when the redirect leaves the API's origin. Not used in tests.
  */
