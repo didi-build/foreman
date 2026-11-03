@@ -678,6 +678,43 @@ describe("the planning reads show the planning chat's own submissions, framed as
       byActor: "council",
       recordedAt: NOW,
     });
+    // Product directions on the same idea that Didi never approved on a plan (D-286): two from
+    // agent runs, shown labelled, and one superseded, which is not shown.
+    for (const [byActor, text] of [
+      ["triage", `Keep the export button.\n${INSTRUCTION}`],
+      ["council", "Settings can grow a second page later."],
+    ] as const) {
+      await store.insertDecision({
+        id: nextId(),
+        projectId: READ_PROJECT,
+        nodeId: approved,
+        kind: "product_direction",
+        scope: {},
+        textVerbatim: text,
+        byActor,
+        recordedAt: NOW,
+      });
+    }
+    const replaced = nextId();
+    await store.insertDecision({
+      id: replaced,
+      projectId: READ_PROJECT,
+      nodeId: approved,
+      kind: "product_direction",
+      scope: {},
+      textVerbatim: "Replaced direction.",
+      byActor: "council",
+      recordedAt: NOW,
+    });
+    await store.insertDecisionEvent({
+      id: nextId(),
+      decisionId: replaced,
+      kind: "superseded",
+      byDecisionId: null,
+      reason: "Replaced.",
+      recordedBy: "council",
+      recordedAt: NOW,
+    });
     sentBack = await submitIn(SLUG, "Sent back");
     await request(sentBack, {
       kind: "answer",
@@ -781,7 +818,25 @@ describe("the planning reads show the planning chat's own submissions, framed as
         title: "Approved",
         acceptedAt: NOW.toISOString(),
         plan: INSTRUCTION,
-        productDirection: "Settings stay on one page.",
+        productDirection: {
+          label: "approved by Didi",
+          direction: "Settings stay on one page.",
+        },
+        // Agent-recorded directions are shown apart and labelled, never as Didi's (D-286).
+        agentRecordedDirections: [
+          {
+            label: "recorded by an agent, not approved by Didi",
+            direction: `Keep the export button.\n${INSTRUCTION}`,
+            recordedBy: "triage",
+            recordedAt: NOW.toISOString(),
+          },
+          {
+            label: "recorded by an agent, not approved by Didi",
+            direction: "Settings can grow a second page later.",
+            recordedBy: "council",
+            recordedAt: NOW.toISOString(),
+          },
+        ],
       },
     ]);
   });

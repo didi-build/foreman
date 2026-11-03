@@ -49,6 +49,7 @@ async function setup() {
   const visual = createVisualComparisons({
     ...f.deps,
     screenshots: v.screenshots,
+    repoFolders: v.repoFolders,
     png: pngCodec,
   });
   const ci = (changedPaths: string[] | undefined, commitSha = HEAD) =>

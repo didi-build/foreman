@@ -51,7 +51,7 @@ async function started() {
   const f = await createFlowFixture();
   await f.live();
   await routeVisual(f);
-  const v = await setupVisual(f, f.screenshots);
+  const v = await setupVisual(f, f.screenshots, f.repoFolders);
   const result = await dispatch(f.deps, {
     nodeId: v.nodeId,
     role: "qa",
@@ -81,13 +81,14 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     const f = await createFlowFixture();
     await f.live();
     await routeVisual(f);
-    const v = await setupVisual(f, f.screenshots);
+    const v = await setupVisual(f, f.screenshots, f.repoFolders);
     await f.evidence(
       v.nodeId,
       "ci_run",
       { conclusion: "success", pr: 7, changedPaths: HEAD_CHANGED_PATHS },
       { commitSha: "e".repeat(40) },
     );
+    v.putHeadOption({ sha: "e".repeat(40) });
     const result = await dispatch(f.deps, {
       nodeId: v.nodeId,
       role: "qa",
@@ -108,7 +109,7 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     const f = await createFlowFixture();
     await f.live();
     await routeVisual(f);
-    const v = await setupVisual(f, f.screenshots);
+    const v = await setupVisual(f, f.screenshots, f.repoFolders);
     await f.evidence(
       v.nodeId,
       "ci_run",
@@ -142,7 +143,7 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
   it("finds no route while the routing policy names no model for qa:visual (D-249)", async () => {
     const f = await createFlowFixture();
     await f.live();
-    const v = await setupVisual(f, f.screenshots);
+    const v = await setupVisual(f, f.screenshots, f.repoFolders);
     expect(
       await dispatch(f.deps, {
         nodeId: v.nodeId,

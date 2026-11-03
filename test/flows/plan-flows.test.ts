@@ -408,7 +408,12 @@ describe("the planning chat's reads follow Didi's real answers (flow, D-273 (3))
       { ideaId, status: "approved" },
     ]);
     expect(await reads.accepted(f.projectId)).toMatchObject([
-      { ideaId, plan: PLAN, productDirection: DIRECTION },
+      {
+        ideaId,
+        plan: PLAN,
+        productDirection: { label: "approved by Didi", direction: DIRECTION },
+        agentRecordedDirections: [],
+      },
     ]);
     expect(await reads.feedback(f.projectId)).toEqual([]);
   });

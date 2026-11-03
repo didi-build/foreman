@@ -1,5 +1,5 @@
 // Unit: the plain parts of CI's render step (scripts/lib/screenshot-bundle.ts): which option
-// folders it renders, the regions an option page marks (D-255), and the bundle it writes, read back
+// folders it renders (the changed ones, and every one at the head for D-281), the regions an option page marks (D-255), and the bundle it writes, read back
 // with the runner's own manifest check. Also the screenshots workflow as written. No browser.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +14,7 @@ import {
   checkBundle,
   galleryBundle,
   galleryShotFile,
+  headOptionFolders,
   optionFolders,
   optionRegions,
   optionsBundle,
@@ -92,6 +93,29 @@ describe("option folders to render", () => {
         "design/c/d/options/bold/index.html",
       ]),
     ).toEqual({ problem: expect.stringContaining("same name") });
+  });
+
+  it("renders every option folder at the head, two features' options of one name included (D-281)", () => {
+    const both = [
+      ...tracked,
+      "design/billing/plans/options/bold/index.html",
+      "design/billing/plans/spec.md",
+    ];
+    expect(headOptionFolders(both)).toEqual({
+      folders: [
+        { option: "bold", path: "design/auth/sign-in/options/bold" },
+        { option: "calm", path: "design/auth/sign-in/options/calm" },
+        { option: "bold", path: "design/billing/plans/options/bold" },
+        { option: "dense", path: "design/billing/plans/options/dense" },
+      ],
+    });
+    expect(headOptionFolders(["design/a/b/options/Bold/index.html"])).toEqual({
+      problem: expect.stringContaining("lowercase letters, digits and hyphens"),
+    });
+    expect(headOptionFolders(["design/a/b/options/bold/page.html"])).toEqual({
+      problem: expect.stringContaining("no index.html"),
+    });
+    expect(headOptionFolders(["design/README.md"])).toEqual({ folders: [] });
   });
 });
 
@@ -274,6 +298,43 @@ describe("writing a bundle and reading it back with the runner's check", () => {
     });
   });
 
+  it("writes a head-options bundle with two features' options of one name that the runner's check accepts (D-281)", () => {
+    const dir = scratch();
+    writeBundle(
+      dir,
+      optionsBundle(
+        COMMIT,
+        [
+          {
+            option: "bold",
+            path: "design/auth/sign-in/options/bold",
+            png: png(40, 30),
+            regions: [],
+          },
+          {
+            option: "bold",
+            path: "design/billing/plans/options/bold",
+            png: png(50, 20),
+            regions: [],
+          },
+        ],
+        "head-options",
+      ),
+    );
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+    expect(manifest.kind).toBe("head-options");
+    expect(manifest.options.map((o: { file: string }) => o.file)).toEqual([
+      "pages/design/auth/sign-in/options/bold.png",
+      "pages/design/billing/plans/options/bold.png",
+    ]);
+    expect(checkBundle(dir, COMMIT, "head-options")).toEqual({
+      summary: { kind: "head-options", images: 2, extras: 0 },
+    });
+    expect(checkBundle(dir, COMMIT, "options")).toEqual({
+      problem: "the manifest is of the other kind",
+    });
+  });
+
   it("refuses to write into a folder that is not empty", () => {
     const dir = scratch();
     writeFileSync(join(dir, "stale.png"), "x");
@@ -369,11 +430,24 @@ describe("the screenshots workflow (.github/workflows/screenshots.yml)", () => {
     expect(uploads.map((s) => s.with?.name)).toEqual([
       artifactName("gallery"),
       artifactName("options"),
+      artifactName("head-options"),
     ]);
     expect(uploads.map((s) => s.with?.path)).toEqual([
       "screenshots/gallery/",
       "screenshots/options/",
+      "screenshots/head-options/",
     ]);
+  });
+
+  it("renders every option folder at the head in the same job as the gallery, with the same browser (D-281)", () => {
+    const runs = job.steps.flatMap((s) => (s.run ? [s.run] : []));
+    const gallery = runs.findIndex((r) => r.includes("--kind gallery"));
+    const head = runs.findIndex((r) => r.includes("--kind head-options"));
+    expect(gallery).toBeGreaterThanOrEqual(0);
+    expect(head).toBeGreaterThan(gallery);
+    expect(runs[head]).toContain('--commit "$HEAD_SHA"');
+    expect(runs[head]).toContain("--browser chrome");
+    expect(runs[head]).not.toContain("--changed-since");
   });
 
   it("drives the browser through playwright-core at an exact version", () => {
@@ -384,6 +458,6 @@ describe("the screenshots workflow (.github/workflows/screenshots.yml)", () => {
     const runs = job.steps.flatMap((s) => (s.run ? [s.run] : [])).join("\n");
     expect(runs).toContain("--kind gallery");
     expect(runs).toContain("--kind options");
-    expect(runs.match(/--browser chrome/g)).toHaveLength(2);
+    expect(runs.match(/--browser chrome/g)).toHaveLength(3);
   });
 });

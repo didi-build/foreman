@@ -11,13 +11,17 @@
 //   the runner does not reopen until the gate lifecycle, M4.1).
 // - `feedback`: Didi's words, verbatim, on each of the planning chat's own plans Didi sent back.
 // - `accepted`: the project's accepted plans, each with the product direction Didi approved with
-//   it, both verbatim from what the plan-approval request showed.
+//   it, both verbatim from what the plan-approval request showed. Next to it, and labelled as not
+//   approved, the product directions Council or Triage runs recorded on that idea through
+//   `POST /decisions`, verbatim, which Didi never saw on a plan-approval request (D-286). The
+//   label keeps who decided what apart: only the first is Didi's.
 //
 // Nothing else is read out: no node state, run, evidence, approval or other gate. An idea with no
 // submission from the planning identity is invisible here, so "own" is the identity that
 // recorded the submission, not anything the caller says.
 import {
   isPlanSubmission,
+  PLANNING_ACTOR,
   PLAN_APPROVAL_KIND,
   planApprovalTopic,
   requestSubmissionId,
@@ -68,6 +72,30 @@ export interface FeedbackView {
   answeredAt: string;
 }
 
+/** The fixed labels on the two kinds of product direction an accepted plan shows (D-286). */
+export const DIRECTION_LABELS = {
+  approved: "approved by Didi",
+  agentRecorded: "recorded by an agent, not approved by Didi",
+} as const;
+
+/** The agent roles whose `product_direction` decisions the read shows, labelled (D-286). */
+const DIRECTION_RECORDERS: ReadonlySet<string> = new Set(["council", "triage"]);
+
+export interface ApprovedDirectionView {
+  label: typeof DIRECTION_LABELS.approved;
+  /** The product direction submitted with the plan Didi approved, exactly as recorded. */
+  direction: string;
+}
+
+export interface AgentDirectionView {
+  label: typeof DIRECTION_LABELS.agentRecorded;
+  /** The direction, exactly as the run recorded it. */
+  direction: string;
+  /** The role of the run that recorded it: `council` or `triage`. */
+  recordedBy: string;
+  recordedAt: string;
+}
+
 export interface AcceptedPlanView {
   ideaId: string;
   title: string;
@@ -75,7 +103,9 @@ export interface AcceptedPlanView {
   /** The plan Didi approved, exactly as the request showed it. */
   plan: string;
   /** The product direction submitted with that plan, or null if the submission is not found. */
-  productDirection: string | null;
+  productDirection: ApprovedDirectionView | null;
+  /** Directions Council or Triage runs recorded on the idea, oldest first; Didi approved none. */
+  agentRecordedDirections: AgentDirectionView[];
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -176,7 +206,22 @@ export function createPlanningReads(store: PlanningReadStore) {
       const views: AcceptedPlanView[] = [];
       for (const { idea, submissions } of await ownIdeas(projectId)) {
         const own = new Map(submissions.map((s) => [s.id, s]));
-        for (const decision of await store.listDecisionsRecordedOn(idea.id)) {
+        const recorded = await store.listDecisionsRecordedOn(idea.id);
+        const agentRecordedDirections: AgentDirectionView[] = recorded
+          .filter(
+            (d) =>
+              d.kind === "product_direction" &&
+              d.status === "active" &&
+              d.byActor !== PLANNING_ACTOR &&
+              DIRECTION_RECORDERS.has(d.byActor),
+          )
+          .map((d) => ({
+            label: DIRECTION_LABELS.agentRecorded,
+            direction: d.textVerbatim,
+            recordedBy: d.byActor,
+            recordedAt: d.recordedAt.toISOString(),
+          }));
+        for (const decision of recorded) {
           if (
             decision.kind !== "council_decision" ||
             decision.status !== "active" ||
@@ -187,14 +232,19 @@ export function createPlanningReads(store: PlanningReadStore) {
             continue;
           }
           const submission = own.get(String(decision.scope.submissionId));
+          const direction = submission
+            ? payloadText(submission, "productDirection")
+            : null;
           views.push({
             ideaId: idea.id,
             title: idea.title,
             acceptedAt: decision.recordedAt.toISOString(),
             plan: decision.textVerbatim,
-            productDirection: submission
-              ? payloadText(submission, "productDirection")
-              : null,
+            productDirection:
+              direction === null
+                ? null
+                : { label: DIRECTION_LABELS.approved, direction },
+            agentRecordedDirections,
           });
         }
       }

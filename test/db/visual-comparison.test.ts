@@ -58,6 +58,7 @@ describe.skipIf(!adminUrl)(
       const visual = createVisualComparisons({
         ...t.deps,
         screenshots: v.screenshots,
+        repoFolders: v.repoFolders,
         png: pngCodec,
       });
       const [a, b] = await Promise.all([
@@ -121,6 +122,7 @@ describe.skipIf(!adminUrl)(
         const visual = createVisualComparisons({
           ...t.deps,
           screenshots: v.screenshots,
+          repoFolders: v.repoFolders,
           png: pngCodec,
         });
         for (const result of results) {

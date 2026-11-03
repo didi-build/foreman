@@ -413,7 +413,11 @@ describe.skipIf(!adminUrl)(
             {
               ideaId,
               plan: "Plan: a settings page.",
-              productDirection: "Settings stay on one page.",
+              productDirection: {
+                label: "approved by Didi",
+                direction: "Settings stay on one page.",
+              },
+              agentRecordedDirections: [],
             },
           ],
         },

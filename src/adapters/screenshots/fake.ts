@@ -1,6 +1,11 @@
-// A fake of the screenshot bundles port for tests (src/core/visual-comparison.ts). Bundles are
-// kept in memory by repository, commit and kind; nothing is read from CI or the network.
-import type { BundleKind, ScreenshotBundles } from "../../core/visual-comparison.ts";
+// Fakes of the screenshot bundles port and the repo folders port for tests
+// (src/core/visual-comparison.ts). Bundles are kept in memory by repository, commit and kind, and
+// folder ids by repository, commit and path; nothing is read from CI, GitHub or the network.
+import type {
+  BundleKind,
+  RepoFolders,
+  ScreenshotBundles,
+} from "../../core/visual-comparison.ts";
 
 export interface FakeBundle {
   manifest: unknown;
@@ -33,6 +38,31 @@ export function createFakeScreenshotBundles(): FakeScreenshotBundles {
           return bytes ? new Uint8Array(bytes) : null;
         },
       };
+    },
+  };
+  return fake;
+}
+
+export interface FakeRepoFolders extends RepoFolders {
+  /** Sets a folder's tree id at a commit; null removes it. */
+  put(repo: string, commitSha: string, path: string, id: string | null): void;
+  /** Every read, in order, as `repo@commit:path`. */
+  reads: string[];
+}
+
+export function createFakeRepoFolders(): FakeRepoFolders {
+  const ids = new Map<string, string>();
+  const key = (repo: string, commitSha: string, path: string) =>
+    `${repo}@${commitSha}:${path}`;
+  const fake: FakeRepoFolders = {
+    reads: [],
+    put(repo, commitSha, path, id) {
+      if (id === null) ids.delete(key(repo, commitSha, path));
+      else ids.set(key(repo, commitSha, path), id);
+    },
+    async folderId(repo, commitSha, path) {
+      fake.reads.push(key(repo, commitSha, path));
+      return ids.get(key(repo, commitSha, path)) ?? null;
     },
   };
   return fake;

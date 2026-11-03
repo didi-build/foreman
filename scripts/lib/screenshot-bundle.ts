@@ -1,5 +1,5 @@
-// The plain parts of CI's render step for the screenshot bundles (D-242, D-255, D-275 point 1):
-// which option folders to render, file names inside a bundle, the regions an option page marks,
+// The plain parts of CI's render step for the screenshot bundles (D-242, D-255, D-275 point 1,
+// D-281): which option folders to render, file names inside a bundle, the regions an option page marks,
 // writing the bundle and checking it with the runner's own manifest check
 // (src/core/visual-comparison.ts `readScreenshotManifest`) and PNG reader. The browser part is in
 // scripts/render-screenshots.ts. Problems are fixed text plus the repository path they concern.
@@ -47,6 +47,32 @@ export function optionFolders(
   tracked: readonly string[],
   changed?: readonly string[],
 ): { folders: OptionFolder[] } | { problem: string } {
+  const found = listOptionFolders(tracked, changed);
+  if ("problem" in found) return found;
+  const names = new Set(found.folders.map((f) => f.option));
+  if (names.size !== found.folders.length) {
+    return { problem: "two option folders in this pull request have the same name" };
+  }
+  return found;
+}
+
+/**
+ * Every option folder tracked at the commit, for the `head-options` bundle the visual comparison
+ * reads (D-281). After a feature's spec step only its approved option's folder stays (D-253), so
+ * this is one folder per designed feature plus the options of features still being explored.
+ * Option names repeat across features, so folders are told apart by path, not by name. A folder
+ * whose name the manifest would refuse, or one without `index.html`, is a problem.
+ */
+export function headOptionFolders(
+  tracked: readonly string[],
+): { folders: OptionFolder[] } | { problem: string } {
+  return listOptionFolders(tracked);
+}
+
+function listOptionFolders(
+  tracked: readonly string[],
+  changed?: readonly string[],
+): { folders: OptionFolder[] } | { problem: string } {
   const files = new Map<string, Set<string>>();
   for (const file of tracked) {
     const m = OPTION_FILE.exec(file);
@@ -71,10 +97,6 @@ export function optionFolders(
       return { problem: `${path}: an option folder has no ${OPTION_PAGE} to render` };
     }
     folders.push({ option, path });
-  }
-  const names = new Set(folders.map((f) => f.option));
-  if (names.size !== folders.length) {
-    return { problem: "two option folders in this pull request have the same name" };
   }
   return { folders };
 }
@@ -157,7 +179,12 @@ export type BundleManifest =
       shots: GalleryShot[];
       specs: SpecFile[];
     }
-  | { foremanScreenshots: 1; kind: "options"; commit: string; options: OptionShot[] };
+  | {
+      foremanScreenshots: 1;
+      kind: "options" | "head-options";
+      commit: string;
+      options: OptionShot[];
+    };
 
 /** A rendered gallery variant before it is written. */
 export interface RenderedShot {
@@ -221,10 +248,15 @@ export function galleryBundle(
   };
 }
 
-/** The options bundle: each option page's PNG and the regions it marks. */
+/**
+ * The options bundle, or with `kind` the `head-options` bundle (D-281): each option page's PNG
+ * and the regions it marks. The file is named by the folder, so two features' options of one name
+ * never share a file.
+ */
 export function optionsBundle(
   commit: string,
   options: readonly RenderedOption[],
+  kind: "options" | "head-options" = "options",
 ): Bundle {
   const files = new Map<string, Uint8Array>();
   const manifestOptions: OptionShot[] = options.map((o) => {
@@ -242,7 +274,7 @@ export function optionsBundle(
   return {
     manifest: {
       foremanScreenshots: 1,
-      kind: "options",
+      kind,
       commit,
       options: manifestOptions,
     },
