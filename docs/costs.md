@@ -221,7 +221,60 @@ What would push a busy month over 300:
 
 Ways to get back under: drop Claude Pro (about 20) or lower the share of hard items. There is no spend cap that stops work (D-011). The daily spend phone call starts at 25 a day (D-117, setting `daily_spend_call_usd`), which is about 750 over a month, well above this target.
 
-## 7. Caveats
+## 7. Vision models for the screenshot comparison (D-242)
+
+The visual comparison (D-242) needs a model that reads images: it compares the option Didi approved with CI screenshots of the built components, per component. Read on 2026-11-03. Prices in USD per million tokens (input / output). Volume is low, about one comparison per design item. Under D-249 the choice goes to the smallest, cheapest model that passes our own test, not the strongest one available.
+
+### What matters for this job
+
+In order: few false passes (saying "matches" when it does not); few false fails; seeing fine detail (copy, colour shades, a few pixels of spacing, missing states, font size and weight); holding several images at once; clear findings; the same verdict on the same input; saying "can't tell" when unsure. Cost barely matters at this volume.
+
+### The cost of one comparison
+
+Assumed: 1 approved image and 4 component screenshots at 1280x800, 1,500 text tokens in, 800 out. Every candidate costs about **0.0005 to 0.006 USD per comparison**. Reasoning tokens are not included; even at 10 times the output, every model stays under 0.03. Cost does not decide this. Accuracy does.
+
+Image tokens per 1280x800 screenshot: Claude documents 1,334, with no downscaling on Haiku 5.5. Qwen3-VL is about 1,000 (inferred from its patch size). Every other figure is guessed or not found. The first test calls replace the guesses with `usage.prompt_tokens`.
+
+### Candidates
+
+| Model                                                                    | In / out                    | Flex    | Evidence (V = vendor, I = independent, S = read through search only)                                                             | Verdict                                                             |
+| ------------------------------------------------------------------------ | --------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `Qwen/Qwen3.8-27B`                                                       | 0.20 / 2.50                 | Yes     | V: OSWorld-Verified 84.3, OmniDocBench 91.1, CharXiv 83.7. No UI-diff score                                                      | Shortlist: strongest screen and document numbers on DeepInfra       |
+| `deepseek-ai/DeepSeek-V4.1-Flash-1017`                                   | 0.20 / 0.60                 | Yes     | V: Chartography 83.0, run with tools. No OCR, UI or multi-image score                                                            | Shortlist: confirm it accepts images on DeepInfra at the first call |
+| Claude Haiku 5.5 (Anthropic, not DeepInfra)                              | 0.10 / 0.50                 | n/a     | V: OSWorld 72.4, Chartography 46.4. Image handling documented. I (family only): Claude Opus 4.7 has few false alarms on DiffSpot | Shortlist: the control                                              |
+| `nvidia/NVIDIA-Nemotron-3.5-Super-VL`                                    | 0.15 / 0.50                 | No      | V, S: OCRBench v2 68.1, ScreenSpot-Pro about 43. Built for documents and GUIs                                                    | Alternate if a shortlisted model refuses images or JSON             |
+| `Qwen/Qwen3.6-35B-A3B`                                                   | 0.10 / 0.95                 | Yes     | V: MMMU 81.7, OmniDocBench 89.9, CC-OCR 81.9                                                                                     | Not shortlisted; could replace Qwen3.8 if it fails                  |
+| `Qwen/Qwen3-VL-235B-A22B-Instruct`                                       | 0.20 / 0.88                 | Yes     | V, S: OCRBench 920, ScreenSpot-Pro 62.0. **I, S: DiffSpot found 5.1% of changes**, by almost always saying "no difference"       | Out: worst false-pass signal                                        |
+| `Qwen/Qwen3-VL-30B-A3B-Instruct`                                         | 0.15 / 0.60                 | Yes     | **I, S: DiffSpot found 9.3% of changes, with 18% false alarms**                                                                  | Out: weak on both error rates                                       |
+| Gemma 4 (31B, 31B turbo, 26B)                                            | 0.07 to 0.20 / 0.34 to 0.40 | Yes     | V: MMMU-Pro 73.8 to 76.9. DeepInfra's image token budget is unknown and cannot be raised                                         | Out for now: small text may be lost                                 |
+| `inclusionAI/Ling-3.0-flash-VL`                                          | 0.06 / 0.18                 | No      | V, S only: CharXiv 81.3, OmniDocBench 91.35                                                                                      | Out for now: no vision numbers could be read directly               |
+| `XiaomiMiMo/MiMo-V2.6-Flash`                                             | 0.14 / 0.28                 | No      | I, S: Roboflow vision evals 52nd of 59                                                                                           | Out: poor independent score                                         |
+| `deepseek-ai/DeepSeek-V4-Flash-Vision-Exp`                               | 0.44 / 1.32                 | Yes     | V, S: Chartography 64.3                                                                                                          | Out: experimental, and V4.1 Flash is newer and cheaper              |
+| `meta-llama/Llama-4-Scout-17B-16E-Instruct`                              | 0.10 / 0.30                 | Yes     | V: ChartQA 88.8, DocVQA 94.4                                                                                                     | Out: April 2025, behind on every shared score                       |
+| `mistralai/Mistral-Small-3.2-24B-Instruct-2506`, `zai-org/GLM-5.3-Flash` | 0.075 / 0.20; 0.15 / 0.50   | Yes; No | Weak or no vision numbers                                                                                                        | Out                                                                 |
+
+Several models the table in section 4 lists as text only also take images on DeepInfra (they are tagged "multimodal"): DeepSeek V4.1 Flash, Qwen3.8, Qwen3.6 and 3.5, Gemma 4, Mistral Small 3.2, MiMo V2.6 Flash, GLM 5.3 Flash and Kimi K2.6. Already deprecated on DeepInfra: the Qwen3-VL Thinking variants, Llama 4 Maverick, GLM-4.6V and Kimi K2.5, among others.
+
+### What DeepInfra's endpoint does with images
+
+Several images per request, in the OpenAI format; jpg, png or webp up to 20 MB each. DeepInfra rescales images itself and does not support the `detail` parameter, so the image token budget cannot be raised. JSON schema output works on every candidate, but DeepInfra's docs warn that JSON mode can push a model to invent an answer rather than say it does not know, so the answer schema needs an explicit `cannot_tell` value.
+
+### The most important finding: no model alone is enough
+
+DiffSpot (a May 2026 paper, read through search only) is the closest published match: 4,400 rendered web-page pairs with one CSS property changed, plus 500 identical pairs. The best of 13 models found only about 40 to 47% of the changes, and under 23% on the hard tier. Claude Opus 4.7 found 31.2% with 0.4% false alarms. Open models found about 5%, mostly by answering "no difference". So a model given two whole screenshots will pass many small spacing, colour and font changes. In line with D-249, the fix is in the scaffolding: a pixel difference or per-component crops before the model call, so the model judges a located change instead of hunting for it.
+
+### Test plan
+
+20 synthetic pairs, half identical and half with one planted difference (colour, spacing, copy, a missing state, font, alignment), each run 3 times on the three shortlisted models and the alternate, with a `match` / `differs` / `cannot_tell` answer per component. Rank by false-pass rate, then false-fail rate, then consistency. Estimated total under 1 USD.
+
+### Measured and guessed
+
+- Read directly on 2026-11-03: DeepInfra prices, Flex, tags and deprecations; DeepInfra's image limits; Haiku 5.5's prices and image token formula; the model-card numbers marked V without S.
+- Read through search snippets only (S): the Qwen3-VL report, Nemotron, Ling, DeepSeek Vision-Exp, DiffSpot and Roboflow. huggingface.co and arxiv.org were blocked in this session.
+- Guessed: tokens per image for every model except Claude and Qwen3-VL.
+- Almost every benchmark is vendor-reported. No candidate on the shortlist has a published UI-difference score, so the test set decides.
+
+## 8. Caveats
 
 - **Cost per finished task is what counts**, not price per token. A cheaper model that needs more fix rounds, fails QA more often or escalates more can cost more per finished item. The scorecard measures this (ADR 0114 section 3).
 - **Cache hit rates drive the totals.** Most input is cached in the workload model. With worse cache hit rates, Qwen3 Coder could cost about 180 a quiet month instead of about 80. Prompt caching is required (D-185), and each run records cached and uncached tokens.
