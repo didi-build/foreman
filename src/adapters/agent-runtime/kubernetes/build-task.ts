@@ -52,7 +52,10 @@ export interface KubernetesTaskParts {
   input: string;
   /** QA: the runner's evidence ids the verdict may cite. */
   evidenceIds?: string[];
-  /** QA's visual comparison: the image pairs, in order (D-242). */
+  /**
+   * QA's visual comparison: the image pairs, in order (D-242). The Council's visual call: the
+   * option screenshots (D-270).
+   */
   images?: TaskImage[];
   stateApiToken: string;
   /**
@@ -108,6 +111,12 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
     task.nodeId = run.nodeId ?? "";
     task.evidenceIds = [...(parts.evidenceIds ?? [])];
     if (parts.images !== undefined) task.images = parts.images.map((i) => ({ ...i }));
+  } else if (role === "council") {
+    // The Council's call on a visual approval reads the option screenshots (D-270). It has no
+    // fetch step, workspace or token in any case.
+    if (parts.images !== undefined) task.images = parts.images.map((i) => ({ ...i }));
+  } else if (parts.images !== undefined) {
+    throw new Error(`a ${role} run carries no images`);
   }
 
   return {

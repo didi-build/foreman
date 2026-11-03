@@ -37,6 +37,7 @@ import type {
 import { parseRunPrice, runCostUsd } from "./run-cost.ts";
 import { RUN_TOKEN_HASH, runTokenExpiry } from "./run-tokens.ts";
 import { taskTypeFor, type TaskTypes } from "./task-types.ts";
+import { VISUAL_CALL_PREFIX, VISUAL_CALL_TASK_TYPE } from "./visual-call.ts";
 
 /** The limits a run is started with (ADR 0107). Recorded in `runs.budget`. */
 export interface RunLimits {
@@ -84,7 +85,8 @@ export interface DispatchRequest {
   questionTopic?: string | null;
   /**
    * A task type other than the role's default, which the role's bot file must allow (ADR 0114
-   * section 1). Only QA's visual comparison asks for one, `qa:visual` (D-242).
+   * section 1). Only QA's visual comparison asks for one, `qa:visual` (D-242), and the Council's
+   * call on a visual approval, `council:visual`, which goes with its question's topic (D-270).
    */
   taskType?: string | null;
 }
@@ -335,6 +337,15 @@ function checkDispatchRequest(request: DispatchRequest): void {
   }
   if (request.role !== "council" && topic !== null) {
     throw new LibraryError("Only a Council dispatch names a question");
+  }
+  if (
+    request.role === "council" &&
+    (request.taskType === VISUAL_CALL_TASK_TYPE) !==
+      (topic ?? "").startsWith(VISUAL_CALL_PREFIX)
+  ) {
+    throw new LibraryError(
+      "A Council visual call has task type council:visual, and only it has",
+    );
   }
   if (request.role !== "qa") return;
   const prNumber = request.prNumber;

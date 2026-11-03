@@ -6,7 +6,7 @@
 // image, its tools, its hosts, its model providers with each key's secret path (D-142, D-143), its
 // per-run limits (D-185), its task types and, for the Council, Triage and QA's visual comparison,
 // its output schemas. A task type other than the role's default may have its own instructions
-// (`task_instructions`, QA's `qa:visual`, D-242). It never holds a model (each run's route names it, ADR 0114) or a credential value.
+// (`task_instructions`, QA's `qa:visual`, D-242, and the Council's `council:visual`, D-270). It never holds a model (each run's route names it, ADR 0114) or a credential value.
 //
 // The check is strict and collects every problem: an unknown field is refused, and a problem names
 // the file and the field, never a value from the file, so a key pasted into the wrong place cannot
@@ -63,13 +63,14 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const PUSHING: readonly AgentRole[] = ["developer", "designer"];
 /** The roles with structured output, and the schema names each must give (D-228). */
 const SCHEMA_NAMES: Partial<Record<AgentRole, readonly string[]>> = {
-  council: ["escalation", "reversal"],
+  council: ["escalation", "reversal", "visual_call"],
   triage: ["answer"],
   qa: ["visual"],
 };
 /** Task types whose runs need instructions of their own (D-242). */
 const TASK_INSTRUCTIONS: Partial<Record<AgentRole, readonly string[]>> = {
   qa: ["qa:visual"],
+  council: ["council:visual"],
 };
 /** ADR 0106 section 5: an installation token lasts at most an hour. */
 const GITHUB_TOKEN_MINUTES = 60;
@@ -113,7 +114,10 @@ export interface BotFile {
   fetchAllowedHosts?: string[];
   /** Council (by question kind), Triage (`answer`) and QA (`visual`). */
   outputSchemas?: Record<string, OutputSchema>;
-  /** Instructions by task type, for a task type that is not the default (QA's `qa:visual`). */
+  /**
+   * Instructions by task type, for a task type that is not the default (QA's `qa:visual`, the
+   * Council's `council:visual`).
+   */
   taskInstructions?: Record<string, string>;
 }
 

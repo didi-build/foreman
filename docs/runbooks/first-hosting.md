@@ -148,6 +148,7 @@ Then check the approval form on Didi's phone with a throwaway request, as the M0
 - The form shows three fields: Decision (Approve, Request changes, Reject, required), Options and Feedback, and the page's own cancel button is hidden (`hide_cancel`). Check the keys against Windmill's OpenFlow spec.
 - The Options field's choices come from the request: the `ask` step returns Windmill's dynamic enums (`{enums: {options: [...]}}` from `approvalFormEnums`), and the page shows exactly the test request's option names, not an empty list and not another request's.
 - How the Options field renders: as checkboxes, radio buttons or a dropdown, and whether it lets Didi pick more than one option (an array of strings with enum items should be a multi-select).
+- That the optional size field ("this was a small tweak", D-278) can be left blank, and that leaving it blank sends nothing for it.
 - Whether the page can show the option screenshots. The screenshots are linked in the approval message either way (D-254).
 - An answer that breaks a rule (Approve with no option, Request changes with no feedback) records nothing and a fresh request opens with its one-line note.
 

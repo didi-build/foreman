@@ -61,9 +61,16 @@
 // without Didi. For each reversal and item, the latest Council answer counts
 // (src/core/guards/council.ts).
 //
+// A third question kind is the Council's call on a visual approval (`visual_call`, D-263, D-270,
+// ./visual-call.ts): open while a `visual_approval` request owned by Didi is open on an item with
+// no call recorded for it (topic `visual-call:<item id>`). Its run has task type `council:visual`
+// and the option screenshots as images. The runner records the call as a `council_decision` on
+// that topic, never on the visual-approval topic, so no guard reads it; nothing acts on it. No
+// usable answer after the run and one re-run records the call as dropped, and nothing goes to Didi.
+//
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
-import { escalationInput, reversalInput } from "./council-input.ts";
+import { escalationInput, reversalInput, visualCallInput } from "./council-input.ts";
 import { createEscalations, type EscalationStep } from "./escalations.ts";
 import {
   COUNCIL_CANNOT_RESOLVE,
@@ -104,12 +111,30 @@ import type {
   Transition,
 } from "./store.ts";
 import { StoreConflictError } from "./store.ts";
+import {
+  readVisualCallAnswer,
+  recordedCall,
+  VISUAL_CALL_DROPPED,
+  VISUAL_CALL_DROPPED_TEXT,
+  VISUAL_CALL_PREFIX,
+  VISUAL_CALL_TASK_TYPE,
+  visualCallImages,
+  visualCallRequest,
+  type VisualCallAnswer,
+  type VisualCallQuestion,
+  type VisualCallRefusal,
+} from "./visual-call.ts";
+import type { ScreenshotBundles, VisualImage } from "./visual-comparison.ts";
 
-/** The topic key prefixes of the two Council questions. */
+/** The topic key prefixes of the Council questions. */
 export const ESCALATION_PREFIX = "escalation:";
 export const REVERSAL_PREFIX = "decision-reversed:";
+export { VISUAL_CALL_PREFIX };
 
-/** One run and one re-run per question; after that the question goes to Didi (D-228). */
+/**
+ * One run and one re-run per question; after that the question goes to Didi (D-228), or for a
+ * visual call it is dropped (D-270).
+ */
 export const COUNCIL_RUNS_PER_QUESTION = 2;
 
 /** The Council's notes are kept up to this many characters, then cut with a marker. */
@@ -164,7 +189,13 @@ export interface ReversalQuestion {
   didiDecisionId: string | null;
 }
 
-export type CouncilQuestion = EscalationQuestion | ReversalQuestion;
+export type { VisualCallQuestion };
+
+export type CouncilQuestion =
+  EscalationQuestion | ReversalQuestion | VisualCallQuestion;
+
+/** A question that goes to Didi when it has no usable answer: every kind but the visual call. */
+export type DidiBoundQuestion = EscalationQuestion | ReversalQuestion;
 
 /** What the runner does next for one open question. */
 export type CouncilNext =
@@ -174,7 +205,9 @@ export type CouncilNext =
   /** A run is due: the first, or the one re-run after an unusable answer. */
   | { step: "start"; question: CouncilQuestion; nodeId: string; attempt: number }
   /** No usable answer after both runs: the question goes to Didi. */
-  | { step: "to_didi"; question: CouncilQuestion; lastRunId: string; reason: string }
+  | { step: "to_didi"; question: DidiBoundQuestion; lastRunId: string; reason: string }
+  /** A visual call with no usable answer after both runs: it is recorded as dropped (D-270). */
+  | { step: "drop"; question: VisualCallQuestion; lastRunId: string; reason: string }
   /** A reversal question with no node to run on: no decision node and no stale item. */
   | { step: "no_node"; question: CouncilQuestion };
 
@@ -313,7 +346,14 @@ export interface CouncilOptions {
   ids: IdSource;
   /** The Council's bot profile gives the output schema of each question kind (D-228). */
   bots: Pick<Record<AgentRole, BotProfile>, "council">;
+  /** CI's screenshot bundles, for the visual call's option screenshots (D-270). */
+  screenshots?: ScreenshotBundles;
 }
+
+/** What a visual call records, or why not (D-270). */
+export type VisualCallRecord =
+  | { recorded: true | "already_recorded"; decisionId: string }
+  | { recorded: false; reason: "kill_switch" | "dry_run" | "question_closed" };
 
 /**
  * The output schema of a question's kind, from the Council's bot file. The bot files loader
@@ -488,7 +528,26 @@ export function createCouncil(options: CouncilOptions) {
       const gate = await store.findOpenGateRequest(decision.projectId, topicKey);
       return gate ? reversalQuestion(gate) : null;
     }
+    if (topicKey.startsWith(VISUAL_CALL_PREFIX)) {
+      const node = await store.getNode(topicKey.slice(VISUAL_CALL_PREFIX.length));
+      if (!node) return null;
+      const gate = await store.findOpenGateRequest(
+        node.projectId,
+        visualApprovalTopic(node.id),
+      );
+      return gate ? visualCallQuestion(gate) : null;
+    }
     return null;
+  }
+
+  /** The visual call a gate request opens, when no call is recorded for it yet (D-270). */
+  async function visualCallQuestion(
+    gate: GateRequest,
+  ): Promise<VisualCallQuestion | null> {
+    const q = visualCallRequest(gate);
+    if (!q) return null;
+    const decisions = await store.listDecisionsForNode(q.nodeId);
+    return recordedCall(decisions, q.nodeId, q.gateRequestId) ? null : q;
   }
 
   /** The Council decision a run recorded, if any (`scope.runId`). */
@@ -526,7 +585,23 @@ export function createCouncil(options: CouncilOptions) {
       if (!(await decisionOfRun(r))) attempts.push(r);
     }
     const last = attempts.at(-1);
-    if (last && attempts.length >= COUNCIL_RUNS_PER_QUESTION) {
+    if (
+      last &&
+      attempts.length >= COUNCIL_RUNS_PER_QUESTION &&
+      q.kind === "visual_call"
+    ) {
+      return {
+        step: "drop",
+        question: q,
+        lastRunId: last.id,
+        reason: `the Council's ${attempts.length} runs gave no usable call; the last ended ${last.outcome ?? "without an outcome"}`,
+      };
+    }
+    if (
+      last &&
+      attempts.length >= COUNCIL_RUNS_PER_QUESTION &&
+      q.kind !== "visual_call"
+    ) {
       return {
         step: "to_didi",
         question: q,
@@ -701,6 +776,65 @@ export function createCouncil(options: CouncilOptions) {
       await tx.insertDecision(decision);
       return { recorded: true, kind: "escalation", decisionId: decision.id };
     });
+  }
+
+  /**
+   * Records a visual call, or its drop, on the call's own topic (D-270): once per run and once per
+   * visual-approval request, while the request is still open. The item's row is the only lock, so
+   * two answers for the same request write one. It never touches the request.
+   */
+  async function writeVisualCall(
+    q: VisualCallQuestion,
+    runId: string,
+    call: string,
+    text: string,
+  ): Promise<VisualCallRecord> {
+    const decision: Decision = {
+      id: ids.next(),
+      projectId: q.projectId,
+      nodeId: q.nodeId,
+      kind: "council_decision",
+      scope: { topicKey: q.topicKey, gateRequestId: q.gateRequestId, call, runId },
+      textVerbatim: text,
+      byActor: "council",
+      recordedAt: clock.now(),
+    };
+    return store.transaction(async (tx): Promise<VisualCallRecord> => {
+      const switches = await held(tx);
+      if (switches) return { recorded: false, reason: switches };
+      await tx.getNodeForUpdate(q.nodeId);
+      const decisions = await tx.listDecisionsForNode(q.nodeId);
+      const earlier = decisions.find(
+        (d) =>
+          d.kind === "council_decision" &&
+          scopeOf(d).topicKey === q.topicKey &&
+          scopeOf(d).runId === runId,
+      );
+      if (earlier) return { recorded: "already_recorded", decisionId: earlier.id };
+      if (recordedCall(decisions, q.nodeId, q.gateRequestId)) {
+        return { recorded: false, reason: "question_closed" };
+      }
+      if ((await tx.getGateRequest(q.gateRequestId))?.status !== "open") {
+        return { recorded: false, reason: "question_closed" };
+      }
+      await tx.insertDecision(decision);
+      return { recorded: true, decisionId: decision.id };
+    });
+  }
+
+  async function recordVisualCall(
+    run: Run,
+    q: VisualCallQuestion,
+    answer: VisualCallAnswer,
+  ): Promise<CouncilAnswer> {
+    const written = await writeVisualCall(q, run.id, answer.call, answer.reason);
+    return written.recorded === false
+      ? { recorded: false, reason: written.reason }
+      : {
+          recorded: written.recorded,
+          kind: "visual_call",
+          decisionId: written.decisionId,
+        };
   }
 
   /** The redo move out of the node's state, for its track, if any (D-231). */
@@ -1293,7 +1427,7 @@ export function createCouncil(options: CouncilOptions) {
       ];
       for (const projectId of projectIds) {
         for (const gate of await store.listOpenGateRequests(projectId)) {
-          const q = reversalQuestion(gate);
+          const q = reversalQuestion(gate) ?? (await visualCallQuestion(gate));
           if (q) found.push(q);
         }
       }
@@ -1306,22 +1440,48 @@ export function createCouncil(options: CouncilOptions) {
      * What a Council run on the topic starts with: its input (src/core/council-input.ts) and the
      * output schema of its question's kind. Null when the question is not open.
      */
-    async taskFor(topicKey: string): Promise<{
-      question: CouncilQuestion;
-      input: string;
-      outputSchema: Record<string, unknown>;
-    } | null> {
+    async taskFor(topicKey: string): Promise<
+      | {
+          question: CouncilQuestion;
+          input: string;
+          outputSchema: Record<string, unknown>;
+          /** `council`, or `council:visual` for a visual call (D-270). */
+          taskType: string;
+          /** A visual call: the option screenshots, labelled, one per option. */
+          images?: VisualImage[];
+        }
+      /** A visual call whose option screenshots cannot be read: no run is started. */
+      | {
+          question: VisualCallQuestion;
+          refused: VisualCallRefusal;
+          input?: undefined;
+          outputSchema?: undefined;
+        }
+      | null
+    > {
       const q = await question(topicKey);
       if (!q) return null;
+      const outputSchema = structuredClone(councilSchema(options.bots, q.kind));
+      if (q.kind === "visual_call") {
+        const read = await visualCallImages(store, options.screenshots, q);
+        if ("refused" in read) return { question: q, refused: read.refused };
+        const node = (await store.getNode(q.nodeId)) as Node;
+        return {
+          question: q,
+          input: visualCallInput({
+            node,
+            imageLabels: read.images.map((i) => i.label),
+          }),
+          outputSchema,
+          taskType: VISUAL_CALL_TASK_TYPE,
+          images: read.images,
+        };
+      }
       const input =
         q.kind === "escalation"
           ? await escalationTaskInput(q)
           : await reversalTaskInput(q);
-      return {
-        question: q,
-        input,
-        outputSchema: structuredClone(councilSchema(options.bots, q.kind)),
-      };
+      return { question: q, input, outputSchema, taskType: "council" };
     },
 
     /**
@@ -1336,26 +1496,41 @@ export function createCouncil(options: CouncilOptions) {
         return { recorded: false, reason: "not_a_council_run" };
       }
       const run = found as Run & { nodeId: string };
-      const earlier = await decisionOfRun(run);
+      // The question first, then this run's own record: a run end racing another end of the same
+      // run that records the answer (and so closes the question) in between then still finds that
+      // record and reports `already_recorded`, never `question_closed`.
       const q = await question(found.questionTopic);
+      const earlier = await decisionOfRun(run);
       if (earlier) {
         return {
           recorded: "already_recorded",
           kind: found.questionTopic.startsWith(REVERSAL_PREFIX)
             ? "reversal"
-            : "escalation",
+            : found.questionTopic.startsWith(VISUAL_CALL_PREFIX)
+              ? "visual_call"
+              : "escalation",
           decisionId: earlier.id,
         };
       }
       if (!q) return { recorded: false, reason: "question_closed" };
       // A run started for an earlier question on the same reversal topic (before Didi's answer
-      // opened its follow-up, D-234) does not answer this one.
-      if (q.kind === "reversal" && run.startedAt.getTime() < q.openedAt.getTime()) {
+      // opened its follow-up, D-234), or for an earlier visual-approval request on the item, does
+      // not answer this one.
+      if (
+        (q.kind === "reversal" || q.kind === "visual_call") &&
+        run.startedAt.getTime() < q.openedAt.getTime()
+      ) {
         return { recorded: false, reason: "question_closed" };
       }
       // First the bot file's schema, then the reader's own checks (D-228).
       const problem = outputProblem(councilSchema(options.bots, q.kind), structured);
       if (problem) return { recorded: false, reason: "invalid", problem };
+      if (q.kind === "visual_call") {
+        const read = readVisualCallAnswer(structured);
+        if ("problem" in read)
+          return { recorded: false, reason: "invalid", problem: read.problem };
+        return recordVisualCall(run, q, read.answer);
+      }
       if (q.kind === "escalation") {
         const read = readEscalationAnswer(structured);
         if ("problem" in read)
@@ -1388,6 +1563,8 @@ export function createCouncil(options: CouncilOptions) {
           step: await escalations.councilUnanswered(q.nodeId, lastRunId, reason),
         };
       }
+      // A visual call never goes to Didi (D-270): it is dropped instead (`dropVisualCall`).
+      if (q.kind === "visual_call") throw new Error("a visual call never goes to Didi");
       if ((await store.getSetting("kill_switch"))?.value === true)
         return { kind: "reversal", gateRequestId: null };
       if ((await store.getSetting("dry_run"))?.value !== false)
@@ -1411,6 +1588,24 @@ export function createCouncil(options: CouncilOptions) {
         },
       });
       return { kind: "reversal", gateRequestId: gate.id };
+    },
+
+    /**
+     * Records a visual call with no usable answer after its run and one re-run as dropped (D-270):
+     * a `council_decision` on the call's topic with `call: "dropped"`, so the question closes.
+     * Nothing goes to Didi and the request is not touched. Live mode only.
+     */
+    async dropVisualCall(
+      q: VisualCallQuestion,
+      lastRunId: string,
+      reason: string,
+    ): Promise<VisualCallRecord> {
+      return writeVisualCall(
+        q,
+        lastRunId,
+        VISUAL_CALL_DROPPED,
+        `${VISUAL_CALL_DROPPED_TEXT} The runner's reason: ${reason}.`,
+      );
     },
   };
 }

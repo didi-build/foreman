@@ -100,8 +100,23 @@ export function readApprovalReply(resume: unknown, approvers: unknown): Approval
     // The older form's one option name, when its page sent one (O-66).
     options = typeof fields.option === "string" ? [fields.option] : [];
   }
-  return { answered: true, choice, words, approvers: names, options };
+  // D-278: Didi's own call on the change's size, only when Didi picked one of the two labels.
+  const size = current ? SMALL_TWEAK_LABELS[String(fields.small_tweak)] : undefined;
+  return {
+    answered: true,
+    choice,
+    words,
+    approvers: names,
+    options,
+    ...(size === undefined ? {} : { smallTweak: size }),
+  };
 }
+
+/** The labels of the form's optional size field (flows/windmill.yaml, D-278). */
+export const SMALL_TWEAK_LABELS: Readonly<Record<string, boolean>> = {
+  "Yes, a small tweak": true,
+  "No, not a small tweak": false,
+};
 
 /** A fresh request opened because an answer broke one of the form's rules (D-254). */
 export interface ReopenedRequest {

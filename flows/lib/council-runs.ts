@@ -5,6 +5,9 @@
 // dry run, one active run per item, the cluster limit, the usage-exhausted wait and the route for
 // task type `council`. Two triggers at once give one run, and a trigger while the run is active
 // starts nothing. A question whose run and one re-run gave no usable answer goes to Didi instead.
+// The Council's call on a visual approval (D-270) is a question too: its run starts the same way,
+// with task type `council:visual` (./start-run.ts), and with no usable answer after the re-run it
+// is recorded as dropped, never sent to Didi.
 //
 // The reconcile flow's live passes run the Council pass for every open question; the run-end
 // flow runs it for an item whose report has just escalated it, so its Council run starts at once.
@@ -52,6 +55,7 @@ import {
   REVERSAL_PREFIX,
   type CouncilAnswer,
   type CouncilNext,
+  type VisualCallRecord,
   type FollowUpStep,
   type RedoStep,
 } from "../../src/core/council.ts";
@@ -84,12 +88,14 @@ import type { TriageRecord } from "../../src/core/triage.ts";
 
 export interface CouncilPassStep {
   topicKey: string;
-  kind: "escalation" | "reversal";
+  kind: "escalation" | "reversal" | "visual_call";
   step: CouncilNext["step"];
   /** With `start`: the dispatch's result, or `start_failed` when it threw (the error is not kept). */
   result?: StartRunResult | { outcome: "start_failed" };
   /** With `to_didi`: the escalation's move to Didi, or the reversal's gate request for Didi. */
   didi?: EscalationStep | { gateRequestId: string | null };
+  /** With `drop`: the visual call recorded as dropped, or why not (D-270). */
+  dropped?: VisualCallRecord;
 }
 
 /** Takes each open Council question one step: on the given topics, or on every open one. */
@@ -125,9 +131,16 @@ export async function councilPass(
       }
     }
     if (next.step === "to_didi") {
-      const sent = await council.toDidi(question, next.lastRunId, next.reason);
+      const sent = await council.toDidi(next.question, next.lastRunId, next.reason);
       step.didi =
         sent.kind === "escalation" ? sent.step : { gateRequestId: sent.gateRequestId };
+    }
+    if (next.step === "drop") {
+      step.dropped = await council.dropVisualCall(
+        next.question,
+        next.lastRunId,
+        next.reason,
+      );
     }
     steps.push(step);
   }

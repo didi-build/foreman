@@ -39,12 +39,16 @@ export interface AgentTaskFile {
   /**
    * QA's visual comparison (D-242): the image pairs the runner made, in order, each with the
    * runner's own label. A QA task with images carries the answer schema and no evidence ids,
-   * and its image posts nothing: the runner records the answer.
+   * and its image posts nothing: the runner records the answer. The Council's call on a visual
+   * approval (D-270): the option screenshots, one per option, each with the runner's own label.
    */
   images?: TaskImage[];
 }
 
-/** One PNG for a visual comparison run, base64 encoded. */
+/** The roles whose task may carry images: QA's visual comparison and the Council's visual call. */
+const IMAGE_ROLES: readonly AgentRole[] = ["qa", "council"];
+
+/** One PNG for a visual comparison or visual call run, base64 encoded. */
 export interface TaskImage {
   label: string;
   mediaType: "image/png";
@@ -117,13 +121,14 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
   const visual = task.images !== undefined;
   if (visual) {
     const images = task.images ?? [];
-    if (role !== "qa") throw new Error("only a QA task carries images");
+    if (!IMAGE_ROLES.includes(role))
+      throw new Error("only a QA or Council task carries images");
     if (
       !Array.isArray(images) ||
       images.length === 0 ||
       images.length > MAX_TASK_IMAGES
     ) {
-      throw new Error(`a QA task's images must be 1 to ${MAX_TASK_IMAGES}`);
+      throw new Error(`a ${role} task's images must be 1 to ${MAX_TASK_IMAGES}`);
     }
     for (const image of images) {
       if (
@@ -136,7 +141,7 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
         !BASE64.test(image.data)
       ) {
         throw new Error(
-          "each of a QA task's images needs a label, image/png and base64 data",
+          `each of a ${role} task's images needs a label, image/png and base64 data`,
         );
       }
     }
