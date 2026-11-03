@@ -107,6 +107,12 @@ The webhook secret is the one the runner App will use in step 13.
 
 Set `TF_VAR_publish_receiver_dns=true`, plan, and check the plan adds exactly one `cloudflare_dns_record` and changes nothing else. Then apply it.
 
+## 11a. The planning chat's path on the tunnel (tunnel gate, D-271)
+
+This changes the tunnel's routing only: one more rule on the receiver's host name, for the path `/plans` exactly, to the state API's public Service (`http://state-api-public.foreman-platform.svc.cluster.local:8081`). That port serves `POST /plans` and nothing else, with a 64 KiB size limit and 20 requests a minute (ADR 0102, O-83). No DNS record is added.
+
+Set `TF_VAR_expose_planning_route=true`, plan, and check the plan changes only `cloudflare_zero_trust_tunnel_cloudflared_config.receiver`, adding exactly one ingress rule with `path = "^/plans$"` before the 404 rule, and nothing else. Then apply it. Check from outside: `POST https://<receiver host name>/plans` with no token answers 401, and `GET` on the same path and any other path answers 404. Only after step 15 creates the planning token does a submission go through.
+
 ## 12. The model key with a spend cap (new-credentials gate)
 
 Create the Anthropic API key for agent runs with a monthly spending limit at the provider (D-143, D-185). Store it at its secret path in Windmill resources. The runner puts it only into each run's egress proxy Secret; no agent holds it.
@@ -139,7 +145,16 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
   kubectl -n foreman-platform rollout restart deployment/state-api
   ```
 
-  The Secret is optional for the state API's pod: until it exists, no planning token is accepted. How the chat reaches the state API from outside the cluster is open (N-67); settle it before this step.
+  The Secret is optional for the state API's pod: until it exists, no planning token is accepted. The chat reaches the state API at `https://<receiver host name>/plans` once step 11a is applied (D-271). Its read routes are not reachable from outside (N-75).
+
+- The state API's Windmill credential for the plan-approval flow (D-273 (2)). First check that Windmill can issue a token that can run `f/foreman/plan_approval` and nothing else (N-76); if it cannot, stop and ask Didi. The state API also needs egress on 443 to Windmill, a wider permission for its pod (N-76). Store the token at `platform/state-api/windmill-plan-approval-token` in Windmill resources and in the state API's Secret, piped straight in:
+
+  ```bash
+  kubectl -n foreman-platform create secret generic state-api-windmill-plan-approval-token --from-file=token=/dev/stdin
+  kubectl -n foreman-platform rollout restart deployment/state-api
+  ```
+
+  Then write the Windmill call in `src/adapters/windmill/plan-approval-flow.ts` against Windmill's own API. Until then every start is refused, the API logs `plan approval flow not started` with the error's type, and the reconcile pass opens the request.
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 

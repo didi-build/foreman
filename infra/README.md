@@ -44,6 +44,7 @@ What it declares (ADR 0106 section 1, D-193 to D-195):
 - DOKS keeps its own firewall on the worker nodes, and DigitalOcean combines the allow rules of every firewall on a droplet. If the managed one allows all outbound traffic, these outbound rules change nothing, so the network policies are the real egress control. Check DigitalOcean's docs on this at first hosting.
 - The DigitalOcean provider keeps an admin credential for the cluster in state. It is set to expire after 1 hour (`kubeconfig_expire_seconds`), and state is encrypted. It is never an output.
 - The receiver's Cloudflare Tunnel, routing one host name and the webhook path to the receiver's in-cluster Service only, everything else to 404. Its DNS record is created only when `publish_receiver_dns = true` (a separate DNS gate).
+- Once Didi passes the tunnel gate (`expose_planning_route = true`, D-271), one more rule on the same host name: the path `/plans` exactly, to the state API's public Service, whose port serves the planning chat's `POST /plans` only, with a size and a rate limit (O-83). No new DNS record.
 - Outputs: the cluster id, its API address and its CA certificate, which are plain settings for the runner, and the tunnel token as a sensitive output. Never a kubeconfig or token for the cluster.
 
 The stack calls the two platform modules directly, not through `modules/project`: the cluster and the tunnel are the factory's own platform, not a project deployed onto a target. It still names no provider (D-146). Its state is `factory/production.tfstate` in the same R2 bucket.
