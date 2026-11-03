@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { approvalDecision } from "../src/core/approvals.ts";
 import type { GitHub } from "../src/core/github.ts";
 import { mergeCommitKey } from "../src/core/github-ingest.ts";
+import { visualApprovalTopic } from "../src/core/guards/design.ts";
 import { createLibrary } from "../src/core/library.ts";
 import { privilegedPathTopic } from "../src/core/merge.ts";
 import { reconcile } from "../src/core/reconcile.ts";
@@ -377,6 +378,77 @@ describe("a privileged-path PR (unit: M3.3, D-102)", () => {
     await t.passedOn(HEAD);
     expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
       outcome: "applied",
+    });
+  });
+});
+
+describe("option folders Didi did not approve (unit: D-258)", () => {
+  const OPTIONS = "design/app/login/options";
+
+  /** The runner's screenshot of option `a` and Didi's approval naming it. */
+  async function approveOptionA(t: Awaited<ReturnType<typeof setup>>): Promise<void> {
+    await t.evidence(
+      t.node.id,
+      "screenshot",
+      {
+        source: "option",
+        option: "a",
+        path: `${OPTIONS}/a`,
+        file: "a.png",
+        sha256: "0".repeat(64),
+        width: 100,
+        height: 100,
+        regions: [],
+      },
+      { commitSha: NEW },
+    );
+    await t.store.insertDecision({
+      id: "20000000-0000-4000-8000-000000000001",
+      projectId: t.node.projectId,
+      nodeId: t.node.id,
+      kind: "approval",
+      scope: { topicKey: visualApprovalTopic(t.node.id), option: "a" },
+      textVerbatim: "",
+      byActor: "didi",
+      recordedAt: t.clock.now(),
+    });
+  }
+
+  it("refuses a design PR that still carries an unpicked option folder, merging nothing", async () => {
+    const t = await setup({
+      track: "design",
+      paths: [`${OPTIONS}/a/index.html`, `${OPTIONS}/b/index.html`],
+    });
+    await approveOptionA(t);
+    await t.passedOn(HEAD);
+    const result = await t.merges().mergeOnPass(t.node.id, t.trigger);
+    // Refused before GitHub is read, so no merge check is recorded yet either.
+    expect(result).toMatchObject({ outcome: "rejected", reason: "guard_failed" });
+    expect(result.failedGuards).toContain("unpicked_options_removed");
+    expect(t.github.merges).toEqual([]);
+    expect(result.gateRequestId).toBeUndefined();
+    // The existing fallback: the item stays In QA review with the missing condition named.
+    expect(await t.state()).toBe("in_qa_review");
+  });
+
+  it("merges a design PR that keeps only the approved option's folder", async () => {
+    const t = await setup({
+      track: "design",
+      paths: [`${OPTIONS}/a/index.html`, "design/app/login/spec.md"],
+    });
+    await approveOptionA(t);
+    await t.passedOn(HEAD);
+    expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
+      outcome: "applied",
+    });
+  });
+
+  it("leaves the code track's merge unchanged: option-like paths do not stop it", async () => {
+    const t = await setup({ paths: [`${OPTIONS}/b/index.html`, "src/a.ts"] });
+    await t.passedOn(HEAD);
+    expect(await t.merges().mergeOnPass(t.node.id, t.trigger)).toMatchObject({
+      outcome: "applied",
+      failedGuards: [],
     });
   });
 });

@@ -178,6 +178,9 @@ const MERGE_GUARD = [
   "prod_env_protected",
 ];
 
+/** What the design track's merge adds to the shared set (D-258). */
+const DESIGN_MERGE_EXTRA = ["unpicked_options_removed"];
+
 describe("every merging move carries the merge guard (contract consistency, D-218)", () => {
   // A merging move is one whose spec row says the runner merges the PR.
   const merging = PAIRS.flatMap(({ file }) =>
@@ -195,8 +198,13 @@ describe("every merging move carries the merge guard (contract consistency, D-21
     );
   });
 
-  it.each(merging)("$file $move.from to $move.to has every check", ({ move }) => {
-    expect(move.guards).toEqual(expect.arrayContaining(MERGE_GUARD));
+  it.each(merging)("$file $move.from to $move.to has every check", ({ file, move }) => {
+    // The design track's merge also checks that the PR no longer carries the folder of an option
+    // Didi did not approve (D-258). Only design items have exploration options, so the code
+    // track's merge keeps the shared set.
+    const expected =
+      file === "design.yaml" ? [...MERGE_GUARD, ...DESIGN_MERGE_EXTRA] : MERGE_GUARD;
+    expect([...(move.guards ?? [])].sort()).toEqual([...expected].sort());
     expect(move.evidence).toEqual(
       expect.arrayContaining(["merge_check", "merge_commit"]),
     );
@@ -211,6 +219,10 @@ describe("every merging move carries the merge guard (contract consistency, D-21
       expect(row?.[1], heading).toMatch(/round cap/);
       expect(row?.[1], heading).toMatch(/privileged path/);
     }
+    const design = tableRows("Design track").find(
+      (r) => r[0] === "In QA review to Verifying on staging (pass)",
+    );
+    expect(design?.[1]).toMatch(/option Didi did not approve/);
   });
 });
 
