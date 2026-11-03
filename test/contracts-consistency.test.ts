@@ -1,5 +1,6 @@
 // Seam: contract consistency (ADR 0105, build plan M2.1). Parses the three transition tables
-// in docs/spec.md section 9 and compares each with its contract file. A move in one and not
+// in docs/spec.md section 9 and compares each with its contract file, and Machine 1's state table
+// in section 3 with contracts/machine-1/idea.yaml (M3.6). A move in one and not
 // the other fails, as does a state label the contracts do not know. Guards and evidence stay
 // prose; people review those.
 import { readFileSync } from "node:fs";
@@ -8,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import {
+  MACHINE_1_DIR,
   MACHINE_2_DIR,
   loadContractFiles,
 } from "../src/adapters/contracts-file/load.ts";
@@ -242,5 +244,65 @@ describe("runner-only moves are the ones a runner step owns (contract consistenc
         expect(t.runner_only === true, `${file}:${t.from}->${t.to}`).toBe(owned);
       }
     }
+  });
+});
+
+/** The rows of the Machine 1 table in docs/spec.md section 3: state label and "Moves on when". */
+function machineOneRows(): { label: string; owner: string; moves: string }[] {
+  const spec = readFileSync("docs/spec.md", "utf8");
+  const start = spec.indexOf("\n## 3. Machine 1");
+  const end = spec.indexOf("\n## 4.", start);
+  if (start < 0 || end < 0) throw new Error("docs/spec.md section 3 not found");
+  return spec
+    .slice(start, end)
+    .split("\n")
+    .filter((line) => line.startsWith("|"))
+    .map((line) =>
+      line
+        .split("|")
+        .slice(1, -1)
+        .map((cell) => cell.trim()),
+    )
+    .filter(([first]) => first !== "State" && !/^-+$/.test(first ?? ""))
+    .map(([label = "", owner = "", moves = ""]) => ({ label, owner, moves }));
+}
+
+describe("Machine 1's contract matches the spec's section 3 table (contract consistency, M3.6)", () => {
+  const parsed = parse(readFileSync(join(MACHINE_1_DIR, "idea.yaml"), "utf8")) as {
+    states: Record<string, { label: string; owner: string }>;
+    transitions: FileMove[];
+  };
+  const byLabel = new Map(
+    Object.entries(parsed.states).map(([id, state]) => [state.label, { id, ...state }]),
+  );
+
+  it("declares every state of the table, with the table's owner", () => {
+    const rows = machineOneRows();
+    // "Parked or Rejected" is one row for two states (D-124).
+    const labels = rows.flatMap((r) =>
+      r.label === "Parked or Rejected" ? ["Parked", "Rejected"] : [r.label],
+    );
+    expect([...byLabel.keys()].sort()).toEqual([...labels].sort());
+    for (const row of rows) {
+      for (const label of row.label === "Parked or Rejected"
+        ? ["Parked", "Rejected"]
+        : [row.label]) {
+        expect(byLabel.get(label)?.owner, label).toBe(row.owner);
+      }
+    }
+  });
+
+  it('declares only moves the table states, as "Goes to" the next state', () => {
+    const rows = new Map(machineOneRows().map((r) => [r.label, r.moves]));
+    const labelOf = (id: string) => parsed.states[id]?.label ?? id;
+    for (const move of parsed.transitions) {
+      expect(rows.get(labelOf(move.from)), `${move.from} to ${move.to}`).toContain(
+        `Goes to ${labelOf(move.to)}`,
+      );
+    }
+    expect(parsed.transitions.map((t) => `${t.from}->${t.to}`)).toEqual([
+      "plan_accepted->triage",
+      "triage->handed_off",
+    ]);
   });
 });

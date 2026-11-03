@@ -32,6 +32,7 @@ import { createBuilderRuns } from "../../src/core/builder-runs.ts";
 import { createCouncil } from "../../src/core/council.ts";
 import { createFailures } from "../../src/core/failures.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
+import { createTriage } from "../../src/core/triage.ts";
 import {
   approvedOptionRecord,
   createVisualComparisons,
@@ -128,6 +129,19 @@ export async function startRun(
   if (input.role === "council" && !council) {
     return { outcome: "not_started", reason: "no_open_question", failedGuards: [] };
   }
+  // A Triage run's input is the idea's accepted plan and the repo map brief at the default
+  // branch's head now; the run records that commit as its headSha, so its answer is checked
+  // against the same map (src/core/triage.ts, D-251, D-262).
+  const triage =
+    input.role === "triage"
+      ? await createTriage(deps).taskFor(
+          node.id,
+          await deps.repoMaps.read(project.repo),
+        )
+      : null;
+  if (input.role === "triage" && !triage) {
+    return { outcome: "not_started", reason: "no_accepted_plan", failedGuards: [] };
+  }
   const isVisual = input.taskType === VISUAL_TASK_TYPE;
   if (isVisual && input.role !== "qa") {
     return { outcome: "not_started", reason: "not_a_qa_run", failedGuards: [] };
@@ -148,29 +162,31 @@ export async function startRun(
   }
   const text = council
     ? council.input
-    : visual
-      ? visual.input
-      : taskInput({
-          ...input,
-          node,
-          project,
-          branch: branch ?? undefined,
-          returned,
-          // The Designer's step comes from the item's state (D-238): the state as the contracts
-          // name it and its label, never a database id. It also gets the option Didi approved,
-          // once one is recorded (D-242, D-243 rule 3).
-          ...(input.role === "designer"
-            ? {
-                approvedOption: await approvedOptionRecord(deps.store, node.id),
-                state: {
-                  name: node.state,
-                  label: Object.hasOwn(deps.contracts.states, node.state)
-                    ? (deps.contracts.states[node.state]?.label ?? node.state)
-                    : node.state,
-                },
-              }
-            : {}),
-        });
+    : triage
+      ? triage.input
+      : visual
+        ? visual.input
+        : taskInput({
+            ...input,
+            node,
+            project,
+            branch: branch ?? undefined,
+            returned,
+            // The Designer's step comes from the item's state (D-238): the state as the contracts
+            // name it and its label, never a database id. It also gets the option Didi approved,
+            // once one is recorded (D-242, D-243 rule 3).
+            ...(input.role === "designer"
+              ? {
+                  approvedOption: await approvedOptionRecord(deps.store, node.id),
+                  state: {
+                    name: node.state,
+                    label: Object.hasOwn(deps.contracts.states, node.state)
+                      ? (deps.contracts.states[node.state]?.label ?? node.state)
+                      : node.state,
+                  },
+                }
+              : {}),
+          });
 
   const starts = createRunStart(deps);
   const check = await starts.checkStart(node.id, input.role);
@@ -178,9 +194,12 @@ export async function startRun(
   const capacity = await runCapacityLimits(deps.store);
 
   const stateApiToken = deps.newRunToken();
-  const admitted = await runs.dispatch(request, {
-    tokenHash: hashRunToken(stateApiToken),
-  });
+  const admitted = await runs.dispatch(
+    triage ? { ...request, headSha: triage.commitSha } : request,
+    {
+      tokenHash: hashRunToken(stateApiToken),
+    },
+  );
   if (!admitted.admitted) return { outcome: "not_admitted", ...admitted };
   const { run } = admitted;
 

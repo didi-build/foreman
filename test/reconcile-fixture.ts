@@ -3,7 +3,10 @@
 // GitHub, and builders for nodes, edges, runs, evidence and gate requests. Fake data only.
 import { createFakeGitHub, type FakeGitHub } from "../src/adapters/github/fake.ts";
 import { readBotFiles } from "../src/adapters/contracts-file/bot-files.ts";
-import { loadContractFiles } from "../src/adapters/contracts-file/load.ts";
+import {
+  loadAllContractFiles,
+  loadContractFiles,
+} from "../src/adapters/contracts-file/load.ts";
 import { validateContracts, type Contracts } from "../src/core/contracts.ts";
 import { GUARD_NAMES, GUARDS } from "../src/core/guards/index.ts";
 import { createMemoryStore } from "../src/core/memory-store.ts";
@@ -27,7 +30,6 @@ import type {
   Node,
   Run,
   Store,
-  Track,
 } from "../src/core/store.ts";
 
 export const REPO = "didi-build/rehearsal";
@@ -39,6 +41,8 @@ export const MINUTE = 60_000;
 
 /** The Council's output schemas, from its real bot file (contracts/bots/council.yaml, D-228). */
 export const COUNCIL_SCHEMAS = readBotFiles().council.outputSchemas ?? {};
+/** Triage's answer schema, from its real bot file (contracts/bots/triage.yaml, M3.6). */
+export const TRIAGE_SCHEMAS = readBotFiles().triage.outputSchemas ?? {};
 /** QA's visual answer schema, from its real bot file (contracts/bots/qa.yaml, D-242). */
 export const QA_SCHEMAS = readBotFiles().qa.outputSchemas ?? {};
 
@@ -48,12 +52,22 @@ const BOTS: Record<AgentRole, BotProfile> = {
   designer: BOT,
   qa: { ...BOT, outputSchemas: QA_SCHEMAS },
   council: { ...BOT, outputSchemas: COUNCIL_SCHEMAS },
-  triage: BOT,
+  triage: { ...BOT, outputSchemas: TRIAGE_SCHEMAS },
 };
 
 export function machine2(): Contracts {
   const { contracts, problems } = validateContracts(
     loadContractFiles("e".repeat(40)).raw,
+    GUARD_NAMES,
+  );
+  if (!contracts) throw new Error(problems.join("\n"));
+  return contracts;
+}
+
+/** Both machines' contracts, as the runner loads them (Machine 1 from M3.6). */
+export function machines(): Contracts {
+  const { contracts, problems } = validateContracts(
+    loadAllContractFiles("e".repeat(40)).raw,
     GUARD_NAMES,
   );
   if (!contracts) throw new Error(problems.join("\n"));
@@ -81,7 +95,7 @@ export async function createReconcileFixture(
     now += minutes * MINUTE;
   };
   const github: FakeGitHub = createFakeGitHub({ webhookSecret: "test-only" });
-  const contracts = machine2();
+  const contracts = machines();
   const deps: ReconcileDeps = {
     store,
     contracts,
@@ -132,10 +146,7 @@ export async function createReconcileFixture(
   }
   await seedRoutingSettings(store, clock.now());
 
-  async function node(
-    state: string,
-    extra: Partial<Node> & { track?: Track } = {},
-  ): Promise<Node> {
+  async function node(state: string, extra: Partial<Node> = {}): Promise<Node> {
     const at = clock.now();
     const created: Node = {
       id: nextId(),

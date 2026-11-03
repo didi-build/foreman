@@ -126,7 +126,8 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
       botVersion: bots.council.version,
       outputSchemas: bots.council.outputSchemas,
     });
-    expect(botProfiles(bots).triage.outputSchemas).toBeUndefined();
+    // Triage's answer schema, which the runner checks every answer against (D-262, M3.6).
+    expect(botProfiles(bots).triage.outputSchemas).toEqual(bots.triage.outputSchemas);
   });
 
   it("name each provider key by a per-project secret path, never a value", () => {

@@ -13,6 +13,9 @@ import type { RawContractFile } from "../../core/contracts.ts";
 
 export const MACHINE_2_DIR = "contracts/machine-2";
 
+/** Machine 1, the idea machine (build plan M3.6). Its states and Machine 2's form one contract set. */
+export const MACHINE_1_DIR = "contracts/machine-1";
+
 /** The one file whose transitions may use `from: any` and `to: return`. */
 export const ESCALATION_FILE = "escalation.yaml";
 
@@ -51,6 +54,31 @@ export function loadContractFiles(
     files.push({ name, escalation: name === ESCALATION_FILE, data });
   }
 
+  const contentHash = hash.digest("hex");
+  return { raw: { version, contentHash, files }, contentHash, files: names };
+}
+
+/**
+ * Loads the contract files of both machines, Machine 1's first, as one set: the library reads one
+ * set, and an idea in Triage escalates through Machine 2's escalation file like any node. The
+ * content hash covers every file, in that order. File names must differ across the two folders.
+ */
+export function loadAllContractFiles(
+  version: string,
+  dirs: readonly string[] = [MACHINE_1_DIR, MACHINE_2_DIR],
+): LoadedContractFiles {
+  const hash = createHash("sha256");
+  const files: RawContractFile[] = [];
+  const names: string[] = [];
+  for (const dir of dirs) {
+    const loaded = loadContractFiles(version, dir);
+    hash.update(loaded.contentHash);
+    files.push(...loaded.raw.files);
+    names.push(...loaded.files);
+  }
+  if (new Set(names).size !== names.length) {
+    throw new Error("Two contract folders hold a file of the same name");
+  }
   const contentHash = hash.digest("hex");
   return { raw: { version, contentHash, files }, contentHash, files: names };
 }

@@ -1,0 +1,144 @@
+# Machine 1, the idea machine (ADR 0105, from docs/spec.md section 3). Ideas have no track, so
+# no transition here names tracks.
+#
+# Every state of the spec's Machine 1 table is declared, so a state name in the store is always a
+# contract state. Only the two moves the minimum Machine 1 automates are declared (build plan M3.6,
+# D-265): Plan accepted to Triage, and Triage to Handed off. The Interview and Council planning stay
+# a chat with the Council (D-261), and how an idea reaches Plan accepted from that chat is open
+# (N-61), so no move into Plan accepted, and none out of Submitted, Interview, Council planning or
+# Needs Didi, exists yet. Parking or rejecting an idea is Didi's and has no move yet either.
+#
+# Triage to Handed off is runner_only: only the Triage handoff step applies it, in the one
+# transaction that creates the work items from Triage's checked answer (src/core/triage.ts).
+# An idea in Triage escalates through escalation.yaml's `from: any` move, like any node.
+# Rules live here and in guard functions, never in the library (essential 3).
+
+part: idea
+
+states:
+  submitted:
+    label: Submitted
+    owner: Runner
+    initial: true
+    purpose: Log a new idea, from Didi, a bot's finding or the Scanner.
+    input: A title and a body.
+    output: The idea, logged.
+    evidence_to_exit: Not set. The move to Interview is not built (N-61).
+    tools: None.
+    budget: not set
+    side_effects: None.
+    failure: Not set.
+
+  interview:
+    label: Interview
+    owner: Council
+    purpose: The Council interviews Didi on the product, one question at a time, in the chat.
+    input: The idea.
+    output: Didi's answers, verbatim with the time, and the locked product direction.
+    evidence_to_exit: Didi confirms the Council's read-back summary. Recorded through the API (D-261).
+    tools: The chat with the Council (D-261).
+    budget: not set
+    side_effects: None.
+    failure: Not set.
+
+  council_planning:
+    label: Council planning
+    owner: Council
+    purpose: The Council writes the plan, grounded in the existing code (D-240).
+    input: The locked product direction.
+    output: A plan.
+    evidence_to_exit: The plan, recorded verbatim.
+    tools: The chat with the Council (D-261).
+    budget: not set
+    side_effects: None.
+    failure: Questions for Didi go to Needs Didi.
+
+  needs_didi:
+    label: Needs Didi
+    owner: Operator
+    purpose: Hold a planning question for Didi.
+    input: The question.
+    output: Didi's answer, verbatim.
+    evidence_to_exit: The answer record.
+    tools: The chat with the Council (D-261).
+    budget: not set
+    side_effects: None.
+    failure: No timeout.
+
+  plan_accepted:
+    label: Plan accepted
+    owner: Runner
+    purpose: Hand the accepted plan to Triage.
+    input: The accepted plan and the product direction, linked to the idea.
+    output: The idea in Triage.
+    evidence_to_exit: An active product direction and an accepted plan on the idea.
+    tools: None. No bot runs in this state.
+    budget: not set
+    side_effects: None.
+    failure: The idea stays here and the next reconcile pass tries again.
+
+  triage:
+    label: Triage
+    owner: Triage
+    purpose: Split the accepted plan into work items, each with a track.
+    input: The accepted plan, verbatim, and the runner's repo map brief at one commit (D-251).
+    output: Triage's structured answer, which the runner checks (D-262, D-264).
+    evidence_to_exit: A checked answer. The runner creates the work items, their links and gate requests.
+    tools: None. Triage has no tools (ADR 0107).
+    budget: not set
+    side_effects: Creating work items starts Machine 2.
+    failure: A bad answer is rejected whole and Triage runs once more with the reason; a second bad answer goes to the Council.
+
+  handed_off:
+    label: Handed off
+    owner: Runner
+    purpose: The idea is done as far as this machine goes.
+    input: The work items, created in Machine 2.
+    output: Nothing. The work items are Machine 2's to finish.
+    evidence_to_exit: Not applicable. This is the end of Machine 1.
+    tools: None.
+    budget: not set
+    side_effects: None.
+    failure: Not applicable.
+
+  parked:
+    label: Parked
+    owner: Operator
+    purpose: Didi parks the idea.
+    input: Didi's word.
+    output: Nothing.
+    evidence_to_exit: Not set.
+    tools: None.
+    budget: not set
+    side_effects: None.
+    failure: Not set.
+
+  rejected:
+    label: Rejected
+    owner: Operator
+    purpose: Didi drops the idea.
+    input: Didi's word.
+    output: Nothing.
+    evidence_to_exit: Not applicable.
+    tools: None.
+    budget: not set
+    side_effects: None.
+    failure: Not applicable.
+
+transitions:
+  - from: plan_accepted
+    to: triage
+    trigger: The idea reaches Plan accepted, or the reconcile pass finds it there.
+    guards: [plan_attached]
+    evidence: []
+    timeout: Next reconcile cycle.
+    fallback: Stays in Plan accepted and the next pass tries again.
+
+  - from: triage
+    to: handed_off
+    trigger: Triage's answer passes the runner's checks. The runner creates the work items in the same transaction.
+    guards: []
+    runner_only: true
+    evidence: []
+    timeout: Triage's budget.
+    fallback: A bad answer is rejected and Triage runs once more; a second bad answer goes to the Council.

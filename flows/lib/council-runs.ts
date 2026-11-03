@@ -79,6 +79,8 @@ import { cancelRun } from "./cancel-runs.ts";
 import type { FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { recordTriageAnswer, triagePass, type TriagePassStep } from "./triage-runs.ts";
+import type { TriageRecord } from "../../src/core/triage.ts";
 
 export interface CouncilPassStep {
   topicKey: string;
@@ -205,6 +207,8 @@ export interface AfterCouncilRun {
   council: CouncilPassStep[];
   /** For a reversal answer: the redo moves and rework items it left due (D-231, D-233). */
   redos?: RedoPassStep[];
+  /** For an idea the Council's decision returned to Triage: its next Triage run (M3.6). */
+  triage?: TriagePassStep[];
 }
 
 /**
@@ -229,7 +233,10 @@ export async function afterCouncilRun(
   if (topic.startsWith(ESCALATION_PREFIX) && run.nodeId) {
     after.escalation = await createEscalations(deps).resolve(run.nodeId);
     if (after.escalation.step === "returned") {
-      after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
+      const returned = await deps.store.getNode(run.nodeId);
+      if (returned?.type === "idea")
+        after.triage = await triagePass(deps, [run.nodeId]);
+      else after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
     }
   }
   if (topic.startsWith(REVERSAL_PREFIX) && answer?.recorded === true) {
@@ -258,6 +265,10 @@ export type AfterRunEnd = AfterReport &
     visual?: VisualRecord;
     /** After a QA run: the visual comparison's one more run after a `cannot_tell` (D-252). */
     visualRerun?: VisualRerunStart;
+    /** A Triage run's answer as the runner checked it: handed off or rejected (M3.6). */
+    triageAnswer?: TriageRecord;
+    /** After a Triage run: the idea's re-run, or its escalation to the Council (D-262). */
+    triage?: TriagePassStep[];
   };
 
 /** The one more visual run after a `cannot_tell`, when it was due (D-252). */
@@ -311,7 +322,9 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
   let answer: CouncilAnswer | undefined;
   let findingIdeas: FindingIdeas | undefined;
   let visual: VisualRecord | undefined;
+  let triageAnswer: TriageRecord | undefined;
   const isCouncil = run.bot === "council";
+  const isTriage = run.bot === "triage";
   const isVisual = run.bot === "qa" && run.taskType === VISUAL_TASK_TYPE;
   async function reportToRecord(
     result: AgentRunResult,
@@ -342,6 +355,14 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
         ? { ...report, outcome: "fail" }
         : report;
     }
+    if (isTriage && report.outcome === "success") {
+      // The runner checks the answer against the repo map at the run's commit and hands it off,
+      // or records why it rejected it (M3.6, D-262). A rejected answer ends the run `fail`.
+      triageAnswer = await recordTriageAnswer(deps, run, result.structured);
+      return triageAnswer.recorded === false && triageAnswer.reason === "rejected"
+        ? { ...report, outcome: "fail" }
+        : report;
+    }
     if (!isCouncil || report.outcome !== "success") return report;
     answer = await createCouncil(deps).recordAnswer(run.id, result.structured);
     return answer.recorded === false && answer.reason === "invalid"
@@ -364,6 +385,14 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       };
       if (isCouncil) {
         return { ...reported, council: await afterCouncilRun(deps, run, answer) };
+      }
+      if (isTriage) {
+        // The idea's next step: its re-run after a rejected answer, or the Council after two.
+        return {
+          ...reported,
+          ...(triageAnswer ? { triageAnswer } : {}),
+          ...(run.nodeId ? { triage: await triagePass(deps, [run.nodeId]) } : {}),
+        };
       }
       // The report escalated the item (or an earlier call did): its Council run starts now
       // rather than at the next reconcile pass.

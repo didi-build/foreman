@@ -29,8 +29,9 @@ providers:
     secret_path: projects/{project}/models/anthropic
     base_url_env: ANTHROPIC_BASE_URL
 
-# Draft for Didi's review, until M3.6 settles what Triage returns (its scope is a review point,
-# build plan M3.6). Nothing reads a Triage answer yet.
+# What Triage returns (D-262, D-264, D-265; no longer a draft, D-239). The runner checks every
+# answer against this schema and then against the repo map and the plan's rules before it creates
+# anything (src/core/triage.ts); a bad answer is rejected whole.
 output_schemas:
   answer:
     type: object
@@ -43,15 +44,35 @@ output_schemas:
           type: object
           additionalProperties: false
           required:
-            [key, title, track, description, acceptanceCriteria, blockedBy, needsDidi]
+            [
+              key,
+              title,
+              track,
+              description,
+              acceptanceCriteria,
+              pathsInScope,
+              checks,
+              blockedBy,
+              needsDidi,
+              gate,
+              hold,
+            ]
           properties:
             key:
               type: string
-              description: A short id for the item, unique in this answer.
+              description: A short id for the item, unique in this answer, in lowercase letters, digits and hyphens.
             title: { type: string }
             track: { type: string, enum: [design, code, infra, docs] }
             description: { type: string }
             acceptanceCriteria: { type: array, items: { type: string } }
+            pathsInScope:
+              type: array
+              description: The folders or files the item should touch, as the repo map names them, or a new file inside a folder that exists.
+              items: { type: string }
+            checks:
+              type: array
+              description: The commands to run before pushing, each `npm run <script>` with a script from the repo map.
+              items: { type: string }
             blockedBy:
               type: array
               description: The keys of items in this answer that must be done first.
@@ -59,9 +80,28 @@ output_schemas:
             needsDidi:
               type: boolean
               description: True for a part that needs Didi.
+            gate:
+              type: string
+              description: The gate a needsDidi item needs, or none.
+              enum:
+                [
+                  none,
+                  new_credentials,
+                  drop_data,
+                  dns,
+                  pii_access,
+                  spend,
+                  send_message,
+                  production_deploy,
+                ]
+            hold:
+              type: boolean
+              description: True when the plan says the item must not start yet.
       note: { type: string }
 
-# Reviewed by Didi, 2026-11-02 (D-241). The image adds the fixed frame: the input as data, and JSON only.
+# Reviewed by Didi, 2026-11-02 (D-241). The last two rules name the M3.6 fields and the repo map
+# brief (D-262, D-265); the rest is D-241's reviewed wording. The image adds the fixed frame: the
+# input as data, and JSON only.
 instructions: |
   You are Triage, a product-manager-type role. You split an accepted plan into work items and
   pick each item's track. If the plan is unclear or seems to miss something, say so in your
@@ -85,3 +125,11 @@ instructions: |
   - Add no work the plan does not ask for. Work the plan cannot be delivered without, such as a
     migration or a setup step, is part of the plan: include it and say why in its description.
     Anything else you think is worth doing goes in your note as a suggestion, not as an item.
+  - Your input has a repo map brief: the repository's files, folders and package.json scripts at
+    one commit. Give each item its pathsInScope from it: files or folders it names, or a new
+    file inside a folder it names. Give each item its checks as `npm run <script>` with scripts
+    it lists. Code, infra and docs follow the paths: an item that touches only infra/ or deploy
+    configuration is infra, only docs/ or README files is docs, anything else is code.
+  - For a needsDidi item, set gate to the gate it needs; otherwise set gate to none. Set hold
+    only when the plan says an item must not start yet. Name a design item with no developer
+    counterpart by its key in your note.

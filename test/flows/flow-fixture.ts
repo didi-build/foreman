@@ -9,6 +9,7 @@ import type {
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
+import { createFakeRepoMaps } from "../../src/adapters/repo-map/fake.ts";
 import { createFakeScreenshotBundles } from "../../src/adapters/screenshots/fake.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
@@ -77,6 +78,7 @@ export function flowDepsFor(
 ) {
   const runtime = createFakeRuntime();
   const screenshots = createFakeScreenshotBundles();
+  const repoMaps = createFakeRepoMaps();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
@@ -85,6 +87,7 @@ export function flowDepsFor(
     runtime,
     stagingChecker,
     screenshots,
+    repoMaps,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -113,6 +116,7 @@ export function flowDepsFor(
     deps,
     runtime,
     screenshots,
+    repoMaps,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {
@@ -124,10 +128,8 @@ export function flowDepsFor(
 export async function createFlowFixture() {
   const f = await createReconcileFixture();
   const stagingChecker = createFakeStagingChecker();
-  const { deps, runtime, screenshots, tasksFor, tokens, setExecutions } = flowDepsFor(
-    f.deps,
-    stagingChecker,
-  );
+  const { deps, runtime, screenshots, repoMaps, tasksFor, tokens, setExecutions } =
+    flowDepsFor(f.deps, stagingChecker);
 
   /** What a flow could have written for these nodes, to compare before and after. */
   async function footprint(...nodeIds: string[]) {
@@ -148,6 +150,7 @@ export async function createFlowFixture() {
     runtime,
     stagingChecker,
     screenshots,
+    repoMaps,
     tasksFor,
     tokens,
     setExecutions,
