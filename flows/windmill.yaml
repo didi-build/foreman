@@ -68,6 +68,16 @@ flows:
     # every pass the kill switch stops. It stops every active agent run and ends it cancelled.
     trigger: called
 
+  - name: plan_approval
+    path: f/foreman/plan_approval
+    entry: flows/plan-approval.ts
+    # Called with an idea id by the state API, right after it records the planning chat's
+    # submission (D-273 (2), D-274), with its own Windmill credential that can start only this
+    # flow (platform/state-api/windmill-plan-approval-token, below). One run per submission. It
+    # opens Didi's plan-approval request at once; the reconcile flow's plan approval pass stays
+    # as the safety net for a start that failed.
+    trigger: called
+
   - name: request_transition
     path: f/foreman/request_transition
     entry: flows/request-transition.ts
@@ -137,6 +147,12 @@ resources:
     # `sha256`) at first hosting. The token itself is kept only in the planning chat's settings.
     - path: platform/state-api/planning-token-sha256
       holds: The SHA-256 of the planning chat's state API token (D-266). New credential at first hosting
+      read_by: state API
+    # Read by the state API, not by a flow (D-273 (2)): a Windmill token that can start only the
+    # plan_approval flow above, copied into the state API's Secret
+    # `state-api-windmill-plan-approval-token` (key `token`) at first hosting.
+    - path: platform/state-api/windmill-plan-approval-token
+      holds: A Windmill token that can start only f/foreman/plan_approval (D-273). New credential at first hosting
       read_by: state API
   values:
     - name: spec_version

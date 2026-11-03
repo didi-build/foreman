@@ -107,6 +107,30 @@ function ops(state: State): StoreOps {
     insertUnique(state.evidence, e.id, e, "evidence_pkey");
   }
 
+  async function decisionsForNode(nodeId: string): Promise<CurrentDecision[]> {
+    const linked = new Set(
+      [...state.nodeDecisions]
+        .map((key) => key.split("|") as [string, string])
+        .filter(([n]) => n === nodeId)
+        .map(([, d]) => d),
+    );
+    const ids = [...state.decisions.values()]
+      .filter((d) => d.nodeId === nodeId || linked.has(d.id))
+      .sort(byTimeThenId<Decision>((d) => d.recordedAt))
+      .map((d) => d.id);
+    return ids.map((id) => {
+      const decision = state.decisions.get(id) as Decision;
+      const event = [...state.decisionEvents.values()].find((e) => e.decisionId === id);
+      const current: CurrentDecision = {
+        ...copy(decision),
+        status: event?.kind ?? "active",
+        replacedById: event?.byDecisionId ?? null,
+        statusChangedAt: event ? copy(event.recordedAt) : null,
+      };
+      return current;
+    });
+  }
+
   return {
     async insertProject(p) {
       for (const existing of state.projects.values()) {
@@ -278,30 +302,9 @@ function ops(state: State): StoreOps {
     async linkNodeToDecision(nodeId, decisionId) {
       state.nodeDecisions.add(`${nodeId}|${decisionId}`);
     },
-    async listDecisionsForNode(nodeId) {
-      const linked = new Set(
-        [...state.nodeDecisions]
-          .map((key) => key.split("|") as [string, string])
-          .filter(([n]) => n === nodeId)
-          .map(([, d]) => d),
-      );
-      const ids = [...state.decisions.values()]
-        .filter((d) => d.nodeId === nodeId || linked.has(d.id))
-        .sort(byTimeThenId<Decision>((d) => d.recordedAt))
-        .map((d) => d.id);
-      return ids.map((id) => {
-        const decision = state.decisions.get(id) as Decision;
-        const event = [...state.decisionEvents.values()].find(
-          (e) => e.decisionId === id,
-        );
-        const current: CurrentDecision = {
-          ...copy(decision),
-          status: event?.kind ?? "active",
-          replacedById: event?.byDecisionId ?? null,
-          statusChangedAt: event ? copy(event.recordedAt) : null,
-        };
-        return current;
-      });
+    listDecisionsForNode: decisionsForNode,
+    async listDecisionsRecordedOn(nodeId) {
+      return (await decisionsForNode(nodeId)).filter((d) => d.nodeId === nodeId);
     },
     async listNodesForDecision(decisionId) {
       return [...state.nodeDecisions]

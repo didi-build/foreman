@@ -5,7 +5,8 @@
 // first hosting and keeps only in the chat's settings. The state API holds only its SHA-256, read
 // from the secret path `platform/state-api/planning-token-sha256`; with no hash set, no planning
 // token is accepted. A planning caller is not a run and has no role: the API lets it call
-// `POST /plans` and nothing else (src/api/routes.ts).
+// `POST /plans` and the planning reads under `/planning/projects/<slug>/` and nothing else
+// (src/api/routes.ts).
 import { timingSafeEqual } from "node:crypto";
 
 import { hashRunToken } from "../core/run-tokens.ts";

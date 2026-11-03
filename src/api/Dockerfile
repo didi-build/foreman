@@ -13,10 +13,11 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src/service-kit ./src/service-kit
 COPY src/core ./src/core
 COPY src/adapters/store-postgres ./src/adapters/store-postgres
+COPY src/adapters/windmill/plan-approval-flow.ts ./src/adapters/windmill/plan-approval-flow.ts
 COPY src/api ./src/api
 
 USER node
-EXPOSE 8080
+EXPOSE 8080 8081
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
   CMD ["node", "-e", "fetch(`http://127.0.0.1:${process.env.PORT ?? 8080}/health`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 CMD ["node", "src/api/main.ts"]

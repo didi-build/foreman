@@ -3,7 +3,8 @@
 // and default-deny network policies with three narrow openings:
 //
 // - the agents' egress proxy pods (and nothing else in agent namespaces) reach the state API port;
-// - the tunnel connector reaches the receiver port, and Cloudflare on 443;
+// - the tunnel connector reaches the receiver port and the state API's public port (which serves
+//   only the planning chat's `POST /plans`, D-271, src/api/public.ts), and Cloudflare on 443;
 // - the state API and the receiver reach cluster DNS and the database port on public addresses.
 //
 // Written as typed objects like the agent namespace objects of slice 3, so the same constants
@@ -36,6 +37,7 @@ import type {
 } from "../../src/adapters/agent-runtime/kubernetes/objects.ts";
 import { WEBHOOK_PATH } from "../../src/github-receiver/handler.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
+import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../../src/adapters/windmill/plan-approval-flow.ts";
 import { secretEnvName } from "../../src/service-kit/config.ts";
 
 export const PLATFORM_NAMESPACE = "foreman-platform";
@@ -51,6 +53,23 @@ export const STATE_API = {
   name: "state-api",
   port: SERVICE_PORT,
   podLabels: { app: "state-api" },
+} as const;
+
+/**
+ * The state API's public port (D-271): its own Service, so the tunnel's route can only ever reach
+ * this port, which serves the planning chat's routes and nothing else (src/api/public.ts, D-282).
+ */
+export const STATE_API_PUBLIC = {
+  name: "state-api-public",
+  port: 8081,
+  podLabels: STATE_API.podLabels,
+  /**
+   * The tunnel's path pattern for this Service (D-271, D-282): exactly `/plans` and the three
+   * planning reads, with the state API's own slug rule (src/api/routes.ts). The tunnel cannot
+   * match the method; the public port checks it.
+   */
+  tunnelPath:
+    "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$",
 } as const;
 
 export const RECEIVER = {
@@ -86,6 +105,14 @@ export const PLATFORM_SECRETS = {
    * and then accepts no planning token, until Didi creates the credential at first hosting.
    */
   stateApiPlanningToken: { name: "state-api-planning-token", key: "sha256" },
+  /**
+   * The state API's Windmill credential that can start only the plan-approval flow (D-273).
+   * Optional: without it the start is refused and the reconcile pass opens the request.
+   */
+  stateApiWindmillToken: {
+    name: "state-api-windmill-plan-approval-token",
+    key: "token",
+  },
 } as const;
 
 /** The receiver's webhook secret path (src/github-receiver/main.ts). */
@@ -285,7 +312,8 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
 
   const policies: NetworkPolicy[] = [
     policy("default-deny", undefined, [], []),
-    // The state API: only the agents' egress proxies call it (D-195); the runner does not.
+    // The state API: only the agents' egress proxies call its port (D-195); the runner does not.
+    // The tunnel connector reaches its public port only, which serves `POST /plans` (D-271).
     policy(
       STATE_API.name,
       STATE_API.podLabels,
@@ -293,6 +321,10 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
         {
           from: [AGENT_PROXY_PODS],
           ports: [{ protocol: "TCP", port: STATE_API.port }],
+        },
+        {
+          from: [samePods(CLOUDFLARED.podLabels)],
+          ports: [{ protocol: "TCP", port: STATE_API_PUBLIC.port }],
         },
       ],
       [dns, database],
@@ -309,8 +341,9 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
       ],
       [dns, database],
     ),
-    // The connector: no ingress; egress to DNS, the receiver, Cloudflare's API on 443 and
-    // Cloudflare's tunnel edge on 7844 (TCP and UDP). Only this pod gets 7844.
+    // The connector: no ingress; egress to DNS, the receiver, the state API's public port,
+    // Cloudflare's API on 443 and Cloudflare's tunnel edge on 7844 (TCP and UDP). Only this pod
+    // gets 7844.
     policy(
       CLOUDFLARED.name,
       CLOUDFLARED.podLabels,
@@ -320,6 +353,10 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
         {
           to: [samePods(RECEIVER.podLabels)],
           ports: [{ protocol: "TCP", port: RECEIVER.port }],
+        },
+        {
+          to: [samePods(STATE_API_PUBLIC.podLabels)],
+          ports: [{ protocol: "TCP", port: STATE_API_PUBLIC.port }],
         },
         { to: [PUBLIC_IPV4], ports: [{ protocol: "TCP", port: 443 }] },
         {
@@ -333,7 +370,7 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
     ),
   ];
 
-  const services = [STATE_API, RECEIVER].map((svc): Service => ({
+  const services = [STATE_API, STATE_API_PUBLIC, RECEIVER].map((svc): Service => ({
     apiVersion: "v1",
     kind: "Service",
     metadata: { name: svc.name, namespace: PLATFORM_NAMESPACE, labels: labels() },
@@ -363,14 +400,22 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
       env: [
         { name: "PORT", value: String(STATE_API.port) },
         secretEnv("DATABASE_URL", PLATFORM_SECRETS.stateApiDatabase),
+        { name: "PUBLIC_PORT", value: String(STATE_API_PUBLIC.port) },
         {
           name: secretEnvName(PLANNING_TOKEN_SHA256_PATH),
           valueFrom: {
             secretKeyRef: { ...PLATFORM_SECRETS.stateApiPlanningToken, optional: true },
           },
         },
+        {
+          name: secretEnvName(WINDMILL_PLAN_APPROVAL_TOKEN_PATH),
+          valueFrom: {
+            secretKeyRef: { ...PLATFORM_SECRETS.stateApiWindmillToken, optional: true },
+          },
+        },
       ],
       port: STATE_API.port,
+      publicPort: STATE_API_PUBLIC.port,
       probe: health(STATE_API.port, "/health"),
       resources: settings.resources.stateApi,
     },
@@ -422,6 +467,8 @@ interface DeploymentParts {
   args?: string[];
   env: EnvVar[];
   port: number;
+  /** A second, public port (the state API's, D-271). */
+  publicPort?: number;
   probe: ContainerProbe;
   resources: Resources;
 }
@@ -465,7 +512,18 @@ function deployment(
               imagePullPolicy: "IfNotPresent",
               ...(parts.args ? { args: parts.args } : {}),
               env: parts.env,
-              ports: [{ name: "http", containerPort: parts.port, protocol: "TCP" }],
+              ports: [
+                { name: "http", containerPort: parts.port, protocol: "TCP" },
+                ...(parts.publicPort === undefined
+                  ? []
+                  : [
+                      {
+                        name: "public",
+                        containerPort: parts.publicPort,
+                        protocol: "TCP" as const,
+                      },
+                    ]),
+              ],
               readinessProbe: parts.probe,
               livenessProbe: { ...parts.probe, periodSeconds: 30 },
               resources: parts.resources,

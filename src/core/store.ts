@@ -427,6 +427,11 @@ export interface StoreOps {
   listNodesForDecision(decisionId: string): Promise<string[]>;
   /** Decisions about a node: recorded on it, or linked to it through `node_decisions`. Oldest first. */
   listDecisionsForNode(nodeId: string): Promise<CurrentDecision[]>;
+  /**
+   * Decisions recorded on a node (`decisions.node_id`), without the `node_decisions` links, which
+   * the state API's database role cannot read. Oldest first.
+   */
+  listDecisionsRecordedOn(nodeId: string): Promise<CurrentDecision[]>;
 
   insertGateRequest(request: GateRequest): Promise<void>;
   getGateRequest(id: string): Promise<GateRequest | null>;

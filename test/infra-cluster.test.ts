@@ -7,6 +7,7 @@ import {
   DEFAULT_DATABASE_PORT,
   PLATFORM_POOL,
   RECEIVER,
+  STATE_API_PUBLIC,
   TUNNEL_EDGE_PORT,
   serviceUrl,
 } from "../infra/kubernetes/platform.ts";
@@ -231,7 +232,7 @@ describe("outputs (unit: D-188, D-195)", () => {
 });
 
 describe("receiver tunnel (unit: D-195)", () => {
-  it("routes one host name and the webhook path to the receiver's internal Service only", () => {
+  it("routes one host name and the webhook path to the receiver's internal Service, and the planning path only when set", () => {
     const config = only(
       cfCode,
       /resource\s+"cloudflare_zero_trust_tunnel_cloudflared_config"\s+"receiver"/,
@@ -239,7 +240,11 @@ describe("receiver tunnel (unit: D-195)", () => {
     const rules = [...config.matchAll(/service\s*=\s*([^\n]+)/g)].map((m) =>
       m[1]?.trim(),
     );
-    expect(rules).toEqual(["var.receiver_tunnel.service_url", '"http_status:404"']);
+    expect(rules).toEqual([
+      "var.receiver_tunnel.service_url",
+      "var.planning_service_url",
+      '"http_status:404"',
+    ]);
     expect(only(stackCode, /variable\s+"receiver_service_url"/)).toContain(
       `default     = "${serviceUrl(RECEIVER)}"`,
     );
@@ -252,6 +257,72 @@ describe("receiver tunnel (unit: D-195)", () => {
     expect(only(cfCode, /variable\s+"receiver_tunnel"/)).toMatch(
       /svc\\\\.cluster\\\\.local/,
     );
+    expect(only(cfCode, /variable\s+"planning_service_url"/)).toMatch(
+      /svc\\\\.cluster\\\\.local/,
+    );
+  });
+
+  it("forwards exactly the planning chat's paths to the state API's public Service, on the receiver's host name, only after Didi's tunnel gate (D-271, D-282)", () => {
+    const config = only(
+      cfCode,
+      /resource\s+"cloudflare_zero_trust_tunnel_cloudflared_config"\s+"receiver"/,
+    );
+    // The path is fixed in the module, not a setting, so no variable can widen it.
+    const paths = [...config.matchAll(/path\s*=\s*([^\n]+)/g)].map((m) => m[1]?.trim());
+    expect(paths).toEqual([
+      "var.receiver_tunnel.path",
+      `"${STATE_API_PUBLIC.tunnelPath}"`,
+      "null",
+    ]);
+    expect(config).toMatch(/var\.planning_service_url == null \? \[\] :/);
+    expect(only(cfCode, /variable\s+"planning_service_url"/)).toMatch(
+      /default\s*=\s*null/,
+    );
+    expect(stackCode).toMatch(
+      /planning_service_url\s*=\s*var\.expose_planning_route \? var\.planning_service_url : null/,
+    );
+    expect(only(stackCode, /variable\s+"expose_planning_route"/)).toMatch(
+      /default\s*=\s*false/,
+    );
+    expect(only(stackCode, /variable\s+"planning_service_url"/)).toContain(
+      `default     = "${serviceUrl(STATE_API_PUBLIC)}"`,
+    );
+    // No new DNS record: the path rides on the receiver's host name.
+    expect(blocks(cfCode, /resource\s+"cloudflare_dns_record"\s+"\w+"/)).toHaveLength(
+      2,
+    );
+  });
+
+  it("matches the planning chat's four paths and nothing else (D-282)", () => {
+    const tunnelPath = new RegExp(STATE_API_PUBLIC.tunnelPath);
+    for (const path of [
+      "/plans",
+      "/planning/projects/rehearsal/submissions",
+      "/planning/projects/rehearsal/feedback",
+      "/planning/projects/a-1/accepted",
+    ]) {
+      expect(tunnelPath.test(path), path).toBe(true);
+    }
+    for (const path of [
+      "/",
+      "/health",
+      "/ideas",
+      "/decisions",
+      "/attention",
+      "/plans/",
+      "/plans/extra",
+      "/xplans",
+      "/planning/projects/rehearsal",
+      "/planning/projects/rehearsal/runs",
+      "/planning/projects/rehearsal/submissions/extra",
+      "/planning/projects/Rehearsal/submissions",
+      "/planning/projects/-x/submissions",
+      "/planning/projects/a/b/submissions",
+      "/planning/projects/../submissions",
+      `/planning/projects/${"a".repeat(101)}/submissions`,
+    ]) {
+      expect(tunnelPath.test(path), path).toBe(false);
+    }
   });
 
   it("publishes the host name as a proxied CNAME to the tunnel", () => {

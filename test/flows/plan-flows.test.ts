@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
+import { run as planApprovalFlow } from "../../flows/plan-approval.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as requestTransition } from "../../flows/request-transition.ts";
 import { createLibrary } from "../../src/core/library.ts";
@@ -17,6 +18,7 @@ import {
   planApprovalTopic,
   type PlanSubmission,
 } from "../../src/core/plans.ts";
+import { createPlanningReads } from "../../src/core/planning-reads.ts";
 import type { GateRequest, Node } from "../../src/core/store.ts";
 import { MAP_COMMIT, PLAN, REPO_MAP } from "../triage-fixture.ts";
 import { REPO } from "../reconcile-fixture.ts";
@@ -132,6 +134,59 @@ describe("the planning chat's plan reaches Didi (flow, D-266)", () => {
     expect(
       await f.store.findOpenGateRequest(f.projectId, planApprovalTopic(ideaId)),
     ).toBe(null);
+  });
+});
+
+describe("the plan-approval flow the state API starts (flow, D-273 (2), D-274)", () => {
+  it("opens Didi's request at once; a repeat and the reconcile pass open nothing more", async () => {
+    const f = await live();
+    const ideaId = await submit(f);
+    const step = await planApprovalFlow(f.deps, { ideaId });
+    expect(step).toMatchObject({ ideaId, step: "opened" });
+    const request = await openRequest(f, ideaId);
+    expect(request).toMatchObject({ nodeId: ideaId, payload: { plan: PLAN, ideaId } });
+    const before = await f.footprint(ideaId);
+    expect(await planApprovalFlow(f.deps, { ideaId })).toEqual({
+      ideaId,
+      step: "waiting",
+    });
+    expect((await reconcileFlow(f.deps)).plans).toMatchObject([
+      { ideaId, step: "waiting" },
+    ]);
+    expect(await f.footprint(ideaId)).toBe(before);
+  });
+
+  it("when the start never came, the reconcile pass opens the request as the safety net", async () => {
+    const f = await live();
+    const ideaId = await submit(f);
+    expect((await reconcileFlow(f.deps)).plans).toMatchObject([
+      { ideaId, step: "opened" },
+    ]);
+    expect(await planApprovalFlow(f.deps, { ideaId })).toMatchObject({
+      step: "waiting",
+    });
+  });
+
+  it("in dry run or under the kill switch opens nothing, and an unknown idea is refused", async () => {
+    const f = await live();
+    const ideaId = await submit(f);
+    await f.setting("dry_run", true);
+    expect(await planApprovalFlow(f.deps, { ideaId })).toMatchObject({
+      step: "dry_run",
+    });
+    await f.live();
+    await f.killed();
+    expect(await planApprovalFlow(f.deps, { ideaId })).toMatchObject({
+      step: "kill_switch",
+    });
+    expect(
+      await f.store.findOpenGateRequest(f.projectId, planApprovalTopic(ideaId)),
+    ).toBe(null);
+    expect(
+      await planApprovalFlow(f.deps, {
+        ideaId: "00000000-0000-4000-8000-00000000ffff",
+      }),
+    ).toMatchObject({ step: "no_idea" });
   });
 });
 
@@ -336,5 +391,47 @@ describe("only the runner records plan_accepted (flow, D-230)", () => {
     await reconcileFlow(f.deps);
     expect(await stateOf(f, ideaId)).toBe("submitted");
     expect(await f.store.listRuns({ nodeId: ideaId })).toEqual([]);
+  });
+});
+
+describe("the planning chat's reads follow Didi's real answers (flow, D-273 (3))", () => {
+  it("shows an approved plan as approved and accepted, with its direction", async () => {
+    const f = await live();
+    const ideaId = await submit(f);
+    const reads = createPlanningReads(f.store);
+    await planApprovalFlow(f.deps, { ideaId });
+    expect(await reads.submissions(f.projectId)).toMatchObject([
+      { ideaId, status: "waiting" },
+    ]);
+    await answer(f, (await openRequest(f, ideaId)).id, "Approve");
+    expect(await reads.submissions(f.projectId)).toMatchObject([
+      { ideaId, status: "approved" },
+    ]);
+    expect(await reads.accepted(f.projectId)).toMatchObject([
+      { ideaId, plan: PLAN, productDirection: DIRECTION },
+    ]);
+    expect(await reads.feedback(f.projectId)).toEqual([]);
+  });
+
+  it("shows a plan sent back with Didi's words verbatim, and a resubmission as waiting", async () => {
+    const f = await live();
+    const ideaId = await submit(f);
+    const reads = createPlanningReads(f.store);
+    await planApprovalFlow(f.deps, { ideaId });
+    const words = "Split it in two.\nKeep the first part small.";
+    await answer(f, (await openRequest(f, ideaId)).id, "Request changes", words);
+    expect(await reads.submissions(f.projectId)).toMatchObject([
+      { ideaId, status: "sent_back" },
+    ]);
+    expect(await reads.feedback(f.projectId)).toMatchObject([
+      { ideaId, outcome: "changes_requested", feedback: words },
+    ]);
+    await submit(f, { ideaId, plan: "Plan, second version." });
+    expect(await reads.submissions(f.projectId)).toMatchObject([
+      { ideaId, status: "waiting" },
+    ]);
+    // The earlier feedback stays readable.
+    expect(await reads.feedback(f.projectId)).toHaveLength(1);
+    expect(await reads.accepted(f.projectId)).toEqual([]);
   });
 });

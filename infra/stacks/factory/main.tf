@@ -33,6 +33,10 @@ module "edge" {
     service_url = var.receiver_service_url
     publish_dns = var.publish_receiver_dns
   }
+
+  # D-271: the planning chat's POST /plans on the same tunnel and host name, only once Didi
+  # passes the tunnel gate at first hosting.
+  planning_service_url = var.expose_planning_route ? var.planning_service_url : null
 }
 
 output "cluster_id" {

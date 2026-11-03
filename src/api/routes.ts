@@ -2,8 +2,11 @@
 // who is calling and what that role may do, then records what the caller reports. No route
 // changes a node's state; only the runner moves nodes, through the library (essential 1).
 //
-// The planning chat's identity (D-266, ./auth.ts) may call `POST /plans` and nothing else, and no
-// run token may call `POST /plans`. Every other route refuses a planning caller with 403.
+// The planning chat's identity (D-266, ./auth.ts) may call `POST /plans` and the three planning
+// reads under `/planning/projects/:slug/` (D-273 (3)) and nothing else, and no run token may call
+// them. Every other route refuses a planning caller with 403. After a submission is recorded, the
+// API starts the plan-approval flow for it (D-273 (2)); if that fails the submission stands and
+// the reconcile pass opens the request later.
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
@@ -13,6 +16,9 @@ import {
   type Library,
 } from "../core/library.ts";
 import { createPlanSubmissions, readPlanSubmission } from "../core/plans.ts";
+import { createPlanningReads, PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
+import type { PlanApprovalFlow } from "../adapters/windmill/plan-approval-flow.ts";
+import type { Logger } from "../service-kit/logger.ts";
 import {
   OUT_OF_SCOPE_FINDINGS,
   readOutOfScopeFindings,
@@ -218,14 +224,28 @@ export interface ApiOptions {
   library: Library;
   clock: Clock;
   /**
-   * The planning chat's identity (D-266): the SHA-256 of its token, and the id source its
-   * submissions are recorded with. Left out, no planning token is accepted.
+   * The planning chat's identity (D-266): the SHA-256 of its token, the id source its
+   * submissions are recorded with, the port that starts the plan-approval flow after each
+   * submission (D-273 (2)) and the logger that notes a failed start. Left out, no planning token
+   * is accepted.
    */
-  planning?: { tokenSha256: string; ids: IdSource; store: Store };
+  planning?: {
+    tokenSha256: string;
+    ids: IdSource;
+    store: Store;
+    approvalFlow: PlanApprovalFlow;
+    logger: Logger;
+  };
 }
 
-/** The planning chat's only route (D-266). */
-const PLANS_PATH = /^\/plans$/;
+/** The planning chat's submission route (D-266). */
+export const PLANS_PATH = /^\/plans$/;
+
+/** The planning chat's reads (D-273 (3)): one project, by slug, and one of three reads. */
+export const PLANNING_READ_PATH =
+  /^\/planning\/projects\/([^/]+)\/(submissions|feedback|accepted)$/;
+
+const SLUG = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
 const SUBMIT_REFUSALS = {
   no_project: { status: 404, error: "project not found" },
@@ -242,6 +262,7 @@ export function createApiHandler({
   clock,
   planning,
 }: ApiOptions): RequestHandler {
+  const reads = createPlanningReads(store);
   const submissions = planning
     ? createPlanSubmissions({
         store: planning.store,
@@ -261,11 +282,47 @@ export function createApiHandler({
       const refusal = SUBMIT_REFUSALS[recorded.reason];
       throw new HttpError(refusal.status, refusal.error);
     }
+    await startApprovalFlow(recorded.ideaId);
     return {
       status: 201,
       body: { ideaId: recorded.ideaId, created: recorded.created },
     };
   }
+  /**
+   * Starts the plan-approval flow for the submission just recorded, so Didi's request opens at
+   * once (D-273 (2)). A failure never undoes the submission: the reconcile pass's plan approval
+   * step opens the request later (D-274). The log names the error's type only, never an id.
+   */
+  async function startApprovalFlow(ideaId: string): Promise<void> {
+    if (!planning) return;
+    try {
+      await planning.approvalFlow.start(ideaId);
+      planning.logger.info("plan approval flow started");
+    } catch (error) {
+      planning.logger.warn(
+        "plan approval flow not started; the reconcile pass opens the request",
+        { errorType: error instanceof Error ? error.name : typeof error },
+      );
+    }
+  }
+
+  /** One planning read for one project, framed as data (D-273 (3)). */
+  async function readPlanning(slug: string, read: string) {
+    if (!SLUG.test(slug)) throw new HttpError(404, "project not found");
+    const project = await store.getProjectBySlug(slug);
+    if (!project) throw new HttpError(404, "project not found");
+    const data =
+      read === "submissions"
+        ? { submissions: await reads.submissions(project.id) }
+        : read === "feedback"
+          ? { feedback: await reads.feedback(project.id) }
+          : { acceptedPlans: await reads.accepted(project.id) };
+    return {
+      status: 200,
+      body: { notice: PLANNING_DATA_NOTICE, project: slug, read, data },
+    };
+  }
+
   /** A node the caller may see: it exists and belongs to the caller's project, or 404. */
   async function nodeInProject(caller: Caller, nodeId: string): Promise<Node> {
     const node = await store.getNode(nodeId);
@@ -463,20 +520,24 @@ export function createApiHandler({
   ): Promise<boolean> => {
     const path = pathOnly(request.url);
     const plans = request.method === "POST" && PLANS_PATH.test(path);
+    const planningRead =
+      request.method === "GET" ? PLANNING_READ_PATH.exec(path) : null;
     const route = routes.find((r) => r.method === request.method && r.path.test(path));
-    if (!route && !plans) return false;
+    if (!route && !plans && !planningRead) return false;
     try {
       const planningCaller = isPlanningCaller(
         request.headers.authorization,
         planning?.tokenSha256 ?? null,
       );
-      if (plans) {
+      if (plans || planningRead) {
         if (planningCaller) {
-          const result = await submitPlan(request);
+          const result = planningRead
+            ? await readPlanning(planningRead[1] ?? "", planningRead[2] ?? "")
+            : await submitPlan(request);
           sendJson(response, result.status, result.body);
           return true;
         }
-        // A run token is never the planning chat (D-266).
+        // A run token is never the planning chat (D-266, D-273).
         const agent = await authenticate(
           store,
           request.headers.authorization,
@@ -487,7 +548,7 @@ export function createApiHandler({
           : new HttpError(401, "unauthorized");
       }
       if (!route) return false;
-      // The planning chat may call nothing but `POST /plans` (D-266).
+      // The planning chat may call nothing but its own routes (D-266, D-273 (3)).
       if (planningCaller) throw new HttpError(403, "this role may not do that");
       const caller = await authenticate(
         store,
