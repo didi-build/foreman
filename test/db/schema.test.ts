@@ -478,6 +478,34 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("lets a newer gate request supersede the open one, checking the reference at commit (migration 0016, O-88)", () => {
+      const [older, newer] = [
+        "00000000-0000-4000-8000-0000000000d1",
+        "00000000-0000-4000-8000-0000000000d2",
+      ];
+      const open = (id: string) =>
+        `insert into factory.gate_requests (id, project_id, topic_key, kind, owner, blocking, status, created_at)
+       values ('${id}', '${ID.project}', 'scope:supersede', 'scope', 'didi', true, 'open', ${AT});`;
+      const supersede = (by: string) =>
+        `update factory.gate_requests set status = 'superseded', superseded_by = '${by}'
+       where id = '${older}' and status = 'open';`;
+      const first = sql(open(older), "factory_runner");
+      expect(first.ok, first.err).toBe(true);
+      // A reference to a request no transaction inserts still fails, at commit.
+      expectRejected(
+        sql(supersede("00000000-0000-4000-8000-0000000000d9"), "factory_runner"),
+        /gate_requests_superseded_by_fkey/,
+      );
+      // The library's order: close the open one naming the newer, then insert the newer.
+      const both = sql(supersede(newer) + open(newer), "factory_runner");
+      expect(both.ok, both.err).toBe(true);
+      const statuses = sql(
+        `select string_agg(status, ',' order by id) from factory.gate_requests
+       where topic_key = 'scope:supersede';`,
+      );
+      expect(statuses.out).toBe("superseded,open");
+    });
+
     it("rejects self edges", () => {
       expectRejected(
         sql(

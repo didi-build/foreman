@@ -27,7 +27,8 @@ flows:
     # which starts the fix round of an item a failed QA round or staging check sent back (O-41).
     # Its plan approval pass opens Didi's request for each plan the planning chat submitted and
     # takes the idea's move on Didi's answer (D-266); its hold release pass releases a held item
-    # Didi approved (D-269).
+    # Didi approved (D-269); its option capture pass captures each design item's exploration
+    # options once CI has rendered them and opens Didi's visual-approval request (O-88).
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
@@ -76,6 +77,17 @@ flows:
     # flow (platform/state-api/windmill-plan-approval-token, below). One run per submission. It
     # opens Didi's plan-approval request at once; the reconcile flow's plan approval pass stays
     # as the safety net for a start that failed.
+    trigger: called
+
+  - name: option_capture
+    path: f/foreman/option_capture
+    entry: flows/option-capture.ts
+    # Called with a design item's id once CI has finished on its PR head (O-88, D-274). It
+    # captures the Designer's exploration options from CI's `options` bundle, opens Didi's
+    # visual-approval request and asks again for the Designer report's move into Waiting for
+    # Didi. Who calls it on CI's end is open, as for verify_staging: the receiver records the
+    # delivery and holds no Windmill credential. The run-end flow tries the same capture at a
+    # Designer run's end, and the reconcile flow's capture pass is the backstop.
     trigger: called
 
   - name: request_transition

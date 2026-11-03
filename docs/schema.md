@@ -129,7 +129,7 @@ Enforcement: no UPDATE or DELETE for any application role (revoke, or a trigger 
 | supersedes_id | uuid null   | A new record replaces an old one without editing it                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ingest_key    | text null   | Unique. Only on `ci_run` and `merge_commit` (migration 0002, ADR 0113), so webhooks and polling record a fact once, and on the runner's `staging_deploy`, `staging_check` and `staging_no_result` (migration 0011, M3.4) and `staging_deploy_failed` (migration 0012, D-225), so each staging fact is recorded once. The runner's merge uses the same key for its `merge_commit` (M3.3). The runner's `failure_count` carries one too (migration 0013), so each count is recorded once |
 
-The runner writes `visual_comparison` (from a checked `qa:visual` answer, on the run's head commit, `ref` `runner:visual_comparison:run-<run id>`) and an option's `screenshot` (on the commit the option was captured at); their payloads are in `docs/guards.md` (D-242, O-66). No migration: both kinds were in the first schema, and `visual_comparison` already needs a commit.
+The runner writes `visual_comparison` (from a checked `qa:visual` answer, on the run's head commit, `ref` `runner:visual_comparison:run-<run id>`) and an option's `screenshot` (on the commit the option was captured at, by option capture, O-88); their payloads are in `docs/guards.md` (D-242, O-66). No migration: both kinds were in the first schema, and `visual_comparison` already needs a commit.
 
 Rule: a guard reads only evidence whose `commit_sha` equals the PR's current head commit. A new commit makes earlier verdicts stale automatically.
 
@@ -181,7 +181,7 @@ When a decision is reversed, every node in this table for that decision is marke
 | superseded_by                             | uuid null   |                                                                                                                                                                                                     |
 | created_at, answered_at, last_notified_at | timestamptz |                                                                                                                                                                                                     |
 
-Constraint: a unique partial index on (topic_key) where status = `open`.
+Constraint: a unique partial index on (topic_key) where status = `open`. The reference `superseded_by` is checked when the transaction commits (migration 0016, O-88), so a newer request can supersede the open one in one transaction: the open one is closed naming the newer, then the newer is inserted.
 
 The `scope` kind is also used for a held work item's release request (D-269, O-77): not blocking, on `hold-release:<node id>`, payload `{question, title, description, ideaId, note?}` and no options; and for the planning chat's plan-approval request (D-266, O-78): blocking, on `plan-approval:<idea id>`, payload `{question, title, plan, productDirection, answers, ideaId, submissionId}` and no options.
 
