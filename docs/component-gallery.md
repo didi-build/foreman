@@ -4,15 +4,15 @@ Every Launchpad-derived repo includes a **component gallery**: a `/gallery` rout
 
 ## Who edits what
 
-| Role          | `design/` (spec files under `design/<area>/<feature>/`) | `components/` (gallery implementations)                                                     |
-| ------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Designer**  | Create and update specs (Diadem approves them).         | Build or update gallery components from the spec after Diadem approves it.                  |
-| **Developer** | No edits                                                | Yes, only for non-design changes: props or tiny non-design wiring fixes                     |
-| **QA**        | Read specs                                              | Verify gallery components match the approved spec (no second Diadem approval on components) |
+| Role          | `design/` (spec files under `design/<area>/<feature>/`)                   | `components/` (gallery implementations)                                                   |
+| ------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **Designer**  | Create and update specs from the option Didi approved (no spec approval). | Build or update gallery components from the merged spec.                                  |
+| **Developer** | No edits                                                                  | Yes, only for non-design changes: props or tiny non-design wiring fixes                   |
+| **QA**        | Read specs                                                                | Verify gallery components match the approved spec (no second Didi approval on components) |
 
 The **`design/` tree is designer-only.** Developers wire components from the gallery into `src/` (or your app tree) and do not change specs.
 
-For Linear status names and handoffs (design ticket, developer counterpart, Diadem approval, QA), see [Design ticket flow](./design-workflow.md).
+For Linear status names and handoffs (design ticket, developer counterpart, Didi's visual approval, QA), see [Design ticket flow](./design-workflow.md).
 
 ## Directories
 
