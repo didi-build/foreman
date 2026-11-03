@@ -10,7 +10,9 @@
 // per run and repository from the role's App, through the `InstallationTokens` port (D-156, D-159,
 // D-178); it is minted last, so a run that would be refused for another reason mints none. QA's
 // visual comparison gets neither the token nor the fetch step's hosts, since it reads only the
-// images in its task file (N-57). Neither value is kept, logged, or put in the task file or the
+// images in its task file (N-57). The Council's call on a visual approval (task type
+// `council:visual`, D-270) carries the option screenshots, and no other Council run carries any.
+// Neither value is kept, logged, or put in the task file or the
 // run's spec: `buildKubernetesTask` passes them to `start` in `credentials` only.
 import {
   buildKubernetesTask,
@@ -29,6 +31,7 @@ import {
 } from "../../src/adapters/github/installation-tokens.ts";
 import type { AgentRole, Store } from "../../src/core/store.ts";
 import { PUSHING_ROLES } from "../../src/core/task-input.ts";
+import { VISUAL_CALL_TASK_TYPE } from "../../src/core/visual-call.ts";
 import { VISUAL_TASK_TYPE } from "../../src/core/visual-comparison.ts";
 import type { RunToStart, TaskSource } from "./compose.ts";
 
@@ -89,6 +92,14 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         : { ...entry };
 
       const visual = role === "qa" && run.taskType === VISUAL_TASK_TYPE;
+      const visualCall = role === "council" && run.taskType === VISUAL_CALL_TASK_TYPE;
+      const withImages = visual || visualCall;
+      if (visualCall && (!start.images || start.images.length === 0)) {
+        throw new Error("the Council's visual call needs the option screenshots");
+      }
+      if (!withImages && start.images !== undefined) {
+        throw new Error("only a visual comparison or visual call run carries images");
+      }
       let outputSchema: Record<string, unknown> | undefined;
       if (visual) {
         // The visual comparison's answer schema and its images (D-242); the core read the schema
@@ -113,7 +124,8 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
             ]),
           ]
         : [...bot.allowedHosts];
-      // A task type with instructions of its own uses them (QA's `qa:visual`, D-242).
+      // A task type with instructions of its own uses them (QA's `qa:visual`, D-242, the
+      // Council's `council:visual`, D-270).
       const instructions = bot.taskInstructions?.[run.taskType] ?? bot.instructions;
       const botFile: KubernetesBotFile = {
         image,
@@ -155,7 +167,7 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         providers: [provider],
         input: start.input,
         evidenceIds: start.evidenceIds,
-        ...(visual
+        ...(withImages
           ? {
               images: (start.images ?? []).map((image) => ({
                 label: image.label,

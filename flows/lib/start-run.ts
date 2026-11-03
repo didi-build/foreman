@@ -5,7 +5,9 @@
 // 1. Read the item and build the run's input (D-213), with why the item came back on a fix round
 //    (O-41). A malformed item refuses here, before anything is written. A Council run's input is
 //    its question instead, with the output schema of the question's kind (src/core/council.ts,
-//    D-228); a question no longer open refuses here. A QA run of task type `qa:visual` gets the
+//    D-228); a question no longer open refuses here. The Council's call on a visual approval
+//    (D-270) has task type `council:visual` and gets the option screenshots as images; one whose
+//    screenshots cannot be read refuses here. A QA run of task type `qa:visual` gets the
 //    runner's visual comparison instead: the image pairs with their located differences and the
 //    spec sections, and the visual answer schema (src/core/visual-comparison.ts, D-242, D-250); a
 //    comparison that cannot be built (no approved option, a screenshot missing or changed)
@@ -30,6 +32,10 @@
 // written.
 import { createBuilderRuns } from "../../src/core/builder-runs.ts";
 import { createCouncil } from "../../src/core/council.ts";
+import {
+  VISUAL_CALL_PREFIX,
+  VISUAL_CALL_TASK_TYPE,
+} from "../../src/core/visual-call.ts";
 import { createFailures } from "../../src/core/failures.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { createTriage } from "../../src/core/triage.ts";
@@ -107,7 +113,15 @@ export async function startRun(
 ): Promise<StartRunResult> {
   const runs = createRuns(deps);
   const { runtime, botVersion } = deps.bots[input.role];
-  const request = { ...input, runtime, botVersion };
+  // A Council run's task type follows its question: the visual call is routed as `council:visual`
+  // (D-270), every other question as the Council's default.
+  const taskType =
+    input.role === "council"
+      ? input.questionTopic?.startsWith(VISUAL_CALL_PREFIX)
+        ? VISUAL_CALL_TASK_TYPE
+        : null
+      : input.taskType;
+  const request = { ...input, taskType, runtime, botVersion };
   if (await dryRunOn(deps.store)) {
     const plan = await runs.planDispatch(request);
     return plan.admitted
@@ -122,13 +136,17 @@ export async function startRun(
   const branch = PUSHING_ROLES.includes(input.role) ? runBranch(node.id) : null;
   // A fix round's input says why the item came back (D-213, O-41).
   const returned = branch ? await createBuilderRuns(deps).returnReason(node.id) : null;
-  const council =
+  const councilTask =
     input.role === "council" && input.questionTopic
       ? await createCouncil(deps).taskFor(input.questionTopic)
       : null;
-  if (input.role === "council" && !council) {
+  if (input.role === "council" && !councilTask) {
     return { outcome: "not_started", reason: "no_open_question", failedGuards: [] };
   }
+  if (councilTask && "refused" in councilTask) {
+    return { outcome: "not_started", reason: councilTask.refused, failedGuards: [] };
+  }
+  const council = councilTask;
   // A Triage run's input is the idea's accepted plan and the repo map brief at the default
   // branch's head now; the run records that commit as its headSha, so its answer is checked
   // against the same map (src/core/triage.ts, D-251, D-262).
@@ -219,6 +237,7 @@ export async function startRun(
       capacity,
       stateApiToken,
       ...(council ? { outputSchema: council.outputSchema } : {}),
+      ...(council?.images ? { images: council.images } : {}),
       ...(visual ? { outputSchema: visual.outputSchema, images: visual.images } : {}),
     });
     handle = await deps.runtime.start(task, deps.limits[input.role]);

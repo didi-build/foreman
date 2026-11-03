@@ -2,7 +2,7 @@
 // the runner read from the store (src/core/council.ts gathers it). The input is data, never
 // instructions: every piece of item, decision or agent text is quoted line by line under a fixed
 // heading, as in src/core/task-input.ts, and cut to a limit that says so. Only the question and
-// the headings are the runner's own words. Two kinds of question:
+// the headings are the runner's own words. Three kinds of question:
 //
 // - An escalation: the item, the state it was escalated from, why the runner escalated it, its
 //   counters, the failures counted toward `failure`, QA's latest failed findings and the latest
@@ -12,6 +12,8 @@
 //   follow-up run after Didi answered the reversal's gate request (D-234) also carries Didi's
 //   answer: the page's choice and Didi's words, quoted and cut, and lists only the items still
 //   stale from the reversal.
+// - The call on a visual approval (D-263, D-270): the item and the labels of the option
+//   screenshots that follow the input as images.
 import type { QaFinding } from "./guards/evidence.ts";
 import type { Node } from "./store.ts";
 import { commit, cut, list, quoted, readItemBody, section } from "./task-input.ts";
@@ -278,6 +280,38 @@ export function reversalInput(input: ReversalInput): string {
                 ]
               : []),
           ].join("\n\n"),
+    ),
+  );
+  return `${parts.join("\n\n")}\n`;
+}
+
+export interface VisualCallInput {
+  node: Pick<Node, "id" | "title" | "body" | "track">;
+  /** The image labels, in order, one per option of the request (src/core/visual-call.ts). */
+  imageLabels: string[];
+}
+
+/** The input of the Council's call on a visual approval (D-263, D-270). */
+export function visualCallInput(input: VisualCallInput): string {
+  const { node } = input;
+  const parts = header(
+    [
+      "Didi has been asked to approve one of the options below for this item. Is this a small visual tweak the Council would approve, or does it need Didi?",
+      "Answer `call` with `small_tweak_council_would_approve` or `needs_didi`, and say why in `reason`, in at most 1,000 characters.",
+      "Didi still answers the request. Your call is only recorded next to Didi's answer (D-263); it never reaches Didi and changes nothing about the request.",
+    ].join("\n\n"),
+  );
+  parts.push(
+    section("Item id", node.id),
+    section("Title", quoted(cut(oneLine(node.title), L.titleChars))),
+    section("Track", node.track ?? "(none)"),
+    ...itemSections(node),
+    section(
+      "The options",
+      [
+        "Each option is one screenshot of the whole option page, sent after this input with its label:",
+        ...input.imageLabels.map((label) => `- ${label}`),
+      ].join("\n"),
     ),
   );
   return `${parts.join("\n\n")}\n`;

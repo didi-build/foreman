@@ -91,6 +91,8 @@ export const TEST_TASK_TYPES: TaskTypes = {
     "qa:visual":
       "QA's visual comparison of a design item's components with the approved option (D-242).",
     council: "A Council question.",
+    "council:visual":
+      "The Council's call on a visual approval, from the option screenshots (D-263, D-270).",
     triage: "Triage, and similar short classification or breakdown work.",
   },
   roles: {
@@ -100,7 +102,7 @@ export const TEST_TASK_TYPES: TaskTypes = {
     },
     designer: { allowed: ["designer"], default: "designer" },
     qa: { allowed: ["qa:review", "qa:visual"], default: "qa:review" },
-    council: { allowed: ["council"], default: "council" },
+    council: { allowed: ["council", "council:visual"], default: "council" },
     triage: { allowed: ["triage"], default: "triage" },
   },
 };

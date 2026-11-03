@@ -207,6 +207,37 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     );
   });
 
+  it("builds the Council's visual call task: its draft instructions, its schema and the option screenshots, no token (D-270)", async () => {
+    const { tasks, minted } = source();
+    const start = startFor("council", {
+      outputSchema: BOTS.council.outputSchemas?.visual_call,
+    });
+    (start.run as { taskType: string }).taskType = "council:visual";
+    start.images = [
+      { label: "Image 1: option a", png: new Uint8Array([137, 80, 78, 71]) },
+    ];
+    const task = (await tasks.taskFor(start)) as KubernetesAgentTask;
+    const { file, spec, credentials } = acceptedByRuntime("council", task);
+    expect(spec.visual).toBeUndefined();
+    expect(credentials.githubToken).toBeUndefined();
+    expect(minted).toEqual([]);
+    expect(file.instructions).toBe(BOTS.council.taskInstructions?.["council:visual"]);
+    expect(file.outputSchema).toEqual(BOTS.council.outputSchemas?.visual_call);
+    expect(file.images).toEqual([
+      { label: "Image 1: option a", mediaType: "image/png", data: "iVBORw==" },
+    ]);
+    // Without its screenshots the visual call is refused; another Council run takes none.
+    delete start.images;
+    await expect(tasks.taskFor(start)).rejects.toThrow(
+      "the Council's visual call needs the option screenshots",
+    );
+    const other = startFor("council", { outputSchema: COUNCIL_SCHEMA });
+    other.images = [{ label: "Image 1: option a", png: new Uint8Array([1]) }];
+    await expect(tasks.taskFor(other)).rejects.toThrow(
+      "only a visual comparison or visual call run carries images",
+    );
+  });
+
   it("keeps QA's review task as it was: no images, no schema, the review instructions, its fetch step and read token", async () => {
     const { tasks, minted } = source();
     const task = (await tasks.taskFor(startFor("qa"))) as KubernetesAgentTask;

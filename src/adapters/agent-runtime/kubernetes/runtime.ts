@@ -210,9 +210,15 @@ export function createKubernetesRuntime(options: {
     async start(task, limits) {
       const { credentials, task: taskFile, ...spec } = task;
       checkRunSpec(spec, limits);
-      // The visual comparison's images are in its task file, and only it carries them (D-242).
-      if ((spec.visual === true) !== (taskFile.images !== undefined)) {
-        throw new Error("only a visual comparison run carries images");
+      // The visual comparison's images are in its task file, and of QA's runs only it carries
+      // them (D-242). A Council run may carry the option screenshots of its visual call (D-270);
+      // it has no fetch step either way. No other run carries images.
+      if (
+        spec.role === "council"
+          ? false
+          : (spec.visual === true) !== (taskFile.images !== undefined)
+      ) {
+        throw new Error("only a visual comparison or Council run carries images");
       }
       const namespace = agentNamespace(spec.projectSlug);
       // Build everything first, so a bad input fails before anything is created.

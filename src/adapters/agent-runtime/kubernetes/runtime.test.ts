@@ -264,8 +264,42 @@ describe("QA's visual comparison (adapter contract: no fetch step, D-242, N-57)"
     );
     const reviewWithImages = { ...task(QA), task: visualTask().task };
     await expect(runtime.start(reviewWithImages, QA_LIMITS)).rejects.toThrow(
-      "only a visual comparison run carries images",
+      "only a visual comparison or Council run carries images",
     );
+    expect(created()).toEqual([]);
+  });
+});
+
+describe("the Council's visual call (adapter contract: images, no fetch step, D-270)", () => {
+  const images = [
+    { label: "Image 1: option a", mediaType: "image/png" as const, data: "iVBORw==" },
+  ];
+
+  it("starts a Council run with the option screenshots in its task file", async () => {
+    const handle = await runtime.start(
+      { ...task(COUNCIL), task: { ...taskFor(COUNCIL), images } },
+      LIMITS,
+    );
+    const n = runNames(COUNCIL.runId);
+    expect(created()).not.toContain(`create Job/${n.fetchJob}`);
+    expect(created()).not.toContain(`create Secret/${n.githubTokenSecret}`);
+    const file = fake.get<Secret>("Secret", NS, n.taskSecret);
+    expect(JSON.parse(file?.stringData["task.json"] ?? "{}")).toMatchObject({ images });
+    expect(handle.spec.visual).toBeUndefined();
+  });
+
+  it("refuses images on a Triage run", async () => {
+    const triage: KubernetesRunSpec = { ...COUNCIL, role: "triage" };
+    await expect(
+      runtime.start(
+        {
+          ...triage,
+          credentials: credentialsFor(triage),
+          task: { ...taskFor(triage), images },
+        },
+        LIMITS,
+      ),
+    ).rejects.toThrow("only a visual comparison or Council run carries images");
     expect(created()).toEqual([]);
   });
 });

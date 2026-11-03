@@ -331,6 +331,34 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
     expect((await t.store.getRun(developer))?.questionTopic).toBeNull();
   });
 
+  it("gives a Council visual call task type council:visual, and no other Council question (D-270)", async () => {
+    const t = await setup();
+    const nodeId = await t.item();
+    const visualTopic = `visual-call:${nodeId}`;
+    await expect(
+      t.runs.dispatch(
+        t.request(nodeId, "council", { questionTopic: visualTopic }),
+        credential(),
+      ),
+    ).rejects.toThrow("A Council visual call has task type council:visual");
+    await expect(
+      t.runs.dispatch(
+        t.request(nodeId, "council", { taskType: "council:visual" }),
+        credential(),
+      ),
+    ).rejects.toThrow("A Council visual call has task type council:visual");
+    // With the right task type it is routed as council:visual: no policy entry, so no route.
+    expect(
+      await t.runs.dispatch(
+        t.request(nodeId, "council", {
+          questionTopic: visualTopic,
+          taskType: "council:visual",
+        }),
+        credential(),
+      ),
+    ).toMatchObject({ admitted: false, reason: "no_route" });
+  });
+
   it("allows at most agent_cluster_max_active_runs active runs across all projects", async () => {
     const t = await setup(2);
     await t.started(t.request(await t.item()));

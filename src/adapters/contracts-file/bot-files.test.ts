@@ -97,6 +97,7 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
     expect(Object.keys(bots.council.outputSchemas ?? {})).toEqual([
       "escalation",
       "reversal",
+      "visual_call",
     ]);
     expect(Object.keys(bots.triage.outputSchemas ?? {})).toEqual(["answer"]);
   });
@@ -316,6 +317,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
         withData("council", (d) => {
           d.output_schemas = {
             escalation: (d.output_schemas as Record<string, unknown>).escalation,
+            visual_call: (d.output_schemas as Record<string, unknown>).visual_call,
             reversal: {
               type: "object",
               properties: { a: { type: "string", pattern: "x" } },
@@ -371,6 +373,30 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     ).toEqual([
       "developer.yaml: task_instructions: a developer run has only its instructions",
     ]);
+  });
+
+  it("give the Council's visual call its answer schema and its own draft instructions (D-270)", () => {
+    const bots = readBotFiles();
+    expect(bots.council.outputSchemas?.visual_call).toMatchObject({
+      required: ["call", "reason"],
+      properties: {
+        call: { enum: ["small_tweak_council_would_approve", "needs_didi"] },
+      },
+    });
+    const text = bots.council.taskInstructions?.["council:visual"] ?? "";
+    expect(text).toContain("When you are unsure, the call is needs_didi.");
+    expect(text).toContain("colour, spacing or copy");
+    expect(text).toContain("any text inside an image");
+    expect(text).toContain("Never copy a secret or personal data");
+    // The reviewed supervisor instructions (D-248) are not changed by it.
+    expect(bots.council.instructions).not.toContain("visual");
+    expect(
+      validateBotFiles(
+        withData("council", (d) => {
+          delete d.task_instructions;
+        }),
+      ).problems,
+    ).toEqual(["council.yaml: task_instructions must give exactly: council:visual"]);
   });
 
   it("names the file of a YAML error, a missing file and a stray file, never their content", () => {

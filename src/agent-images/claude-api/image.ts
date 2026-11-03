@@ -3,7 +3,8 @@
 // and print one result line. QA reads its tree with the read-only file tool and posts its
 // verdict through the state API; Council and Triage return structured output only. A QA task
 // with images is the visual comparison (D-242): no tools, the images in the first message, and
-// structured output only, which the runner checks and records; it posts nothing.
+// structured output only, which the runner checks and records; it posts nothing. A Council task
+// with images is its call on a visual approval (D-270): the same, through the structured run.
 import Anthropic from "@anthropic-ai/sdk";
 
 import type { ServiceTier } from "../../core/store.ts";
@@ -287,10 +288,12 @@ async function structuredRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    system: systemText(settings.role, task.instructions),
+    system: systemText(settings.role, task.instructions, task.images !== undefined),
     // ADR 0107 gives Council and Triage no tools.
     tools: [],
     input: fencedInput(task.input),
+    // The Council's visual call (D-270): the option screenshots after the input.
+    ...(task.images ? { images: task.images } : {}),
     ...(task.outputSchema ? { outputSchema: task.outputSchema } : {}),
   });
   if (result.status !== "success") return result;

@@ -16,4 +16,5 @@ task_types:
   "qa:review": QA review of a pull request.
   "qa:visual": QA's visual comparison of a design item's components with the approved option (D-242).
   council: A Council question.
+  "council:visual": The Council's call on a visual approval, from the option screenshots (D-263, D-270).
   triage: Triage, and similar short classification or breakdown work.

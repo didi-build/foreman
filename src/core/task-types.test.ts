@@ -13,7 +13,7 @@ const roles = {
   },
   designer: { allowed: ["designer"], default: "designer" },
   qa: { allowed: ["qa:review", "qa:visual"], default: "qa:review" },
-  council: { allowed: ["council"], default: "council" },
+  council: { allowed: ["council", "council:visual"], default: "council" },
   triage: { allowed: ["triage"], default: "triage" },
 };
 
@@ -23,7 +23,7 @@ const file = (extra: Record<string, unknown> = {}) => ({
 });
 
 describe("task types (unit, ADR 0114 section 1)", () => {
-  it("accepts the seven task types with each role's allowed list and default", () => {
+  it("accepts the eight task types with each role's allowed list and default", () => {
     expect(validateTaskTypes("e".repeat(40), file(), roles)).toEqual({
       taskTypes: TEST_TASK_TYPES,
       problems: [],
