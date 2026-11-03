@@ -65,7 +65,9 @@ Decided in M3.2 (D-213); no earlier document gave `body` a shape. The dispatch r
 | `pathsInScope`       | list of text | The repository paths the work should stay within                                       |
 | `checks`             | list of text | The repository checks that must pass before a push, for example `npm run check` (N-33) |
 
-A field of the wrong type refuses the dispatch before anything is written, and the error names the field, never its value. A missing field is stated as missing in the input. Who fills these fields is settled with Triage (M3.6); until then they are written when the item is created.
+A field of the wrong type refuses the dispatch before anything is written, and the error names the field, never its value. A missing field is stated as missing in the input.
+
+Triage fills these fields (M3.6, D-262). When the runner hands a checked Triage answer off, each work item it creates also carries `source` (`triage`), `ideaId` (the idea it was split from), `triageRunId` (the Triage run whose answer it came from) and `triageKey` (the item's key in that answer), and its `hold` column is the answer's hold flag (O-71 to O-74). An item made another way has the fields it was written with.
 
 ### Idea body from a run's finding
 
@@ -222,6 +224,10 @@ Constraint: a unique partial index on (topic_key) where status = `open`.
 | question_topic         | text null    | Only on a Council run: the topic key of the question it answers, `escalation:<node id>` or `decision-reversed:<decision id>` (migration 0014, D-228) |
 
 A run is active while `ended_at` is null. Dispatch admission reads the active runs (index `runs_active`) under one advisory lock, in the transaction that inserts the run (ADR 0106 section 7, `src/core/runs.ts`).
+
+A Triage run's `head_sha` is the commit of the repo map its input carried (D-251, O-72): the runner checks its answer against the map at that commit. Only a QA run's `head_sha` is a pull request's head.
+
+Each work item the Triage handoff creates gets one `decision_point_records` row in the handoff's transaction: decision point `triage_track`, decider `triage_answer_path_rule_v1`, the hash of the item's title, description and paths, the output `{track, pathTrack, agrees, runId, key}` and confidence 1 for a code, infra or docs track the path rule confirms, 0.5 for design, which only Triage's judgement decides (D-264, O-73). No text from the answer is in the record.
 
 The route (`model` and the columns from `task_type` to `model_catalog_version`) is chosen by `src/core/routing.ts` when the run is admitted and written in the same transaction, with a `decision_point_records` row (decision point `model_route`, decider `model_route_rule_v1`, confidence 1). The route columns are not null with no default: migration 0005 stops if `runs` already holds a row, because a run recorded before routing has no route to fill in.
 
