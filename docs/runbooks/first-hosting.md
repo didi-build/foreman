@@ -117,6 +117,8 @@ Set `TF_VAR_expose_planning_route=true`, plan, and check the plan changes only `
 
 Create the Anthropic API key for agent runs with a monthly spending limit at the provider (D-143, D-185). Store it at its secret path in Windmill resources. The runner puts it only into each run's egress proxy Secret; no agent holds it.
 
+The visual task types (`council:visual`, `qa:visual`) have no entry in `model_routing_policy` or `model_output_token_needs` yet, so a visual call or visual QA run is refused with `no_route` until they do. Once the vision model test at this step picks the model, add both entries with a reviewed migration, as 0019 did for the close runs.
+
 ## 13. The GitHub Apps (D-178)
 
 Register the GitHub Apps of D-156 together, each with its own identity. The runner App's webhook URL is `https://<receiver host name>/github/webhook`, with the webhook secret from step 10. Their private keys stay with the runner, never on the cluster.
