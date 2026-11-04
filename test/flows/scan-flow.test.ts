@@ -28,7 +28,7 @@ function scanOf(targets: string[]): RepoScan {
     counts,
     findings: targets.map((target, i) => ({
       check: "doc_link_missing",
-      path: "docs/guide.md",
+      path: `docs/guide-${i + 1}.md`,
       line: i + 1,
       target,
     })),
@@ -290,7 +290,7 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
       `Scan: last ran 2026-10-31 08:00 UTC at commit ${SHA.slice(0, 12)}: 6 findings (doc_link_missing 6); 5 new ideas, 0 merged as duplicates, 0 folded into open ideas, 1 over the cap of 5.`,
     );
     expect(text).toContain(
-      `- new idea "Broken link in docs/guide.md to docs/a.md" (item ${ideas[0]?.id}), drift, doc_link_missing`,
+      `- new idea "Broken link in docs/guide-1.md to docs/a.md" (item ${ideas[0]?.id}), drift, doc_link_missing`,
     );
   });
 });

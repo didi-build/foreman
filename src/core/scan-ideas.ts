@@ -18,7 +18,8 @@
 //   nothing new is recorded for it. So is a finding whose key is a Parked or Rejected scanner
 //   idea's, until that idea is reopened (D-301 (1)).
 // - Fold in (D-301 (2)): a new finding with the same check and the same file as a scanner idea
-//   that was open when the scan began is added to the oldest such idea as `scan_scope_update`
+//   that was open when the scan began, or that this scan filed earlier (D-304), is added to the
+//   oldest such idea as `scan_scope_update`
 //   evidence on the scan's commit, `{check, path, line, target, dedupeKey}`, append-only. Its key
 //   is then the idea's, so later scans merge it. Folded findings do not count toward the cap.
 // - Cap: at most `SCAN_IDEA_CAP` (5) new ideas per scan; new findings past it, and findings the
@@ -337,6 +338,7 @@ export function createScanIdeas({
         const scanId = ids.next();
         const ref = `${SCAN_TRIGGER_PREFIX}${scanId}`;
         const newIdeas: ScanNewIdea[] = [];
+        const filedByFile = new Map<string, { id: string; title: string }>();
         const folded: ScanFolded[] = [];
         let merged = 0;
         for (const finding of scan.findings) {
@@ -345,11 +347,14 @@ export function createScanIdeas({
             merged += 1;
             continue;
           }
-          const into = openByFile.get(`${finding.check}\u0000${finding.path}`);
+          const where = `${finding.check}\u0000${finding.path}`;
+          // An idea open when the scan began, or one this scan filed earlier for the same check
+          // and file (D-304), so the result does not depend on which day a finding first shows.
+          const into = openByFile.get(where)?.node ?? filedByFile.get(where);
           if (into) {
             await tx.insertEvidence({
               id: ids.next(),
-              nodeId: into.node.id,
+              nodeId: into.id,
               runId: null,
               kind: "scan_scope_update",
               ref,
@@ -361,8 +366,8 @@ export function createScanIdeas({
             });
             absorbing.add(dedupeKey);
             folded.push({
-              nodeId: into.node.id,
-              title: into.node.title,
+              nodeId: into.id,
+              title: into.title,
               check: finding.check,
               dedupeKey,
             });
@@ -387,6 +392,7 @@ export function createScanIdeas({
             },
             at,
           });
+          filedByFile.set(where, { id, title: idea.title });
           newIdeas.push({
             nodeId: id,
             title: idea.title,

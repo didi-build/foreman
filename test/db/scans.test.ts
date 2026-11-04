@@ -37,7 +37,7 @@ function scanOf(targets: string[]): RepoScan {
     counts,
     findings: targets.map((target, i) => ({
       check: "doc_link_missing",
-      path: "docs/guide.md",
+      path: `docs/guide-${i + 1}.md`,
       line: i + 1,
       target,
     })),
@@ -96,13 +96,13 @@ describe.skipIf(!adminUrl)(
           state: "submitted",
           owner_role: "runner",
           source: SCANNER_SOURCE,
-          key: "scanner:doc_link_missing:docs/guide.md -> docs/a.md",
+          key: "scanner:doc_link_missing:docs/guide-1.md -> docs/a.md",
         },
         {
           state: "submitted",
           owner_role: "runner",
           source: SCANNER_SOURCE,
-          key: "scanner:doc_link_missing:docs/guide.md -> docs/b.md",
+          key: "scanner:doc_link_missing:docs/guide-2.md -> docs/b.md",
         },
       ]);
       const recorded = await pool.query(

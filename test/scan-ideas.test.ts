@@ -124,7 +124,11 @@ describe("filing a scan's findings as ideas (unit: D-300, O-92)", () => {
 
   it("files at most 5 new ideas per scan; the rest, listed or only counted, are over the cap", async () => {
     const f = await fixture();
-    const findings = Array.from({ length: 8 }, (_, i) => link(i + 1));
+    // Each in its own file, so none folds into another (D-304).
+    const findings = Array.from({ length: 8 }, (_, i) => ({
+      ...link(i + 1),
+      path: `docs/a${i + 1}.md`,
+    }));
     const filed = await f.scans.file(
       f.projectId,
       scanOf(findings, { doc_link_missing: 12 }),
@@ -138,16 +142,37 @@ describe("filing a scan's findings as ideas (unit: D-300, O-92)", () => {
     ).toEqual(findings.slice(0, 5).map(scanDedupeKey));
   });
 
+  it("folds a finding into an idea the same scan filed earlier for the same check and file (D-304)", async () => {
+    const f = await fixture();
+    const filed = await f.scans.file(f.projectId, scanOf([link(1), link(2), link(3)]));
+    expect(filed).toMatchObject({
+      step: "filed",
+      summary: { findings: 3, merged: 0, overCap: 0 },
+    });
+    expect(filed.step === "filed" && filed.summary.newIdeas).toHaveLength(1);
+    expect(filed.step === "filed" && filed.summary.folded).toHaveLength(2);
+    const [idea] = await f.ideas();
+    const updates = await f.store.listEvidence({
+      nodeId: idea!.id,
+      kind: "scan_scope_update",
+    });
+    expect(updates.map((e) => (e.payload as { line: number }).line)).toEqual([2, 3]);
+    // The next day all three merge into that one idea, as if they had appeared one per day.
+    f.advanceMinutes(24 * 60);
+    const next = await f.scans.file(f.projectId, scanOf([link(1), link(2), link(3)]));
+    expect(next).toMatchObject({ summary: { merged: 3, newIdeas: [], folded: [] } });
+  });
+
   it("merges a finding already on an open scanner idea: nothing new is recorded for it, and the cap counts only new ideas", async () => {
     const f = await fixture();
-    await f.scans.file(f.projectId, scanOf([link(1), link(2)]));
+    const first = [link(1), { ...link(2), path: "docs/a2.md" }];
+    await f.scans.file(f.projectId, scanOf(first));
     f.advanceMinutes(24 * 60);
     // New findings in other files: none folds into the open ideas (D-301 (2)).
     const next = await f.scans.file(
       f.projectId,
       scanOf([
-        link(1),
-        link(2),
+        ...first,
         ...Array.from({ length: 6 }, (_, i) => ({
           ...link(i + 3),
           path: `docs/b${i}.md`,
