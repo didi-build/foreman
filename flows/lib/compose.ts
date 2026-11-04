@@ -32,9 +32,11 @@ import {
 } from "../../src/adapters/github/runner-app-tokens.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
+import { createGitHubRepoVisibility } from "../../src/adapters/screenshots/github-visibility.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
+import type { RepoVisibility } from "../../src/core/option-capture.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
@@ -107,6 +109,12 @@ export interface FlowDeps extends ReconcileDeps {
    * read with the runner App's `contents: read` token (D-267). Refuses until the runner App exists.
    */
   repoFolders: RepoFolders;
+  /**
+   * Whether a project's repository is private, before option capture links Didi's visual-approval
+   * request to CI's run (O-89), read with the runner App's `contents: read` token (D-267).
+   * Refuses until the runner App exists, so capture links nothing and opens nothing.
+   */
+  repoVisibility: RepoVisibility;
   /**
    * The repo map per commit for Triage (D-251), built in its own short-lived Job in the project's
    * agent namespace, whose only network is GitHub and which holds only the runner App's
@@ -192,6 +200,13 @@ export function runnerRepoFolders(
   tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
 ): RepoFolders {
   return createGitHubRepoFolders({ tokens, http: createGitHubHttp() });
+}
+
+/** Whether a repository is private (O-89, D-267); refuses on the token today. */
+export function runnerRepoVisibility(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): RepoVisibility {
+  return createGitHubRepoVisibility({ tokens, http: createGitHubHttp() });
 }
 
 /**
@@ -323,6 +338,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     stagingChecker: unbuiltStagingChecker(),
     screenshots: runnerScreenshotBundles(),
     repoFolders: runnerRepoFolders(),
+    repoVisibility: runnerRepoVisibility(),
     repoMaps: runnerRepoMaps(clusterParts),
     tasks: createTaskSource({
       bots: botFiles,

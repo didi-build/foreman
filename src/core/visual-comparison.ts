@@ -169,6 +169,12 @@ export type BundleKind = ScreenshotManifest["kind"];
 /** What CI saved for one commit: its manifest (`manifest.json`) and its files. */
 export interface ScreenshotBundle {
   manifest: unknown;
+  /**
+   * The id of the GitHub Actions workflow run whose artifact this bundle is, from the same lookup
+   * by commit (D-276). Option capture links Didi's visual-approval request to that run on a
+   * private repository (O-89); it checks the id before it builds the link.
+   */
+  workflowRunId: number;
   /** A file of the bundle by its path, or null when it is not there. */
   file(path: string): Promise<Uint8Array | null>;
 }

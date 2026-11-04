@@ -5,22 +5,31 @@
 // options, the Council's visual call question and images, the `options_attached` guard and QA's
 // visual comparison plan after Didi approves. Then repeats and supersedes, the switches, the
 // D-279 refusal, other features' folders, a bad manifest, and the bounds on the option count.
+// O-89: which refusals count one failure once per head and send the item back with the
+// refusal's fixed text, and the CI run link on the request, only for a private repository.
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
 import { encodePng, pngCodec } from "../src/adapters/screenshots/png.ts";
-import { createFakeRepoFolders } from "../src/adapters/screenshots/fake.ts";
+import {
+  createFakeRepoFolders,
+  FAKE_WORKFLOW_RUN_ID,
+} from "../src/adapters/screenshots/fake.ts";
 import { approvalDecision, approvalFormEnums } from "../src/core/approvals.ts";
 import { visualApprovalTopic } from "../src/core/guards/design.ts";
 import { GUARDS } from "../src/core/guards/index.ts";
 import { createLibrary } from "../src/core/library.ts";
+import { createBuilderRuns } from "../src/core/builder-runs.ts";
+import { captureRefusalKey } from "../src/core/failures.ts";
 import {
   CAPTURE_REFUSAL_TEXT,
+  ciRunLink,
   createOptionCaptures,
+  DESIGNER_REFUSALS,
   featuresOf,
   MAX_CAPTURED_OPTIONS,
-  VISUAL_APPROVAL_QUESTION,
+  visualApprovalQuestion,
 } from "../src/core/option-capture.ts";
 import { SCREENSHOT_PIPELINE_REASON } from "../src/core/screenshot-pipeline.ts";
 import { visualCallImages, visualCallRequest } from "../src/core/visual-call.ts";
@@ -47,7 +56,11 @@ async function setup(options: Parameters<typeof setupCapture>[1] = {}) {
   const f = await createReconcileFixture();
   await f.setting("dry_run", false);
   const c = await setupCapture(f, options);
-  const captures = createOptionCaptures({ ...f.deps, screenshots: c.screenshots });
+  const captures = createOptionCaptures({
+    ...f.deps,
+    screenshots: c.screenshots,
+    repoVisibility: c.visibility,
+  });
   const gates = () =>
     f.store.listGateRequests(f.projectId, visualApprovalTopic(c.nodeId));
   const shots = () => f.store.listEvidence({ nodeId: c.nodeId, kind: "screenshot" });
@@ -108,11 +121,15 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
       nodeId: c.nodeId,
       topicKey: visualApprovalTopic(c.nodeId),
       payload: {
-        question: VISUAL_APPROVAL_QUESTION,
+        question: visualApprovalQuestion(
+          `https://github.com/${REPO}/actions/runs/${FAKE_WORKFLOW_RUN_ID}`,
+        ),
         options: ["a", "b"],
         captureCommitSha: HEAD,
       },
     });
+    // The repository was confirmed private before the request linked CI's run (O-89).
+    expect(c.visibility.reads).toEqual([REPO]);
     // The approval form's Options field shows exactly these (D-254).
     expect(approvalFormEnums(gate!)).toEqual({ options: ["a", "b"] });
     // The move into Waiting for Didi now finds its evidence.
@@ -330,6 +347,7 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
       step: "refused",
       reason: "screenshot_pipeline_changed",
       text: SCREENSHOT_PIPELINE_REASON,
+      failureCount: { counted: true, failures: 1 },
     });
     expect(c.screenshots.reads).toEqual([]);
     expect(await gates()).toEqual([]);
@@ -374,10 +392,13 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
       step: "refused",
       reason: "more_than_one_feature",
       text: CAPTURE_REFUSAL_TEXT.more_than_one_feature,
+      failureCount: { counted: true, failures: 1 },
     });
     await c.ciAt(HEAD, [], ["components/x/X.tsx"]);
+    // The same head: counted once already (O-89).
     expect(await captures.capture(c.nodeId)).toMatchObject({
       reason: "no_option_folders",
+      failureCount: { counted: "already_counted", failures: 1 },
     });
     expect(c.screenshots.reads).toEqual([]);
   });
@@ -413,6 +434,7 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
       step: "refused",
       reason: "too_few_options",
       text: CAPTURE_REFUSAL_TEXT.too_few_options,
+      failureCount: { counted: true, failures: 1 },
     });
     expect(await one.gates()).toEqual([]);
 
@@ -432,7 +454,7 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
 
   it("never quotes a path, a file or an id in a refusal", () => {
     for (const text of Object.values(CAPTURE_REFUSAL_TEXT)) {
-      expect(text).not.toMatch(/design\/|\.png|[0-9a-f]{8}-/);
+      expect(text).not.toMatch(/design\/|\.png|[0-9a-f]{8}-|https?:|github\.com/);
     }
   });
 
@@ -458,9 +480,11 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
       },
     };
     expect(
-      await createOptionCaptures({ ...refusing.f.deps, screenshots: port }).capture(
-        refusing.c.nodeId,
-      ),
+      await createOptionCaptures({
+        ...refusing.f.deps,
+        screenshots: port,
+        repoVisibility: refusing.c.visibility,
+      }).capture(refusing.c.nodeId),
     ).toEqual({
       nodeId: refusing.c.nodeId,
       step: "refused",
@@ -476,5 +500,331 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
     expect(await captures.pending()).toEqual([c.nodeId]);
     expect(await captures.capture(code.id)).toMatchObject({ step: "not_exploring" });
     expect(await captures.capture(waiting.id)).toMatchObject({ step: "not_exploring" });
+  });
+});
+
+/** Puts the item's head into each refusal the Designer caused (O-89). */
+const DESIGNER_CAUSED: Partial<
+  Record<
+    (typeof DESIGNER_REFUSALS)[number],
+    (t: Awaited<ReturnType<typeof setup>>) => Promise<unknown>
+  >
+> = {
+  screenshot_pipeline_changed: (t) =>
+    t.c.ciAt(HEAD, ["a", "b"], ["scripts/render-screenshots.ts"]),
+  no_option_folders: (t) => t.c.ciAt(HEAD, [], ["components/x/X.tsx"]),
+  more_than_one_feature: (t) =>
+    t.c.ciAt(HEAD, ["a", "b"], ["design/gallery/other-feature/options/c/index.html"]),
+  too_few_options: async (t) => {
+    await t.c.ciAt(HEAD, ["a"]);
+    t.c.putOptions(["a"]);
+  },
+  too_many_options: async (t) => {
+    const names = Array.from({ length: MAX_CAPTURED_OPTIONS + 1 }, (_, i) => `o${i}`);
+    await t.c.ciAt(HEAD, names);
+    t.c.putOptions(names);
+  },
+};
+
+/** The Designer run's start, recorded as the dispatch records it, so a fix round can follow. */
+const started = (t: Awaited<ReturnType<typeof setup>>, runId: string) =>
+  t.f.evidence(
+    t.c.nodeId,
+    "dispatch_record",
+    { repo: REPO, branch: `foreman/${t.c.nodeId}` },
+    { runId },
+  );
+
+describe("capture refusals and the failure count (unit: memory store, O-89)", () => {
+  it.each([...DESIGNER_REFUSALS])(
+    "%s counts one failure once per head and sends the item back with the refusal's fixed text",
+    async (reason) => {
+      const t = await setup();
+      await started(t, t.c.designerRun.id);
+      const arrange = DESIGNER_CAUSED[reason];
+      expect(arrange).toBeDefined();
+      await arrange!(t);
+      expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
+        step: "refused",
+        reason,
+        text: CAPTURE_REFUSAL_TEXT[reason],
+        failureCount: { counted: true, failures: 1 },
+      });
+      // The reconcile pass asks again on the same head: nothing more is counted.
+      expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
+        reason,
+        failureCount: { counted: "already_counted", failures: 1 },
+      });
+      expect(await t.f.store.getCounter(t.c.nodeId, "failure")).toBe(1);
+      const rows = await t.f.store.listEvidence({
+        nodeId: t.c.nodeId,
+        kind: "failure_count",
+      });
+      expect(rows).toEqual([
+        expect.objectContaining({
+          runId: t.c.designerRun.id,
+          commitSha: HEAD,
+          ref: captureRefusalKey(t.c.nodeId, HEAD),
+          recordedBy: "runner",
+          payload: {
+            cause: "capture_refused",
+            refusal: reason,
+            failedGuards: ["options_attached"],
+          },
+        }),
+      ]);
+      // The same send-back path as a refused done report: a fix round is due on the same branch,
+      // and its input says why with the refusal's fixed text.
+      const builderRuns = createBuilderRuns(t.f.deps);
+      expect(await builderRuns.check(t.c.nodeId)).toEqual({
+        due: true,
+        nodeId: t.c.nodeId,
+        role: "designer",
+        cause: "refused",
+      });
+      expect(await builderRuns.returnReason(t.c.nodeId)).toEqual({
+        kind: "capture_refused",
+        refusal: reason,
+        text: CAPTURE_REFUSAL_TEXT[reason],
+        commitSha: HEAD,
+        earlier: null,
+      });
+      // Nothing is opened or recorded for Didi, and the item stays In design exploration.
+      expect(await t.gates()).toEqual([]);
+      expect(await t.shots()).toEqual([]);
+      expect((await t.f.store.getNode(t.c.nodeId))?.state).toBe(
+        "in_design_exploration",
+      );
+    },
+  );
+
+  it("a fix round that pushes nothing counts nothing more on the same head; a new head counts again", async () => {
+    const t = await setup({ names: ["a"] });
+    await started(t, t.c.designerRun.id);
+    await t.captures.capture(t.c.nodeId);
+    // The fix round's run ends on the same head.
+    t.f.advanceMinutes(10);
+    const again = await t.f.run(t.c.nodeId, "designer", 0, {
+      endedAt: t.f.clock.now(),
+      outcome: "success",
+    });
+    await started(t, again.id);
+    expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
+      failureCount: { counted: "already_counted", failures: 1 },
+    });
+    expect(await createBuilderRuns(t.f.deps).check(t.c.nodeId)).toMatchObject({
+      due: false,
+      reason: "not_due",
+    });
+    // A new head with the same mistake is a new failure.
+    t.f.advanceMinutes(1);
+    await t.c.ciAt(NEXT, ["a"]);
+    t.c.putOptions(["a"], { sha: NEXT });
+    expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
+      reason: "too_few_options",
+      failureCount: { counted: true, failures: 2 },
+    });
+    expect(await createBuilderRuns(t.f.deps).returnReason(t.c.nodeId)).toMatchObject({
+      kind: "capture_refused",
+      commitSha: NEXT,
+    });
+  });
+
+  it("the third counted refusal escalates the item to the Council, as other Designer failures do", async () => {
+    const t = await setup({ names: ["a"] });
+    const heads = [HEAD, NEXT, BUILD];
+    let last: unknown;
+    for (const [i, sha] of heads.entries()) {
+      if (i > 0) {
+        t.f.advanceMinutes(1);
+        await t.c.ciAt(sha, ["a"]);
+        t.c.putOptions(["a"], { sha });
+      }
+      last = await t.captures.capture(t.c.nodeId);
+    }
+    expect(last).toMatchObject({
+      failureCount: {
+        counted: true,
+        failures: 3,
+        escalation: { outcome: "applied", toState: "escalated_to_council" },
+      },
+    });
+    expect((await t.f.store.getNode(t.c.nodeId))?.state).toBe("escalated_to_council");
+  });
+
+  it("counts nothing for a refusal the Designer did not cause, or a wait", async () => {
+    const cases: [
+      string,
+      (t: Awaited<ReturnType<typeof setup>>) => Promise<unknown>,
+    ][] = [
+      [
+        "changed_paths_unknown",
+        (t) =>
+          t.f.evidence(
+            t.c.nodeId,
+            "ci_run",
+            { conclusion: "success", pr: 7 },
+            { commitSha: HEAD },
+          ),
+      ],
+      [
+        "bundle_invalid",
+        async (t) =>
+          t.c.screenshots.put(REPO, HEAD, "options", {
+            manifest: { foremanScreenshots: 1, kind: "options", commit: NEXT },
+            files: new Map(),
+          }),
+      ],
+      [
+        "option_file_changed",
+        async (t) => {
+          const bundle = await t.c.screenshots.read(REPO, HEAD, "options");
+          t.c.screenshots.put(REPO, HEAD, "options", {
+            manifest: bundle!.manifest,
+            files: new Map(),
+          });
+        },
+      ],
+      ["no_private_link", async (t) => t.c.visibility.set(REPO, "public")],
+      [
+        // CI has not rendered the head yet: a wait, not a refusal.
+        "bundle_missing",
+        async () => undefined,
+      ],
+    ];
+    for (const [expected, arrange] of cases) {
+      const t = await setup({ bundle: expected !== "bundle_missing" });
+      await arrange(t);
+      const step = await t.captures.capture(t.c.nodeId);
+      expect(step).toMatchObject(
+        expected === "bundle_missing" ? { step: expected } : { reason: expected },
+      );
+      expect(step).not.toHaveProperty("failureCount");
+      expect(await t.f.store.getCounter(t.c.nodeId, "failure")).toBe(0);
+      expect(
+        await t.f.store.listEvidence({ nodeId: t.c.nodeId, kind: "failure_count" }),
+      ).toEqual([]);
+    }
+    // The port refusing (no runner App yet, or GitHub failing) is not the Designer's either.
+    const unreadable = await setup();
+    const step = await createOptionCaptures({
+      ...unreadable.f.deps,
+      screenshots: {
+        read: async () => {
+          throw new Error("not built");
+        },
+      },
+      repoVisibility: unreadable.c.visibility,
+    }).capture(unreadable.c.nodeId);
+    expect(step).toEqual({
+      nodeId: unreadable.c.nodeId,
+      step: "refused",
+      reason: "bundle_unreadable",
+      text: CAPTURE_REFUSAL_TEXT.bundle_unreadable,
+    });
+    expect(await unreadable.f.store.getCounter(unreadable.c.nodeId, "failure")).toBe(0);
+  });
+
+  it("counts nothing for a Designer-caused refusal in dry run or under the kill switch", async () => {
+    for (const [key, value] of [
+      ["dry_run", true],
+      ["kill_switch", true],
+    ] as const) {
+      const t = await setup({ names: ["a"] });
+      await t.f.setting(key, value);
+      expect(await t.captures.capture(t.c.nodeId)).toEqual({
+        nodeId: t.c.nodeId,
+        step: key,
+      });
+      expect(await t.f.store.getCounter(t.c.nodeId, "failure")).toBe(0);
+    }
+  });
+});
+
+describe("the CI run link on the visual-approval request (unit: memory store, O-89)", () => {
+  it("carries the run id from the bundle read into the link, for a private repository", async () => {
+    const t = await setup({ bundle: false });
+    t.c.putOptions(["a", "b"]);
+    const read = await t.c.screenshots.read(REPO, HEAD, "options");
+    t.c.screenshots.put(REPO, HEAD, "options", {
+      manifest: read!.manifest,
+      files: new Map(
+        ["a", "b"].map((o) => [
+          `pages/${FEATURE}/options/${o}.png`,
+          t.c.pages.get(o) as Uint8Array,
+        ]),
+      ),
+      workflowRunId: 987654321,
+    });
+    expect(await t.captures.capture(t.c.nodeId)).toMatchObject({ step: "opened" });
+    const [gate] = await t.gates();
+    expect((gate!.payload as { question: string }).question).toBe(
+      visualApprovalQuestion(`https://github.com/${REPO}/actions/runs/987654321`),
+    );
+  });
+
+  it("refuses a run id that is not a positive safe integer, asking nothing and opening nothing", async () => {
+    for (const id of [0, -3, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+      const t = await setup();
+      const read = await t.c.screenshots.read(REPO, HEAD, "options");
+      t.c.screenshots.put(REPO, HEAD, "options", {
+        manifest: read!.manifest,
+        files: new Map(
+          ["a", "b"].map((o) => [
+            `pages/${FEATURE}/options/${o}.png`,
+            t.c.pages.get(o) as Uint8Array,
+          ]),
+        ),
+        workflowRunId: id,
+      });
+      expect(await t.captures.capture(t.c.nodeId)).toEqual({
+        nodeId: t.c.nodeId,
+        step: "refused",
+        reason: "bundle_unreadable",
+        text: CAPTURE_REFUSAL_TEXT.bundle_unreadable,
+      });
+      expect(t.c.visibility.reads).toEqual([]);
+      expect(await t.gates()).toEqual([]);
+      expect(await t.shots()).toEqual([]);
+    }
+  });
+
+  it("builds the link only from a valid repository name and run id", () => {
+    expect(ciRunLink(REPO, 12)).toBe(`https://github.com/${REPO}/actions/runs/12`);
+    for (const repo of ["../x", "a/b/c", "a b/c", "", "a/b?x=1"]) {
+      expect(ciRunLink(repo, 12)).toBe(null);
+    }
+    for (const id of ["12", 0, -1, 2.5, null, undefined, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(ciRunLink(REPO, id)).toBe(null);
+    }
+  });
+
+  it("fails closed on a public repository or a failed visibility check: refuses, records nothing, opens nothing", async () => {
+    for (const answer of ["public", "fail"] as const) {
+      const t = await setup();
+      t.c.visibility.set(REPO, answer);
+      const step = await t.captures.capture(t.c.nodeId);
+      expect(step).toEqual({
+        nodeId: t.c.nodeId,
+        step: "refused",
+        reason: "no_private_link",
+        text: CAPTURE_REFUSAL_TEXT.no_private_link,
+      });
+      expect(JSON.stringify(step)).not.toMatch(/https?:|actions\/runs/);
+      expect(t.c.visibility.reads).toEqual([REPO]);
+      expect(await t.gates()).toEqual([]);
+      expect(await t.shots()).toEqual([]);
+      expect(await t.f.store.getCounter(t.c.nodeId, "failure")).toBe(0);
+    }
+  });
+
+  it("puts the link only on the request: not in the step, the evidence or the Designer's input", async () => {
+    const t = await setup();
+    const step = await t.captures.capture(t.c.nodeId);
+    expect(JSON.stringify(step)).not.toMatch(/https?:|actions\/runs/);
+    expect(JSON.stringify(await t.shots())).not.toMatch(/https?:|actions\/runs/);
+    expect(
+      JSON.stringify(await createBuilderRuns(t.f.deps).returnReason(t.c.nodeId)),
+    ).not.toMatch(/https?:/);
   });
 });

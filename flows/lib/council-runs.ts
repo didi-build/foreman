@@ -84,6 +84,7 @@ import {
   type BuilderRunStart,
 } from "./builder-runs.ts";
 import { cancelRun } from "./cancel-runs.ts";
+import { countedRefusal } from "./option-capture.ts";
 import type { FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
@@ -405,9 +406,20 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
         run.bot === "designer" && run.nodeId
           ? await createOptionCaptures(deps).capture(run.nodeId)
           : undefined;
+      const after = await reportedMoveAndFixRound(deps, run.id);
+      // A capture refusal the Designer caused counted toward `failure` (O-89): the report's own
+      // move does not count it, so its fix round starts here, when one is due.
+      if (
+        optionCapture &&
+        countedRefusal(optionCapture) &&
+        after.builderRuns.length === 0 &&
+        run.nodeId
+      ) {
+        after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
+      }
       const reported = {
         ...(optionCapture ? { optionCapture } : {}),
-        ...(await reportedMoveAndFixRound(deps, run.id)),
+        ...after,
         ...(findingIdeas ? { findingIdeas } : {}),
         ...(visual ? { visual } : {}),
       };

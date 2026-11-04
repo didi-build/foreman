@@ -172,6 +172,20 @@ export type ReturnReason =
     }
   | {
       /**
+       * The runner refused to capture the Designer's exploration options at the head for a
+       * reason the Designer caused, and counted it (O-89). `text` is that refusal's fixed text
+       * from the runner's own table (`CAPTURE_REFUSAL_TEXT`, src/core/option-capture.ts), looked
+       * up by its code, never text read from a record; it names no path, file or id.
+       */
+      kind: "capture_refused";
+      refusal: string;
+      text: string;
+      commitSha: string | null;
+      /** Why the item came back before that, when a fail move or a refused report did. */
+      earlier: ReturnReason | null;
+    }
+  | {
+      /**
        * Didi asked for changes to, or rejected, the design options on the visual approval, and
        * the item went back to exploration (D-242, D-243 rule 5). `words` exactly as Didi typed.
        */
@@ -308,6 +322,15 @@ function returnSection(reason: ReturnReason): string {
         `The runner refused the last done report on ${commit(reason.commitSha, "head")}. These checks failed: ${names.length > 0 ? names.join(", ") : "(not recorded)"}. A head QA already failed goes back to QA only as a new commit. Fix the work and push a new commit on the same branch.`,
       ];
       if (reason.earlier && reason.earlier.kind !== "report_refused") {
+        lines.push(returnSection(reason.earlier));
+      }
+      return lines.join("\n\n");
+    }
+    case "capture_refused": {
+      const lines = [
+        `The runner could not capture your exploration options on ${commit(reason.commitSha, "head")}: ${reason.text}. Didi has not been asked. Fix what it names and push a new commit on the same branch. The runner captures the options again once CI has rendered the new head.`,
+      ];
+      if (reason.earlier && reason.earlier.kind !== "capture_refused") {
         lines.push(returnSection(reason.earlier));
       }
       return lines.join("\n\n");

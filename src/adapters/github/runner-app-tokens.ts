@@ -1,6 +1,7 @@
 // The runner App's own read-only installation tokens (D-267, D-127, D-178). Didi registers the
 // runner App at first hosting with two read-only permissions beyond D-127: `contents: read`, so the
-// runner can fetch a project's code at a commit to build the repo map (D-251), and `actions:
+// runner can fetch a project's code at a commit to build the repo map (D-251) and, with the same
+// permission, check a folder's tree id (D-281) and whether the repository is private (O-89), and `actions:
 // read`, so it can download CI's screenshot bundles as workflow artifacts (D-242). Each token the
 // runner mints for these reads names one repository and exactly one of the two permissions, read
 // only (GitHub lets an installation token ask for fewer permissions than the App has), so a token
@@ -12,6 +13,7 @@
 // The real implementation needs the runner App and its private key, which the runner holds, so
 // until the App is registered through the new-credentials gate (D-178) the runner's port refuses
 // with `NotBuiltError` (flows/lib/compose.ts), and tests pass a fake.
+import { REPOSITORY } from "../../core/github.ts";
 
 /** The two read permissions D-267 adds to the runner App, each minted on its own. */
 export type RunnerReadPermission = "contents" | "actions";
@@ -28,8 +30,8 @@ export interface RunnerAppTokens {
   mint(request: RunnerAppTokenRequest): Promise<string>;
 }
 
-/** `owner/name` as GitHub spells a repository: the only form a token or a path is built for. */
-export const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+/** `owner/name` as GitHub spells a repository, from the core (src/core/github.ts). */
+export { REPOSITORY };
 
 /** One GET to GitHub's REST API, as the runner's reads need it. */
 export interface GitHubGetRequest {

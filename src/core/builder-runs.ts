@@ -5,7 +5,10 @@
 // would start. This finds such items, and the item whose builder run ended `usage_exhausted`, so
 // the runner can start the run with no move (src/core/run-start.ts writes only the handle and a
 // fresh `dispatch_record` on the item's one branch, D-220). It also reads why the item came back,
-// for the run's input (src/core/task-input.ts).
+// for the run's input (src/core/task-input.ts). The fix round after a refused done report (O-43)
+// or after an option capture refused for a reason the Designer caused (O-89) is due the same way:
+// the role's latest run has a `failure_count` row, and the input shows why, the capture's with
+// its fixed text from the runner's own table.
 //
 // Which states and moves count comes from the contracts, never from a list of state names: the
 // building state is one whose owner is a role that pushes a branch (Developer, Designer), and a
@@ -23,8 +26,9 @@ import { visualApprovalTopic } from "./guards/design.ts";
 import { readQaVerdict, readVisualComparison } from "./guards/evidence.ts";
 import { optionFoldersAt } from "./guards/options.ts";
 import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
-import { failureCountKey } from "./failures.ts";
+import { captureRefusalKey, failureCountKey } from "./failures.ts";
 import { createLibrary, type Clock, type IdSource } from "./library.ts";
+import { CAPTURE_REFUSAL_TEXT, DESIGNER_REFUSALS } from "./option-capture.ts";
 import { QA_FAIL_GUARD } from "./run-reports.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import { ESCALATION_GUARD, STAGING_FAIL_GUARD } from "./staging.ts";
@@ -56,7 +60,8 @@ export interface BuilderRunsOptions {
  * started since; `resumed`, the item's latest started run is the role's and ended
  * `usage_exhausted`, and admission then applies the wait (src/core/runs.ts); `refused`, the item's
  * latest started run is the role's, its done report was refused on its guards and counted toward
- * `failure` (P-03, M3.5, O-43), so the fix round goes on, bounded by the escalation.
+ * `failure` (P-03, M3.5, O-43), or option capture refused the options of its report for a reason
+ * the Designer caused and counted it (O-89), so the fix round goes on, bounded by the escalation.
  */
 export type BuilderRunCause = "returned" | "resumed" | "refused";
 
@@ -160,6 +165,23 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     );
   }
 
+  /**
+   * The `failure_count` row of a capture refusal the Designer caused, counted for this run's
+   * report on its head (O-89), if one was counted.
+   */
+  async function refusedCapture(
+    node: Node,
+    runId: string,
+  ): Promise<Evidence | undefined> {
+    return (await store.listEvidence({ nodeId: node.id, kind: "failure_count" })).find(
+      (e) =>
+        e.runId === runId &&
+        e.commitSha !== null &&
+        e.ref === captureRefusalKey(node.id, e.commitSha) &&
+        field(e.payload, "cause") === "capture_refused",
+    );
+  }
+
   /** Whether the guards would let the item escalate now (`escalation_trigger_met`). */
   async function escalationDue(node: Node): Promise<boolean> {
     if (!escalationMove) return false;
@@ -207,7 +229,11 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
       const latest = started.at(-1);
       if (latest?.bot === role && latest.outcome === "usage_exhausted")
         cause = "resumed";
-      else if (latest?.bot === role && (await refusedReport(node, latest.id)))
+      else if (
+        latest?.bot === role &&
+        ((await refusedReport(node, latest.id)) ||
+          (await refusedCapture(node, latest.id)))
+      )
         cause = "refused";
     }
     if (!cause) return { due: false, nodeId, reason: "not_due" };
@@ -370,7 +396,9 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
      * Why the item came back, for the builder's input: from the evidence the fail move that sent
      * it into its current state carried. When the role's latest run reported done and the report
      * was refused (O-43), that comes first, with the checks that failed, and the fail move's reason
-     * after it. Null when neither is how it got here (a first run).
+     * after it. When option capture refused that run's options for a reason the Designer caused
+     * (O-89), the refusal's fixed text comes before both. Null when none is how it got here (a
+     * first run).
      */
     async returnReason(nodeId: string): Promise<ReturnReason | null> {
       const node = await store.getNode(nodeId);
@@ -382,15 +410,30 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
         .filter((r) => r.bot === role)
         .at(-1);
       const refused = latest ? await refusedReport(node, latest.id) : undefined;
-      if (!refused) return earlier;
-      const guards = field(refused.payload, "failedGuards");
+      const guards = refused ? field(refused.payload, "failedGuards") : undefined;
+      const reported: ReturnReason | null = refused
+        ? {
+            kind: "report_refused",
+            failedGuards: Array.isArray(guards)
+              ? guards.filter((g): g is string => typeof g === "string")
+              : [],
+            commitSha: refused.commitSha,
+            earlier,
+          }
+        : earlier;
+      const capture = latest ? await refusedCapture(node, latest.id) : undefined;
+      if (!capture) return reported;
+      // The text comes from the runner's own table by the refusal's code, never from the row.
+      const refusal = DESIGNER_REFUSALS.find(
+        (r) => r === field(capture.payload, "refusal"),
+      );
+      if (!refusal) return reported ?? { kind: "not_recorded" };
       return {
-        kind: "report_refused",
-        failedGuards: Array.isArray(guards)
-          ? guards.filter((g): g is string => typeof g === "string")
-          : [],
-        commitSha: refused.commitSha,
-        earlier,
+        kind: "capture_refused",
+        refusal,
+        text: CAPTURE_REFUSAL_TEXT[refusal],
+        commitSha: capture.commitSha,
+        earlier: reported,
       };
     },
   };

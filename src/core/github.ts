@@ -1,6 +1,12 @@
 // What ingestion reads from GitHub (ADR 0113 section 7). The core defines the interface; the
 // adapter in src/adapters/github/ implements it, with a fake beside it for tests.
 
+/**
+ * `owner/name` as GitHub spells a repository: the only form a token, an API path or a link to
+ * GitHub is built for (the runner App's reads, D-267; the CI run link on a visual approval, O-89).
+ */
+export const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+
 /** A pull request as GitHub reports it now. */
 export interface PullRequest {
   /** The base repository, `owner/name`. */

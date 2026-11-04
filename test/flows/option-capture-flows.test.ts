@@ -4,7 +4,9 @@
 // then takes the item into Waiting for Didi. When CI has not, the report's move is refused without
 // counting a failure or starting a fix round, and the option capture flow (the event path) or the
 // reconcile flow's capture pass (the safety net) captures later and asks for the same report's
-// move again, once. Synthetic images only.
+// move again, once. A refusal the Designer caused counts one failure once per head and starts the
+// fix round with the refusal's fixed text in its input; a public repository opens nothing and
+// counts nothing (O-89). Synthetic images only.
 import { describe, expect, it } from "vitest";
 
 import { run as optionCaptureFlow } from "../../flows/option-capture.ts";
@@ -12,6 +14,8 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
+import { CAPTURE_REFUSAL_TEXT } from "../../src/core/option-capture.ts";
+import { REPO } from "../reconcile-fixture.ts";
 import { setupCapture } from "../option-capture-fixture.ts";
 import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
 
@@ -27,18 +31,27 @@ const RESULT: AgentRunResult = {
 };
 
 /** A design item in exploration whose Designer run is still running, live. */
-async function setup(bundle: boolean) {
+async function setup(bundle: boolean, names?: string[]) {
   const f = await createFlowFixture();
   await f.live();
   const c = await setupCapture(f, {
     screenshots: f.screenshots,
+    visibility: f.repoVisibility,
     bundle,
+    ...(names ? { names } : {}),
     designerRun: { endedAt: null, outcome: null },
   });
   await f.store.setRunHandle(c.designerRun.id, {
     runtime: "fake",
     runId: c.designerRun.id,
   });
+  // The run's start as the dispatch records it, so a fix round can follow it.
+  await f.evidence(
+    c.nodeId,
+    "dispatch_record",
+    { repo: REPO, branch: `foreman/${c.nodeId}` },
+    { runId: c.designerRun.id },
+  );
   f.advanceMinutes(1);
   return { f, c };
 }
@@ -128,6 +141,67 @@ describe("option capture through the flows (flow: fake adapters, O-88)", () => {
     ]);
     expect((await f.store.getNode(c.nodeId))?.state).toBe("waiting_for_didi");
     expect((await reconcileFlow(f.deps)).optionCaptures).toEqual([]);
+  });
+
+  it("a refusal the Designer caused counts one failure and starts the fix round with the refusal's text; a repeat on the head counts nothing more (O-89)", async () => {
+    const { f, c } = await setup(true, ["a"]);
+    const ended = await finish(f, c.designerRun.id);
+    expect(ended).toMatchObject({
+      optionCapture: {
+        step: "refused",
+        reason: "too_few_options",
+        failureCount: { counted: true, failures: 1 },
+      },
+      move: {
+        requested: true,
+        outcome: "rejected",
+        failedGuards: ["options_attached"],
+      },
+      builderRuns: [{ nodeId: c.nodeId, role: "designer", cause: "refused" }],
+    });
+    // The report's own refusal by `options_attached` alone still counts nothing (O-88).
+    expect(ended).not.toHaveProperty("move.failureCount");
+    expect(await failures(f, c.nodeId)).toBe(1);
+    expect(f.runtime.started).toHaveLength(1);
+    // The fix round's input says why it came back, with the refusal's fixed text.
+    const [fixRound] = f.tasksFor;
+    expect(fixRound?.input).toContain(CAPTURE_REFUSAL_TEXT.too_few_options);
+    expect(fixRound?.input).not.toMatch(/https?:/);
+
+    // The fix round's run ends without a new head: the capture pass counts nothing more and
+    // starts nothing.
+    const fixRunId = fixRound!.run.id;
+    f.advanceMinutes(5);
+    await finish(f, fixRunId);
+    expect(await failures(f, c.nodeId)).toBe(1);
+    const pass = await optionCaptureFlow(f.deps, { nodeId: c.nodeId });
+    expect(pass).toMatchObject([
+      {
+        capture: {
+          step: "refused",
+          failureCount: { counted: "already_counted", failures: 1 },
+        },
+        builderRuns: [],
+      },
+    ]);
+    expect(f.runtime.started).toHaveLength(1);
+  });
+
+  it("a public repository opens nothing, counts nothing and starts nothing (O-89)", async () => {
+    const { f, c } = await setup(true);
+    f.repoVisibility.set(REPO, "public");
+    const ended = await finish(f, c.designerRun.id);
+    expect(ended).toMatchObject({
+      optionCapture: { step: "refused", reason: "no_private_link" },
+      builderRuns: [],
+    });
+    expect(ended).not.toHaveProperty("optionCapture.failureCount");
+    expect(await failures(f, c.nodeId)).toBe(0);
+    expect(
+      await f.store.findOpenGateRequest(f.projectId, visualApprovalTopic(c.nodeId)),
+    ).toBe(null);
+    expect((await f.store.getNode(c.nodeId))?.state).toBe("in_design_exploration");
+    expect(f.runtime.started).toEqual([]);
   });
 
   it("does nothing under the kill switch or in dry run", async () => {

@@ -497,6 +497,21 @@ describe("why the item came back, on a fix round (unit, D-213, O-41)", () => {
     );
   });
 
+  it("says the runner refused to capture the options, with the refusal's fixed text, then why it came back before (O-89)", () => {
+    const section = sectionOf(
+      withReturn({
+        kind: "capture_refused",
+        refusal: "too_few_options",
+        text: "fewer than 2 options were rendered for the item's feature",
+        commitSha: "a".repeat(40),
+        earlier: { kind: "not_recorded" },
+      }),
+    );
+    expect(section).toBe(
+      `The runner could not capture your exploration options on head ${"a".repeat(40)}: fewer than 2 options were rendered for the item's feature. Didi has not been asked. Fix what it names and push a new commit on the same branch. The runner captures the options again once CI has rendered the new head.\n\nThe item came back to this state, and no record says why.`,
+    );
+  });
+
   it("quotes the Council's or Didi's answer after an escalation as data (M3.5, O-46)", () => {
     const section = sectionOf(
       withReturn({

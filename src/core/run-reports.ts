@@ -33,7 +33,8 @@
 // alone (a scope change, which the contract sends to the Council, not to the counter), and a
 // refusal by `options_attached` alone (the Designer's options are captured by the runner once CI
 // has rendered them, after the report; the capture then asks for the same report's move again,
-// src/core/option-capture.ts, O-88). A QA run's
+// src/core/option-capture.ts, O-88). When the capture itself refuses for a reason the Designer
+// caused, the capture counts that, once per head (src/core/failures.ts, O-89). A QA run's
 // report never counts: a merge waiting on a condition is not a failure.
 //
 // QA's visual comparison (D-252): a `differs` record passes `qa_failed_with_findings`, so the

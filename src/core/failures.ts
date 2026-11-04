@@ -1,9 +1,11 @@
-// The P-03 failure counts that have no move of their own (build plan M3.5, D-169, O-43, O-44).
-// QA's fail and the staging fail count in the transaction of their move back (src/core/run-reports.ts,
-// src/core/staging.ts). Two counts have no move: a done report the runner refused on its guards,
-// and a repeated failed start. Each is recorded as `failure_count` evidence on the node under a
-// key that names its cause and run, in the transaction that adds one to `failure`, so the row and
-// the count commit together and a repeated report or a retried flow counts once. After a count the
+// The P-03 failure counts that have no move of their own (build plan M3.5, D-169, O-43, O-44,
+// O-89). QA's fail and the staging fail count in the transaction of their move back
+// (src/core/run-reports.ts, src/core/staging.ts). Three counts have no move: a done report the
+// runner refused on its guards, a repeated failed start, and an option capture refused for a
+// reason the Designer caused (src/core/option-capture.ts). Each is recorded as `failure_count`
+// evidence on the node under a key that names its cause and run (for a capture refusal, its node
+// and head, so it counts once per head), in the transaction that adds one to `failure`, so the
+// row and the count commit together and a repeated report or a retried flow counts once. After a count the
 // runner asks for the escalation with the same trigger, which `escalation_trigger_met` allows once
 // `failure` reaches `failure_threshold`; asking again after a count is how a call cut short
 // between the two is recovered.
@@ -18,11 +20,17 @@ import type { Clock, IdSource, Trigger } from "./library.ts";
 import type { Evidence, Json, Run, Store } from "./store.ts";
 
 /** Why a `failure_count` row added one to `failure`. */
-export type FailureCause = "report_refused" | "dispatch_failed";
+export type FailureCause = "report_refused" | "dispatch_failed" | "capture_refused";
 
 /** The key a count is recorded under: one per cause and run. */
-export const failureCountKey = (cause: FailureCause, runId: string): string =>
-  `runner:failure_count:${cause}:run-${runId}`;
+export const failureCountKey = (
+  cause: Exclude<FailureCause, "capture_refused">,
+  runId: string,
+): string => `runner:failure_count:${cause}:run-${runId}`;
+
+/** The key a capture refusal is counted under: one per item and head, whatever the run (O-89). */
+export const captureRefusalKey = (nodeId: string, headSha: string): string =>
+  `runner:failure_count:capture_refused:${nodeId}:${headSha}`;
 
 /**
  * How many failed starts in a row on an item make a dispatch failure "repeated" (P-03, O-44): the
@@ -69,10 +77,10 @@ export function createFailures(options: FailuresOptions) {
     cause: FailureCause,
     payload: { [key: string]: Json },
     commitSha: string | null,
+    key: string,
   ): Promise<
     { counted: true | "already_counted"; failures: number } | "kill_switch" | "dry_run"
   > {
-    const key = failureCountKey(cause, run.id);
     return store.transaction(async (tx) => {
       if ((await tx.getSetting("kill_switch"))?.value === true) return "kill_switch";
       if ((await tx.getSetting("dry_run"))?.value !== false) return "dry_run";
@@ -106,8 +114,9 @@ export function createFailures(options: FailuresOptions) {
     commitSha: string | null,
     trigger: Trigger,
     reason: string,
+    key: string,
   ): Promise<FailureCount> {
-    const counted = await countOnce(run, cause, payload, commitSha);
+    const counted = await countOnce(run, cause, payload, commitSha, key);
     if (counted === "kill_switch" || counted === "dry_run") {
       return { counted: false, reason: counted };
     }
@@ -146,6 +155,7 @@ export function createFailures(options: FailuresOptions) {
         headSha,
         trigger,
         "a done report was refused on its guards, and the failure counter reached its limit",
+        failureCountKey("report_refused", run.id),
       );
     },
 
@@ -186,6 +196,34 @@ export function createFailures(options: FailuresOptions) {
         null,
         { kind: "event", ref: `dispatch_failed:${run.id}` },
         "the dispatch failed repeatedly, and the failure counter reached its limit",
+        failureCountKey("dispatch_failed", run.id),
+      );
+    },
+
+    /**
+     * An option capture the runner refused for a reason the Designer caused (O-89): `failure` up
+     * by one, once per item and head, so the reconcile pass asking again, or a fix round that
+     * pushes nothing, counts nothing more on the same head. The row names the Designer run whose
+     * report the capture was for, so the fix round goes on from it (src/core/builder-runs.ts), and
+     * the refusal by its code only. The caller (src/core/option-capture.ts) decides the refusal
+     * is the Designer's. The escalation's trigger names the head.
+     */
+    async captureRefused(
+      runId: string,
+      headSha: string,
+      refusal: string,
+      failedGuards: string[],
+    ): Promise<FailureCount> {
+      const run = withNode(await store.getRun(runId));
+      if (!run) return { counted: false, reason: "no_run" };
+      return countAndEscalate(
+        run,
+        "capture_refused",
+        { refusal, failedGuards },
+        headSha,
+        { kind: "event", ref: `capture_refused:${headSha}` },
+        "the runner refused to capture the Designer's options, and the failure counter reached its limit",
+        captureRefusalKey(run.nodeId, headSha),
       );
     },
   };

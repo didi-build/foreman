@@ -85,7 +85,8 @@ flows:
     # Called with a design item's id once CI has finished on its PR head (O-88, D-274). It
     # captures the Designer's exploration options from CI's `options` bundle, opens Didi's
     # visual-approval request and asks again for the Designer report's move into Waiting for
-    # Didi. Who calls it on CI's end is open, as for verify_staging: the receiver records the
+    # Didi. A refusal the Designer caused counts once per head and starts the fix round; the
+    # request links CI's run only on a private repository (O-89). Who calls it on CI's end is open, as for verify_staging: the receiver records the
     # delivery and holds no Windmill credential. The run-end flow tries the same capture at a
     # Designer run's end, and the reconcile flow's capture pass is the backstop.
     trigger: called
@@ -103,7 +104,9 @@ flows:
     # sends the approval page to Didi only (D-170), `record` is this entry. `ask` needs the
     # notification adapter and the gate lifecycle (M4.1), so only `record` is built. The same form
     # answers the planning chat's plan-approval request (D-266) and a held item's release request
-    # (D-269): neither lists options, so the Options field shows none.
+    # (D-269): neither lists options, so the Options field shows none. A visual approval's
+    # question ends with the link to the CI run holding the screenshots (O-89), which `ask`
+    # shows as the request's question text.
     entry: flows/approval-resume.ts
     trigger: approval_resume
     suspend:

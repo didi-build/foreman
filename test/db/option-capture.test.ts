@@ -1,8 +1,10 @@
 // Seam: database integration (docs/test-plan.md, O-88). Option capture on the real Postgres
 // store, as the factory_runner role: the role may record the option screenshots and open,
 // supersede and list the visual-approval requests, and two captures of the same head that race
-// open one request, since the item's row is locked before the check. Synthetic images in a fake
-// screenshot port; no network.
+// open one request, since the item's row is locked before the check. A refusal the Designer
+// caused records its `failure_count` row under its once-per-head key and adds one to `failure`,
+// and a repeat on the head adds nothing (O-89). Synthetic images in a fake screenshot port and a
+// fake visibility port; no network.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -12,6 +14,7 @@ import {
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
+import { captureRefusalKey } from "../../src/core/failures.ts";
 import { createOptionCaptures } from "../../src/core/option-capture.ts";
 import type { Store } from "../../src/core/store.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
@@ -49,7 +52,11 @@ describe.skipIf(!adminUrl)(
       const f = await createReconcileFixture({ store, idPrefix, slug });
       await f.setting("dry_run", false);
       const c = await setupCapture(f);
-      const captures = createOptionCaptures({ ...f.deps, screenshots: c.screenshots });
+      const captures = createOptionCaptures({
+        ...f.deps,
+        screenshots: c.screenshots,
+        repoVisibility: c.visibility,
+      });
       const gates = () =>
         store.listGateRequests(f.projectId, visualApprovalTopic(c.nodeId));
       const shots = () => store.listEvidence({ nodeId: c.nodeId, kind: "screenshot" });
@@ -75,6 +82,36 @@ describe.skipIf(!adminUrl)(
         [HEAD, "runner"],
         [HEAD, "runner"],
       ]);
+    });
+
+    it("counts a refusal the Designer caused once per head, as factory_runner (O-89)", async () => {
+      const f = await createReconcileFixture({
+        store,
+        idPrefix: "8f400000-0000-4000-8000",
+        slug: "capture-c",
+      });
+      await f.setting("dry_run", false);
+      const c = await setupCapture(f, { names: ["a"] });
+      const captures = createOptionCaptures({
+        ...f.deps,
+        screenshots: c.screenshots,
+        repoVisibility: c.visibility,
+      });
+      const steps = await Promise.all([
+        captures.capture(c.nodeId),
+        captures.capture(c.nodeId),
+      ]);
+      expect(
+        steps
+          .map((s) => (s.step === "refused" ? s.failureCount?.counted : null))
+          .sort(),
+      ).toEqual(["already_counted", true]);
+      expect(await store.getCounter(c.nodeId, "failure")).toBe(1);
+      expect(
+        (await store.listEvidence({ nodeId: c.nodeId, kind: "failure_count" })).map(
+          (e) => [e.ref, e.commitSha, e.runId],
+        ),
+      ).toEqual([[captureRefusalKey(c.nodeId, HEAD), HEAD, c.designerRun.id]]);
     });
 
     it("supersedes the older open request for a newer head", async () => {

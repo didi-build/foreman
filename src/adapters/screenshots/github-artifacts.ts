@@ -5,10 +5,11 @@
 // `actions: read` for that one repository, the runner looks the bundle up by commit: it lists the
 // workflow runs of the commit asked for (`head_sha`), then each run's artifacts of that name, and
 // takes the newest one that has not expired, so it never pages through other commits' artifacts
-// (D-276). It downloads it and reads it in memory (./zip.ts). No artifact for the commit is no
-// bundle (null), which the visual comparison refuses with its fixed reason. The manifest is
-// returned as parsed JSON, or null when it is missing or not JSON; the visual comparison checks
-// its shape and every file's SHA-256 strictly.
+// (D-276). It downloads it and reads it in memory (./zip.ts), and returns with it the id of the
+// workflow run the artifact came from, which option capture links Didi to (O-89). No artifact
+// for the commit is no bundle (null), which the visual comparison refuses with its fixed reason.
+// The manifest is returned as parsed JSON, or null when it is missing or not JSON; the visual
+// comparison checks its shape and every file's SHA-256 strictly.
 //
 // CI's Screenshots workflow makes the bundles (scripts/render-screenshots.ts, O-81); until the
 // runner App is registered (D-178) the token port refuses with `NotBuiltError`
@@ -43,6 +44,8 @@ export const MAX_RUNS_PER_COMMIT = 20;
 
 interface Artifact {
   id: number;
+  /** The workflow run whose artifact listing named it. */
+  runId: number;
   name: string;
   expired: boolean;
   createdAt: string;
@@ -73,7 +76,7 @@ function runIds(body: Uint8Array, commitSha: string): number[] {
     .slice(0, MAX_RUNS_PER_COMMIT);
 }
 
-function artifacts(body: Uint8Array): Artifact[] {
+function artifacts(body: Uint8Array, runId: number): Artifact[] {
   const list = (json(body, "artifact") as { artifacts?: unknown }).artifacts;
   if (!Array.isArray(list))
     throw new GitHubReadError("the artifact listing has no list");
@@ -83,6 +86,7 @@ function artifacts(body: Uint8Array): Artifact[] {
     return [
       {
         id: a.id as number,
+        runId,
         name: a.name,
         expired: a.expired === true,
         createdAt: typeof a.created_at === "string" ? a.created_at : "",
@@ -137,7 +141,7 @@ export function createGitHubScreenshotBundles({
             `listing the artifacts failed with ${listing.status}`,
           );
         }
-        candidates.push(...artifacts(listing.body));
+        candidates.push(...artifacts(listing.body, runId));
       }
       const found = candidates
         .filter((a) => a.name === name && !a.expired)
@@ -172,6 +176,7 @@ export function createGitHubScreenshotBundles({
       }
       return {
         manifest,
+        workflowRunId: found.runId,
         file: async (path) => {
           const bytes = files.get(path);
           return bytes ? new Uint8Array(bytes) : null;
