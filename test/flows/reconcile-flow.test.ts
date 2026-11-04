@@ -8,6 +8,7 @@ import { run } from "../../flows/reconcile.ts";
 import { run as verifyStaging } from "../../flows/verify-staging.ts";
 import type { FlowDeps } from "../../flows/lib/compose.ts";
 import { setupMerge } from "../merge-fixture.ts";
+import { stalledItems, stalledRuns } from "../../src/core/stalls.ts";
 import { HEAD, REPO } from "../reconcile-fixture.ts";
 import { createFakeStagingChecker, setupStaging } from "../staging-fixture.ts";
 import { createFlowFixture } from "./flow-fixture.ts";
@@ -201,5 +202,36 @@ describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
     ).toEqual({ outcome: "refused", reason: "kill_switch" });
     expect(await t.transitions(t.node.id)).toEqual(before);
     expect(t.checker.calls).toEqual([]);
+  });
+});
+
+describe("stalled work in the reconcile flow's result (flow: fake adapters, D-302)", () => {
+  it("carries the stalled runs and items from the same read-only check as the daily check, on every pass", async () => {
+    const f = await createFlowFixture();
+    const ready = await f.node("ready_for_dev");
+    const working = await f.node("in_development");
+    const quiet = await f.run(working.id, "developer", 0);
+    f.advanceMinutes(120);
+
+    const result = await run(f.deps);
+    expect(result.stalledItems).toEqual((await stalledItems(f.deps)).items);
+    expect(result.stalledItems).toMatchObject([
+      { nodeId: ready.id, waits: [{ code: "dry_run" }] },
+    ]);
+    expect(result.stalledRuns).toEqual(await stalledRuns(f.deps));
+    expect(result.stalledRuns).toMatchObject([{ runId: quiet.id, bot: "developer" }]);
+    expect(result.stalls).toBe(1);
+
+    // Under the kill switch the pass stops, and the lists still show.
+    await f.killed();
+    const killed = await run(f.deps);
+    expect(killed.stalledItems).toMatchObject([
+      { nodeId: ready.id, waits: [{ code: "kill_switch" }, { code: "dry_run" }] },
+    ]);
+
+    await f.setting("reconcile_interval_minutes", null);
+    expect((await run(f.deps)).problems).toContain(
+      "reconcile_interval_minutes is missing or invalid: no stalled items list",
+    );
   });
 });

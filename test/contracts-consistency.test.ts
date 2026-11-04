@@ -326,6 +326,7 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       "submitted->plan_accepted",
       "council_planning->plan_accepted",
       "submitted->council_planning",
+      "submitted->rejected",
       "plan_accepted->triage",
       "triage->handed_off",
     ]);
@@ -342,5 +343,14 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       ["council_planning->plan_accepted", ["plan_approval_recorded"], true],
       ["submitted->council_planning", ["plan_return_recorded"], true],
     ]);
+  });
+
+  it("only the runner rejects an idea, and only a scanner idea in Submitted that is no longer found (D-301)", () => {
+    const intoRejected = parsed.transitions.filter((t) => t.to === "rejected");
+    expect(
+      intoRejected.map((t) => [`${t.from}->${t.to}`, t.guards, t.runner_only]),
+    ).toEqual([["submitted->rejected", ["scanner_finding_gone"], true]]);
+    expect(intoRejected[0]?.trigger).toContain("scan:<scan id>");
+    expect(parsed.transitions.filter((t) => t.to === "parked")).toEqual([]);
   });
 });

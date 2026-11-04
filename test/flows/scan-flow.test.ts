@@ -2,7 +2,9 @@
 // The checks are tested in src/core/scan.test.ts and the filing in test/scan-ideas.test.ts; this
 // covers what the flow adds: every project scanned once, the switches checked before any Job, the
 // runner App's refusal recording nothing, a failure recorded by its step only, and the daily check
-// showing what the scan found. Synthetic data only; no cluster, network or token.
+// showing what the scan found. And over two days (D-301, O-93): a new finding folded into an open
+// idea, an idea in Submitted no longer found withdrawn, one further along recorded with the Council
+// asked, and the daily check's lines for each. Synthetic data only; no cluster, network or token.
 import { describe, expect, it } from "vitest";
 
 import { run as dailyCheck } from "../../flows/daily-check.ts";
@@ -26,10 +28,11 @@ function scanOf(targets: string[]): RepoScan {
     counts,
     findings: targets.map((target, i) => ({
       check: "doc_link_missing",
-      path: "docs/guide.md",
+      path: `docs/guide-${i + 1}.md`,
       line: i + 1,
       target,
     })),
+    notRun: [],
   };
 }
 
@@ -163,6 +166,94 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
     },
   );
 
+  it("folds in, withdraws and asks the Council over two days, and the daily check shows each (D-301)", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const link = (path: string, target: string, line = 1) => ({
+      check: "doc_link_missing" as const,
+      path,
+      line,
+      target,
+    });
+    const day1 = [
+      link("docs/a.md", "docs/x.md"),
+      link("docs/b.md", "docs/y.md"),
+      link("docs/c.md", "docs/z.md"),
+    ];
+    const counts = (n: number) => ({ ...scanOf([]).counts, doc_link_missing: n });
+    f.repoScans.put(REPO, {
+      commitSha: SHA,
+      counts: counts(3),
+      findings: day1,
+      notRun: [],
+    });
+    await scanFlow(f.deps);
+    const ideas = await ideasIn(f, f.projectId);
+    const byPath = (p: string) =>
+      ideas.find(
+        (i) => (i.body as { evidence: { path: string }[] }).evidence[0]?.path === p,
+      );
+    const [a, b, c] = [byPath("docs/a.md"), byPath("docs/b.md"), byPath("docs/c.md")];
+    // The idea on docs/c.md moved on to Council planning.
+    await f.store.changeNodeState(c?.id ?? "", 0, {
+      state: "council_planning",
+      substate: null,
+      ownerRole: "council",
+      blockedReason: null,
+      stateSince: f.clock.now(),
+      updatedAt: f.clock.now(),
+    });
+    f.advanceMinutes(24 * 60);
+    const LATER = "d".repeat(40);
+    const day2 = [link("docs/a.md", "docs/w.md", 9), link("docs/a.md", "docs/x.md")];
+    f.repoScans.put(REPO, {
+      commitSha: LATER,
+      counts: counts(2),
+      findings: day2,
+      notRun: [],
+    });
+    const result = await scanFlow(f.deps);
+    expect(result.projects[0]).toMatchObject({
+      outcome: "filed",
+      commitSha: LATER,
+      summary: {
+        merged: 1,
+        newIdeas: [],
+        folded: [{ nodeId: a?.id }],
+        gone: [
+          { nodeId: b?.id, action: "withdraw" },
+          { nodeId: c?.id, action: "asked_council" },
+        ],
+      },
+      withdrawals: [{ nodeId: b?.id, outcome: "applied" }],
+    });
+    expect((await f.store.getNode(b?.id ?? ""))?.state).toBe("rejected");
+    expect((await f.store.getNode(c?.id ?? ""))?.state).toBe("council_planning");
+    expect(
+      await f.store.findOpenGateRequest(f.projectId, `scanner-gone:${c?.id}`),
+    ).toMatchObject({ owner: "council", kind: "council_question" });
+    f.advanceMinutes(60);
+    const { check, text } = await dailyCheck(f.deps);
+    expect(check.projects[0]?.scan).toMatchObject({
+      foldedInto: [{ nodeId: a?.id, title: a?.title, findings: 1 }],
+      withdrawn: [{ nodeId: b?.id, title: b?.title }],
+      notWithdrawn: [],
+      askedCouncil: [{ nodeId: c?.id, title: c?.title, state: "council_planning" }],
+    });
+    expect(text).toContain(
+      "2 findings (doc_link_missing 2); 0 new ideas, 1 merged as duplicates, 1 folded into open ideas, 0 over the cap of 5.",
+    );
+    expect(text).toContain(
+      `- folded into "Broken link in docs/a.md to docs/x.md" (item ${a?.id}): 1 new finding`,
+    );
+    expect(text).toContain(
+      `- withdrawn "Broken link in docs/b.md to docs/y.md" (item ${b?.id}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+    );
+    expect(text).toContain(
+      `- no longer found, asked the Council: "Broken link in docs/c.md to docs/z.md" (item ${c?.id}), in council_planning`,
+    );
+  });
+
   it("is shown in the next daily check: when it ran, what it found and which ideas those became", async () => {
     const f = await createFlowFixture();
     await f.live();
@@ -196,10 +287,10 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
       ideas.map((i) => i.id).sort(),
     );
     expect(text).toContain(
-      `Scan: last ran 2026-10-31 08:00 UTC at commit ${SHA.slice(0, 12)}: 6 findings (doc_link_missing 6); 5 new ideas, 0 merged as duplicates, 1 over the cap of 5.`,
+      `Scan: last ran 2026-10-31 08:00 UTC at commit ${SHA.slice(0, 12)}: 6 findings (doc_link_missing 6); 5 new ideas, 0 merged as duplicates, 0 folded into open ideas, 1 over the cap of 5.`,
     );
     expect(text).toContain(
-      `- new idea "Broken link in docs/guide.md to docs/a.md" (item ${ideas[0]?.id}), drift, doc_link_missing`,
+      `- new idea "Broken link in docs/guide-1.md to docs/a.md" (item ${ideas[0]?.id}), drift, doc_link_missing`,
     );
   });
 });

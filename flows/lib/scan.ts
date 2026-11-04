@@ -1,8 +1,12 @@
 // The Scanner's stage 1 pass (D-299, D-300, O-92): once a day, before the daily check, it scans
 // every project's repository at its default branch's head in the repo map Job's scan mode
 // (`repoScans`, src/adapters/agent-runtime/kubernetes/repo-maps.ts) and files the new findings as
-// ideas in that project, at most 5 per scan, duplicates merged (src/core/scan-ideas.ts). It never
-// changes code, opens a PR or opens a gate request.
+// ideas in that project, at most 5 per scan, duplicates merged, new findings in the same file as an
+// open scanner idea folded into it, and the open ideas it no longer finds cleaned up: one still in
+// Submitted withdrawn to Rejected by the runner-only move, one further along recorded and asked
+// about in a Council question (src/core/scan-ideas.ts, D-301, O-93). It never changes code, opens
+// a PR, moves an idea further along or touches a work item. The Council question's run is started
+// by the reconcile flow's Council pass, as for every open question.
 //
 // Switches: under the kill switch or in dry run the pass reads nothing and starts no Job, as a run
 // start in dry run starts none (./start-run.ts), and the filing step reads both again in its own
@@ -18,6 +22,7 @@ import {
   createScanIdeas,
   type ScanFailure,
   type ScanSummary,
+  type ScanWithdrawal,
 } from "../../src/core/scan-ideas.ts";
 import { NotBuiltError, type FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
@@ -26,7 +31,14 @@ import { heldBy } from "./switches.ts";
 export const SCAN_FLOW_PATH = "f/foreman/scan";
 
 export type ProjectScanStep =
-  | { slug: string; outcome: "filed"; commitSha: string; summary: ScanSummary }
+  | {
+      slug: string;
+      outcome: "filed";
+      commitSha: string;
+      summary: ScanSummary;
+      /** The withdrawals of ideas in Submitted it no longer found (D-301). */
+      withdrawals: ScanWithdrawal[];
+    }
   | { slug: string; outcome: "failed"; failure: ScanFailure; recorded: boolean }
   /** A switch was turned on while the pass ran: nothing was written for the project. */
   | { slug: string; outcome: "held"; reason: string };
@@ -95,6 +107,7 @@ export async function scanPass(deps: FlowDeps): Promise<ScanPassResult> {
             outcome: "filed",
             commitSha: scan.commitSha,
             summary: filed.summary,
+            withdrawals: filed.withdrawals,
           }
         : { slug: project.slug, outcome: "held", reason: filed.reason },
     );

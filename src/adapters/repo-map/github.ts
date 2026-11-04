@@ -72,7 +72,8 @@ export async function readHeadCommit(
 
 /**
  * The archive at `commitSha`, downloaded and unpacked in memory (./tarball.ts). `alsoKeep` names
- * files whose text is kept besides the code the map parses (the Scanner's, O-92).
+ * files whose text is kept besides the code the map parses (the Scanner's, O-92), and `tooLarge`
+ * collects the wanted files whose text was too large to keep (D-301).
  */
 export async function readArchiveAt(
   http: GitHubHttp,
@@ -80,6 +81,7 @@ export async function readArchiveAt(
   commitSha: string,
   token: string,
   alsoKeep?: (path: string) => boolean,
+  tooLarge?: Set<string>,
 ): Promise<Map<string, string>> {
   if (!REPOSITORY.test(repo)) throw new GitHubReadError("not a repository name");
   if (!FULL_SHA.test(commitSha)) {
@@ -94,7 +96,7 @@ export async function readArchiveAt(
   if (archive.status !== 200) {
     throw new GitHubReadError(`downloading the code failed with ${archive.status}`);
   }
-  return readTarball(archive.body, alsoKeep);
+  return readTarball(archive.body, alsoKeep, tooLarge);
 }
 
 /** The map of the code at `commitSha`: the archive downloaded, unpacked in memory and parsed. */

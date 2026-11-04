@@ -3,14 +3,17 @@
 // (./github.ts `readArchiveAt`), keeping the text of the Markdown and contract files besides the
 // code, builds the repo map for the gallery registry's resolved imports (./typescript.ts, which
 // parses and never runs code), parses each contract file as YAML (parse only), and runs the fixed
-// checks (src/core/scan.ts). Its result is the checks' findings, counted and bounded; the runner
-// checks it again as untrusted data. Nothing here runs project code or writes anywhere.
+// checks (src/core/scan.ts). Its result is the checks' findings, counted and bounded, and where a
+// check could not run (`scanNotRun`, D-301, O-93): the registry check with no registry, and a file
+// whose text was too large to keep; the runner checks it again as untrusted data. Nothing here
+// runs project code or writes anywhere.
 import { parseAllDocuments } from "yaml";
 
 import {
   GALLERY_REGISTRY,
   isContractFile,
   runScanChecks,
+  scanNotRun,
   scanReadsText,
   scanResult,
   type ScanInput,
@@ -35,10 +38,14 @@ export function yamlProblemLine(text: string): number | null | 0 {
   return 0;
 }
 
-/** The checks' input from an unpacked checkout (path to text, as `readTarball` gives it). */
+/**
+ * The checks' input from an unpacked checkout (path to text, as `readTarball` gives it), with
+ * the files whose text was too large to keep.
+ */
 export function scanInputFrom(
   commitSha: string,
   files: ReadonlyMap<string, string>,
+  tooLarge: ReadonlySet<string> = new Set(),
 ): ScanInput {
   const paths = [...files.keys()].sort();
   const texts = new Map<string, string>();
@@ -62,6 +69,7 @@ export function scanInputFrom(
     texts,
     registryImports: registry ? registry.imports : null,
     unparsableContracts,
+    unread: paths.filter((p) => tooLarge.has(p)),
   };
 }
 
@@ -72,6 +80,15 @@ export async function readScanAt(
   commitSha: string,
   token: string,
 ) {
-  const files = await readArchiveAt(http, repo, commitSha, token, scanReadsText);
-  return scanResult(commitSha, runScanChecks(scanInputFrom(commitSha, files)));
+  const tooLarge = new Set<string>();
+  const files = await readArchiveAt(
+    http,
+    repo,
+    commitSha,
+    token,
+    scanReadsText,
+    tooLarge,
+  );
+  const input = scanInputFrom(commitSha, files, tooLarge);
+  return scanResult(commitSha, runScanChecks(input), scanNotRun(input));
 }

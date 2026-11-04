@@ -169,6 +169,7 @@ export function createLibrary({
       store.findOpenGateRequest(projectId, topicKey),
     listGateRequests: (projectId, topicKey) =>
       store.listGateRequests(projectId, topicKey),
+    getLatestScan: (projectId, outcome) => store.getLatestScan(projectId, outcome),
   };
 
   async function evaluateGuards(node: Node, names: string[]): Promise<GuardCheck[]> {

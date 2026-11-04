@@ -11,7 +11,11 @@
 # Council planning, where the chat can submit again. These three moves are runner_only: only the
 # plan approval step applies them, and the move into Plan accepted records `plan_accepted` in its
 # transaction (D-230). No move out of Interview or Needs Didi exists, and the automated Interview
-# is the next release. Parking or rejecting an idea is Didi's and has no move yet either.
+# is the next release. Parking or rejecting an idea is Didi's and has no move yet either, with
+# one exception (D-301): the runner withdraws an idea the Scanner filed, while it is still in
+# Submitted, once the latest scan of its project no longer finds any of its findings. That move,
+# Submitted to Rejected, is runner_only: only the scan's filing step takes it
+# (src/core/scan-ideas.ts), guarded by scanner_finding_gone, with the trigger naming the scan.
 #
 # Triage to Handed off is runner_only: only the Triage handoff step applies it, in the one
 # transaction that creates the work items from Triage's checked answer (src/core/triage.ts).
@@ -157,6 +161,15 @@ transitions:
     evidence: []
     timeout: None.
     fallback: Stays in Submitted.
+
+  - from: submitted
+    to: rejected
+    trigger: The scan `scan:<scan id>` of the idea's project no longer finds any of a scanner idea's findings (D-301). The runner records "no longer found by the scanner at commit X" on the idea first.
+    guards: [scanner_finding_gone]
+    runner_only: true
+    evidence: []
+    timeout: None. The next scan tries again while the idea is still not found.
+    fallback: Stays in Submitted, and the daily check lists it as not withdrawn.
 
   - from: plan_accepted
     to: triage

@@ -2,7 +2,10 @@
 // Postgres store as the factory_runner role: the scan record of migration 0017 (insert, the latest
 // per project, append-only, a ran scan names its commit, no access for factory_api), the project
 // list and lock the filing needs, and two scans of the same project at once filing one set of
-// ideas, since the project row is locked first.
+// ideas, since the project row is locked first. And D-301 (O-93, migration 0018): the two new
+// evidence kinds the runner writes (each needs its commit, and the state API's role cannot write
+// them), the latest scan that ran, and a fold-in, a withdrawal through the guarded move and a
+// Council question for an idea further along, all as factory_runner.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -11,7 +14,11 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
-import { createScanIdeas, SCANNER_SOURCE } from "../../src/core/scan-ideas.ts";
+import {
+  createScanIdeas,
+  SCANNER_SOURCE,
+  scannerGoneTopic,
+} from "../../src/core/scan-ideas.ts";
 import { SCAN_CHECKS, type RepoScan } from "../../src/core/scan.ts";
 import type { Store } from "../../src/core/store.ts";
 import { createReconcileFixture } from "../reconcile-fixture.ts";
@@ -30,10 +37,11 @@ function scanOf(targets: string[]): RepoScan {
     counts,
     findings: targets.map((target, i) => ({
       check: "doc_link_missing",
-      path: "docs/guide.md",
+      path: `docs/guide-${i + 1}.md`,
       line: i + 1,
       target,
     })),
+    notRun: [],
   };
 }
 
@@ -88,13 +96,13 @@ describe.skipIf(!adminUrl)(
           state: "submitted",
           owner_role: "runner",
           source: SCANNER_SOURCE,
-          key: "scanner:doc_link_missing:docs/guide.md -> docs/a.md",
+          key: "scanner:doc_link_missing:docs/guide-1.md -> docs/a.md",
         },
         {
           state: "submitted",
           owner_role: "runner",
           source: SCANNER_SOURCE,
-          key: "scanner:doc_link_missing:docs/guide.md -> docs/b.md",
+          key: "scanner:doc_link_missing:docs/guide-2.md -> docs/b.md",
         },
       ]);
       const recorded = await pool.query(
@@ -144,6 +152,151 @@ describe.skipIf(!adminUrl)(
           tx.lockProject("8f300000-0000-4000-8000-999999999999"),
         ),
       ).toBe(false);
+    });
+
+    it("folds in, withdraws through the guarded move and asks the Council as the runner's role (D-301)", async () => {
+      const t = await createReconcileFixture({
+        store,
+        idPrefix: "8f500000-0000-4000-8000",
+        slug: "sd",
+      });
+      await t.setting("dry_run", false);
+      const scans = createScanIdeas(t.deps);
+      const link = (path: string, target: string) => ({
+        check: "doc_link_missing" as const,
+        path,
+        line: 1,
+        target,
+      });
+      const at = (sha: string, findings: ReturnType<typeof link>[]): RepoScan => ({
+        ...scanOf([]),
+        commitSha: sha,
+        counts: { ...scanOf([]).counts, doc_link_missing: findings.length },
+        findings,
+      });
+      await scans.file(
+        t.projectId,
+        at(SHA, [
+          link("docs/a.md", "docs/x.md"),
+          link("docs/b.md", "docs/y.md"),
+          link("docs/c.md", "docs/z.md"),
+        ]),
+      );
+      const ideas = await pool.query(
+        "select id, body->'evidence'->0->>'path' as path from factory.nodes where project_id = $1 and type = 'idea' order by path",
+        [t.projectId],
+      );
+      const [a, b, c] = ideas.rows.map((r: { id: string }) => r.id);
+      await store.changeNodeState(c, 0, {
+        state: "triage",
+        substate: null,
+        ownerRole: "triage",
+        blockedReason: null,
+        stateSince: t.clock.now(),
+        updatedAt: t.clock.now(),
+      });
+      t.advanceMinutes(24 * 60);
+      const later = "d".repeat(40);
+      const filed = await scans.file(
+        t.projectId,
+        at(later, [link("docs/a.md", "docs/w.md"), link("docs/a.md", "docs/x.md")]),
+      );
+      expect(filed).toMatchObject({
+        step: "filed",
+        summary: { merged: 1, folded: [{ nodeId: a }] },
+        withdrawals: [{ nodeId: b, outcome: "applied" }],
+      });
+      const states = await pool.query(
+        "select id, state from factory.nodes where id = any($1) order by id",
+        [[a, b, c]],
+      );
+      expect(
+        Object.fromEntries(
+          states.rows.map((r: { id: string; state: string }) => [r.id, r.state]),
+        ),
+      ).toEqual({
+        [a]: "submitted",
+        [b]: "rejected",
+        [c]: "triage",
+      });
+      const kinds = await pool.query(
+        "select node_id, kind, commit_sha from factory.evidence where node_id = any($1) order by kind, node_id",
+        [[a, b, c]],
+      );
+      expect(kinds.rows).toEqual(
+        [
+          { node_id: b, kind: "scan_not_found", commit_sha: later },
+          { node_id: c, kind: "scan_not_found", commit_sha: later },
+          { node_id: a, kind: "scan_scope_update", commit_sha: later },
+        ].sort(
+          (x, y) => x.kind.localeCompare(y.kind) || x.node_id.localeCompare(y.node_id),
+        ),
+      );
+      expect(
+        await store.findOpenGateRequest(t.projectId, scannerGoneTopic(c)),
+      ).toMatchObject({ owner: "council", kind: "council_question", nodeId: c });
+      // The latest scan that ran, past a failure recorded after it.
+      t.advanceMinutes(10);
+      await scans.recordFailure(t.projectId, "job");
+      expect((await store.getLatestScan(t.projectId))?.outcome).toBe("failed");
+      expect(await store.getLatestScan(t.projectId, "scanned")).toMatchObject({
+        outcome: "scanned",
+        commitSha: later,
+      });
+    });
+
+    it("requires the commit on the two scan evidence kinds and lets the state API's role write neither (migration 0018)", async () => {
+      const t = await createReconcileFixture({
+        store,
+        idPrefix: "8f600000-0000-4000-8000",
+        slug: "se",
+      });
+      const node = await t.node("submitted", { type: "idea", track: null });
+      const row = (
+        id: string,
+        kind: "scan_scope_update" | "scan_not_found",
+        commitSha: string | null,
+      ) => ({
+        id,
+        nodeId: node.id,
+        runId: null,
+        kind,
+        ref: "scan:x",
+        commitSha,
+        payload: {},
+        recordedBy: "runner:scanner",
+        recordedAt: t.clock.now(),
+        supersedesId: null,
+      });
+      await store.insertEvidence(
+        row("8f600000-0000-4000-8000-0000000000c1", "scan_scope_update", SHA),
+      );
+      await store.insertEvidence(
+        row("8f600000-0000-4000-8000-0000000000c2", "scan_not_found", SHA),
+      );
+      for (const kind of ["scan_scope_update", "scan_not_found"] as const) {
+        await expect(
+          store.insertEvidence(
+            row(`8f600000-0000-4000-8000-000000000d${kind.length}`, kind, null),
+          ),
+        ).rejects.toThrow(/evidence_scan_commit/);
+      }
+      const api = new pg.Pool({
+        connectionString: url,
+        max: 1,
+        options: "-c role=factory_api",
+      });
+      try {
+        await expect(
+          api.query(
+            `insert into factory.evidence (id, node_id, kind, ref, commit_sha, payload, recorded_by, recorded_at)
+             values ('8f600000-0000-4000-8000-0000000000e1', $1, 'scan_not_found', 'x', $2, '{}', 'api', now())`,
+            [node.id, SHA],
+          ),
+        ).rejects.toThrow(/row-level security|permission denied|violates/);
+      } finally {
+        await api.end();
+      }
     });
 
     it("keeps scans append-only, requires a ran scan's commit, and gives the state API's role no access", async () => {

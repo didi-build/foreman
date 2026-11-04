@@ -473,9 +473,13 @@ function ops(state: State): StoreOps {
       }
       insertUnique(state.scans, scan.id, scan, "scans_pkey");
     },
-    async getLatestScan(projectId) {
+    async getLatestScan(projectId, outcome) {
       const scans = [...state.scans.values()]
-        .filter((scan) => scan.projectId === projectId)
+        .filter(
+          (scan) =>
+            scan.projectId === projectId &&
+            (outcome === undefined || scan.outcome === outcome),
+        )
         .sort(byTimeThenId<ScanRecord>((scan) => scan.recordedAt));
       return copy(scans.at(-1) ?? null);
     },

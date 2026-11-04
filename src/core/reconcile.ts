@@ -39,7 +39,6 @@ import {
 import { createBuilderRuns } from "./builder-runs.ts";
 import type { GitHub } from "./github.ts";
 import { pollRepository, type PollResult } from "./github-ingest.ts";
-import { readCiRun } from "./guards/evidence.ts";
 import {
   createLibrary,
   LibraryError,
@@ -58,6 +57,7 @@ import {
 } from "./runs.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import { createStaging, type StagingResult } from "./staging.ts";
+import { qaHeadOf, stalledRuns, type StalledRun } from "./stalls.ts";
 import type { AgentRole, GateRequest, Node, Run, Store, StoreOps } from "./store.ts";
 import type { TaskTypes } from "./task-types.ts";
 
@@ -188,16 +188,8 @@ export interface AdvancePlan extends MovePlan {
   dispatch?: DispatchPlan;
 }
 
-/** An active run with no activity within its budget window (report only). */
-export interface Stall {
-  runId: string;
-  nodeId: string | null;
-  bot: string;
-  lastActivityAt: Date;
-  /** The run's `budget.maxMinutes`, or null when the budget is unreadable. */
-  budgetMinutes: number | null;
-  idleMinutes: number;
-}
+/** An active run with no activity within its budget window (report only, ./stalls.ts). */
+export type Stall = StalledRun;
 
 /**
  * A gate request the pass would close (D-199): `cancelled` when its node is Done, `expired` when
@@ -450,17 +442,6 @@ export async function reconcile(
     };
   }
 
-  /** The PR and head commit from the newest `ci_run`, which a QA dispatch needs. */
-  async function headOf(
-    nodeId: string,
-  ): Promise<{ prNumber: number; headSha: string } | null> {
-    const ciRun = (await store.listEvidence({ nodeId, kind: "ci_run" })).at(-1);
-    const payload = ciRun ? readCiRun(ciRun.payload) : null;
-    return ciRun?.commitSha && payload
-      ? { prNumber: payload.pr, headSha: ciRun.commitSha }
-      : null;
-  }
-
   // Runs this pass planned. They count as active for admission, so the limits hold.
   const planned: Run[] = [];
 
@@ -474,7 +455,7 @@ export async function reconcile(
     const { runtime, botVersion } = deps.bots[role];
     const request: DispatchRequest = { nodeId: node.id, role, runtime, botVersion };
     if (role === "qa") {
-      const head = await headOf(node.id);
+      const head = await qaHeadOf(store, node.id);
       if (!head) return { ...plan, outcome: "no_head" };
       Object.assign(request, head);
     }
@@ -665,34 +646,9 @@ export async function reconcile(
   }
 
   // Step 5. Stall check: active runs with no activity within their budget window. Activity is
-  // the run's start and any evidence recorded under the run.
-  for (const run of await store.listActiveRuns()) {
-    const evidence = run.nodeId
-      ? (await store.listEvidence({ nodeId: run.nodeId })).filter(
-          (e) => e.runId === run.id,
-        )
-      : [];
-    const last = Math.max(
-      run.startedAt.getTime(),
-      ...evidence.map((e) => e.recordedAt.getTime()),
-    );
-    const budget = run.budget as { maxMinutes?: unknown } | null;
-    const budgetMinutes =
-      typeof budget?.maxMinutes === "number" && budget.maxMinutes > 0
-        ? budget.maxMinutes
-        : null;
-    const idleMinutes = (now.getTime() - last) / MINUTE;
-    if (budgetMinutes === null || idleMinutes > budgetMinutes) {
-      report.stalls.push({
-        runId: run.id,
-        nodeId: run.nodeId,
-        bot: run.bot,
-        lastActivityAt: new Date(last),
-        budgetMinutes,
-        idleMinutes,
-      });
-    }
-  }
+  // the run's start and any evidence recorded under the run. The same read-only check the daily
+  // check reads (./stalls.ts, D-302).
+  report.stalls = await stalledRuns(deps);
 
   // Step 6. Clean up (D-199). A newer request on the same topic already supersedes the older one
   // when it is opened (schema invariant 5). A request on a node that reached Done would be

@@ -38,6 +38,18 @@
 //   at which commit, its findings by check, the new ideas it filed (ids and titles), how many it
 //   merged as duplicates and how many were over the cap; for a failed scan, the step it stopped at.
 //   Read from the scan's record (migration 0017, ./scan-ideas.ts), which the scan flow writes.
+//   Since D-301 (O-93) it also shows the open ideas new findings were folded into, with how many
+//   each, and the ideas the scan no longer found: each one in Submitted as withdrawn (its move to
+//   Rejected applied with the scan's trigger), or as not withdrawn when the move did not apply,
+//   so Didi can reopen it; each one further along as no longer found with the Council asked.
+// - stalled: both kinds of stalled work (D-302, D-112, O-94), from the one read-only stall check
+//   the reconcile pass also reads (./stalls.ts): items ready to start for at least one reconcile
+//   cycle with no run, with how long and what each waits on as the runner would say it now, and
+//   active runs with no recorded activity past their budget, with the bot and the time since
+//   their last activity. Longest stalled first, both kinds in one list in the rendering. No push
+//   alert: D-112's alert after an hour waits for delivery (M4.3). A failing `no_pending_gate`
+//   guard is named without its note, since the note names topic keys (see below); the request
+//   itself shows under questions when it is Didi's.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
@@ -57,9 +69,20 @@ import {
   readScanFailure,
   readScanSummary,
   SCAN_FAILURE_TEXT,
+  SCAN_TRIGGER_PREFIX,
+  WITHDRAWN_STATE,
   type ScanNewIdea,
 } from "./scan-ideas.ts";
 import { STAGING_PASS_GUARD } from "./staging.ts";
+import {
+  STALL_WAIT_TEXT,
+  stalledItems,
+  stalledRuns,
+  type StalledItem,
+  type StalledItemsDeps,
+  type StalledRun,
+  type StallWait,
+} from "./stalls.ts";
 import type {
   Edge,
   GateKind,
@@ -68,6 +91,7 @@ import type {
   Node,
   Project,
   Run,
+  Store,
   StoreOps,
   Transition,
 } from "./store.ts";
@@ -88,6 +112,7 @@ export const SPEND_THRESHOLDS_NOT_BUILT =
 export type DailyCheckStore = Pick<
   StoreOps,
   | "getProject"
+  | "getNode"
   | "listNodes"
   | "listEdges"
   | "listTransitions"
@@ -100,8 +125,12 @@ export type DailyCheckStore = Pick<
   | "getLatestScan"
 >;
 
-export interface DailyCheckDeps {
-  store: DailyCheckStore;
+/**
+ * The stall check needs what a dry-run dispatch reads (./stalls.ts): the guards, the run limits,
+ * the bot files' runtime and version, and the task types. It still reads only.
+ */
+export interface DailyCheckDeps extends StalledItemsDeps {
+  store: Store;
   contracts: Contracts;
   clock: Clock;
 }
@@ -197,8 +226,32 @@ export interface ScanSection {
   /** Findings past the cap of new ideas per scan, not filed this time. */
   overCap: number;
   cap: number | null;
+  /** Open ideas new findings were folded into (D-301), each with how many, by item id. */
+  foldedInto: { nodeId: string; title: string; findings: number }[];
+  /** Scanner ideas in Submitted the scan no longer found, withdrawn to Rejected (D-301). */
+  withdrawn: { nodeId: string; title: string }[];
+  /** Ones it no longer found whose withdrawal did not apply: still in Submitted. */
+  notWithdrawn: { nodeId: string; title: string }[];
+  /** Ideas further along it no longer found: recorded on each, and the Council asked. */
+  askedCouncil: { nodeId: string; title: string; state: string }[];
   /** Said when there is no scan, or its record cannot be read. */
   note: string | null;
+}
+
+/** An active run quiet past its budget, with its item's recorded title (data), or null. */
+export interface StalledRunEntry extends StalledRun {
+  title: string | null;
+}
+
+/** A stalled item with the contracts' name for its state. */
+export interface StalledItemEntry extends StalledItem {
+  stateLabel: string;
+}
+
+/** Both kinds of stalled work in a project (D-302), each longest stalled first. */
+export interface StalledSection {
+  items: StalledItemEntry[];
+  runs: StalledRunEntry[];
 }
 
 export const NO_SCAN_YET =
@@ -218,6 +271,7 @@ export interface ProjectCheck {
   heldItems: HeldItemWithRequest[];
   spend: SpendSection;
   scan: ScanSection;
+  stalled: StalledSection;
 }
 
 export interface DailyCheck {
@@ -231,6 +285,10 @@ export interface DailyCheck {
   quietProjects: string[];
   productionDeployApproval: { items: []; note: string };
   spendNote: string;
+  /** One reconcile cycle, after which a ready item with no run counts as stalled (D-112). */
+  stalledAfterMinutes: number | null;
+  /** Said when stalled items could not be listed. */
+  stalledNote: string | null;
 }
 
 const MINUTE_MS = 60_000;
@@ -273,6 +331,10 @@ async function scanSection(
     merged: 0,
     overCap: 0,
     cap: null,
+    foldedInto: [],
+    withdrawn: [],
+    notWithdrawn: [],
+    askedCouncil: [],
     note: NO_SCAN_YET,
   };
   const last = await store.getLatestScan(projectId);
@@ -299,6 +361,33 @@ async function scanSection(
       note: "The last scan's record could not be read.",
     };
   }
+  const foldedInto: ScanSection["foldedInto"] = [];
+  for (const f of summary.folded) {
+    const into = foldedInto.find((i) => i.nodeId === f.nodeId);
+    if (into) into.findings += 1;
+    else foldedInto.push({ nodeId: f.nodeId, title: f.title, findings: 1 });
+  }
+  const withdrawn: ScanSection["withdrawn"] = [];
+  const notWithdrawn: ScanSection["notWithdrawn"] = [];
+  const askedCouncil: ScanSection["askedCouncil"] = [];
+  const trigger = `${SCAN_TRIGGER_PREFIX}${last.id}`;
+  for (const g of summary.gone) {
+    if (g.action === "asked_council") {
+      askedCouncil.push({ nodeId: g.nodeId, title: g.title, state: g.state });
+      continue;
+    }
+    const moved = (await store.listTransitions(g.nodeId)).some(
+      (t) =>
+        t.mode === "applied" &&
+        t.toState === WITHDRAWN_STATE &&
+        t.triggerRef === trigger,
+    );
+    const node = await store.getNode(g.nodeId);
+    (moved && node?.state === WITHDRAWN_STATE ? withdrawn : notWithdrawn).push({
+      nodeId: g.nodeId,
+      title: g.title,
+    });
+  }
   return {
     ...known,
     outcome: "scanned",
@@ -308,17 +397,29 @@ async function scanSection(
     merged: summary.merged,
     overCap: summary.overCap,
     cap: summary.cap,
+    foldedInto,
+    withdrawn,
+    notWithdrawn,
+    askedCouncil,
   };
 }
+
+/** The guard whose note names open requests by topic key, which the check never shows. */
+const PENDING_GATE_GUARD = "no_pending_gate";
+
+/** A wait as the check shows it: the guard's note, unless it names topic keys. */
+const shownWait = (wait: StallWait): StallWait =>
+  wait.guard === PENDING_GATE_GUARD ? { ...wait, detail: null } : wait;
 
 const inWindow = (at: Date, from: Date, to: Date): boolean =>
   at.getTime() >= from.getTime() && at.getTime() < to.getTime();
 
 /** Generates the daily check. Reads only. */
 export async function generateDailyCheck(
-  { store, contracts, clock }: DailyCheckDeps,
+  deps: DailyCheckDeps,
   { holdReleaseRequestFlow }: DailyCheckOptions,
 ): Promise<DailyCheck> {
+  const { store, contracts, clock } = deps;
   const to = clock.now();
   const from = new Date(to.getTime() - DAILY_CHECK_WINDOW_HOURS * 60 * MINUTE_MS);
   const killSwitch = (await store.getSetting("kill_switch"))?.value === true;
@@ -351,6 +452,8 @@ export async function generateDailyCheck(
     await listHeldItems({ store, clock }),
     holdReleaseRequestFlow,
   );
+  const stalled = await stalledItems(deps);
+  const quietRuns = await stalledRuns(deps);
 
   const outgoing = new Map<string, Edge[]>();
   const blocksFrom = async (nodeId: string): Promise<Edge[]> => {
@@ -510,6 +613,21 @@ export async function generateDailyCheck(
       heldItems: held.filter((h) => h.projectId === projectId),
       spend,
       scan: await scanSection(store, projectId),
+      stalled: {
+        items: stalled.items
+          .filter((i) => i.projectId === projectId)
+          .map((i) => ({
+            ...i,
+            stateLabel: labelOf(i.state),
+            waits: i.waits.map(shownWait),
+          })),
+        runs: quietRuns
+          .filter((r) => r.projectId === projectId)
+          .map((r) => ({
+            ...r,
+            title: r.nodeId ? (nodeById.get(r.nodeId)?.title ?? null) : null,
+          })),
+      },
     };
     const quiet =
       waitingItems === 0 &&
@@ -523,7 +641,12 @@ export async function generateDailyCheck(
       spend.runsEnded === 0 &&
       spend.runsActive === 0 &&
       check.scan.findings === 0 &&
-      check.scan.outcome !== "failed";
+      check.scan.withdrawn.length === 0 &&
+      check.scan.notWithdrawn.length === 0 &&
+      check.scan.askedCouncil.length === 0 &&
+      check.scan.outcome !== "failed" &&
+      check.stalled.items.length === 0 &&
+      check.stalled.runs.length === 0;
     if (quiet) quietProjects.push(project.slug);
     else projects.push(check);
   }
@@ -543,6 +666,8 @@ export async function generateDailyCheck(
     quietProjects: quietProjects.sort(),
     productionDeployApproval: { items: [], note: PRODUCTION_DEPLOY_NOT_BUILT },
     spendNote: SPEND_THRESHOLDS_NOT_BUILT,
+    stalledAfterMinutes: stalled.cycleMinutes,
+    stalledNote: stalled.problem,
   };
 }
 
@@ -638,8 +763,47 @@ function renderProject(p: ProjectCheck, to: Date): string[] {
         : "") +
       `, ${s.tokens.input} input and ${s.tokens.output} output tokens; ${plural(s.runsActive, "run")} active`,
   );
+  lines.push(...renderStalled(p.stalled, to));
   lines.push(...renderScan(p.scan));
   return lines;
+}
+
+/** What a stalled item waits on, as one phrase per wait. */
+function waitText(wait: StallWait): string {
+  const text = STALL_WAIT_TEXT[wait.code];
+  if (wait.code === "usage_exhausted_wait") {
+    return (
+      `${text} (${wait.detail ?? "cause not recorded"})` +
+      (wait.until ? `, until ${when(wait.until)}` : ", with no wait setting to end it")
+    );
+  }
+  const guard = wait.guard !== undefined ? `: ${wait.guard}` : "";
+  return `${text}${guard}${wait.detail !== null ? ` (${quote(wait.detail)})` : ""}`;
+}
+
+/** Both kinds in one list, longest stalled first (D-302). */
+function renderStalled(stalled: StalledSection, to: Date): string[] {
+  const entries: { since: Date; line: string }[] = [
+    ...stalled.items.map((i) => ({
+      since: i.readySince,
+      line:
+        `- ready, no run started: ${quote(i.title)} (item ${i.nodeId}) in ${i.stateLabel}` +
+        ` for ${duration(i.stalledForMinutes)}. Waits on: ${i.waits.map(waitText).join("; ")}`,
+    })),
+    ...stalled.runs.map((r) => ({
+      since: r.lastActivityAt,
+      line:
+        `- run quiet: the ${r.bot} run on ` +
+        (r.nodeId
+          ? `${r.title !== null ? quote(r.title) : "an item"} (item ${r.nodeId})`
+          : "no item") +
+        `, no activity for ${duration(Math.max(0, Math.floor((to.getTime() - r.lastActivityAt.getTime()) / MINUTE_MS)))}` +
+        (r.budgetMinutes !== null
+          ? `, past its budget of ${duration(Math.round(r.budgetMinutes))}`
+          : ", its time budget cannot be read"),
+    })),
+  ].sort((a, b) => a.since.getTime() - b.since.getTime());
+  return [`Stalled (${entries.length}):`, ...entries.map((e) => e.line)];
 }
 
 function renderScan(scan: ScanSection): string[] {
@@ -651,13 +815,30 @@ function renderScan(scan: ScanSection): string[] {
   const byCheck = SCAN_CHECKS.filter((c) => scan.findingsByCheck[c] > 0)
     .map((c) => `${c} ${scan.findingsByCheck[c]}`)
     .join(", ");
+  const folded = scan.foldedInto.reduce((n, f) => n + f.findings, 0);
   return [
     `${ran}: ${plural(scan.findings, "finding")}${byCheck === "" ? "" : ` (${byCheck})`}; ` +
       `${plural(scan.newIdeas.length, "new idea")}, ${scan.merged} merged as duplicates, ` +
-      `${scan.overCap} over the cap of ${scan.cap ?? 0}.`,
+      `${folded} folded into open ideas, ${scan.overCap} over the cap of ${scan.cap ?? 0}.`,
     ...scan.newIdeas.map(
       (idea) =>
         `- new idea ${quote(idea.title)} (item ${idea.nodeId}), ${idea.class}, ${idea.check}`,
+    ),
+    ...scan.foldedInto.map(
+      (f) =>
+        `- folded into ${quote(f.title)} (item ${f.nodeId}): ${plural(f.findings, "new finding")}`,
+    ),
+    ...scan.withdrawn.map(
+      (w) =>
+        `- withdrawn ${quote(w.title)} (item ${w.nodeId}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+    ),
+    ...scan.notWithdrawn.map(
+      (w) =>
+        `- no longer found, not withdrawn yet: ${quote(w.title)} (item ${w.nodeId}), still in Submitted`,
+    ),
+    ...scan.askedCouncil.map(
+      (a) =>
+        `- no longer found, asked the Council: ${quote(a.title)} (item ${a.nodeId}), in ${a.state}`,
     ),
   ];
 }
@@ -682,6 +863,9 @@ export function renderDailyCheck(check: DailyCheck): string {
     `Spend across projects: ${usd(totalCost)}. ${check.spendNote}`,
     `Production deploy approval: ${check.productionDeployApproval.note}`,
   );
+  if (check.stalledNote !== null) {
+    lines.push(`Stalled items: not listed. ${check.stalledNote}.`);
+  }
   if (check.quietProjects.length > 0) {
     lines.push(`Nothing to show for: ${check.quietProjects.join(", ")}.`);
   }

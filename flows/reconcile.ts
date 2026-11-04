@@ -1,7 +1,7 @@
 // The reconcile flow (build plan M3.1, architecture section 2.5), on the schedule in
 // flows/windmill.yaml (D-164). It reads this month's Windmill execution count, runs one reconcile
 // pass in dry run (D-167), the cancel pass on the kill switch (D-202) and, with `dry_run` off, the
-// live passes (./lib/live-passes.ts). Every pass lists the held items for the daily check (D-272).
+// live passes (./lib/live-passes.ts). Every pass lists held items and stalled work (D-272, D-302).
 import { reconcile, type ExecutionAlert } from "../src/core/reconcile.ts";
 import { cancelActiveRuns, type CancelRunsReport } from "./lib/cancel-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
@@ -50,7 +50,7 @@ export async function run(deps: FlowDeps): Promise<ReconcileFlowResult> {
     failedPolls: report.polls.filter((p) => p.error).length,
     executions: report.executions,
     cancelled,
-    ...(await dailyCheckLists(deps)),
+    ...(await dailyCheckLists(deps, problems)),
     problems: [...problems, ...report.problems, ...live.problems],
   };
 }

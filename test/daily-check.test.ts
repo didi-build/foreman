@@ -156,6 +156,8 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
       quietProjects: ["rehearsal"],
       productionDeployApproval: { items: [], note: PRODUCTION_DEPLOY_NOT_BUILT },
       spendNote: expect.stringContaining("M4.5"),
+      stalledAfterMinutes: 120,
+      stalledNote: null,
     });
     const text = renderDailyCheck(check);
     expect(text).toContain("Nothing moved and nothing is waiting.");
@@ -535,6 +537,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
         "Held with no open release request (1):",
         `- "Remove the old page" (item ${held.id}), held 1 h 30 min. Didi's last note (rejected, 2026-10-31 08:00 UTC): "Not this week.". To ask for a fresh release request, start ${FLOW} with {"nodeId":"${held.id}"}`,
         "Spend: 1 run ended, $0.42, 5000 input and 500 output tokens; 0 runs active",
+        "Stalled (0):",
         `Scan: ${NO_SCAN_YET}`,
         "",
         `Spend across projects: $0.42. ${(await f.generate()).spendNote}`,
@@ -617,13 +620,118 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     });
     const text = renderDailyCheck(check);
     expect(text).toContain(
-      `Scan: last ran 2026-10-31 07:30 UTC at commit cccccccccccc: 3 findings (design_spec_not_indexed 1, doc_link_missing 2); 1 new idea, 2 merged as duplicates, 0 over the cap of 5.`,
+      `Scan: last ran 2026-10-31 07:30 UTC at commit cccccccccccc: 3 findings (design_spec_not_indexed 1, doc_link_missing 2); 1 new idea, 2 merged as duplicates, 0 folded into open ideas, 0 over the cap of 5.`,
     );
     expect(text).toContain(
       `- new idea ${JSON.stringify(title)} (item ${ideaId}), drift, doc_link_missing`,
     );
     expect(text.split("\n").filter((l) => l.startsWith("Kill switch:"))).toHaveLength(
       1,
+    );
+  });
+
+  it("shows what the scan folded in and cleaned up: folded counts, withdrawn, not withdrawn and asked the Council, titles quoted (D-301, O-93)", async () => {
+    const f = await fixture();
+    const idea = (title: string, state: string) =>
+      f.node(state, { type: "idea", track: null, title });
+    const into = await idea('Folded "into"', "submitted");
+    const withdrawn = await idea("Withdrawn idea", "rejected");
+    const stuck = await idea("Still submitted", "submitted");
+    const asked = await idea("Further along", "triage");
+    const scanId = f.deps.ids.next();
+    // The withdrawal applied with this scan's trigger; the other one did not apply.
+    await f.store.insertTransition({
+      id: f.deps.ids.next(),
+      nodeId: withdrawn.id,
+      fromState: "submitted",
+      toState: "rejected",
+      fromSubstate: null,
+      toSubstate: null,
+      triggerKind: "event",
+      triggerRef: `scan:${scanId}`,
+      actorKind: "runner",
+      actorId: "runner:scanner",
+      guardResult: [],
+      evidenceIds: [],
+      specVersion: "v",
+      mode: "applied",
+      reason: null,
+      at: f.clock.now(),
+    });
+    const fold = (n: number) => ({
+      nodeId: into.id,
+      title: into.title,
+      check: "doc_link_missing",
+      dedupeKey: `k${n}`,
+    });
+    await f.store.insertScan({
+      id: scanId,
+      projectId: f.projectId,
+      commitSha: "c".repeat(40),
+      outcome: "scanned",
+      summary: {
+        counts: {
+          design_index_link_missing: 0,
+          design_spec_not_indexed: 0,
+          gallery_spec_missing: 0,
+          gallery_entry_unregistered: 0,
+          contract_unparsable: 0,
+          doc_link_missing: 3,
+        },
+        findings: 3,
+        newIdeas: [],
+        merged: 1,
+        folded: [fold(1), fold(2)],
+        overCap: 0,
+        cap: 5,
+        gone: [
+          {
+            nodeId: withdrawn.id,
+            title: withdrawn.title,
+            state: "submitted",
+            action: "withdraw",
+          },
+          {
+            nodeId: stuck.id,
+            title: stuck.title,
+            state: "submitted",
+            action: "withdraw",
+          },
+          {
+            nodeId: asked.id,
+            title: asked.title,
+            state: "triage",
+            action: "asked_council",
+          },
+        ],
+        listed: [],
+        notRun: [],
+      },
+      recordedBy: "runner:scanner",
+      recordedAt: f.clock.now(),
+    });
+    const check = await f.generate();
+    expect(check.projects[0]?.scan).toMatchObject({
+      foldedInto: [{ nodeId: into.id, title: into.title, findings: 2 }],
+      withdrawn: [{ nodeId: withdrawn.id, title: "Withdrawn idea" }],
+      notWithdrawn: [{ nodeId: stuck.id, title: "Still submitted" }],
+      askedCouncil: [{ nodeId: asked.id, title: "Further along", state: "triage" }],
+    });
+    const text = renderDailyCheck(check);
+    expect(text).toContain(
+      "0 new ideas, 1 merged as duplicates, 2 folded into open ideas, 0 over the cap of 5.",
+    );
+    expect(text).toContain(
+      `- folded into ${JSON.stringify(into.title)} (item ${into.id}): 2 new findings`,
+    );
+    expect(text).toContain(
+      `- withdrawn "Withdrawn idea" (item ${withdrawn.id}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+    );
+    expect(text).toContain(
+      `- no longer found, not withdrawn yet: "Still submitted" (item ${stuck.id}), still in Submitted`,
+    );
+    expect(text).toContain(
+      `- no longer found, asked the Council: "Further along" (item ${asked.id}), in triage`,
     );
   });
 
@@ -645,6 +753,82 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     );
     expect(renderDailyCheck(check)).toContain(
       "The last scan's record could not be read.",
+    );
+  });
+
+  it("shows both kinds of stalled work, longest stalled first, with what each item waits on (D-302, O-94)", async () => {
+    const f = await fixture();
+    const ready = await f.node("ready_for_dev", { title: 'Build the "page"' });
+    f.advanceMinutes(60);
+    const gated = await f.node("ready_for_dev", { title: "Fix the footer" });
+    await f.openGate(gated.id, `hold-release:${gated.id}`, {
+      kind: "scope",
+      owner: "didi",
+      blocking: false,
+    });
+    const worker = await f.node("in_development", { title: "Build the API" });
+    await f.run(worker.id, "developer", 0);
+    // Under one cycle: not stalled.
+    f.advanceMinutes(70);
+    await f.node("ready_for_dev", { title: "Too new" });
+    f.advanceMinutes(60);
+    const docs = await f.node("in_development", { title: "Write the docs" });
+    await f.run(docs.id, "developer", 10, { budget: null });
+
+    const check = await f.generate(readOnly(f.store));
+    expect(check.stalledAfterMinutes).toBe(120);
+    const [project] = check.projects;
+    expect(project?.stalled.items).toEqual([
+      expect.objectContaining({
+        nodeId: ready.id,
+        title: 'Build the "page"',
+        stateLabel: "Ready for dev",
+        readySince: new Date(START),
+        stalledForMinutes: 190,
+      }),
+      expect.objectContaining({
+        nodeId: gated.id,
+        stalledForMinutes: 130,
+        // The guard's note names the request's topic key, which the check never shows.
+        waits: [
+          { code: "dry_run", detail: null },
+          { code: "guard_failed", guard: "no_pending_gate", detail: null },
+        ],
+      }),
+    ]);
+    expect(project?.stalled.runs).toEqual([
+      expect.objectContaining({
+        nodeId: worker.id,
+        bot: "developer",
+        title: "Build the API",
+      }),
+      expect.objectContaining({ nodeId: docs.id, budgetMinutes: null }),
+    ]);
+
+    const text = renderDailyCheck(check);
+    const lines = text.split("\n");
+    const at = lines.indexOf("Stalled (4):");
+    expect(lines.slice(at, at + 5)).toEqual([
+      "Stalled (4):",
+      `- ready, no run started: "Build the \\"page\\"" (item ${ready.id}) in Ready for dev for 3 h 10 min. Waits on: dry run is on: the runner plans dispatches and starts none`,
+      `- ready, no run started: "Fix the footer" (item ${gated.id}) in Ready for dev for 2 h 10 min. Waits on: dry run is on: the runner plans dispatches and starts none; a guard on its dispatch move fails: no_pending_gate`,
+      `- run quiet: the developer run on "Build the API" (item ${worker.id}), no activity for 2 h 10 min, past its budget of 50 min`,
+      `- run quiet: the developer run on "Write the docs" (item ${docs.id}), no activity for 10 min, its time budget cannot be read`,
+    ]);
+    expect(text).not.toContain("hold-release:");
+  });
+
+  it("says when stalled items cannot be listed, and lists stalled runs anyway", async () => {
+    const f = await fixture();
+    await f.setting("reconcile_interval_minutes", null);
+    await f.run((await f.node("in_development")).id, "developer", 60);
+    const check = await f.generate();
+    expect(check.stalledNote).toBe(
+      "reconcile_interval_minutes is missing or invalid: no stalled items list",
+    );
+    expect(check.projects[0]?.stalled.runs).toHaveLength(1);
+    expect(renderDailyCheck(check)).toContain(
+      "Stalled items: not listed. reconcile_interval_minutes is missing or invalid: no stalled items list.",
     );
   });
 

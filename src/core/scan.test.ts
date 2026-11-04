@@ -1,6 +1,7 @@
 // Seam: unit, plain logic (D-162). The Scanner's stage 1 fixed checks over synthetic repository
 // files, the strict check of the Job's result as untrusted data, and the idea fields the runner
-// writes from a finding (src/core/scan.ts, D-299, D-300, O-92). No archive, network or model.
+// writes from a finding (src/core/scan.ts, D-299, D-300, O-92). Where a check did not run, and
+// when a scan certainly found none of an idea's keys (D-301, O-93). No archive, network or model.
 import { describe, expect, it } from "vitest";
 
 import { MAX_FINDING_DETAIL, MAX_FINDING_TITLE } from "./out-of-scope-findings.ts";
@@ -13,6 +14,8 @@ import {
   SCAN_CHECKS,
   scanDedupeKey,
   scanIdea,
+  scanFoundNone,
+  scanNotRun,
   scanResult,
   ScanResultError,
   type ScanFinding,
@@ -292,6 +295,7 @@ const result = (findings: unknown[], counts: Record<string, unknown> = {}) => ({
     ...counts,
   },
   findings,
+  notRun: [],
 });
 
 describe("the scan result, checked as untrusted data (unit: O-92)", () => {
@@ -366,6 +370,43 @@ describe("the scan result, checked as untrusted data (unit: O-92)", () => {
     ["unsorted findings", result([{ ...FINDING, path: "docs/b.md" }, FINDING])],
     ["a dedupe key twice", result([FINDING, { ...FINDING, line: 9 }])],
     ["more listed than counted", result([FINDING], { doc_link_missing: 0 })],
+    [
+      "no notRun",
+      Object.fromEntries(Object.entries(result([])).filter(([k]) => k !== "notRun")),
+    ],
+    ["notRun not a list", { ...result([]), notRun: {} }],
+    [
+      "a not-run entry with an extra field",
+      { ...result([]), notRun: [{ check: "doc_link_missing", path: null, why: "x" }] },
+    ],
+    [
+      "a not-run entry of an unknown check",
+      { ...result([]), notRun: [{ check: "run_code", path: null }] },
+    ],
+    [
+      "a not-run path its check does not read",
+      { ...result([]), notRun: [{ check: "doc_link_missing", path: "src/a.ts" }] },
+    ],
+    [
+      "a not-run entry twice",
+      {
+        ...result([]),
+        notRun: [
+          { check: "doc_link_missing", path: "docs/a.md" },
+          { check: "doc_link_missing", path: "docs/a.md" },
+        ],
+      },
+    ],
+    [
+      "too many not-run entries",
+      {
+        ...result([]),
+        notRun: Array.from({ length: MAX_LISTED_FINDINGS + 1 }, (_, i) => ({
+          check: "doc_link_missing",
+          path: `docs/m${String(i).padStart(4, "0")}.md`,
+        })),
+      },
+    ],
   ])("refuses %s", (_label, value) => {
     expect(() => checkScanResult(value, SHA)).toThrow(ScanResultError);
   });
@@ -407,5 +448,115 @@ describe("a finding as an idea (unit: idea fields P-14)", () => {
     expect(idea.title).not.toMatch(/[\r\n]/);
     expect(idea.description.length).toBeLessThanOrEqual(MAX_FINDING_DETAIL);
     expect(idea.dedupeKey).toContain(long);
+  });
+});
+
+describe("where a check did not run (unit: D-301, O-93)", () => {
+  it("lists nothing for a repository every check read in full", () => {
+    expect(scanNotRun(input(passing()))).toEqual([]);
+  });
+
+  it("lists the registry check as a whole with no registry, or one too large to read", () => {
+    const files = passing();
+    delete files["gallery/registry.ts"];
+    expect(scanNotRun(input(files))).toEqual([
+      { check: "gallery_entry_unregistered", path: null },
+    ]);
+    expect(scanNotRun(input(passing(), { unread: ["gallery/registry.ts"] }))).toEqual([
+      { check: "gallery_entry_unregistered", path: null },
+    ]);
+  });
+
+  it("lists each check of a file too large to read, and nothing for a file that is not there", () => {
+    expect(
+      scanNotRun(
+        input(passing(), {
+          unread: [
+            "design/README.md",
+            "components/button/button.gallery.ts",
+            "contracts/machine-2/code.yaml",
+            "docs/component-gallery.md",
+            "docs/deleted.md",
+          ],
+        }),
+      ),
+    ).toEqual([
+      { check: "design_index_link_missing", path: "design/README.md" },
+      { check: "gallery_spec_missing", path: "components/button/button.gallery.ts" },
+      { check: "contract_unparsable", path: "contracts/machine-2/code.yaml" },
+      { check: "doc_link_missing", path: "design/README.md" },
+      { check: "doc_link_missing", path: "docs/component-gallery.md" },
+    ]);
+  });
+
+  it("lists the spec check of a gallery entry with no single literal specPath", () => {
+    const files = {
+      ...passing(),
+      "components/button/button.gallery.ts": "export const b = { specPath: spec };\n",
+    };
+    expect(scanNotRun(input(files))).toEqual([
+      { check: "gallery_spec_missing", path: "components/button/button.gallery.ts" },
+    ]);
+  });
+
+  it("lists each check once as a whole past the bound", () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i <= MAX_LISTED_FINDINGS; i++) files[`docs/d${i}.md`] = "";
+    const notRun = scanNotRun({
+      ...input(files),
+      registryImports: [],
+      unread: Object.keys(files),
+    });
+    expect(notRun).toEqual([{ check: "doc_link_missing", path: null }]);
+    // The Job's result carries it, and the runner reads it back.
+    const made = scanResult(SHA, [], notRun);
+    expect(checkScanResult(JSON.parse(JSON.stringify(made)), SHA).notRun).toEqual(
+      notRun,
+    );
+  });
+});
+
+describe("whether a scan found none of an idea's keys (unit: D-301, O-93)", () => {
+  const key = (f: ScanFinding) => ({
+    check: f.check,
+    path: f.path,
+    dedupeKey: scanDedupeKey(f),
+  });
+  const other: ScanFinding = { ...FINDING, target: "docs/c.md" };
+  const scan = (findings: ScanFinding[], extra = {}) => ({
+    counts: result(findings).counts as ReturnType<typeof scanResult>["counts"],
+    findings,
+    notRun: [],
+    ...extra,
+  });
+
+  it("is true only when no key was found, every check named listed all it found and ran over each file", () => {
+    expect(scanFoundNone(scan([]), [key(FINDING), key(other)])).toBe(true);
+    expect(scanFoundNone(scan([other]), [key(FINDING)])).toBe(true);
+    expect(scanFoundNone(scan([other]), [key(FINDING), key(other)])).toBe(false);
+    expect(
+      scanFoundNone(scan([], { counts: { ...scan([]).counts, doc_link_missing: 1 } }), [
+        key(FINDING),
+      ]),
+    ).toBe(false);
+    expect(
+      scanFoundNone(
+        scan([], { notRun: [{ check: "doc_link_missing", path: "docs/a.md" }] }),
+        [key(FINDING)],
+      ),
+    ).toBe(false);
+    expect(
+      scanFoundNone(
+        scan([], { notRun: [{ check: "doc_link_missing", path: "docs/z.md" }] }),
+        [key(FINDING)],
+      ),
+    ).toBe(true);
+    expect(
+      scanFoundNone(scan([], { notRun: [{ check: "doc_link_missing", path: null }] }), [
+        key(FINDING),
+      ]),
+    ).toBe(false);
+    // No keys: never taken as gone.
+    expect(scanFoundNone(scan([]), [])).toBe(false);
   });
 });

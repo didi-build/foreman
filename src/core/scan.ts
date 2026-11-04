@@ -11,6 +11,12 @@
 // description, class, confidence and dedupe key itself from its own table below (`scanIdea`), so
 // no text from the Job becomes an idea except a checked repository path.
 //
+// The Job also reports where a check could not run (`scanNotRun`, D-301, O-93): the whole of
+// `gallery_entry_unregistered` when there is no readable registry, and a check for one file when
+// the file is there but its text was too large to keep, or, for `gallery_spec_missing`, when the
+// file has no single literal `specPath`. The runner treats an idea as no longer found only when
+// every check its keys name ran over its file and listed all its findings (`scanFoundNone`).
+//
 // The checks, in the order they are listed and filed:
 // - design_index_link_missing (drift): `design/README.md`, the design index, links a `spec.md`
 //   that does not exist.
@@ -64,6 +70,15 @@ export interface ScanFinding {
   target: string | null;
 }
 
+/**
+ * A check that could not run (D-301, O-93): over one file (`path`), or over every file (`path`
+ * null). Its findings there are unknown, so no idea of that check and file is no longer found.
+ */
+export interface ScanNotRun {
+  check: ScanCheckId;
+  path: string | null;
+}
+
 /** What one scan found: every finding's count by check, and the findings listed (bounded). */
 export interface RepoScan {
   commitSha: string;
@@ -71,6 +86,8 @@ export interface RepoScan {
   counts: Record<ScanCheckId, number>;
   /** At most `MAX_LISTED_FINDINGS`, sorted, each dedupe key once. */
   findings: ScanFinding[];
+  /** Where a check could not run, at most `MAX_LISTED_FINDINGS`, sorted, each once. */
+  notRun: ScanNotRun[];
 }
 
 /**
@@ -92,6 +109,8 @@ export interface ScanInput {
   registryImports: readonly string[] | null;
   /** The contract files that are not valid YAML, with the line of the first problem. */
   unparsableContracts: readonly { path: string; line: number | null }[];
+  /** Files the checks read whose text was too large to keep (empty when not given). */
+  unread?: readonly string[];
 }
 
 /** What a check is: its class and how its idea reads. */
@@ -419,8 +438,61 @@ export function runScanChecks(input: ScanInput): ScanFinding[] {
   });
 }
 
+/** The order not-run entries are listed in: check, then the whole check first, then path. */
+export function compareNotRun(a: ScanNotRun, b: ScanNotRun): number {
+  if (a.check !== b.check) return order(a.check) - order(b.check);
+  if (a.path === b.path) return 0;
+  if (a.path === null) return -1;
+  if (b.path === null) return 1;
+  return a.path < b.path ? -1 : 1;
+}
+
+/**
+ * Where a check could not run (D-301, O-93), sorted, each once: the registry check as a whole
+ * when there is no readable registry; a file's checks when its text was too large to keep; and
+ * the spec check of a gallery entry with no single literal `specPath` the check can read. A file
+ * that is not there is not listed: what was found in it is gone with it. Past
+ * `MAX_LISTED_FINDINGS` entries, a check with entries is listed once as a whole instead.
+ */
+export function scanNotRun(input: ScanInput): ScanNotRun[] {
+  const files = new Set(input.paths);
+  const unread = new Set((input.unread ?? []).filter((p) => files.has(p)));
+  const found: ScanNotRun[] = [];
+  if (input.registryImports === null || unread.has(GALLERY_REGISTRY)) {
+    found.push({ check: "gallery_entry_unregistered", path: null });
+  }
+  for (const path of [...files].sort()) {
+    if (unread.has(path)) {
+      if (path === DESIGN_INDEX) {
+        found.push({ check: "design_index_link_missing", path });
+      }
+      if (GALLERY_FILE.test(path)) found.push({ check: "gallery_spec_missing", path });
+      if (CONTRACT_FILE.test(path)) found.push({ check: "contract_unparsable", path });
+      if (MARKDOWN.test(path)) found.push({ check: "doc_link_missing", path });
+      continue;
+    }
+    if (GALLERY_FILE.test(path)) {
+      const text = input.texts.get(path);
+      const spec = text === undefined ? null : specPathOf(text);
+      if (spec === null || linkTarget("", spec.value.replace(/^\.\//, "")) === null) {
+        found.push({ check: "gallery_spec_missing", path });
+      }
+    }
+  }
+  const sorted = found.sort(compareNotRun);
+  if (sorted.length <= MAX_LISTED_FINDINGS) return sorted;
+  return SCAN_CHECKS.filter((c) => sorted.some((n) => n.check === c)).map((check) => ({
+    check,
+    path: null,
+  }));
+}
+
 /** Counts every finding by check, then lists at most `MAX_LISTED_FINDINGS` (the Job's result). */
-export function scanResult(commitSha: string, findings: readonly ScanFinding[]) {
+export function scanResult(
+  commitSha: string,
+  findings: readonly ScanFinding[],
+  notRun: readonly ScanNotRun[] = [],
+) {
   const counts = Object.fromEntries(SCAN_CHECKS.map((c) => [c, 0])) as Record<
     ScanCheckId,
     number
@@ -431,7 +503,39 @@ export function scanResult(commitSha: string, findings: readonly ScanFinding[]) 
     commitSha,
     counts,
     findings: [...findings].sort(compareFindings).slice(0, MAX_LISTED_FINDINGS),
+    notRun: [...notRun].sort(compareNotRun).slice(0, MAX_LISTED_FINDINGS),
   };
+}
+
+/** One of an idea's findings, as the runner keeps it: its check, its file and its dedupe key. */
+export interface ScanKey {
+  check: ScanCheckId;
+  path: string;
+  dedupeKey: string;
+}
+
+/**
+ * Whether a scan certainly found none of these keys (D-301, O-93): no listed finding has one of
+ * them, every check they name listed all its findings (none was only counted), and every check
+ * ran over each key's file. False for no keys, so an idea whose keys cannot be read is never
+ * taken as gone.
+ */
+export function scanFoundNone(
+  scan: Pick<RepoScan, "counts" | "findings" | "notRun">,
+  keys: readonly ScanKey[],
+): boolean {
+  if (keys.length === 0) return false;
+  const found = new Set(scan.findings.map(scanDedupeKey));
+  const listed = new Map<ScanCheckId, number>();
+  for (const f of scan.findings) listed.set(f.check, (listed.get(f.check) ?? 0) + 1);
+  return keys.every(
+    (k) =>
+      !found.has(k.dedupeKey) &&
+      (listed.get(k.check) ?? 0) === scan.counts[k.check] &&
+      !scan.notRun.some(
+        (n) => n.check === k.check && (n.path === null || n.path === k.path),
+      ),
+  );
 }
 
 /** A scan result the runner refuses. The message names the problem, never a value. */
@@ -453,11 +557,13 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /**
  * The scan in a Job's `structured` result, checked as untrusted data for `commitSha`: exactly
- * `{scan: 1, commitSha, counts, findings}`; the commit asked for; a whole count of at most
+ * `{scan: 1, commitSha, counts, findings, notRun}`; the commit asked for; a whole count of at most
  * `MAX_FINDING_COUNT` for exactly each check; at most `MAX_LISTED_FINDINGS` findings of exactly
  * `check`, `path`, `line` and `target`, each a known check, a plain path the check may be about,
  * a whole line or null, and a plain target exactly when the check has one; sorted, each dedupe
- * key once, and no more of a check listed than counted. Throws `ScanResultError` naming the
+ * key once, and no more of a check listed than counted; and at most `MAX_LISTED_FINDINGS` not-run
+ * entries of exactly `check` and `path`, each a known check and a plain path the check may be
+ * about or null, sorted and each once. Throws `ScanResultError` naming the
  * first problem, never the value.
  */
 export function checkScanResult(value: unknown, commitSha: string): RepoScan {
@@ -466,10 +572,10 @@ export function checkScanResult(value: unknown, commitSha: string): RepoScan {
   };
   if (
     !isPlainObject(value) ||
-    !hasOnlyKeys(value, ["scan", "commitSha", "counts", "findings"]) ||
+    !hasOnlyKeys(value, ["scan", "commitSha", "counts", "findings", "notRun"]) ||
     value.scan !== 1
   ) {
-    return fail("is not exactly scan, commitSha, counts and findings");
+    return fail("is not exactly scan, commitSha, counts, findings and notRun");
   }
   if (value.commitSha !== commitSha || !FULL_SHA.test(commitSha)) {
     return fail("is not for the commit asked for");
@@ -546,6 +652,38 @@ export function checkScanResult(value: unknown, commitSha: string): RepoScan {
   for (const [check, n] of listed) {
     if (n > (counts[check] as number))
       return fail("lists more findings than it counts");
+  }
+  const notRun = value.notRun;
+  if (!Array.isArray(notRun) || notRun.length > MAX_LISTED_FINDINGS) {
+    return fail(`notRun is not a list of at most ${MAX_LISTED_FINDINGS}`);
+  }
+  let before: ScanNotRun | null = null;
+  for (const item of notRun as unknown[]) {
+    if (!isPlainObject(item) || !hasOnlyKeys(item, ["check", "path"])) {
+      return fail("has a not-run entry that is not exactly check and path");
+    }
+    const check = item.check;
+    if (
+      typeof check !== "string" ||
+      !(SCAN_CHECKS as readonly string[]).includes(check)
+    ) {
+      return fail("has a not-run entry of an unknown check");
+    }
+    const path = item.path;
+    if (
+      path !== null &&
+      (!isPlainRepoPath(path) ||
+        !SCAN_CHECK_DEFINITIONS[check as ScanCheckId].pathPattern.test(path))
+    ) {
+      return fail(
+        "has a not-run entry whose path is not plain or not one its check reads",
+      );
+    }
+    const entry: ScanNotRun = { check: check as ScanCheckId, path };
+    if (before !== null && compareNotRun(before, entry) >= 0) {
+      return fail("not-run entries are not sorted, or one is there twice");
+    }
+    before = entry;
   }
   return value as unknown as RepoScan;
 }

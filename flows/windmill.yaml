@@ -30,7 +30,9 @@ flows:
     # Didi approved (D-269); its option capture pass captures each design item's exploration
     # options once CI has rendered them and opens Didi's visual-approval request (O-88). Every
     # pass, whatever the switches, its result lists the held items with no open release request
-    # for Didi's daily check (`heldItems`, D-272, O-90); listing writes nothing and asks nothing.
+    # for Didi's daily check (`heldItems`, D-272, O-90), and the stalled runs and items from the
+    # one stall check the daily check also reads (`stalledRuns`, `stalledItems`, D-302, O-94);
+    # listing writes nothing and asks nothing.
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
