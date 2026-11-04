@@ -63,7 +63,7 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const PUSHING: readonly AgentRole[] = ["developer", "designer"];
 /** The roles with structured output, and the schema names each must give (D-228). */
 const SCHEMA_NAMES: Partial<Record<AgentRole, readonly string[]>> = {
-  council: ["escalation", "reversal", "visual_call"],
+  council: ["escalation", "reversal", "visual_call", "scanner_gone"],
   triage: ["answer"],
   qa: ["visual"],
 };

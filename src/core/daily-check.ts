@@ -38,6 +38,10 @@
 //   at which commit, its findings by check, the new ideas it filed (ids and titles), how many it
 //   merged as duplicates and how many were over the cap; for a failed scan, the step it stopped at.
 //   Read from the scan's record (migration 0017, ./scan-ideas.ts), which the scan flow writes.
+//   Since D-301 (O-93) it also shows the open ideas new findings were folded into, with how many
+//   each, and the ideas the scan no longer found: each one in Submitted as withdrawn (its move to
+//   Rejected applied with the scan's trigger), or as not withdrawn when the move did not apply,
+//   so Didi can reopen it; each one further along as no longer found with the Council asked.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
@@ -57,6 +61,8 @@ import {
   readScanFailure,
   readScanSummary,
   SCAN_FAILURE_TEXT,
+  SCAN_TRIGGER_PREFIX,
+  WITHDRAWN_STATE,
   type ScanNewIdea,
 } from "./scan-ideas.ts";
 import { STAGING_PASS_GUARD } from "./staging.ts";
@@ -88,6 +94,7 @@ export const SPEND_THRESHOLDS_NOT_BUILT =
 export type DailyCheckStore = Pick<
   StoreOps,
   | "getProject"
+  | "getNode"
   | "listNodes"
   | "listEdges"
   | "listTransitions"
@@ -197,6 +204,14 @@ export interface ScanSection {
   /** Findings past the cap of new ideas per scan, not filed this time. */
   overCap: number;
   cap: number | null;
+  /** Open ideas new findings were folded into (D-301), each with how many, by item id. */
+  foldedInto: { nodeId: string; title: string; findings: number }[];
+  /** Scanner ideas in Submitted the scan no longer found, withdrawn to Rejected (D-301). */
+  withdrawn: { nodeId: string; title: string }[];
+  /** Ones it no longer found whose withdrawal did not apply: still in Submitted. */
+  notWithdrawn: { nodeId: string; title: string }[];
+  /** Ideas further along it no longer found: recorded on each, and the Council asked. */
+  askedCouncil: { nodeId: string; title: string; state: string }[];
   /** Said when there is no scan, or its record cannot be read. */
   note: string | null;
 }
@@ -273,6 +288,10 @@ async function scanSection(
     merged: 0,
     overCap: 0,
     cap: null,
+    foldedInto: [],
+    withdrawn: [],
+    notWithdrawn: [],
+    askedCouncil: [],
     note: NO_SCAN_YET,
   };
   const last = await store.getLatestScan(projectId);
@@ -299,6 +318,33 @@ async function scanSection(
       note: "The last scan's record could not be read.",
     };
   }
+  const foldedInto: ScanSection["foldedInto"] = [];
+  for (const f of summary.folded) {
+    const into = foldedInto.find((i) => i.nodeId === f.nodeId);
+    if (into) into.findings += 1;
+    else foldedInto.push({ nodeId: f.nodeId, title: f.title, findings: 1 });
+  }
+  const withdrawn: ScanSection["withdrawn"] = [];
+  const notWithdrawn: ScanSection["notWithdrawn"] = [];
+  const askedCouncil: ScanSection["askedCouncil"] = [];
+  const trigger = `${SCAN_TRIGGER_PREFIX}${last.id}`;
+  for (const g of summary.gone) {
+    if (g.action === "asked_council") {
+      askedCouncil.push({ nodeId: g.nodeId, title: g.title, state: g.state });
+      continue;
+    }
+    const moved = (await store.listTransitions(g.nodeId)).some(
+      (t) =>
+        t.mode === "applied" &&
+        t.toState === WITHDRAWN_STATE &&
+        t.triggerRef === trigger,
+    );
+    const node = await store.getNode(g.nodeId);
+    (moved && node?.state === WITHDRAWN_STATE ? withdrawn : notWithdrawn).push({
+      nodeId: g.nodeId,
+      title: g.title,
+    });
+  }
   return {
     ...known,
     outcome: "scanned",
@@ -308,6 +354,10 @@ async function scanSection(
     merged: summary.merged,
     overCap: summary.overCap,
     cap: summary.cap,
+    foldedInto,
+    withdrawn,
+    notWithdrawn,
+    askedCouncil,
   };
 }
 
@@ -523,6 +573,9 @@ export async function generateDailyCheck(
       spend.runsEnded === 0 &&
       spend.runsActive === 0 &&
       check.scan.findings === 0 &&
+      check.scan.withdrawn.length === 0 &&
+      check.scan.notWithdrawn.length === 0 &&
+      check.scan.askedCouncil.length === 0 &&
       check.scan.outcome !== "failed";
     if (quiet) quietProjects.push(project.slug);
     else projects.push(check);
@@ -651,13 +704,30 @@ function renderScan(scan: ScanSection): string[] {
   const byCheck = SCAN_CHECKS.filter((c) => scan.findingsByCheck[c] > 0)
     .map((c) => `${c} ${scan.findingsByCheck[c]}`)
     .join(", ");
+  const folded = scan.foldedInto.reduce((n, f) => n + f.findings, 0);
   return [
     `${ran}: ${plural(scan.findings, "finding")}${byCheck === "" ? "" : ` (${byCheck})`}; ` +
       `${plural(scan.newIdeas.length, "new idea")}, ${scan.merged} merged as duplicates, ` +
-      `${scan.overCap} over the cap of ${scan.cap ?? 0}.`,
+      `${folded} folded into open ideas, ${scan.overCap} over the cap of ${scan.cap ?? 0}.`,
     ...scan.newIdeas.map(
       (idea) =>
         `- new idea ${quote(idea.title)} (item ${idea.nodeId}), ${idea.class}, ${idea.check}`,
+    ),
+    ...scan.foldedInto.map(
+      (f) =>
+        `- folded into ${quote(f.title)} (item ${f.nodeId}): ${plural(f.findings, "new finding")}`,
+    ),
+    ...scan.withdrawn.map(
+      (w) =>
+        `- withdrawn ${quote(w.title)} (item ${w.nodeId}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+    ),
+    ...scan.notWithdrawn.map(
+      (w) =>
+        `- no longer found, not withdrawn yet: ${quote(w.title)} (item ${w.nodeId}), still in Submitted`,
+    ),
+    ...scan.askedCouncil.map(
+      (a) =>
+        `- no longer found, asked the Council: ${quote(a.title)} (item ${a.nodeId}), in ${a.state}`,
     ),
   ];
 }

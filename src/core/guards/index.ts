@@ -1,7 +1,7 @@
 // The guard registry: exactly the guards of ADR 0105's guard list (24 from M2.2, the two merge
 // guard checks D-218 and M3.3 add, the same-head check M3.5 adds, the Council redo check D-231
-// adds, the design merge's option folder check D-258 adds, and Didi's answer to the planning chat's
-// plan D-266 adds, two guards), by name. Contracts name guards; the
+// adds, the design merge's option folder check D-258 adds, Didi's answer to the planning chat's
+// plan D-266 adds, two guards, and the Scanner's withdrawal of its own idea D-301 adds), by name. Contracts name guards; the
 // library looks them up here. See docs/guards.md for the evidence each one reads.
 import type { GuardRegistry } from "../contracts.ts";
 import {
@@ -40,6 +40,7 @@ import {
 } from "./review.ts";
 import { unpickedOptionsRemoved } from "./options.ts";
 import { planApprovalRecorded, planReturnRecorded } from "./plan.ts";
+import { scannerFindingGone } from "./scanner.ts";
 import { stagingCheckFailed, stagingCheckOnMergeCommit } from "./staging.ts";
 
 export const GUARDS: GuardRegistry = {
@@ -74,6 +75,7 @@ export const GUARDS: GuardRegistry = {
   unpicked_options_removed: unpickedOptionsRemoved,
   plan_approval_recorded: planApprovalRecorded,
   plan_return_recorded: planReturnRecorded,
+  scanner_finding_gone: scannerFindingGone,
 };
 
 export const GUARD_NAMES: readonly string[] = Object.keys(GUARDS);

@@ -98,6 +98,12 @@ describe("the scan read in the Job (adapter, O-92)", () => {
       TOKEN,
     );
     expect(result.findings).toEqual([]);
+    // Their checks did not run over them, so no idea about them is taken as gone (D-301).
+    expect(result.notRun).toEqual([
+      { check: "gallery_entry_unregistered", path: null },
+      { check: "contract_unparsable", path: "contracts/big.yaml" },
+      { check: "doc_link_missing", path: "docs/big.md" },
+    ]);
   });
 
   it("refuses a bad repository or commit before any download", async () => {

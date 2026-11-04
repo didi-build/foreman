@@ -662,11 +662,12 @@ function ops(db: Queryable): StoreOps {
         ],
       );
     },
-    async getLatestScan(projectId) {
+    async getLatestScan(projectId, outcome) {
       const r = await one(
         `select * from factory.scans where project_id = $1
+         and ($2::text is null or outcome = $2)
          order by recorded_at desc, id desc limit 1`,
-        [projectId],
+        [projectId, outcome ?? null],
       );
       return r && toScanRecord(r);
     },

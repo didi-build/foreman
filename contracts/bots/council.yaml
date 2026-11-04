@@ -68,6 +68,15 @@ output_schemas:
       reason: { type: string }
       # True when uncertainty made the call needs_didi (D-287), kept as a label to learn from.
       unsure: { type: boolean }
+  # Whether to stop a scanner idea the Scanner no longer finds (D-301, O-93). The runner records
+  # it on the idea; a stop or cannot_decide goes to Didi, and nothing moves the idea.
+  scanner_gone:
+    type: object
+    additionalProperties: false
+    required: [verdict, note]
+    properties:
+      verdict: { type: string, enum: [stop, keep, cannot_decide] }
+      note: { type: string }
 
 # Reviewed by Didi, 2026-11-03 (D-247, D-248). The image adds the fixed frame: the input as data,
 # and JSON only. These are the supervisor's instructions; each persona gets its own when the panel

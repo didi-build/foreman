@@ -1,7 +1,12 @@
-// Seam: unit, plain logic over the memory store with the real contracts, a fixed clock and ids
-// (D-162). The Scanner's stage 1 files its findings as ideas and records the scan
+// Seam: unit, plain logic over the memory store with the real contracts and guards, a fixed clock
+// and ids (D-162). The Scanner's stage 1 files its findings as ideas and records the scan
 // (src/core/scan-ideas.ts, D-300, O-92): the idea fields, the cap of 5, the dedupe against open
-// ideas and items, the switches and the failure record. Synthetic data only.
+// ideas and items, the switches and the failure record. And how its ideas change over time
+// (D-301, O-93): a parked or rejected idea absorbing its finding until it is reopened, a new
+// finding in the same file folded into the oldest open idea, and the clean up of ideas no longer
+// found (Submitted withdrawn through the guarded runner-only move, further along recorded and
+// asked about once per commit), never on a failed scan, under a switch or for a check that did not
+// run. Synthetic data only.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -18,6 +23,8 @@ import {
   type ScanFinding,
 } from "../src/core/scan.ts";
 import type { Node, Store } from "../src/core/store.ts";
+import { scannerGoneTopic } from "../src/core/scan-ideas.ts";
+import { createLibrary } from "../src/core/library.ts";
 import { createReconcileFixture } from "./reconcile-fixture.ts";
 
 const SHA = "c".repeat(40);
@@ -37,7 +44,7 @@ function scanOf(
     SCAN_CHECKS.map((c) => [c, 0]),
   ) as RepoScan["counts"];
   for (const f of findings) counts[f.check] += 1;
-  return { commitSha: SHA, counts: { ...counts, ...extra }, findings };
+  return { commitSha: SHA, counts: { ...counts, ...extra }, findings, notRun: [] };
 }
 
 async function fixture() {
@@ -106,8 +113,12 @@ describe("filing a scan's findings as ideas (unit: D-300, O-92)", () => {
         },
       ],
       merged: 0,
+      folded: [],
       overCap: 0,
       cap: SCAN_IDEA_CAP,
+      gone: [],
+      listed: [finding],
+      notRun: [],
     });
   });
 
@@ -131,9 +142,17 @@ describe("filing a scan's findings as ideas (unit: D-300, O-92)", () => {
     const f = await fixture();
     await f.scans.file(f.projectId, scanOf([link(1), link(2)]));
     f.advanceMinutes(24 * 60);
+    // New findings in other files: none folds into the open ideas (D-301 (2)).
     const next = await f.scans.file(
       f.projectId,
-      scanOf([link(1), link(2), ...Array.from({ length: 6 }, (_, i) => link(i + 3))]),
+      scanOf([
+        link(1),
+        link(2),
+        ...Array.from({ length: 6 }, (_, i) => ({
+          ...link(i + 3),
+          path: `docs/b${i}.md`,
+        })),
+      ]),
     );
     expect(next).toMatchObject({ summary: { findings: 8, merged: 2, overCap: 1 } });
     expect(next.step === "filed" && next.summary.newIdeas).toHaveLength(5);
@@ -264,5 +283,405 @@ describe("filing a scan's findings as ideas (unit: D-300, O-92)", () => {
         cap: 5,
       }),
     ).toBeNull();
+  });
+});
+
+const OTHER_SHA = "d".repeat(40);
+
+/** A scan at `sha` of these findings, nothing else counted. */
+const scanAt = (
+  sha: string,
+  findings: ScanFinding[],
+  extra: Partial<RepoScan> = {},
+) => ({
+  ...scanOf(findings),
+  commitSha: sha,
+  ...extra,
+});
+
+async function d301() {
+  const f = await fixture();
+  /** Moves a node in the store, as a later move of Machine 1 or Didi would. */
+  const move = async (node: Node, state: string) => {
+    const now = (await f.store.getNode(node.id)) as Node;
+    await f.store.changeNodeState(node.id, now.version, {
+      state,
+      substate: null,
+      ownerRole: now.ownerRole,
+      blockedReason: null,
+      stateSince: f.clock.now(),
+      updatedAt: f.clock.now(),
+    });
+  };
+  const day = () => f.advanceMinutes(24 * 60);
+  const keyed = async (key: string) =>
+    (await f.ideas()).find((n) => (n.body as { dedupeKey: string }).dedupeKey === key);
+  return { ...f, move, day, keyed };
+}
+
+describe("how scanner ideas change over time (unit: D-301, O-93)", () => {
+  it.each(["parked", "rejected"])(
+    "merges a finding whose idea is %s, filing nothing, until the idea is reopened",
+    async (state) => {
+      const f = await d301();
+      await f.scans.file(f.projectId, scanOf([link(1)]));
+      const [idea] = await f.ideas();
+      await f.move(idea as Node, state);
+      f.day();
+      expect(await f.scans.file(f.projectId, scanOf([link(1)]))).toMatchObject({
+        summary: { merged: 1, newIdeas: [], folded: [], gone: [] },
+      });
+      expect(await f.ideas()).toHaveLength(1);
+      // Reopened: back in Submitted, it is open, so the finding still merges into it.
+      await f.move(idea as Node, "submitted");
+      f.day();
+      expect(await f.scans.file(f.projectId, scanOf([link(1)]))).toMatchObject({
+        summary: { merged: 1, newIdeas: [] },
+      });
+      // Out of Parked or Rejected and finished (handed off, no work left): filed again.
+      await f.move(idea as Node, "handed_off");
+      f.day();
+      expect(await f.scans.file(f.projectId, scanOf([link(1)]))).toMatchObject({
+        summary: { merged: 0, newIdeas: [{ check: "doc_link_missing" }] },
+      });
+      expect(await f.ideas()).toHaveLength(2);
+    },
+  );
+
+  it("folds a new finding with the same check and file into the open idea as a scope update, and merges it later", async () => {
+    const f = await d301();
+    await f.scans.file(f.projectId, scanOf([link(1)]));
+    const [idea] = await f.ideas();
+    f.day();
+    const folded = await f.scans.file(
+      f.projectId,
+      scanAt(OTHER_SHA, [link(1), link(2)]),
+    );
+    expect(folded).toMatchObject({
+      step: "filed",
+      summary: {
+        merged: 1,
+        newIdeas: [],
+        overCap: 0,
+        folded: [
+          {
+            nodeId: idea?.id,
+            title: idea?.title,
+            check: "doc_link_missing",
+            dedupeKey: scanDedupeKey(link(2)),
+          },
+        ],
+      },
+    });
+    const updates = await f.store.listEvidence({
+      nodeId: idea?.id ?? "",
+      kind: "scan_scope_update",
+    });
+    const scanId = (await f.store.getLatestScan(f.projectId))?.id;
+    expect(updates).toMatchObject([
+      {
+        commitSha: OTHER_SHA,
+        ref: `scan:${scanId}`,
+        recordedBy: "runner:scanner",
+        payload: { ...link(2), dedupeKey: scanDedupeKey(link(2)) },
+      },
+    ]);
+    // A later scan treats the folded key as the idea's: merged, nothing new.
+    f.day();
+    expect(
+      await f.scans.file(f.projectId, scanAt(OTHER_SHA, [link(1), link(2)])),
+    ).toMatchObject({ summary: { merged: 2, newIdeas: [], folded: [] } });
+    // A new finding of another check, or in another file, is not folded in.
+    f.day();
+    const elsewhere = await f.scans.file(
+      f.projectId,
+      scanAt(OTHER_SHA, [link(1), link(2), { ...link(3), path: "docs/z.md" }]),
+    );
+    expect(elsewhere).toMatchObject({
+      summary: { folded: [], newIdeas: [{ check: "doc_link_missing" }] },
+    });
+    expect(await f.ideas()).toHaveLength(2);
+  });
+
+  it("does not count folded findings toward the cap", async () => {
+    const f = await d301();
+    await f.scans.file(f.projectId, scanOf([link(1)]));
+    f.day();
+    const others = Array.from({ length: 6 }, (_, i) => ({
+      ...link(20 + i),
+      path: `docs/o${i}.md`,
+    }));
+    const next = await f.scans.file(
+      f.projectId,
+      scanOf([link(1), link(2), link(3), ...others]),
+    );
+    expect(next).toMatchObject({
+      summary: { findings: 9, merged: 1, overCap: 1 },
+    });
+    expect(next.step === "filed" && next.summary.folded).toHaveLength(2);
+    expect(next.step === "filed" && next.summary.newIdeas).toHaveLength(5);
+  });
+
+  it("folds into the oldest of several open ideas of the same check and file, and never into a closed one", async () => {
+    const f = await d301();
+    const scannerIdea = (n: number, minutesAgo: number) =>
+      f.node("submitted", {
+        type: "idea",
+        track: null,
+        ownerRole: "runner",
+        title: `Idea ${n}`,
+        body: {
+          source: "scanner",
+          check: "doc_link_missing",
+          evidence: [{ path: "docs/a.md", line: n }],
+          dedupeKey: scanDedupeKey(link(n)),
+        },
+        createdAt: new Date(f.clock.now().getTime() - minutesAgo * 60_000),
+      });
+    // Made in this order, so the ids do not follow the age: the oldest is parked, then the
+    // second oldest is the one a new finding goes to.
+    await scannerIdea(1, 10);
+    const oldest = await scannerIdea(2, 30);
+    const secondOldest = await scannerIdea(3, 20);
+    await f.move(oldest, "parked");
+    f.day();
+    const next = await f.scans.file(
+      f.projectId,
+      scanOf([link(1), link(2), link(3), link(4)]),
+    );
+    expect(next).toMatchObject({
+      summary: {
+        merged: 3,
+        folded: [{ nodeId: secondOldest.id, title: "Idea 3" }],
+        newIdeas: [],
+      },
+    });
+  });
+
+  it("withdraws an idea still in Submitted that the scan no longer finds, through the guarded runner-only move", async () => {
+    const f = await d301();
+    await f.scans.file(
+      f.projectId,
+      scanOf([link(1), { ...link(2), path: "docs/b.md" }]),
+    );
+    const gone = await f.keyed(scanDedupeKey(link(1)));
+    f.day();
+    const next = await f.scans.file(
+      f.projectId,
+      scanAt(OTHER_SHA, [{ ...link(2), path: "docs/b.md" }]),
+    );
+    const record = await f.store.getLatestScan(f.projectId);
+    expect(next).toMatchObject({
+      step: "filed",
+      summary: {
+        merged: 1,
+        gone: [
+          {
+            nodeId: gone?.id,
+            title: gone?.title,
+            state: "submitted",
+            action: "withdraw",
+          },
+        ],
+      },
+      withdrawals: [{ nodeId: gone?.id, outcome: "applied" }],
+    });
+    expect((await f.store.getNode(gone?.id ?? ""))?.state).toBe("rejected");
+    const [reason] = await f.store.listEvidence({
+      nodeId: gone?.id ?? "",
+      kind: "scan_not_found",
+    });
+    expect(reason).toMatchObject({
+      commitSha: OTHER_SHA,
+      payload: { note: `No longer found by the scanner at commit ${OTHER_SHA}.` },
+    });
+    const [moved] = await f.store.listTransitions(gone?.id ?? "");
+    expect(moved).toMatchObject({
+      fromState: "submitted",
+      toState: "rejected",
+      triggerKind: "event",
+      triggerRef: `scan:${record?.id}`,
+      actorKind: "runner",
+      actorId: "runner:scanner",
+      mode: "applied",
+      reason: `No longer found by the scanner at commit ${OTHER_SHA}.`,
+      evidenceIds: [reason?.id],
+    });
+    expect(moved?.guardResult).toMatchObject([
+      { name: "scanner_finding_gone", pass: true },
+    ]);
+    // Withdrawn, it is rejected: its finding coming back merges into it, so Didi can reopen it.
+    f.day();
+    expect(
+      await f.scans.file(
+        f.projectId,
+        scanOf([link(1), { ...link(2), path: "docs/b.md" }]),
+      ),
+    ).toMatchObject({ summary: { merged: 2, newIdeas: [], gone: [] } });
+  });
+
+  it("records an idea further along as no longer found and asks the Council once per commit, never moving it or its work items", async () => {
+    const f = await d301();
+    await f.scans.file(f.projectId, scanOf([link(1)]));
+    const [idea] = await f.ideas();
+    await f.move(idea as Node, "handed_off");
+    const item = await f.node("in_development");
+    await f.store.insertEdge({
+      id: f.deps.ids.next(),
+      fromNode: idea?.id ?? "",
+      toNode: item.id,
+      type: "split_into",
+      createdAt: f.clock.now(),
+    });
+    f.day();
+    const next = await f.scans.file(f.projectId, scanAt(OTHER_SHA, []));
+    expect(next).toMatchObject({
+      summary: {
+        gone: [{ nodeId: idea?.id, state: "handed_off", action: "asked_council" }],
+      },
+      withdrawals: [],
+    });
+    const topic = scannerGoneTopic(idea?.id ?? "");
+    const question = await f.store.findOpenGateRequest(f.projectId, topic);
+    expect(question).toMatchObject({
+      nodeId: idea?.id,
+      kind: "council_question",
+      owner: "council",
+      blocking: false,
+      payload: { commitSha: OTHER_SHA },
+    });
+    const notFound = () =>
+      f.store.listEvidence({ nodeId: idea?.id ?? "", kind: "scan_not_found" });
+    expect(await notFound()).toHaveLength(1);
+    // Nothing moved: not the idea, not its item.
+    expect((await f.store.getNode(idea?.id ?? ""))?.state).toBe("handed_off");
+    expect(await f.store.listTransitions(idea?.id ?? "")).toEqual([]);
+    expect(await f.store.getNode(item.id)).toEqual(item);
+    // The same commit again: nothing new recorded, no second question.
+    f.day();
+    await f.scans.file(f.projectId, scanAt(OTHER_SHA, []));
+    expect(await notFound()).toHaveLength(1);
+    expect(await f.store.listGateRequests(f.projectId, topic)).toHaveLength(1);
+    // A new commit while the question is open: recorded, and still one question.
+    f.day();
+    await f.scans.file(f.projectId, scanAt("e".repeat(40), []));
+    expect(await notFound()).toHaveLength(2);
+    expect(await f.store.listGateRequests(f.projectId, topic)).toHaveLength(1);
+    // Once that question is answered, the next new commit asks again.
+    await f.store.closeGateRequest(question?.id ?? "", {
+      status: "cancelled",
+      at: f.clock.now(),
+    });
+    f.day();
+    await f.scans.file(f.projectId, scanAt("f".repeat(40), []));
+    expect(await notFound()).toHaveLength(3);
+    expect(await f.store.findOpenGateRequest(f.projectId, topic)).toMatchObject({
+      payload: { commitSha: "f".repeat(40) },
+    });
+  });
+
+  it("cleans up nothing on a failed scan, or under the kill switch or dry run", async () => {
+    const f = await d301();
+    await f.scans.file(f.projectId, scanOf([link(1)]));
+    const [idea] = await f.ideas();
+    f.day();
+    await f.scans.recordFailure(f.projectId, "job", OTHER_SHA);
+    for (const [key, value] of [
+      ["kill_switch", true],
+      ["dry_run", true],
+    ] as const) {
+      await f.setting(key, value);
+      expect(await f.scans.file(f.projectId, scanAt(OTHER_SHA, []))).toEqual({
+        step: "refused",
+        reason: key,
+      });
+      await f.setting(key, false);
+    }
+    expect((await f.store.getNode(idea?.id ?? ""))?.state).toBe("submitted");
+    expect(
+      await f.store.listEvidence({ nodeId: idea?.id ?? "", kind: "scan_not_found" }),
+    ).toEqual([]);
+    expect(await f.store.listOpenGateRequests(f.projectId)).toEqual([]);
+  });
+
+  it.each<[string, Partial<RepoScan>]>([
+    [
+      "its check did not run over its file",
+      { notRun: [{ check: "doc_link_missing", path: "docs/a.md" }] },
+    ],
+    [
+      "its check did not run at all",
+      { notRun: [{ check: "doc_link_missing", path: null }] },
+    ],
+    [
+      "its check found more than the Job listed",
+      { counts: { ...scanOf([]).counts, doc_link_missing: 1 } },
+    ],
+  ])("does not take an idea as gone when %s", async (_label, extra) => {
+    const f = await d301();
+    await f.scans.file(f.projectId, scanOf([link(1)]));
+    const [idea] = await f.ideas();
+    f.day();
+    expect(await f.scans.file(f.projectId, scanAt(OTHER_SHA, [], extra))).toMatchObject(
+      {
+        summary: { gone: [] },
+        withdrawals: [],
+      },
+    );
+    expect((await f.store.getNode(idea?.id ?? ""))?.state).toBe("submitted");
+  });
+
+  it("lets only the runner's own step take the move to Rejected, never any other request", async () => {
+    const f = await d301();
+    await f.scans.file(
+      f.projectId,
+      scanOf([link(1), { ...link(2), path: "docs/b.md" }]),
+    );
+    const idea = await f.keyed(scanDedupeKey(link(1)));
+    f.day();
+    const library = createLibrary(f.deps);
+    const request = {
+      nodeId: idea?.id ?? "",
+      toState: "rejected",
+      trigger: { kind: "event" as const, ref: "scan:x" },
+      actor: { kind: "operator" as const, id: "didi" },
+    };
+    expect(await library.requestTransition(request)).toMatchObject({
+      outcome: "rejected",
+      reason: "runner_only_move",
+    });
+    // With the flag but no scan since the idea was filed, the guard refuses.
+    expect(
+      await library.requestTransition({ ...request, runnerOnly: true }),
+    ).toMatchObject({
+      outcome: "rejected",
+      reason: "guard_failed",
+      guardReport: [{ name: "scanner_finding_gone", pass: false }],
+    });
+    expect((await f.store.getNode(idea?.id ?? ""))?.state).toBe("submitted");
+  });
+
+  it("takes an idea of the registry check as gone only when the registry check ran", async () => {
+    const f = await d301();
+    const unregistered: ScanFinding = {
+      check: "gallery_entry_unregistered",
+      path: "components/a/a.gallery.ts",
+      line: null,
+      target: null,
+    };
+    await f.scans.file(f.projectId, scanOf([unregistered]));
+    const [idea] = await f.ideas();
+    f.day();
+    // The registry is missing: the check did not run, so the idea is not gone.
+    await f.scans.file(
+      f.projectId,
+      scanAt(OTHER_SHA, [], {
+        notRun: [{ check: "gallery_entry_unregistered", path: null }],
+      }),
+    );
+    expect((await f.store.getNode(idea?.id ?? ""))?.state).toBe("submitted");
+    f.day();
+    await f.scans.file(f.projectId, scanAt(OTHER_SHA, []));
+    expect((await f.store.getNode(idea?.id ?? ""))?.state).toBe("rejected");
   });
 });

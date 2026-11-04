@@ -100,6 +100,7 @@ export interface GuardContext {
     | "listDecisionsForNode"
     | "listGateRequests"
     | "getProject"
+    | "getLatestScan"
   >;
 }
 
@@ -128,6 +129,8 @@ const EVIDENCE_KINDS: EvidenceKind[] = [
   "screenshot",
   "agent_report",
   "failure_count",
+  "scan_scope_update",
+  "scan_not_found",
 ];
 
 const STATE_ID = /^[a-z][a-z0-9_]*$/;

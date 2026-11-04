@@ -104,7 +104,11 @@ export type EvidenceKind =
   | "docs_note"
   | "screenshot"
   | "agent_report"
-  | "failure_count";
+  | "failure_count"
+  /** A finding the Scanner folded into an open scanner idea (migration 0018, D-301, O-93). */
+  | "scan_scope_update"
+  /** A scan that no longer found any of a scanner idea's findings, once per commit (D-301). */
+  | "scan_not_found";
 
 export interface Evidence {
   id: string;
@@ -502,8 +506,14 @@ export interface StoreOps {
 
   /** Records one scan (migration 0017). */
   insertScan(scan: ScanRecord): Promise<void>;
-  /** The project's most recent scan, by `recordedAt` then id, or null. */
-  getLatestScan(projectId: string): Promise<ScanRecord | null>;
+  /**
+   * The project's most recent scan, by `recordedAt` then id, or null; with `outcome`, the most
+   * recent scan with that outcome (the guard `scanner_finding_gone` reads the latest that ran).
+   */
+  getLatestScan(
+    projectId: string,
+    outcome?: ScanRecord["outcome"],
+  ): Promise<ScanRecord | null>;
 }
 
 export interface Store extends StoreOps {

@@ -617,13 +617,118 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     });
     const text = renderDailyCheck(check);
     expect(text).toContain(
-      `Scan: last ran 2026-10-31 07:30 UTC at commit cccccccccccc: 3 findings (design_spec_not_indexed 1, doc_link_missing 2); 1 new idea, 2 merged as duplicates, 0 over the cap of 5.`,
+      `Scan: last ran 2026-10-31 07:30 UTC at commit cccccccccccc: 3 findings (design_spec_not_indexed 1, doc_link_missing 2); 1 new idea, 2 merged as duplicates, 0 folded into open ideas, 0 over the cap of 5.`,
     );
     expect(text).toContain(
       `- new idea ${JSON.stringify(title)} (item ${ideaId}), drift, doc_link_missing`,
     );
     expect(text.split("\n").filter((l) => l.startsWith("Kill switch:"))).toHaveLength(
       1,
+    );
+  });
+
+  it("shows what the scan folded in and cleaned up: folded counts, withdrawn, not withdrawn and asked the Council, titles quoted (D-301, O-93)", async () => {
+    const f = await fixture();
+    const idea = (title: string, state: string) =>
+      f.node(state, { type: "idea", track: null, title });
+    const into = await idea('Folded "into"', "submitted");
+    const withdrawn = await idea("Withdrawn idea", "rejected");
+    const stuck = await idea("Still submitted", "submitted");
+    const asked = await idea("Further along", "triage");
+    const scanId = f.deps.ids.next();
+    // The withdrawal applied with this scan's trigger; the other one did not apply.
+    await f.store.insertTransition({
+      id: f.deps.ids.next(),
+      nodeId: withdrawn.id,
+      fromState: "submitted",
+      toState: "rejected",
+      fromSubstate: null,
+      toSubstate: null,
+      triggerKind: "event",
+      triggerRef: `scan:${scanId}`,
+      actorKind: "runner",
+      actorId: "runner:scanner",
+      guardResult: [],
+      evidenceIds: [],
+      specVersion: "v",
+      mode: "applied",
+      reason: null,
+      at: f.clock.now(),
+    });
+    const fold = (n: number) => ({
+      nodeId: into.id,
+      title: into.title,
+      check: "doc_link_missing",
+      dedupeKey: `k${n}`,
+    });
+    await f.store.insertScan({
+      id: scanId,
+      projectId: f.projectId,
+      commitSha: "c".repeat(40),
+      outcome: "scanned",
+      summary: {
+        counts: {
+          design_index_link_missing: 0,
+          design_spec_not_indexed: 0,
+          gallery_spec_missing: 0,
+          gallery_entry_unregistered: 0,
+          contract_unparsable: 0,
+          doc_link_missing: 3,
+        },
+        findings: 3,
+        newIdeas: [],
+        merged: 1,
+        folded: [fold(1), fold(2)],
+        overCap: 0,
+        cap: 5,
+        gone: [
+          {
+            nodeId: withdrawn.id,
+            title: withdrawn.title,
+            state: "submitted",
+            action: "withdraw",
+          },
+          {
+            nodeId: stuck.id,
+            title: stuck.title,
+            state: "submitted",
+            action: "withdraw",
+          },
+          {
+            nodeId: asked.id,
+            title: asked.title,
+            state: "triage",
+            action: "asked_council",
+          },
+        ],
+        listed: [],
+        notRun: [],
+      },
+      recordedBy: "runner:scanner",
+      recordedAt: f.clock.now(),
+    });
+    const check = await f.generate();
+    expect(check.projects[0]?.scan).toMatchObject({
+      foldedInto: [{ nodeId: into.id, title: into.title, findings: 2 }],
+      withdrawn: [{ nodeId: withdrawn.id, title: "Withdrawn idea" }],
+      notWithdrawn: [{ nodeId: stuck.id, title: "Still submitted" }],
+      askedCouncil: [{ nodeId: asked.id, title: "Further along", state: "triage" }],
+    });
+    const text = renderDailyCheck(check);
+    expect(text).toContain(
+      "0 new ideas, 1 merged as duplicates, 2 folded into open ideas, 0 over the cap of 5.",
+    );
+    expect(text).toContain(
+      `- folded into ${JSON.stringify(into.title)} (item ${into.id}): 2 new findings`,
+    );
+    expect(text).toContain(
+      `- withdrawn "Withdrawn idea" (item ${withdrawn.id}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+    );
+    expect(text).toContain(
+      `- no longer found, not withdrawn yet: "Still submitted" (item ${stuck.id}), still in Submitted`,
+    );
+    expect(text).toContain(
+      `- no longer found, asked the Council: "Further along" (item ${asked.id}), in triage`,
     );
   });
 

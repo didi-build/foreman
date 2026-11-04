@@ -7,7 +7,9 @@
 // starts nothing. A question whose run and one re-run gave no usable answer goes to Didi instead.
 // The Council's call on a visual approval (D-270) is a question too: its run starts the same way,
 // with task type `council:visual` (./start-run.ts), and with no usable answer after the re-run it
-// is recorded as dropped, never sent to Didi.
+// is recorded as dropped, never sent to Didi. So is the question on a scanner idea the Scanner no
+// longer finds (D-301, src/core/scan-ideas.ts), opened by the scan and run with task type
+// `council`; its answer is recorded and nothing moves the idea.
 //
 // The reconcile flow's live passes run the Council pass for every open question; the run-end
 // flow runs it for an item whose report has just escalated it, so its Council run starts at once.
@@ -55,6 +57,7 @@ import {
   REVERSAL_PREFIX,
   type CouncilAnswer,
   type CouncilNext,
+  type CouncilQuestion,
   type VisualCallRecord,
   type FollowUpStep,
   type RedoStep,
@@ -93,11 +96,14 @@ import type { TriageRecord } from "../../src/core/triage.ts";
 
 export interface CouncilPassStep {
   topicKey: string;
-  kind: "escalation" | "reversal" | "visual_call";
+  kind: CouncilQuestion["kind"];
   step: CouncilNext["step"];
   /** With `start`: the dispatch's result, or `start_failed` when it threw (the error is not kept). */
   result?: StartRunResult | { outcome: "start_failed" };
-  /** With `to_didi`: the escalation's move to Didi, or the reversal's gate request for Didi. */
+  /**
+   * With `to_didi`: the escalation's move to Didi, or the gate request for Didi of a reversal or
+   * a scanner idea that is no longer found (D-301).
+   */
   didi?: EscalationStep | { gateRequestId: string | null };
   /** With `drop`: the visual call recorded as dropped, or why not (D-270). */
   dropped?: VisualCallRecord;
