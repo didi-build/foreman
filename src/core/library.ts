@@ -59,6 +59,11 @@ export interface TransitionRequest {
    * other request for such a move is rejected with `runner_only_move` (O-54).
    */
   runnerOnly?: true;
+  /**
+   * When two runner-only moves lead from the node's state to `toState` (D-307), the guard that
+   * names the one the runner step means: only a move whose guards include it is taken.
+   */
+  guardedBy?: string;
 }
 
 export type TransitionOutcome = "applied" | "planned" | "noop" | "rejected" | "refused";
@@ -214,24 +219,27 @@ export function createLibrary({
   }
 
   /**
-   * The contract transition that legalizes this move, if any: an exact match first, then the
-   * escalation forms (`from: any` into an escalated state, `to: return` back out, ADR 0105).
+   * The contract transitions that legalize this move: the exact matches first (more than one only
+   * for two runner-only ways in, narrowed by `guardedBy`, D-307), then the escalation forms
+   * (`from: any` into an escalated state, `to: return` back out, ADR 0105).
    */
-  async function findMove(
+  async function findMoves(
     node: Node,
     toState: string,
-  ): Promise<TransitionContract | undefined> {
+    guardedBy?: string,
+  ): Promise<TransitionContract[]> {
     // `any` and `return` are keywords, never states: a request for them is illegal.
-    if (!stateOf(toState)) return undefined;
+    if (!stateOf(toState)) return [];
     const candidates = contracts.transitions.filter((move) => trackMatches(move, node));
-    const exact = candidates.find(
+    const exact = candidates.filter(
       (move) =>
         move.from !== "any" &&
         move.to !== "return" &&
         move.from === node.state &&
-        move.to === toState,
+        move.to === toState &&
+        (guardedBy === undefined || move.guards.includes(guardedBy)),
     );
-    if (exact) return exact;
+    if (exact.length > 0) return exact;
     const fromAny = candidates.find(
       (move) =>
         move.escalation &&
@@ -239,12 +247,12 @@ export function createLibrary({
         move.to === toState &&
         !stateOf(node.state)?.escalated,
     );
-    if (fromAny) return fromAny;
+    if (fromAny) return [fromAny];
     const toReturn = candidates.find(
       (move) => move.escalation && move.from === node.state && move.to === "return",
     );
-    if (toReturn && (await resolveReturnState(node.id)) === toState) return toReturn;
-    return undefined;
+    if (toReturn && (await resolveReturnState(node.id)) === toState) return [toReturn];
+    return [];
   }
 
   /** True when adding from -> to would close a loop of `blocks` edges, read through `ops`. */
@@ -376,11 +384,11 @@ export function createLibrary({
     if (!node) throw new LibraryError(`No node ${request.nodeId}`);
     if (node.state === request.toState) return { outcome: "noop", guardReport: [] };
 
-    const move = await findMove(node, request.toState);
-    if (!move) {
+    const moves = await findMoves(node, request.toState, request.guardedBy);
+    if (moves.length === 0) {
       return { outcome: "rejected", reason: "illegal_move", guardReport: [] };
     }
-    if (move.runnerOnly && request.runnerOnly !== true) {
+    if (moves.some((move) => move.runnerOnly) && request.runnerOnly !== true) {
       return { outcome: "rejected", reason: "runner_only_move", guardReport: [] };
     }
     const target = stateOf(request.toState);
@@ -391,11 +399,15 @@ export function createLibrary({
         guardReport: [],
       };
     }
-    const guardReport = await evaluateGuards(node, move.guards);
-    if (guardReport.some((check) => !check.pass)) {
-      return { outcome: "rejected", reason: "guard_failed", guardReport };
+    // Two runner-only ways in (D-307) not narrowed by `guardedBy`: the first whose guards all
+    // pass is taken; when none does, the report holds every way's checks.
+    const failed: GuardCheck[] = [];
+    for (const move of moves) {
+      const guardReport = await evaluateGuards(node, move.guards);
+      if (guardReport.every((check) => check.pass)) return { node, guardReport };
+      failed.push(...guardReport);
     }
-    return { node, guardReport };
+    return { outcome: "rejected", reason: "guard_failed", guardReport: failed };
   }
 
   async function attemptTransition(

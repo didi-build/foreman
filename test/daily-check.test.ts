@@ -534,6 +534,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
         "Staging: no staging address recorded",
         "Questions waiting for Didi (1):",
         `- [blocking] escalation on "Pick the date library" (item ${escalated.id}), waiting 1 h 30 min (request ${gate.id}): "Which date library should we use?"`,
+        "Accepted by the Council (0):",
         "Held with no open release request (1):",
         `- "Remove the old page" (item ${held.id}), held 1 h 30 min. Didi's last note (rejected, 2026-10-31 08:00 UTC): "Not this week.". To ask for a fresh release request, start ${FLOW} with {"nodeId":"${held.id}"}`,
         "Spend: 1 run ended, $0.42, 5000 input and 500 output tokens; 0 runs active",

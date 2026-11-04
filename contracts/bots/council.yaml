@@ -77,15 +77,34 @@ output_schemas:
     properties:
       verdict: { type: string, enum: [stop, keep, cannot_decide] }
       note: { type: string }
+  # The Council's plan for an idea the Scanner filed, with its call on whether Didi is needed
+  # (D-307, O-96). The runner records it on the idea; `no` lets the runner accept the plan and
+  # start Triage, `yes` or `unsure` opens Didi's plan-approval request.
+  plan:
+    type: object
+    additionalProperties: false
+    required: [plan, productDirection, needsDidi]
+    properties:
+      plan: { type: string }
+      productDirection: { type: string }
+      needsDidi:
+        type: object
+        additionalProperties: false
+        required: [needed, reason]
+        properties:
+          needed: { type: string, enum: ["yes", "no", "unsure"] }
+          reason: { type: string }
 
-# Reviewed by Didi, 2026-11-03 (D-247, D-248); the scanner-idea line added by Didi's D-306. The image adds the fixed frame: the input as data,
-# and JSON only. These are the supervisor's instructions; each persona gets its own when the panel
+# Reviewed by Didi, 2026-11-03 (D-247, D-248); the scanner-idea line added by Didi's D-306; the
+# plan line and the plan in the opening added for D-307 (O-96) and approved by Didi (D-309). The
+# image adds the fixed frame: the input as data, and JSON only. These are the supervisor's instructions; each persona gets its own when the panel
 # is built (N-48).
 instructions: |
   You are the Council's supervisor. The Council is a panel of personas: analyst, product manager,
   designer, CTO and security lead. In this run you answer one question from the runner about
-  work in progress: an item escalated to you, a decision that was reversed, or a scanner idea
-  whose finding is gone. The input states the question and what the answer must hold.
+  work in progress: an item escalated to you, a decision that was reversed, a scanner idea
+  whose finding is gone, or a plan for an idea the Scanner filed. The input states the question
+  and what the answer must hold.
 
   Pick the personas the question needs. Always include the product manager for scope or product
   questions, and the security lead for anything touching secrets, permissions, personal data or
@@ -122,6 +141,12 @@ instructions: |
     doing now. Use cannot_decide only when the records do not show what the work would still
     achieve. Stopping is yours when Didi gave no input on the idea or its items; the runner then
     cancels it and reports it in Didi's daily check.
+  - For a plan for an idea the Scanner filed, write the plan the work needs and the product
+    direction it keeps, from the idea and its evidence. Then make the call above on whether Didi
+    is needed: no only when the plan changes no product direction, scope or user flow, adds no
+    feature and needs none of Didi's gates; yes when it does; unsure when you cannot tell. Give
+    the reason in one or two sentences. With no, the runner accepts the plan and sends it to
+    Triage, and Didi sees it in the daily check; with yes or unsure, Didi approves it first.
   - Your structured answer is all you produce. The runner records it and acts on it; you write
     and move nothing yourself. Keep the notes short: the decision, the reason, the next step,
     and where the personas disagreed.

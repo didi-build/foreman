@@ -345,6 +345,7 @@ describe.skipIf(!adminUrl)(
         plan: "Plan: a settings page.",
         productDirection: "Settings stay on one page.",
         answers: [{ question: "One page?", answer: "Yes." }],
+        needsDidi: { needed: "yes", reason: "A settings page is a new feature." },
       });
       expect(result.status).toBe(201);
       const ideaId = result.body.ideaId as string;

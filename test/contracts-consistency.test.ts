@@ -325,6 +325,8 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
     expect(parsed.transitions.map((t) => `${t.from}->${t.to}`)).toEqual([
       "submitted->plan_accepted",
       "council_planning->plan_accepted",
+      "submitted->plan_accepted",
+      "council_planning->plan_accepted",
       "submitted->council_planning",
       "submitted->rejected",
       "plan_accepted->triage",
@@ -343,6 +345,21 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       ["council_planning->plan_accepted", ["plan_approval_recorded"], true],
       ["submitted->council_planning", ["plan_return_recorded"], true],
     ]);
+  });
+
+  it("the Council's own way into Plan accepted is runner only and guarded by its acceptance (D-307)", () => {
+    const council = parsed.transitions.filter((t) =>
+      (t.guards ?? []).includes("council_plan_accepted"),
+    );
+    expect(council.map((t) => [`${t.from}->${t.to}`, t.guards, t.runner_only])).toEqual(
+      [
+        ["submitted->plan_accepted", ["council_plan_accepted"], true],
+        ["council_planning->plan_accepted", ["council_plan_accepted"], true],
+      ],
+    );
+    const rows = new Map(machineOneRows().map((r) => [r.label, r.moves]));
+    expect(rows.get("Submitted")).toMatch(/the Council accepts it itself/);
+    expect(rows.get("Council planning")).toMatch(/the Council accepts it itself/);
   });
 
   it("only the runner rejects an idea, and only a scanner idea in Submitted that is no longer found (D-301)", () => {

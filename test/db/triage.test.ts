@@ -4,7 +4,8 @@
 // decision records; two run ends for the same run at once hand off once; a write that fails part
 // way leaves nothing behind; a held item's release after Didi's Approve is taken once when two
 // calls race (D-269); a rejected held item is listed for the daily check and two asks for a
-// fresh release request at once open one (D-272); and a rejected answer is recorded once.
+// fresh release request at once open one (D-272); a rejected answer is recorded once; and the
+// Council's own acceptance of a plan that needs no Didi is taken once when two steps race (D-307).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -313,6 +314,7 @@ describe.skipIf(!adminUrl)(
         plan: PLAN,
         productDirection: DIRECTION,
         answers: [],
+        needsDidi: { needed: "yes", reason: "It adds a settings page, a new feature." },
       });
       if (!submitted.recorded) throw new Error("not recorded");
       const ideaId = submitted.ideaId;
@@ -346,6 +348,55 @@ describe.skipIf(!adminUrl)(
       expect(moves.rows).toEqual([
         { from_state: "submitted", to_state: "plan_accepted" },
       ]);
+    });
+
+    it("the Council accepts a plan that needs no Didi once when two steps race, and says so (D-307)", async () => {
+      const t = await createReconcileFixture({
+        store,
+        idPrefix: "9f000000-0000-4000-8000",
+        slug: "tr6",
+      });
+      await t.setting("dry_run", false);
+      const submitted = await createPlanSubmissions(t.deps).submit({
+        projectSlug: "tr6",
+        ideaId: null,
+        title: "Rename a setting",
+        plan: PLAN,
+        productDirection: DIRECTION,
+        answers: [],
+        needsDidi: { needed: "no", reason: "An internal rename; nothing a user sees." },
+      });
+      if (!submitted.recorded) throw new Error("not recorded");
+      const ideaId = submitted.ideaId;
+      const approvals = createPlanApprovals(t.deps);
+      const steps = await Promise.all([approvals.step(ideaId), approvals.step(ideaId)]);
+      expect(steps.map((s) => s.step)).toContain("council_accepted");
+      expect((await store.getNode(ideaId))?.state).toBe("plan_accepted");
+      const rows = await pool.query(
+        "select scope->>'acceptedBy' as accepted_by, scope->>'needsDidiReason' as reason, by_actor from factory.decisions where node_id = $1 and kind = 'council_decision' and scope->>'kind' = 'plan_accepted'",
+        [ideaId],
+      );
+      expect(rows.rows).toEqual([
+        {
+          accepted_by: "council",
+          reason: "An internal rename; nothing a user sees.",
+          by_actor: "council",
+        },
+      ]);
+      const moves = await pool.query(
+        "select from_state, to_state, guard_result->0->>'name' as guard from factory.transitions where node_id = $1",
+        [ideaId],
+      );
+      expect(moves.rows).toEqual([
+        {
+          from_state: "submitted",
+          to_state: "plan_accepted",
+          guard: "council_plan_accepted",
+        },
+      ]);
+      expect(
+        await store.listGateRequests(t.projectId, planApprovalTopic(ideaId)),
+      ).toEqual([]);
     });
 
     it("records a rejected answer once, on the idea, by the runner", async () => {

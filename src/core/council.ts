@@ -78,9 +78,22 @@
 // `escalation` request for Didi on the same topic, since parking or rejecting the idea is Didi's.
 // Nothing moves the idea or touches its work items.
 //
+// A fifth question kind plans an idea the Scanner filed (`plan`, D-307, O-96): open while a
+// scanner idea is in Submitted with no plan yet (no planning-chat submission and no Council
+// planning answer on it, ./plans.ts) and no request on its topic `council-plan:<idea id>`. Its run
+// has task type `council` and its input shows the idea, its finding and its scope updates
+// (./council-input.ts). The answer (the plan, the product direction it keeps, and the call on
+// whether Didi is needed with its reason) is checked against the bot file's schema and then read
+// strictly, and recorded in one transaction: the plan as a `council_decision` on the idea with
+// `scope.kind` `plan_proposal` and the call, and the direction as a `product_direction` decision
+// by `council`. The plan approval step then takes it (./plans.ts): `no` is the Council's own
+// acceptance, `yes` or `unsure` opens Didi's plan-approval request. No usable answer after the
+// re-run opens one `escalation` request for Didi on the topic, not blocking; nothing acts on it.
+//
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import {
+  councilPlanInput,
   escalationInput,
   reversalInput,
   scannerGoneInput,
@@ -107,7 +120,17 @@ import { readQaVerdict } from "./guards/evidence.ts";
 import { outputProblem, type OutputSchema } from "./output-schema.ts";
 import type { BotProfile } from "./reconcile.ts";
 import { quoted } from "./task-input.ts";
-import { SCANNER_GONE_PREFIX } from "./scan-ideas.ts";
+import { isScannerIdea, SCANNER_GONE_PREFIX } from "./scan-ideas.ts";
+import {
+  COUNCIL_PLAN_PREFIX,
+  councilPlanTopic,
+  latestPlan,
+  PLAN_LIMITS,
+  PLAN_PROPOSAL_KIND,
+  readNeedsDidi,
+  SUBMITTED_STATE,
+  type NeedsDidi,
+} from "./plans.ts";
 import {
   createLibrary,
   type AlsoWrite,
@@ -146,7 +169,7 @@ import type { ScreenshotBundles, VisualImage } from "./visual-comparison.ts";
 /** The topic key prefixes of the Council questions. */
 export const ESCALATION_PREFIX = "escalation:";
 export const REVERSAL_PREFIX = "decision-reversed:";
-export { SCANNER_GONE_PREFIX, VISUAL_CALL_PREFIX };
+export { COUNCIL_PLAN_PREFIX, SCANNER_GONE_PREFIX, VISUAL_CALL_PREFIX };
 
 /**
  * One run and one re-run per question; after that the question goes to Didi (D-228), or for a
@@ -199,6 +222,23 @@ export interface ScannerGoneQuestion {
   commitSha: string | null;
 }
 
+/** The Council's plan for an idea the Scanner filed (D-307). */
+export interface CouncilPlanAnswer {
+  plan: string;
+  productDirection: string;
+  needsDidi: NeedsDidi;
+}
+
+export interface CouncilPlanQuestion {
+  kind: "plan";
+  topicKey: string;
+  projectId: string;
+  /** The scanner idea; the Council's run is on it. */
+  nodeId: string;
+  /** When the idea entered Submitted. */
+  openedAt: Date;
+}
+
 export interface EscalationQuestion {
   kind: "escalation";
   topicKey: string;
@@ -227,11 +267,15 @@ export interface ReversalQuestion {
 export type { VisualCallQuestion };
 
 export type CouncilQuestion =
-  EscalationQuestion | ReversalQuestion | VisualCallQuestion | ScannerGoneQuestion;
+  | EscalationQuestion
+  | ReversalQuestion
+  | VisualCallQuestion
+  | ScannerGoneQuestion
+  | CouncilPlanQuestion;
 
 /** A question that goes to Didi when it has no usable answer: every kind but the visual call. */
 export type DidiBoundQuestion =
-  EscalationQuestion | ReversalQuestion | ScannerGoneQuestion;
+  EscalationQuestion | ReversalQuestion | ScannerGoneQuestion | CouncilPlanQuestion;
 
 /** What the runner does next for one open question. */
 export type CouncilNext =
@@ -512,6 +556,49 @@ export function readScannerGoneAnswer(
   };
 }
 
+/**
+ * Reads the Council's plan for a scanner idea against its schema (D-307): a non-blank plan and
+ * product direction within the planning chat's bounds, and the call on Didi read as strictly as
+ * `POST /plans` reads it. Problems name the field, never its value.
+ */
+export function readCouncilPlanAnswer(
+  value: unknown,
+): { answer: CouncilPlanAnswer } | { problem: string } {
+  if (!isObject(value)) return { problem: "the answer is not an object" };
+  const shape = exactKeys(
+    value,
+    ["plan", "productDirection", "needsDidi"],
+    "the answer ",
+  );
+  if (shape) return { problem: shape };
+  const { plan, productDirection } = value;
+  if (
+    typeof plan !== "string" ||
+    plan.trim() === "" ||
+    plan.length > PLAN_LIMITS.planChars
+  ) {
+    return {
+      problem: `plan must be non-empty text of at most ${PLAN_LIMITS.planChars} characters`,
+    };
+  }
+  if (
+    typeof productDirection !== "string" ||
+    productDirection.trim() === "" ||
+    productDirection.length > PLAN_LIMITS.directionChars
+  ) {
+    return {
+      problem: `productDirection must be non-empty text of at most ${PLAN_LIMITS.directionChars} characters`,
+    };
+  }
+  const call = readNeedsDidi(value.needsDidi, "needsDidi");
+  if ("problem" in call) return call;
+  return { answer: { plan, productDirection, needsDidi: call.needsDidi } };
+}
+
+/** What Didi is asked when the Council gave no usable plan for a scanner idea (D-307). */
+export const COUNCIL_PLAN_NO_ANSWER =
+  "The Council gave no usable plan for this idea the Scanner filed. You can plan it in the planning chat.";
+
 /** What Didi is asked when the Council's answer on a scanner idea needs Didi (D-301). */
 const SCANNER_GONE_DIDI = {
   stop: "The Scanner no longer finds any of this idea's findings, and the Council recommends stopping it. Parking or rejecting it is yours.",
@@ -604,8 +691,37 @@ export function createCouncil(options: CouncilOptions) {
     };
   }
 
+  /**
+   * The Council's planning question on a scanner idea (D-307): open while the idea is in
+   * Submitted with no plan and no request on its topic. Reads through `ops`, so the answer's
+   * transaction checks it again.
+   */
+  async function councilPlanQuestion(
+    ops: Pick<
+      StoreOps,
+      "getNode" | "listEvidence" | "listDecisionsForNode" | "listGateRequests"
+    >,
+    nodeId: string,
+  ): Promise<CouncilPlanQuestion | null> {
+    const node = await ops.getNode(nodeId);
+    if (!node || !isScannerIdea(node) || node.state !== SUBMITTED_STATE) return null;
+    if (await latestPlan(ops, node.id)) return null;
+    const topicKey = councilPlanTopic(node.id);
+    if ((await ops.listGateRequests(node.projectId, topicKey)).length > 0) return null;
+    return {
+      kind: "plan",
+      topicKey,
+      projectId: node.projectId,
+      nodeId: node.id,
+      openedAt: node.stateSince,
+    };
+  }
+
   /** The open question on a topic key, or null when it is not open. */
   async function question(topicKey: string): Promise<CouncilQuestion | null> {
+    if (topicKey.startsWith(COUNCIL_PLAN_PREFIX)) {
+      return councilPlanQuestion(store, topicKey.slice(COUNCIL_PLAN_PREFIX.length));
+    }
     if (topicKey.startsWith(SCANNER_GONE_PREFIX)) {
       const node = await store.getNode(topicKey.slice(SCANNER_GONE_PREFIX.length));
       if (!node) return null;
@@ -804,6 +920,11 @@ export function createCouncil(options: CouncilOptions) {
       ).map((e) => e.commitSha),
       workItems,
     });
+  }
+
+  async function councilPlanTaskInput(q: CouncilPlanQuestion): Promise<string> {
+    const node = (await store.getNode(q.nodeId)) as Node;
+    return councilPlanInput({ node, scopeUpdates: await scopeUpdatesOf(node.id) });
   }
 
   async function reversalTaskInput(q: ReversalQuestion): Promise<string> {
@@ -1079,6 +1200,64 @@ export function createCouncil(options: CouncilOptions) {
           return { recorded: false, reason: error.reason };
         throw error;
       });
+  }
+
+  /**
+   * Records the Council's plan for a scanner idea (D-307), once per run and while the question is
+   * open: the plan as a `plan_proposal` council decision with the call on Didi, and the product
+   * direction as a `product_direction` decision, in one transaction under the idea's row lock.
+   * The plan approval step then acts on it (./plans.ts).
+   */
+  async function recordCouncilPlan(
+    run: Run & { nodeId: string },
+    q: CouncilPlanQuestion,
+    answer: CouncilPlanAnswer,
+  ): Promise<CouncilAnswer> {
+    const at = clock.now();
+    const direction: Decision = {
+      id: ids.next(),
+      projectId: q.projectId,
+      nodeId: q.nodeId,
+      kind: "product_direction",
+      scope: { source: "council_plan", topicKey: q.topicKey, runId: run.id },
+      textVerbatim: answer.productDirection,
+      byActor: "council",
+      recordedAt: at,
+    };
+    const decision: Decision = {
+      id: ids.next(),
+      projectId: q.projectId,
+      nodeId: q.nodeId,
+      kind: "council_decision",
+      scope: {
+        kind: PLAN_PROPOSAL_KIND,
+        topicKey: q.topicKey,
+        runId: run.id,
+        needsDidi: answer.needsDidi as unknown as Json,
+        productDirection: answer.productDirection,
+        directionDecisionId: direction.id,
+      },
+      textVerbatim: answer.plan,
+      byActor: "council",
+      recordedAt: at,
+    };
+    return store.transaction(async (tx): Promise<CouncilAnswer> => {
+      const switches = await held(tx);
+      if (switches) return { recorded: false, reason: switches };
+      await tx.getNodeForUpdate(q.nodeId);
+      const earlier = (await tx.listDecisionsForNode(q.nodeId)).find(
+        (d) => d.kind === "council_decision" && scopeOf(d).runId === run.id,
+      );
+      if (earlier) {
+        return { recorded: "already_recorded", kind: "plan", decisionId: earlier.id };
+      }
+      if (!(await councilPlanQuestion(tx, q.nodeId))) {
+        return { recorded: false, reason: "question_closed" };
+      }
+      await tx.insertDecision(direction);
+      await tx.insertDecision(decision);
+      return { recorded: true, kind: "plan", decisionId: decision.id };
+    });
   }
 
   /** The redo move out of the node's state, for its track, if any (D-231). */
@@ -1657,7 +1836,7 @@ export function createCouncil(options: CouncilOptions) {
       return (await store.listNodes({})).filter((n) => n.stale).map((n) => n.id);
     },
 
-    /** Every open Council question, escalations first, in the store's order. */
+    /** Every open Council question, escalations first, then scanner ideas to plan (D-307). */
     async questions(): Promise<CouncilQuestion[]> {
       const found: CouncilQuestion[] = [];
       if (councilState) {
@@ -1665,6 +1844,10 @@ export function createCouncil(options: CouncilOptions) {
           const q = await escalationQuestion(node.id);
           if (q) found.push(q);
         }
+      }
+      for (const node of await store.listNodes({ state: SUBMITTED_STATE })) {
+        const q = await councilPlanQuestion(store, node.id);
+        if (q) found.push(q);
       }
       const projectIds = [
         ...new Set((await store.listNodes({})).map((n) => n.projectId)),
@@ -1729,7 +1912,9 @@ export function createCouncil(options: CouncilOptions) {
           ? await escalationTaskInput(q)
           : q.kind === "scanner_gone"
             ? await scannerGoneTaskInput(q)
-            : await reversalTaskInput(q);
+            : q.kind === "plan"
+              ? await councilPlanTaskInput(q)
+              : await reversalTaskInput(q);
       return { question: q, input, outputSchema, taskType: "council" };
     },
 
@@ -1759,7 +1944,9 @@ export function createCouncil(options: CouncilOptions) {
               ? "visual_call"
               : found.questionTopic.startsWith(SCANNER_GONE_PREFIX)
                 ? "scanner_gone"
-                : "escalation",
+                : found.questionTopic.startsWith(COUNCIL_PLAN_PREFIX)
+                  ? "plan"
+                  : "escalation",
           decisionId: earlier.id,
         };
       }
@@ -1783,6 +1970,12 @@ export function createCouncil(options: CouncilOptions) {
         if ("problem" in read)
           return { recorded: false, reason: "invalid", problem: read.problem };
         return recordVisualCall(run, q, read.answer);
+      }
+      if (q.kind === "plan") {
+        const read = readCouncilPlanAnswer(structured);
+        if ("problem" in read)
+          return { recorded: false, reason: "invalid", problem: read.problem };
+        return recordCouncilPlan(run, q, read.answer);
       }
       if (q.kind === "scanner_gone") {
         const read = readScannerGoneAnswer(structured);
@@ -1814,7 +2007,7 @@ export function createCouncil(options: CouncilOptions) {
       reason: string,
     ): Promise<
       | { kind: "escalation"; step: EscalationStep }
-      | { kind: "reversal" | "scanner_gone"; gateRequestId: string | null }
+      | { kind: "reversal" | "scanner_gone" | "plan"; gateRequestId: string | null }
     > {
       if (q.kind === "escalation") {
         return {
@@ -1824,6 +2017,41 @@ export function createCouncil(options: CouncilOptions) {
       }
       // A visual call never goes to Didi (D-270): it is dropped instead (`dropVisualCall`).
       if (q.kind === "visual_call") throw new Error("a visual call never goes to Didi");
+      if (q.kind === "plan") {
+        // One request for Didi on the topic, not blocking; it closes the Council's question.
+        return store.transaction(async (tx) => {
+          if (await held(tx)) return { kind: "plan", gateRequestId: null };
+          await tx.getNodeForUpdate(q.nodeId);
+          const earlier = await tx.listGateRequests(q.projectId, q.topicKey);
+          if (earlier.length > 0) {
+            return { kind: "plan", gateRequestId: earlier[0]?.id ?? null };
+          }
+          const at = clock.now();
+          const gate: GateRequest = {
+            id: ids.next(),
+            projectId: q.projectId,
+            nodeId: q.nodeId,
+            topicKey: q.topicKey,
+            kind: "escalation",
+            owner: "didi",
+            blocking: false,
+            payload: {
+              question: COUNCIL_PLAN_NO_ANSWER,
+              reason,
+              lastCouncilRunId: lastRunId,
+            },
+            approvalUrl: null,
+            status: "open",
+            decisionId: null,
+            supersededBy: null,
+            createdAt: at,
+            answeredAt: null,
+            lastNotifiedAt: null,
+          };
+          await tx.insertGateRequest(gate);
+          return { kind: "plan", gateRequestId: gate.id };
+        });
+      }
       if (q.kind === "scanner_gone") {
         // One request for Didi on the topic, which replaces the Council's question.
         return store.transaction(async (tx) => {

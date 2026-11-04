@@ -150,12 +150,15 @@ async function call(
 }
 
 const PLAN = "Plan: a settings page.\n1. Design it.\n2. Wire it in.";
+/** The Council's call on the plan, required on every submission (D-307). */
+const NEEDS_DIDI = { needed: "yes", reason: "A settings page is a new feature." };
 const submission = (extra: Record<string, unknown> = {}) => ({
   projectSlug: "rehearsal",
   title: "Settings page",
   plan: PLAN,
   productDirection: "Settings stay on one page.",
   answers: [{ question: "One page or two?", answer: "One page,\nplease." }],
+  needsDidi: NEEDS_DIDI,
   ...extra,
 });
 
@@ -336,9 +339,32 @@ describe("a plan submission (API seam, D-266)", () => {
           plan: PLAN,
           productDirection: "Settings stay on one page.",
           answers: [{ question: "One page or two?", answer: "One page,\nplease." }],
+          needsDidi: NEEDS_DIDI,
         },
       },
     ]);
+  });
+
+  it("records a call that Didi is not needed as sent, and accepts nothing itself: only the runner does (D-307)", async () => {
+    const notNeeded = { needed: "no", reason: "An internal rename." };
+    const result = await call(
+      withPlanning,
+      "POST",
+      "/plans",
+      planningToken,
+      submission({ needsDidi: notNeeded }),
+    );
+    expect(result.status).toBe(201);
+    const ideaId = result.body.ideaId as string;
+    expect((await store.getNode(ideaId))?.state).toBe("submitted");
+    expect(await store.listTransitions(ideaId)).toEqual([]);
+    expect(
+      (await store.listDecisionsForNode(ideaId)).some(
+        (d) => d.kind === "council_decision",
+      ),
+    ).toBe(false);
+    const [report] = await store.listEvidence({ nodeId: ideaId, kind: "agent_report" });
+    expect(report?.payload).toMatchObject({ needsDidi: notNeeded });
   });
 
   it("records a resubmission on an idea in Council planning, and refuses an idea past it", async () => {
@@ -401,6 +427,31 @@ describe("a plan submission (API seam, D-266)", () => {
       400,
     ],
     ["a malformed idea id", { ideaId: "not-an-id" }, 400],
+    ["no call on Didi (D-307)", { needsDidi: undefined }, 400],
+    ["a call that is a boolean", { needsDidi: { needed: false, reason: "r" } }, 400],
+    [
+      "a call outside yes, no, unsure",
+      { needsDidi: { needed: "maybe", reason: "r" } },
+      400,
+    ],
+    ["a call with no reason", { needsDidi: { needed: "no" } }, 400],
+    ["a call with a blank reason", { needsDidi: { needed: "no", reason: " " } }, 400],
+    [
+      "a call with a reason over its bound",
+      {
+        needsDidi: {
+          needed: "no",
+          reason: "r".repeat(PLAN_LIMITS.needsDidiReasonChars + 1),
+        },
+      },
+      400,
+    ],
+    [
+      "a call with an extra field",
+      { needsDidi: { needed: "no", reason: "r", by: "didi" } },
+      400,
+    ],
+    ["a call that is text", { needsDidi: "no" }, 400],
   ] as const)("refuses %s and writes nothing", async (_label, change, status) => {
     const before = await footprint();
     const body = submission(change as Record<string, unknown>);
@@ -655,6 +706,7 @@ describe("the planning reads show the planning chat's own submissions, framed as
   let sentBack: string;
   let expired: string;
   let foreignAnswer: string;
+  let councilAccepted: string;
   let notOwn: Node;
 
   beforeAll(async () => {
@@ -731,6 +783,24 @@ describe("the planning reads show the planning chat's own submissions, framed as
       words: "Not Didi's words.",
       by: "council",
     });
+    // A plan the Council accepted itself, with no request (D-307).
+    councilAccepted = await submitIn(SLUG, "Council accepted", "Fix the broken link.");
+    await store.insertDecision({
+      id: nextId(),
+      projectId: READ_PROJECT,
+      nodeId: councilAccepted,
+      kind: "council_decision",
+      scope: {
+        kind: "plan_accepted",
+        recordedBy: "runner",
+        acceptedBy: "council",
+        needsDidiReason: "A docs fix.",
+        submissionId: await latestSubmissionId(councilAccepted),
+      },
+      textVerbatim: "Fix the broken link.",
+      byActor: "council",
+      recordedAt: NOW,
+    });
     // An idea of the same project whose plan was not submitted by the planning identity.
     notOwn = await idea(READ_PROJECT, "submitted");
     await store.insertEvidence({
@@ -773,7 +843,7 @@ describe("the planning reads show the planning chat's own submissions, framed as
     }
   });
 
-  it("gives the status of each own submission: waiting, approved, sent back, or closed unanswered", async () => {
+  it("gives the status of each own submission: waiting, approved, sent back, closed unanswered, or accepted by the Council", async () => {
     const { data } = await read("submissions");
     const byIdea = Object.fromEntries(
       (data.submissions ?? []).map((s) => [s.ideaId as string, s.status]),
@@ -785,6 +855,7 @@ describe("the planning reads show the planning chat's own submissions, framed as
       [sentBack]: "sent_back",
       [expired]: "closed_unanswered",
       [foreignAnswer]: "closed_unanswered",
+      [councilAccepted]: "accepted_by_council",
     });
     expect(byIdea[notOwn.id]).toBeUndefined();
     expect(data.submissions?.[0]).toEqual({
@@ -817,6 +888,8 @@ describe("the planning reads show the planning chat's own submissions, framed as
         ideaId: approved,
         title: "Approved",
         acceptedAt: NOW.toISOString(),
+        // A plan_accepted recorded before D-307 has no acceptedBy and reads as Didi's.
+        acceptedBy: "didi",
         plan: INSTRUCTION,
         productDirection: {
           label: "approved by Didi",
@@ -837,6 +910,19 @@ describe("the planning reads show the planning chat's own submissions, framed as
             recordedAt: NOW.toISOString(),
           },
         ],
+      },
+      {
+        ideaId: councilAccepted,
+        title: "Council accepted",
+        acceptedAt: NOW.toISOString(),
+        acceptedBy: "council",
+        plan: "Fix the broken link.",
+        // The Council accepted it: its direction is never labelled as Didi's (D-307).
+        productDirection: {
+          label: "submitted with a plan the Council accepted, not approved by Didi",
+          direction: "Settings stay on one page.",
+        },
+        agentRecordedDirections: [],
       },
     ]);
   });

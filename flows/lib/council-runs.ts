@@ -9,7 +9,11 @@
 // with task type `council:visual` (./start-run.ts), and with no usable answer after the re-run it
 // is recorded as dropped, never sent to Didi. So is the question on a scanner idea the Scanner no
 // longer finds (D-301, src/core/scan-ideas.ts), opened by the scan and run with task type
-// `council`; its answer is recorded and nothing moves the idea.
+// `council`; its answer is recorded and nothing moves the idea. The Council's plan for a scanner
+// idea in Submitted (D-307, src/core/council.ts kind `plan`) starts the same way; once its answer
+// is recorded, `afterCouncilRun` takes the idea's plan approval step at once (src/core/plans.ts):
+// the Council's own acceptance and the Triage pass when Didi is not needed, else Didi's
+// plan-approval request.
 //
 // The reconcile flow's live passes run the Council pass for every open question; the run-end
 // flow runs it for an item whose report has just escalated it, so its Council run starts at once.
@@ -52,6 +56,7 @@
 // passes run it before the Council pass for every reversal a stale item relies on, so an answer
 // recorded under the kill switch or in dry run (D-201), or a step cut short, is acted on later.
 import {
+  COUNCIL_PLAN_PREFIX,
   createCouncil,
   ESCALATION_PREFIX,
   REVERSAL_PREFIX,
@@ -93,6 +98,7 @@ import { heldBy } from "./switches.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
 import { recordTriageAnswer, triagePass, type TriagePassStep } from "./triage-runs.ts";
 import type { TriageRecord } from "../../src/core/triage.ts";
+import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans.ts";
 
 export interface CouncilPassStep {
   topicKey: string;
@@ -233,6 +239,8 @@ export interface AfterCouncilRun {
   redos?: RedoPassStep[];
   /** For an idea the Council's decision returned to Triage: its next Triage run (M3.6). */
   triage?: TriagePassStep[];
+  /** For the Council's plan on a scanner idea: its plan approval step (D-307). */
+  plan?: PlanApprovalStep;
 }
 
 /**
@@ -268,6 +276,19 @@ export async function afterCouncilRun(
       .filter((v) => v.result === "redo_move_due" || v.result === "rework_due")
       .map((v) => v.nodeId);
     if (due.length > 0) after.redos = await redoPass(deps, due);
+  }
+  if (
+    topic.startsWith(COUNCIL_PLAN_PREFIX) &&
+    answer?.recorded === true &&
+    run.nodeId
+  ) {
+    after.plan = await createPlanApprovals(deps).step(run.nodeId);
+    if (
+      after.plan.step === "council_accepted" &&
+      after.plan.move.outcome === "applied"
+    ) {
+      after.triage = await triagePass(deps, [run.nodeId]);
+    }
   }
   after.council = await councilPass(deps, [topic]);
   return after;
