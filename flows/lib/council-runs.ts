@@ -13,7 +13,9 @@
 // idea in Submitted (D-307, src/core/council.ts kind `plan`) starts the same way; once its answer
 // is recorded, `afterCouncilRun` takes the idea's plan approval step at once (src/core/plans.ts):
 // the Council's own acceptance and the Triage pass when Didi is not needed, else Didi's
-// plan-approval request.
+// plan-approval request. An idea filed from a bot's out-of-scope finding is planned the same way,
+// and so is a replan after Didi sent a Council plan back (D-316), which the approval resume step
+// starts at once (./approval.ts).
 // `council`; its answer is recorded, and a `stop` is taken on by the cancel pass below (D-308). So
 // is a work item's "is this still needed?" question (D-308, src/core/still-needed.ts).
 //

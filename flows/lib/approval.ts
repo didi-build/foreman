@@ -29,6 +29,7 @@ import {
 } from "../../src/core/cancel.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import {
+  councilPlanTopic,
   createPlanApprovals,
   PLAN_APPROVAL_PREFIX,
   type PlanApprovalStep,
@@ -184,7 +185,15 @@ export interface AfterAnswer {
    * Triage pass for the idea, which starts Triage as M3.6 built. The reconcile flow's plan
    * approval pass asks again if this step is held by a switch or cut short.
    */
-  plan?: { step: PlanApprovalStep; triage: TriagePassStep[] };
+  plan?: {
+    step: PlanApprovalStep;
+    triage: TriagePassStep[];
+    /**
+     * On Reject or Request changes on a Council plan: the Council pass on the idea's planning
+     * topic, which starts the replan with Didi's words (D-316 (3)). Empty when no replan is due.
+     */
+    council: CouncilPassStep[];
+  };
   /**
    * For a request to confirm a Council stop (D-308): the cancel step, which cancels on Didi's
    * Approve and does nothing on Reject. The reconcile flow's cancel pass asks again if this step
@@ -203,8 +212,9 @@ export interface AfterAnswer {
  * held item's release request (D-269), the runner clears the hold flag on Didi's Approve
  * (src/core/hold-release.ts). For a plan-approval request (D-266), the idea moves into Plan
  * accepted on Approve, with `plan_accepted` recorded by the runner, and Triage starts; Reject or
- * Request changes sends an idea in Submitted back to Council planning (src/core/plans.ts). Any
- * other gate kind asks for nothing.
+ * Request changes sends an idea in Submitted back to Council planning (src/core/plans.ts), and
+ * on a Council plan the Council pass starts its replan with Didi's words (D-316 (3)). Any other
+ * gate kind asks for nothing.
  */
 export async function afterAnswer(
   deps: FlowDeps,
@@ -241,7 +251,11 @@ export async function afterAnswer(
   if (gate.nodeId && gate.topicKey === `${PLAN_APPROVAL_PREFIX}${gate.nodeId}`) {
     const step = await createPlanApprovals(deps).step(gate.nodeId);
     const accepted = step.step === "accepted" && step.move.outcome === "applied";
-    plan = { step, triage: accepted ? await triagePass(deps, [gate.nodeId]) : [] };
+    plan = {
+      step,
+      triage: accepted ? await triagePass(deps, [gate.nodeId]) : [],
+      council: accepted ? [] : await councilPass(deps, [councilPlanTopic(gate.nodeId)]),
+    };
   }
   return {
     heldBy: await heldBy(deps.store),

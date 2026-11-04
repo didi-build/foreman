@@ -5,7 +5,8 @@
 // (D-301, O-93): a parked or rejected idea absorbing its finding until it is reopened, a new
 // finding in the same file folded into the oldest open idea, and the clean up of ideas no longer
 // found (Submitted withdrawn through the guarded runner-only move, further along recorded and
-// asked about once per commit), never on a failed scan, under a switch or for a check that did not
+// asked about once per commit, and a withdrawal cancelling the idea's open plan-approval request,
+// D-316 (4)), never on a failed scan, under a switch or for a check that did not
 // run. Synthetic data only.
 import { describe, expect, it } from "vitest";
 
@@ -25,6 +26,7 @@ import {
 import type { Node, Store } from "../src/core/store.ts";
 import { scannerGoneTopic } from "../src/core/scan-ideas.ts";
 import { createLibrary } from "../src/core/library.ts";
+import { planApprovalTopic } from "../src/core/plans.ts";
 import { createReconcileFixture } from "./reconcile-fixture.ts";
 
 const SHA = "c".repeat(40);
@@ -603,6 +605,92 @@ describe("how scanner ideas change over time (unit: D-301, O-93)", () => {
     expect(await f.store.findOpenGateRequest(f.projectId, topic)).toMatchObject({
       payload: { commitSha: "f".repeat(40) },
     });
+  });
+
+  it("cancels the open plan-approval request of an idea it withdraws, in the withdrawal's transaction (D-316 (4))", async () => {
+    const f = await d301();
+    await f.scans.file(
+      f.projectId,
+      scanOf([link(1), { ...link(2), path: "docs/b.md" }]),
+    );
+    const gone = (await f.keyed(scanDedupeKey(link(1)))) as Node;
+    const kept = (await f.keyed(
+      scanDedupeKey({ ...link(2), path: "docs/b.md" }),
+    )) as Node;
+    const library = createLibrary(f.deps);
+    const request = (ideaId: string) =>
+      library.openGateRequest({
+        projectId: f.projectId,
+        nodeId: ideaId,
+        topicKey: planApprovalTopic(ideaId),
+        kind: "scope",
+        owner: "didi",
+        blocking: true,
+        payload: { question: "Approve this plan?", plan: "A plan." },
+      });
+    // An earlier request Didi answered, then the open one for the latest plan.
+    const answered = await request(gone.id);
+    await library.answerGateRequest(answered.id, {
+      nodeId: gone.id,
+      kind: "answer",
+      scope: { topicKey: answered.topicKey, outcome: "changes_requested" },
+      textVerbatim: "Smaller.",
+      byActor: "didi",
+    });
+    const open = await request(gone.id);
+    // Another idea's open request is not touched.
+    const other = await request(kept.id);
+    f.day();
+    const next = await f.scans.file(
+      f.projectId,
+      scanAt(OTHER_SHA, [{ ...link(2), path: "docs/b.md" }]),
+    );
+    expect(next).toMatchObject({
+      withdrawals: [{ nodeId: gone.id, outcome: "applied" }],
+    });
+    expect((await f.store.getNode(gone.id))?.state).toBe("rejected");
+    expect(await f.store.getGateRequest(open.id)).toMatchObject({
+      status: "cancelled",
+      decisionId: null,
+    });
+    expect((await f.store.getGateRequest(answered.id))?.status).toBe("answered");
+    expect((await f.store.getGateRequest(other.id))?.status).toBe("open");
+    // Nothing new is opened on the topic.
+    expect(
+      await f.store.listGateRequests(f.projectId, planApprovalTopic(gone.id)),
+    ).toHaveLength(2);
+  });
+
+  it("leaves the plan-approval request open when the withdrawal is not applied", async () => {
+    const f = await d301();
+    await f.scans.file(f.projectId, scanOf([link(1)]));
+    const [idea] = (await f.ideas()) as Node[];
+    const open = await createLibrary(f.deps).openGateRequest({
+      projectId: f.projectId,
+      nodeId: idea!.id,
+      topicKey: planApprovalTopic(idea!.id),
+      kind: "scope",
+      owner: "didi",
+      blocking: true,
+      payload: { question: "Approve this plan?", plan: "A plan." },
+    });
+    f.day();
+    // The kill switch turns on between the filing and the move: the move refuses, and the
+    // request it would have cancelled stays open.
+    const real = f.store.transaction.bind(f.store);
+    let calls = 0;
+    f.store.transaction = (async (work: Parameters<typeof real>[0]) => {
+      const out = await real(work);
+      calls += 1;
+      if (calls === 1) await f.setting("kill_switch", true);
+      return out;
+    }) as typeof f.store.transaction;
+    const next = await f.scans.file(f.projectId, scanAt(OTHER_SHA, []));
+    expect(next).toMatchObject({
+      withdrawals: [{ nodeId: idea!.id, outcome: "refused" }],
+    });
+    expect((await f.store.getNode(idea!.id))?.state).toBe("submitted");
+    expect((await f.store.getGateRequest(open.id))?.status).toBe("open");
   });
 
   it("cleans up nothing on a failed scan, or under the kill switch or dry run", async () => {

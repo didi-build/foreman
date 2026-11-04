@@ -3,8 +3,9 @@
 // at most 3, each a title and what was seen. When the run-end flow has a successful result from
 // one of those roles, it calls `submit` before it records the run's end, and the runner, not the
 // agent, creates one idea per finding in Machine 1's entry state (Submitted, owned by the runner,
-// ./ideas.ts), the same front door the Scanner will use (D-150). The Council sizes each idea; the
-// current item is not changed, not moved and not escalated.
+// ./ideas.ts), the same front door the Scanner will use (D-150). The Council sizes each idea and
+// plans it as it plans a scanner idea (D-316 (1), ./council.ts); the current item is not
+// changed, not moved and not escalated.
 //
 // Each idea is marked with who found it: `body.foundBy` holds the role, the item and the run.
 // `body.description` is the finding's detail and the title is the finding's title, both the
