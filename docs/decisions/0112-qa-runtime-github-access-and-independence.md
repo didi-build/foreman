@@ -15,7 +15,7 @@ QA checks a pull request before the runner merges it. Didi wants QA to have its 
 - A dedicated QA GitHub App with exactly these permissions: Contents read, Pull requests read, Metadata read, Checks write. No Pull requests write, so it can never approve, request changes or comment on a review. No webhooks.
 - Installed only on selected repositories, first on `foreman`.
 - QA, the runner and the Developer each have their own GitHub App and their own private key.
-- The runner App also asks for `contents: read` and `actions: read` when Didi registers it (D-267): the runner reads a project's code at a commit for the repo map and the approved option's folder id for the visual comparison (D-281), and downloads CI's screenshot bundles as workflow artifacts, each with a token minted for that one repository and that one permission (O-79). QA's token keeps its own approved use (D-159): it is never minted for the runner's reads.
+- The runner App also asks for `contents: read` and `actions: read` when Didi registers it (D-267): a project's code at a commit is read for the repo map, inside the repo map's own Job with a token the runner mints for it (D-275 (2), O-87), the runner reads the approved option's folder id for the visual comparison (D-281), and downloads CI's screenshot bundles as workflow artifacts, each with a token minted for that one repository and that one permission (O-79). QA's token keeps its own approved use (D-159): it is never minted for the runner's reads.
 - The App manifest is kept in the repo, and a test checks its permission list and that webhooks are off.
 
 ### Who posts (D-157, D-160)

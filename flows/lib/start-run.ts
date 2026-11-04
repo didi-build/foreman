@@ -152,10 +152,7 @@ export async function startRun(
   // against the same map (src/core/triage.ts, D-251, D-262).
   const triage =
     input.role === "triage"
-      ? await createTriage(deps).taskFor(
-          node.id,
-          await deps.repoMaps.read(project.repo),
-        )
+      ? await createTriage(deps).taskFor(node.id, await deps.repoMaps.read(project))
       : null;
   if (input.role === "triage" && !triage) {
     return { outcome: "not_started", reason: "no_accepted_plan", failedGuards: [] };

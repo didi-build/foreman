@@ -40,7 +40,10 @@ async function visualAnswer(ctx: GuardContext): Promise<CurrentDecision | undefi
   );
 }
 
-/** The Designer's options are attached (screenshots) and one visual-approval request is open. */
+/**
+ * The Designer's options are attached (screenshots) and one visual-approval request is open. Both
+ * are written by the runner's option capture (../option-capture.ts, O-88), never by an agent.
+ */
 export async function optionsAttached(ctx: GuardContext): Promise<GuardCheck> {
   const shots = await ctx.store.listEvidence({
     nodeId: ctx.node.id,

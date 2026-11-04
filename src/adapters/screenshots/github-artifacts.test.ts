@@ -1,7 +1,8 @@
 // Seam: the screenshot bundles' GitHub read (unit with fakes, D-267, D-242, N-52 option a). The
 // runner's port mints a read-only `actions` token for the one repository, lists the workflow runs
 // of the commit asked for, then each run's artifacts of the bundle's name, takes the newest
-// unexpired one, downloads it and reads the zip in memory (D-276). A fake token port and a fake HTTP port stand in for
+// unexpired one, downloads it and reads the zip in memory (D-276), and gives the id of the
+// workflow run it came from (O-89). A fake token port and a fake HTTP port stand in for
 // GitHub; the artifacts are synthetic zips made here. No network, no real repository or token.
 import { createHash } from "node:crypto";
 import { crc32, deflateRawSync } from "node:zlib";
@@ -182,6 +183,8 @@ describe("the screenshot bundles from CI's workflow artifacts (unit with fakes, 
     );
     expect(paths.at(-1)).toEqual([`/repos/${REPO}/actions/artifacts/2/zip`, "raw"]);
     expect(bundle?.manifest).toEqual(MANIFEST_JSON);
+    // The workflow run whose listing named the artifact read, for the approval link (O-89).
+    expect(bundle?.workflowRunId).toBe(20);
     expect(Buffer.from((await bundle?.file("shots/settings-panel.png")) ?? [])).toEqual(
       PNG,
     );

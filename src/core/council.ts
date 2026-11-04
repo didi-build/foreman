@@ -788,13 +788,20 @@ export function createCouncil(options: CouncilOptions) {
     runId: string,
     call: string,
     text: string,
+    unsure?: boolean,
   ): Promise<VisualCallRecord> {
     const decision: Decision = {
       id: ids.next(),
       projectId: q.projectId,
       nodeId: q.nodeId,
       kind: "council_decision",
-      scope: { topicKey: q.topicKey, gateRequestId: q.gateRequestId, call, runId },
+      scope: {
+        topicKey: q.topicKey,
+        gateRequestId: q.gateRequestId,
+        call,
+        runId,
+        ...(unsure === undefined ? {} : { unsure }),
+      },
       textVerbatim: text,
       byActor: "council",
       recordedAt: clock.now(),
@@ -827,7 +834,13 @@ export function createCouncil(options: CouncilOptions) {
     q: VisualCallQuestion,
     answer: VisualCallAnswer,
   ): Promise<CouncilAnswer> {
-    const written = await writeVisualCall(q, run.id, answer.call, answer.reason);
+    const written = await writeVisualCall(
+      q,
+      run.id,
+      answer.call,
+      answer.reason,
+      answer.unsure,
+    );
     return written.recorded === false
       ? { recorded: false, reason: written.reason }
       : {

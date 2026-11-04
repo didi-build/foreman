@@ -1,8 +1,10 @@
 // The repo map (D-251): the runner's own map of a repository at one commit, built on the
-// TypeScript compiler by an adapter (src/adapters/repo-map/typescript.ts) in a step with no
-// network. It holds every file, each code file's exported names and the repository files it
-// imports, and the scripts in the root `package.json`. Plain logic here: the checks Triage's
-// answer is held to (D-262) and the bounded brief that goes into Triage's input.
+// TypeScript compiler by an adapter (src/adapters/repo-map/typescript.ts) inside the repo map's
+// own short-lived Job, whose only network is GitHub (D-275 (2), O-87). It holds every file, each
+// code file's exported names and the repository files it imports, and the scripts in the root
+// `package.json`. Plain logic here: the strict check of a map the Job hands back, which the runner
+// treats as untrusted data, the checks Triage's answer is held to (D-262) and the bounded brief
+// that goes into Triage's input.
 //
 // The map is context, never evidence a guard trusts: no guard reads it, and nothing it says
 // moves a node. The runner checks Triage's answer against it, and the brief names its commit so
@@ -26,15 +28,155 @@ export interface RepoMap {
   scripts: Record<string, string>;
 }
 
+/** The project a map is read for: its repository, and its slug, which names its agent namespace. */
+export interface RepoMapProject {
+  slug: string;
+  /** `owner/name`. */
+  repo: string;
+}
+
 /**
  * Where the runner gets a map (the port). `commitSha` left out means the default branch's head
  * now. A map is built per commit, so the same commit gives the same map.
  */
 export interface RepoMaps {
-  read(repo: string, commitSha?: string): Promise<RepoMap>;
+  read(project: RepoMapProject, commitSha?: string): Promise<RepoMap>;
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * The bounds of a map. The Job checks its own map against them before it hands it back, and the
+ * runner checks what it reads again, so a map either side refuses never reaches Triage.
+ */
+export const REPO_MAP_LIMITS = {
+  /** Files, the same as the archive's bound (src/adapters/repo-map/tarball.ts). */
+  files: 50_000,
+  /** Characters of one path. */
+  pathChars: 1024,
+  /** Exported names, and imported files, of one file. */
+  namesPerFile: 20_000,
+  /** Characters of one exported name. */
+  nameChars: 1000,
+  scripts: 1000,
+  scriptNameChars: 200,
+  scriptChars: 10_000,
+} as const;
+
+/** A map the runner refuses. The message names the problem, never a value from the map. */
+export class RepoMapError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RepoMapError";
+  }
+}
+
+/** Relative, `/` separated, no empty, `.` or `..` part, no backslash or control character. */
+function isMapPath(path: unknown): path is string {
+  if (
+    typeof path !== "string" ||
+    path === "" ||
+    path.length > REPO_MAP_LIMITS.pathChars
+  ) {
+    return false;
+  }
+  if (path.startsWith("/")) return false;
+  for (const char of path) {
+    const code = char.codePointAt(0) ?? 0;
+    if (char === "\\" || code < 0x20 || code === 0x7f) return false;
+  }
+  return path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const hasOnlyKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean =>
+  Object.keys(value).length === keys.length &&
+  keys.every((key) => Object.hasOwn(value, key));
+
+/** Strictly ascending: sorted, with no entry twice. */
+function ascending(list: readonly string[]): boolean {
+  for (let i = 1; i < list.length; i++) {
+    if (!((list[i - 1] as string) < (list[i] as string))) return false;
+  }
+  return true;
+}
+
+/**
+ * The map in `value`, checked as untrusted data: exactly the map's fields and no others, the
+ * commit asked for, files sorted by path with no path twice, every path plain and relative, each
+ * file's exports sorted and unique, its imports sorted, unique and files of the map, the scripts
+ * plain text, and every count and length within `REPO_MAP_LIMITS`. Throws `RepoMapError` naming
+ * the first problem, never the value.
+ */
+export function checkRepoMap(value: unknown, commitSha: string): RepoMap {
+  const fail = (problem: string): never => {
+    throw new RepoMapError(`the repo map ${problem}`);
+  };
+  if (!isPlainObject(value) || !hasOnlyKeys(value, ["commitSha", "files", "scripts"])) {
+    return fail("is not an object with exactly commitSha, files and scripts");
+  }
+  if (value.commitSha !== commitSha || !FULL_SHA.test(commitSha)) {
+    return fail("is not for the commit asked for");
+  }
+  const files = value.files;
+  if (!Array.isArray(files) || files.length > REPO_MAP_LIMITS.files) {
+    return fail(`files is not a list of at most ${REPO_MAP_LIMITS.files}`);
+  }
+  const paths: string[] = [];
+  for (const file of files as unknown[]) {
+    if (!isPlainObject(file) || !hasOnlyKeys(file, ["path", "exports", "imports"])) {
+      return fail("has a file that is not exactly path, exports and imports");
+    }
+    if (!isMapPath(file.path)) return fail("has a path that is not plain and relative");
+    paths.push(file.path);
+  }
+  if (!ascending(paths)) return fail("files are not sorted by path, each once");
+  const known = new Set(paths);
+  for (const file of files as RepoMapFile[]) {
+    const { exports, imports } = file;
+    if (
+      !Array.isArray(exports) ||
+      exports.length > REPO_MAP_LIMITS.namesPerFile ||
+      !exports.every(
+        (name) => typeof name === "string" && name.length <= REPO_MAP_LIMITS.nameChars,
+      ) ||
+      !ascending(exports)
+    ) {
+      return fail("has a file whose exports are not sorted, unique and within bounds");
+    }
+    if (
+      !Array.isArray(imports) ||
+      imports.length > REPO_MAP_LIMITS.namesPerFile ||
+      !imports.every((target) => typeof target === "string" && known.has(target)) ||
+      !ascending(imports)
+    ) {
+      return fail("has a file whose imports are not sorted, unique files of the map");
+    }
+  }
+  const scripts = value.scripts;
+  if (
+    !isPlainObject(scripts) ||
+    Object.keys(scripts).length > REPO_MAP_LIMITS.scripts
+  ) {
+    return fail(`scripts is not an object of at most ${REPO_MAP_LIMITS.scripts}`);
+  }
+  for (const [name, script] of Object.entries(scripts)) {
+    if (
+      name === "" ||
+      name.length > REPO_MAP_LIMITS.scriptNameChars ||
+      typeof script !== "string" ||
+      script.length > REPO_MAP_LIMITS.scriptChars
+    ) {
+      return fail("has a script that is not text within bounds");
+    }
+  }
+  return value as unknown as RepoMap;
+}
 
 /** True when the map has the shape the checks and the brief rely on. */
 export function isRepoMap(value: unknown): value is RepoMap {

@@ -1,13 +1,17 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
-// the GitHub reader, the agent runtime, each run's task and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
+// the GitHub reader, the agent runtime, the repo map's Job, each run's task and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
 // 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createKubernetesClient } from "../../src/adapters/agent-runtime/kubernetes/client.ts";
 import type { KubernetesRunSettings } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
+import {
+  createKubernetesRepoMaps,
+  type RepoMapCluster,
+} from "../../src/adapters/agent-runtime/kubernetes/repo-maps.ts";
 import { createKubernetesRuntime } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
 import type { AgentRuntime } from "../../src/adapters/agent-runtime/runtime.ts";
 import {
@@ -26,12 +30,13 @@ import {
   createGitHubHttp,
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
-import { createGitHubRepoMaps } from "../../src/adapters/repo-map/github.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
+import { createGitHubRepoVisibility } from "../../src/adapters/screenshots/github-visibility.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
+import type { RepoVisibility } from "../../src/core/option-capture.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
@@ -105,8 +110,15 @@ export interface FlowDeps extends ReconcileDeps {
    */
   repoFolders: RepoFolders;
   /**
-   * The repo map per commit for Triage (D-251), from the code GitHub serves with the runner App's
-   * `contents: read` token (D-267). Refuses until the runner App exists (D-178).
+   * Whether a project's repository is private, before option capture links Didi's visual-approval
+   * request to CI's run (O-89), read with the runner App's `contents: read` token (D-267).
+   * Refuses until the runner App exists, so capture links nothing and opens nothing.
+   */
+  repoVisibility: RepoVisibility;
+  /**
+   * The repo map per commit for Triage (D-251), built in its own short-lived Job in the project's
+   * agent namespace, whose only network is GitHub and which holds only the runner App's
+   * `contents: read` token (D-267, D-275 (2)). Refuses until the runner App exists (D-178).
    */
   repoMaps: RepoMaps;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
@@ -190,11 +202,27 @@ export function runnerRepoFolders(
   return createGitHubRepoFolders({ tokens, http: createGitHubHttp() });
 }
 
-/** The repo map from the code at a commit (D-251, D-267); refuses on the token today. */
+/** Whether a repository is private (O-89, D-267); refuses on the token today. */
+export function runnerRepoVisibility(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): RepoVisibility {
+  return createGitHubRepoVisibility({ tokens, http: createGitHubHttp() });
+}
+
+/**
+ * The repo map from the code at a commit, built in its own Job (D-251, D-267, D-275 (2)); refuses
+ * on the token today, before the cluster is read.
+ */
 export function runnerRepoMaps(
+  cluster: () => Promise<RepoMapCluster>,
   tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
 ): RepoMaps {
-  return createGitHubRepoMaps({ tokens, http: createGitHubHttp() });
+  return createKubernetesRepoMaps({
+    tokens,
+    http: createGitHubHttp(),
+    cluster,
+    ids: { next: () => randomUUID() },
+  });
 }
 
 /** Built on first use, so a flow that never starts an agent never reads the cluster token. */
@@ -278,6 +306,21 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
   const store = createPostgresStore(pool);
   // Read on the first task built, so a flow that starts no agent never needs it.
   let images: Promise<Record<string, string>> | undefined;
+  // The cluster client and run settings, built on first use by an agent run or a repo map Job,
+  // so a flow that uses neither never reads the cluster token.
+  let cluster: Promise<RepoMapCluster> | undefined;
+  const clusterParts = () =>
+    (cluster ??= (async () => ({
+      client: createKubernetesClient({
+        server: await env.value(VALUE_NAMES.clusterEndpoint),
+        ca: await env.value(VALUE_NAMES.clusterCaCertificate),
+        token: await env.secret(SECRET_PATHS.clusterToken),
+      }),
+      settings: jsonValue(
+        VALUE_NAMES.agentRunSettings,
+        await env.value(VALUE_NAMES.agentRunSettings),
+      ) as KubernetesRunSettings,
+    }))());
 
   return {
     store,
@@ -291,23 +334,12 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     limits: runLimits(botFiles),
     bots: botProfiles(botFiles),
     taskTypes: checked.taskTypes,
-    runtime: lazyRuntime(async () =>
-      createKubernetesRuntime({
-        client: createKubernetesClient({
-          server: await env.value(VALUE_NAMES.clusterEndpoint),
-          ca: await env.value(VALUE_NAMES.clusterCaCertificate),
-          token: await env.secret(SECRET_PATHS.clusterToken),
-        }),
-        settings: jsonValue(
-          VALUE_NAMES.agentRunSettings,
-          await env.value(VALUE_NAMES.agentRunSettings),
-        ) as KubernetesRunSettings,
-      }),
-    ),
+    runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),
     stagingChecker: unbuiltStagingChecker(),
     screenshots: runnerScreenshotBundles(),
     repoFolders: runnerRepoFolders(),
-    repoMaps: runnerRepoMaps(),
+    repoVisibility: runnerRepoVisibility(),
+    repoMaps: runnerRepoMaps(clusterParts),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

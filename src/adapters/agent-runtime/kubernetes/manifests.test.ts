@@ -18,20 +18,33 @@ import {
 } from "./fixtures.ts";
 import {
   AGENTS_POOL,
+  REPO_MAP_HOSTS,
   agentStage,
   checkRunSpec,
+  checkSettings,
   fetchStage,
+  repoMapSecret,
+  repoMapStage,
   runSecrets,
   taskSecret,
   workspaceClaim,
   type KubernetesRunSpec,
+  type RepoMapJobSpec,
 } from "./manifests.ts";
-import { LABEL_RUN_ID, runNames } from "./names.ts";
+import { LABEL_RUN_ID, repoMapNames, runNames } from "./names.ts";
 import type { EnvVar, Job, NetworkPolicy, RunObject } from "./objects.ts";
 
 // Unit: the run's manifests as pure functions (ADR 0106 sections 2 to 6). No cluster.
 
 const PROXY_IP = "10.245.0.10";
+
+/** One repo map read (D-275 (2)). */
+const REPO_MAP: RepoMapJobSpec = {
+  mapId: "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d",
+  projectSlug: "rehearsal",
+  repository: "didi-build/rehearsal",
+  commitSha: "0123456789abcdef0123456789abcdef01234567",
+};
 
 function envOf(job: Job): Map<string, EnvVar> {
   const container = job.spec.template.spec.containers[0];
@@ -55,7 +68,8 @@ function everything(): { jobs: Job[]; objects: RunObject[] } {
   const council = agentStage(COUNCIL, LIMITS, SETTINGS);
   const qa = agentStage(QA, QA_LIMITS, SETTINGS);
   const fetch = fetchStage(QA, SETTINGS);
-  const stages = [dev, council, qa, fetch];
+  const repoMap = repoMapStage(REPO_MAP, SETTINGS);
+  const stages = [dev, council, qa, fetch, repoMap];
   const jobs = stages.flatMap((s) => [s.proxyJob, s.clientJob(PROXY_IP)]);
   const objects: RunObject[] = [
     ...jobs,
@@ -63,6 +77,7 @@ function everything(): { jobs: Job[]; objects: RunObject[] } {
     ...runSecrets(DEVELOPER, credentialsFor(DEVELOPER)),
     ...runSecrets(QA, credentialsFor(QA)),
     ...runSecrets(COUNCIL, credentialsFor(COUNCIL)),
+    repoMapSecret(REPO_MAP, GITHUB_TOKEN),
     workspaceClaim(QA, SETTINGS),
   ];
   return { jobs, objects };
@@ -423,6 +438,147 @@ describe("run network (unit: per-run NetworkPolicies, ADR 0106 section 2, D-195)
       selector: { [LABEL_RUN_ID]: DEVELOPER.runId, "foreman/component": "proxy" },
       ports: [{ name: "proxy", protocol: "TCP", port: 8080, targetPort: 8080 }],
     });
+  });
+});
+
+describe("the repo map Job (unit: D-275 (2), O-87)", () => {
+  const stage = repoMapStage(REPO_MAP, SETTINGS);
+  const n = repoMapNames(REPO_MAP.mapId);
+  const mapJob = stage.clientJob(PROXY_IP);
+
+  it("runs the repo map image with its own deadline, no retries, the grace period and a short TTL", () => {
+    expect(mapJob.metadata.name).toBe(n.job);
+    expect(mapJob.spec.template.spec.containers[0]?.image).toBe(SETTINGS.repoMapImage);
+    expect(mapJob.spec.activeDeadlineSeconds).toBe(SETTINGS.repoMapMaxMinutes * 60);
+    expect(mapJob.spec.backoffLimit).toBe(0);
+    expect(mapJob.spec.template.spec.restartPolicy).toBe("Never");
+    expect(mapJob.spec.ttlSecondsAfterFinished).toBe(SETTINGS.ttlSecondsAfterFinished);
+    expect(mapJob.spec.template.spec.terminationGracePeriodSeconds).toBe(
+      SETTINGS.terminationGracePeriodSeconds,
+    );
+    expect(mapJob.spec.template.spec.containers[0]?.resources).toEqual(
+      SETTINGS.resources.repoMap,
+    );
+    expect(stage.proxyJob.spec.activeDeadlineSeconds).toBe(
+      SETTINGS.repoMapMaxMinutes * 60 +
+        SETTINGS.terminationGracePeriodSeconds +
+        SETTINGS.proxyDeadlineMarginSeconds,
+    );
+  });
+
+  it("gives the Job the read token and no other credential: no state API, no model, no task", () => {
+    expect(secretRefs(mapJob)).toEqual([n.githubTokenSecret]);
+    expect(envOf(mapJob).get("GITHUB_TOKEN")).toEqual({
+      name: "GITHUB_TOKEN",
+      valueFrom: { secretKeyRef: { name: n.githubTokenSecret, key: "token" } },
+    });
+    expect([...envOf(mapJob).keys()].sort()).toEqual([
+      "FOREMAN_COMMIT_SHA",
+      "FOREMAN_REPOSITORY",
+      "FOREMAN_RUN_ID",
+      "GITHUB_TOKEN",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+      "TMPDIR",
+      "https_proxy",
+      "no_proxy",
+    ]);
+    expect(value(mapJob, "FOREMAN_REPOSITORY")).toBe(REPO_MAP.repository);
+    expect(value(mapJob, "FOREMAN_COMMIT_SHA")).toBe(REPO_MAP.commitSha);
+    expect(value(mapJob, "HTTPS_PROXY")).toBe(`http://${PROXY_IP}:8080`);
+    // Its proxy holds no credential at all.
+    expect(secretRefs(stage.proxyJob)).toEqual([]);
+    // Only a scratch /tmp: no task Secret, no workspace claim.
+    expect(mapJob.spec.template.spec.volumes).toEqual([
+      { name: "tmp", emptyDir: { sizeLimit: SETTINGS.scratchSizeLimit } },
+    ]);
+    const secret = repoMapSecret(REPO_MAP, GITHUB_TOKEN);
+    expect(secret.metadata.name).toBe(n.githubTokenSecret);
+    expect(secret.stringData).toEqual({ token: GITHUB_TOKEN });
+    expect(secret.immutable).toBe(true);
+    expect(JSON.stringify([stage.proxyJob, mapJob, ...stage.policies])).not.toContain(
+      GITHUB_TOKEN,
+    );
+  });
+
+  it("reaches GitHub only: its pod only its own proxy, the proxy only DNS and public 443, and only GitHub's hosts", () => {
+    expect([...REPO_MAP_HOSTS]).toEqual(["api.github.com", "codeload.github.com"]);
+    expect(value(stage.proxyJob, "ALLOWED_HOSTS")).toBe(
+      "api.github.com,codeload.github.com",
+    );
+    expect(value(stage.proxyJob, "MODEL_PROVIDERS")).toBe("[]");
+    expect(value(stage.proxyJob, "STATE_API_UPSTREAM")).toBe("");
+    const [client, proxy] = stage.policies;
+    expect(client.spec.ingress).toEqual([]);
+    expect(client.spec.egress).toEqual([
+      {
+        to: [
+          {
+            podSelector: {
+              matchLabels: {
+                [LABEL_RUN_ID]: REPO_MAP.mapId,
+                "foreman/component": "repo-map-proxy",
+              },
+            },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 8080 }],
+      },
+    ]);
+    expect(proxy.spec.ingress[0]?.from).toEqual([
+      {
+        podSelector: {
+          matchLabels: {
+            [LABEL_RUN_ID]: REPO_MAP.mapId,
+            "foreman/component": "repo-map",
+          },
+        },
+      },
+    ]);
+    // DNS and public 443 only: no state API, no private range.
+    expect(proxy.spec.egress).toHaveLength(2);
+    expect(proxy.spec.egress[1]?.to[0]?.ipBlock?.except).toContain("10.0.0.0/8");
+    expect(stage.proxyService.spec.selector).toEqual({
+      [LABEL_RUN_ID]: REPO_MAP.mapId,
+      "foreman/component": "repo-map-proxy",
+    });
+  });
+
+  it("labels its objects with the read's id and the repo-map role, under names apart from runs", () => {
+    for (const object of [
+      stage.proxyJob,
+      mapJob,
+      stage.proxyService,
+      ...stage.policies,
+      repoMapSecret(REPO_MAP, GITHUB_TOKEN),
+    ]) {
+      expect(object.metadata.labels?.["foreman/role"]).toBe("repo-map");
+      expect(object.metadata.labels?.[LABEL_RUN_ID]).toBe(REPO_MAP.mapId);
+      expect(object.metadata.name).toMatch(/^map-/);
+    }
+  });
+
+  it.each<[string, Partial<RepoMapJobSpec>]>([
+    ["a bad id", { mapId: "Not An Id" }],
+    ["a bad project slug", { projectSlug: "Bad_Slug" }],
+    ["a bad repository", { repository: "../x" }],
+    ["a short commit", { commitSha: "abc" }],
+  ])("refuses %s", (_label, change) => {
+    expect(() => repoMapStage({ ...REPO_MAP, ...change }, SETTINGS)).toThrow();
+    expect(() => repoMapSecret({ ...REPO_MAP, ...change }, GITHUB_TOKEN)).toThrow();
+  });
+
+  it("refuses an empty token, an unpinned image and a bad deadline", () => {
+    expect(() => repoMapSecret(REPO_MAP, "")).toThrow(/read token/);
+    expect(() =>
+      checkSettings({
+        ...SETTINGS,
+        repoMapImage: "registry.example.com/repo-map:latest",
+      }),
+    ).toThrow(/repo map image must be pinned by digest/);
+    expect(() => checkSettings({ ...SETTINGS, repoMapMaxMinutes: 0 })).toThrow(
+      /repoMapMaxMinutes/,
+    );
   });
 });
 

@@ -27,7 +27,8 @@ flows:
     # which starts the fix round of an item a failed QA round or staging check sent back (O-41).
     # Its plan approval pass opens Didi's request for each plan the planning chat submitted and
     # takes the idea's move on Didi's answer (D-266); its hold release pass releases a held item
-    # Didi approved (D-269).
+    # Didi approved (D-269); its option capture pass captures each design item's exploration
+    # options once CI has rendered them and opens Didi's visual-approval request (O-88).
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
@@ -78,6 +79,18 @@ flows:
     # as the safety net for a start that failed.
     trigger: called
 
+  - name: option_capture
+    path: f/foreman/option_capture
+    entry: flows/option-capture.ts
+    # Called with a design item's id once CI has finished on its PR head (O-88, D-274). It
+    # captures the Designer's exploration options from CI's `options` bundle, opens Didi's
+    # visual-approval request and asks again for the Designer report's move into Waiting for
+    # Didi. A refusal the Designer caused counts once per head and starts the fix round; the
+    # request links CI's run only on a private repository (O-89). Who calls it on CI's end is open, as for verify_staging: the receiver records the
+    # delivery and holds no Windmill credential. The run-end flow tries the same capture at a
+    # Designer run's end, and the reconcile flow's capture pass is the backstop.
+    trigger: called
+
   - name: request_transition
     path: f/foreman/request_transition
     entry: flows/request-transition.ts
@@ -91,7 +104,9 @@ flows:
     # sends the approval page to Didi only (D-170), `record` is this entry. `ask` needs the
     # notification adapter and the gate lifecycle (M4.1), so only `record` is built. The same form
     # answers the planning chat's plan-approval request (D-266) and a held item's release request
-    # (D-269): neither lists options, so the Options field shows none.
+    # (D-269): neither lists options, so the Options field shows none. A visual approval's
+    # question ends with the link to the CI run holding the screenshots (O-89), which `ask`
+    # shows as the request's question text.
     entry: flows/approval-resume.ts
     trigger: approval_resume
     suspend:
@@ -168,7 +183,7 @@ resources:
     - name: agent_cluster_ca_certificate
       holds: The cluster's CA certificate (first-hosting runbook step 8)
     - name: agent_run_settings
-      holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106)
+      holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106), the repo map Job's image, resources and deadline included (D-275 (2))
     - name: agent_images
       holds: The agent image references by image kind as JSON, each pinned by digest. Each bot file (contracts/bots/) names its kind
   # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is

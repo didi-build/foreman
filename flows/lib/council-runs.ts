@@ -67,6 +67,10 @@ import {
   visualRerunCheck,
   type VisualRecord,
 } from "../../src/core/visual-comparison.ts";
+import {
+  createOptionCaptures,
+  type CaptureStep,
+} from "../../src/core/option-capture.ts";
 import { pngCodec } from "../../src/adapters/screenshots/png.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
@@ -80,6 +84,7 @@ import {
   type BuilderRunStart,
 } from "./builder-runs.ts";
 import { cancelRun } from "./cancel-runs.ts";
+import { countedRefusal } from "./option-capture.ts";
 import type { FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
@@ -278,6 +283,8 @@ export type AfterRunEnd = AfterReport &
     visual?: VisualRecord;
     /** After a QA run: the visual comparison's one more run after a `cannot_tell` (D-252). */
     visualRerun?: VisualRerunStart;
+    /** After a Designer run: the capture of its options at the PR head, or why not (O-88). */
+    optionCapture?: CaptureStep;
     /** A Triage run's answer as the runner checked it: handed off or rejected (M3.6). */
     triageAnswer?: TriageRecord;
     /** After a Triage run: the idea's re-run, or its escalation to the Council (D-262). */
@@ -329,7 +336,9 @@ export async function visualRerun(
  * still before the end is recorded: the runtime's result is not kept, so a flow cut short after
  * the end would lose them, while one cut short before it polls again and finds the ideas made.
  * The ideas never change the report or the item's move. `after` runs once the end is recorded:
- * the reported move and fix round (./builder-runs.ts), then for a Council run `afterCouncilRun`.
+ * for a Designer run the capture of its exploration options when CI has already rendered them
+ * (src/core/option-capture.ts, O-88), the reported move and fix round (./builder-runs.ts), then
+ * for a Council run `afterCouncilRun`.
  */
 export function runEndSteps(deps: FlowDeps, run: Run) {
   let answer: CouncilAnswer | undefined;
@@ -391,8 +400,26 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       return recorded;
     },
     async after(): Promise<AfterRunEnd> {
+      // A Designer run in exploration: its options are captured first when CI has already
+      // rendered them, so the report's move finds them (O-88).
+      const optionCapture =
+        run.bot === "designer" && run.nodeId
+          ? await createOptionCaptures(deps).capture(run.nodeId)
+          : undefined;
+      const after = await reportedMoveAndFixRound(deps, run.id);
+      // A capture refusal the Designer caused counted toward `failure` (O-89): the report's own
+      // move does not count it, so its fix round starts here, when one is due.
+      if (
+        optionCapture &&
+        countedRefusal(optionCapture) &&
+        after.builderRuns.length === 0 &&
+        run.nodeId
+      ) {
+        after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
+      }
       const reported = {
-        ...(await reportedMoveAndFixRound(deps, run.id)),
+        ...(optionCapture ? { optionCapture } : {}),
+        ...after,
         ...(findingIdeas ? { findingIdeas } : {}),
         ...(visual ? { visual } : {}),
       };

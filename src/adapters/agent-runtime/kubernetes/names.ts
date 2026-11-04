@@ -19,9 +19,17 @@ export const MANAGED_BY = "foreman-runner";
 
 /**
  * The pods of a run. The QA fetch step has its own proxy, so the QA pod's proxy never allows
- * GitHub (ADR 0106 sections 3 and 5).
+ * GitHub (ADR 0106 sections 3 and 5). The repo map Job and its proxy are the pods of one map read
+ * (D-275 (2)), which is not a run.
  */
-export type Component = "agent" | "proxy" | "fetch" | "fetch-proxy";
+export type Component =
+  "agent" | "proxy" | "fetch" | "fetch-proxy" | "repo-map" | "repo-map-proxy";
+
+/**
+ * The role label of a Job's objects: an agent run's role, or `repo-map` for the repo map's own
+ * Job, which is the runner's work and runs no agent (D-275 (2)).
+ */
+export type JobRole = AgentRole | "repo-map";
 
 export function checkRunId(runId: string): string {
   if (!RUN_ID.test(runId)) {
@@ -66,6 +74,22 @@ export function runNames(runId: string) {
 
 export type RunNames = ReturnType<typeof runNames>;
 
+/**
+ * The fixed names of the objects of one repo map read (D-275 (2)), from its own id. `map-`, not
+ * `run-`, so they never meet a run's names.
+ */
+export function repoMapNames(mapId: string) {
+  const base = `map-${checkRunId(mapId)}`;
+  return {
+    job: base,
+    policy: base,
+    proxyJob: `${base}-proxy`,
+    proxyService: `${base}-proxy`,
+    proxyPolicy: `${base}-proxy`,
+    githubTokenSecret: `${base}-github-token`,
+  };
+}
+
 /** Labels that find every object of one run. */
 export function runSelector(runId: string): Labels {
   return { [LABEL_RUN_ID]: checkRunId(runId) };
@@ -76,10 +100,14 @@ export function componentSelector(runId: string, component: Component): Labels {
   return { ...runSelector(runId), [LABEL_COMPONENT]: component };
 }
 
-export function runLabels(
-  run: { runId: string; projectSlug: string; role: AgentRole },
-  component?: Component,
-): Labels {
+/** Who a Job's objects belong to: a run, or one repo map read (whose id stands in the run id). */
+export interface JobOwner {
+  runId: string;
+  projectSlug: string;
+  role: JobRole;
+}
+
+export function runLabels(run: JobOwner, component?: Component): Labels {
   return {
     [LABEL_MANAGED_BY]: MANAGED_BY,
     [LABEL_RUN_ID]: checkRunId(run.runId),

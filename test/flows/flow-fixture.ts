@@ -12,6 +12,7 @@ import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.
 import { createFakeRepoMaps } from "../../src/adapters/repo-map/fake.ts";
 import {
   createFakeRepoFolders,
+  createFakeRepoVisibility,
   createFakeScreenshotBundles,
 } from "../../src/adapters/screenshots/fake.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
@@ -82,6 +83,7 @@ export function flowDepsFor(
   const runtime = createFakeRuntime();
   const screenshots = createFakeScreenshotBundles();
   const repoFolders = createFakeRepoFolders();
+  const repoVisibility = createFakeRepoVisibility();
   const repoMaps = createFakeRepoMaps();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
@@ -92,6 +94,7 @@ export function flowDepsFor(
     stagingChecker,
     screenshots,
     repoFolders,
+    repoVisibility,
     repoMaps,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
@@ -122,6 +125,7 @@ export function flowDepsFor(
     runtime,
     screenshots,
     repoFolders,
+    repoVisibility,
     repoMaps,
     tasksFor,
     tokens,
@@ -139,6 +143,7 @@ export async function createFlowFixture() {
     runtime,
     screenshots,
     repoFolders,
+    repoVisibility,
     repoMaps,
     tasksFor,
     tokens,
@@ -165,6 +170,7 @@ export async function createFlowFixture() {
     stagingChecker,
     screenshots,
     repoFolders,
+    repoVisibility,
     repoMaps,
     tasksFor,
     tokens,

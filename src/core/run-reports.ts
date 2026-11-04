@@ -28,9 +28,13 @@
 // (Developer, Designer) finds every move it triggers refused by the guards, `failure` goes up by
 // one, once per report (src/core/failures.ts), and the escalation is asked for. That includes a
 // done report on a head QA already failed, which `no_failed_qa_verdict_on_head` refuses (O-42).
-// Two refusals do not count: CI still `pending` on the head (no result yet, not a failure; the
-// report counts if it is asked for again once CI is red), and a refusal by `scope_matches_plan`
-// alone (a scope change, which the contract sends to the Council, not to the counter). A QA run's
+// Three refusals do not count: CI still `pending` on the head (no result yet, not a failure; the
+// report counts if it is asked for again once CI is red), a refusal by `scope_matches_plan`
+// alone (a scope change, which the contract sends to the Council, not to the counter), and a
+// refusal by `options_attached` alone (the Designer's options are captured by the runner once CI
+// has rendered them, after the report; the capture then asks for the same report's move again,
+// src/core/option-capture.ts, O-88). When the capture itself refuses for a reason the Designer
+// caused, the capture counts that, once per head and Designer run (src/core/failures.ts, O-89, D-293). A QA run's
 // report never counts: a merge waiting on a condition is not a failure.
 //
 // QA's visual comparison (D-252): a `differs` record passes `qa_failed_with_findings`, so the
@@ -65,6 +69,7 @@ import { createFailures, type FailureCount } from "./failures.ts";
 import { REDO_GUARD } from "./guards/council.ts";
 import { headCommit, readCiRun, readVisualComparison } from "./guards/evidence.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
+import { OPTIONS_GUARD } from "./option-capture.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import type { AgentRole, CounterKind, Evidence, Node, Run, Store } from "./store.ts";
 import { PUSHING_ROLES } from "./task-input.ts";
@@ -207,6 +212,10 @@ export function createRunReports(options: RunReportsOptions) {
       return { counts: false, headSha };
     }
     if (failed.every((name) => name === SCOPE_GUARD)) return { counts: false, headSha };
+    // The options are the runner's to capture once CI has rendered them, after the Designer's
+    // report (./option-capture.ts, O-88): their absence alone is not the Designer's failure.
+    if (failed.every((name) => name === OPTIONS_GUARD))
+      return { counts: false, headSha };
     if (
       failed.includes(CI_GUARD) &&
       head &&

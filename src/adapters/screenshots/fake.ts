@@ -1,6 +1,9 @@
 // Fakes of the screenshot bundles port and the repo folders port for tests
-// (src/core/visual-comparison.ts). Bundles are kept in memory by repository, commit and kind, and
-// folder ids by repository, commit and path; nothing is read from CI, GitHub or the network.
+// (src/core/visual-comparison.ts), and of the repository visibility port option capture checks
+// before it links Didi to CI's run (src/core/option-capture.ts, O-89). Bundles are kept in memory
+// by repository, commit and kind, folder ids by repository, commit and path, and visibility by
+// repository; nothing is read from CI, GitHub or the network.
+import type { RepoVisibility } from "../../core/option-capture.ts";
 import type {
   BundleKind,
   RepoFolders,
@@ -10,7 +13,12 @@ import type {
 export interface FakeBundle {
   manifest: unknown;
   files: Map<string, Uint8Array>;
+  /** The workflow run the bundle came from; `FAKE_WORKFLOW_RUN_ID` unless given. */
+  workflowRunId?: number;
 }
+
+/** The workflow run id a fake bundle carries unless the test gives one. */
+export const FAKE_WORKFLOW_RUN_ID = 4242;
 
 export interface FakeScreenshotBundles extends ScreenshotBundles {
   put(repo: string, commitSha: string, kind: BundleKind, bundle: FakeBundle): void;
@@ -33,6 +41,7 @@ export function createFakeScreenshotBundles(): FakeScreenshotBundles {
       if (!bundle) return null;
       return {
         manifest: structuredClone(bundle.manifest),
+        workflowRunId: bundle.workflowRunId ?? FAKE_WORKFLOW_RUN_ID,
         file: async (path) => {
           const bytes = bundle.files.get(path);
           return bytes ? new Uint8Array(bytes) : null;
@@ -63,6 +72,30 @@ export function createFakeRepoFolders(): FakeRepoFolders {
     async folderId(repo, commitSha, path) {
       fake.reads.push(key(repo, commitSha, path));
       return ids.get(key(repo, commitSha, path)) ?? null;
+    },
+  };
+  return fake;
+}
+
+export interface FakeRepoVisibility extends RepoVisibility {
+  /** A repository's answer: private, public, or a failed read. Unset repositories are private. */
+  set(repo: string, answer: "private" | "public" | "fail"): void;
+  /** Every repository asked about, in order. */
+  reads: string[];
+}
+
+export function createFakeRepoVisibility(): FakeRepoVisibility {
+  const answers = new Map<string, "private" | "public" | "fail">();
+  const fake: FakeRepoVisibility = {
+    reads: [],
+    set(repo, answer) {
+      answers.set(repo, answer);
+    },
+    async isPrivate(repo) {
+      fake.reads.push(repo);
+      const answer = answers.get(repo) ?? "private";
+      if (answer === "fail") throw new Error("the fake visibility read failed");
+      return answer === "private";
     },
   };
   return fake;

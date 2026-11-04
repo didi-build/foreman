@@ -18,14 +18,21 @@ const resources: Resources = {
 export const SETTINGS: KubernetesRunSettings = {
   proxyImage: `registry.example.com/foreman/egress-proxy${digest("a")}`,
   fetchImage: `registry.example.com/foreman/qa-fetch${digest("b")}`,
+  repoMapImage: `registry.example.com/foreman/repo-map${digest("e")}`,
   proxyPort: 8080,
   runAsUser: 1000,
-  resources: { agent: resources, proxy: resources, fetch: resources },
+  resources: {
+    agent: resources,
+    proxy: resources,
+    fetch: resources,
+    repoMap: resources,
+  },
   scratchSizeLimit: "1Gi",
   terminationGracePeriodSeconds: 30,
   ttlSecondsAfterFinished: 3600,
   proxyDeadlineMarginSeconds: 120,
   fetchMaxMinutes: 10,
+  repoMapMaxMinutes: 5,
   workspace: { size: "1Gi", storageClassName: "do-block-storage" },
   stateApi: {
     upstream: "http://state-api.foreman-platform.svc.cluster.local:8080",

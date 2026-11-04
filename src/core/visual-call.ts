@@ -17,7 +17,9 @@
 //
 // The runner checks the answer against `output_schemas.visual_call` in the Council's bot file and
 // the rules below (D-228), and records it itself (D-230) as a `council_decision` on the item with
-// `scope {topicKey: "visual-call:<item id>", gateRequestId, call, runId}`. That topic is not the
+// `scope {topicKey: "visual-call:<item id>", gateRequestId, call, runId}`, plus `unsure` when the
+// answer gives it (D-287): true when uncertainty made the call `needs_didi`, kept so the calls
+// can later be learned from. That topic is not the
 // visual-approval topic, so `approval_recorded` and `changes_requested_recorded` never read it
 // (./guards/design.ts). The call never answers or changes the request, opens nothing for Didi and
 // changes nothing that reaches Didi. An unusable answer gets one re-run; after that the call is
@@ -84,6 +86,8 @@ export interface VisualCallQuestion {
 export interface VisualCallAnswer {
   call: VisualCall;
   reason: string;
+  /** True when uncertainty made the call `needs_didi` (D-287). Left out when not given. */
+  unsure?: boolean;
 }
 
 export type VisualCallRefusal =
@@ -152,18 +156,20 @@ export function recordedCall(
 }
 
 /**
- * Reads a call that already fits the bot file's schema, by the runner's own rules: exactly `call`
- * and `reason`, `call` one of the two, `reason` 1 to 1,000 characters after trimming. Problems name
- * the field, never its value.
+ * Reads a call that already fits the bot file's schema, by the runner's own rules: `call` and
+ * `reason`, and optionally `unsure`, nothing else; `call` one of the two, `reason` 1 to 1,000
+ * characters after trimming; `unsure` a boolean, and true only with `needs_didi`, since an unsure
+ * Council calls needs_didi (D-287). Problems name the field, never its value.
  */
 export function readVisualCallAnswer(
   value: unknown,
 ): { answer: VisualCallAnswer } | { problem: string } {
   if (!isObject(value)) return { problem: "the answer is not an object" };
   const keys = Object.keys(value).sort().join();
-  if (keys !== "call,reason")
-    return { problem: "the answer must hold exactly call and reason" };
-  const { call, reason } = value;
+  if (keys !== "call,reason" && keys !== "call,reason,unsure") {
+    return { problem: "the answer must hold call and reason, and optionally unsure" };
+  }
+  const { call, reason, unsure } = value;
   if (typeof call !== "string" || !(VISUAL_CALLS as readonly string[]).includes(call)) {
     return { problem: "call must be small_tweak_council_would_approve or needs_didi" };
   }
@@ -173,7 +179,19 @@ export function readVisualCallAnswer(
       problem: `reason must be 1 to ${VISUAL_CALL_LIMITS.reasonChars} characters`,
     };
   }
-  return { answer: { call: call as VisualCall, reason: text } };
+  if (unsure !== undefined && typeof unsure !== "boolean") {
+    return { problem: "unsure must be true or false" };
+  }
+  if (unsure === true && call !== "needs_didi") {
+    return { problem: "unsure may be true only with needs_didi" };
+  }
+  return {
+    answer: {
+      call: call as VisualCall,
+      reason: text,
+      ...(typeof unsure === "boolean" ? { unsure } : {}),
+    },
+  };
 }
 
 const sha256 = (bytes: Uint8Array): string =>
@@ -239,6 +257,8 @@ export interface VisualCallPair {
   /** The `council_decision` that holds the call. */
   callDecisionId: string;
   call: VisualCall | typeof VISUAL_CALL_DROPPED;
+  /** The Council's own `unsure` label on the call (D-287), or null when it gave none. */
+  unsure: boolean | null;
   calledAt: Date;
   /** Didi's latest active answer on the same request, if any. */
   didi: { decisionId: string; outcome: DidiOutcome; answeredAt: Date } | null;
@@ -317,6 +337,7 @@ export async function visualCallPairs(
         gateRequestId,
         callDecisionId: d.id,
         call: call as VisualCallPair["call"],
+        unsure: typeof scope.unsure === "boolean" ? scope.unsure : null,
         calledAt: d.recordedAt,
         didi,
         agreement,

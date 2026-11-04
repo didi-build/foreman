@@ -1,5 +1,6 @@
-// A run's Kubernetes objects as pure functions (ADR 0106 sections 1 to 6). Same input, same
-// objects: no clock, no random names. Every pod follows section 4 (non-root, read-only root,
+// A run's Kubernetes objects as pure functions (ADR 0106 sections 1 to 6), and those of the repo
+// map's own Job (D-275 (2), O-87), which reuses the same proxy stage and Job shape. Same input,
+// same objects: no clock, no random names. Every pod follows section 4 (non-root, read-only root,
 // no privilege escalation, drop ALL, seccomp RuntimeDefault, no service account token, no host
 // access, limits on every container) and runs on the tainted agents pool (D-193).
 import { secretEnvName } from "../../../service-kit/config.ts";
@@ -25,9 +26,11 @@ import {
   agentNamespace,
   checkRunId,
   componentSelector,
+  repoMapNames,
   runLabels,
   runNames,
   type Component,
+  type JobOwner,
   type RunNames,
 } from "./names.ts";
 import type {
@@ -56,10 +59,17 @@ export interface KubernetesRunSettings {
   proxyImage: string;
   /** The QA fetch step's image, pinned by digest. */
   fetchImage: string;
+  /** The repo map Job's image (src/agent-images/repo-map/, D-275 (2)), pinned by digest. */
+  repoMapImage: string;
   proxyPort: number;
   /** The numeric user and group every pod runs as. Never 0. */
   runAsUser: number;
-  resources: { agent: Resources; proxy: Resources; fetch: Resources };
+  resources: {
+    agent: Resources;
+    proxy: Resources;
+    fetch: Resources;
+    repoMap: Resources;
+  };
   /** Size limit of each `emptyDir` (the work folder and `/tmp`). */
   scratchSizeLimit: string;
   /** Between SIGTERM and the forced stop (ADR 0106 section 6). */
@@ -70,6 +80,8 @@ export interface KubernetesRunSettings {
   proxyDeadlineMarginSeconds: number;
   /** The QA fetch step's deadline. */
   fetchMaxMinutes: number;
+  /** The repo map Job's deadline (D-275 (2)). */
+  repoMapMaxMinutes: number;
   /** QA's per-run volume (ADR 0106 section 5). No storage class means the cluster default. */
   workspace: { size: string; storageClassName?: string };
   /**
@@ -271,12 +283,16 @@ export function checkSettings(settings: KubernetesRunSettings): void {
   for (const [name, image] of [
     ["proxy", settings.proxyImage],
     ["fetch", settings.fetchImage],
+    ["repo map", settings.repoMapImage],
   ] as const) {
     if (!DIGEST_PINNED.test(image))
       throw new Error(`${name} image must be pinned by digest`);
   }
   if (!Number.isInteger(settings.runAsUser) || settings.runAsUser < 1) {
     throw new Error("runAsUser must be a user id above 0");
+  }
+  if (!Number.isInteger(settings.repoMapMaxMinutes) || settings.repoMapMaxMinutes < 1) {
+    throw new Error("repoMapMaxMinutes must be a positive whole number");
   }
   if (parseStateApiUpstream(settings.stateApi.upstream) === undefined) {
     throw new Error("the state API upstream is required");
@@ -399,9 +415,7 @@ export function agentStage(
       MAX_REJECTED_MODEL_REQUESTS: String(spec.maxRejectedModelRequests),
       STATE_API_UPSTREAM: settings.stateApi.upstream,
     },
-    modelSecret: spec.providers.some((p) => p.secretPath)
-      ? names.modelSecret
-      : undefined,
+    proxySecretEnv: modelSecretEnv(spec, names.modelSecret),
     clientJob: (proxyAddress) =>
       job(spec, settings, names.agentJob, "agent", deadline, {
         image: spec.image,
@@ -443,7 +457,7 @@ export function fetchStage(
       MAX_REJECTED_MODEL_REQUESTS: "1",
       STATE_API_UPSTREAM: "",
     },
-    modelSecret: undefined,
+    proxySecretEnv: [],
     clientJob: (proxyAddress) =>
       job(spec, settings, names.fetchJob, "fetch", deadline, {
         image: settings.fetchImage,
@@ -476,6 +490,113 @@ export function fetchStage(
   });
 }
 
+/**
+ * The hosts the repo map Job's proxy allows (D-275 (2)): GitHub's API, and the host its archive
+ * download redirects to. Fixed here, not a setting, so nothing can widen them.
+ */
+export const REPO_MAP_HOSTS: readonly string[] = [
+  "api.github.com",
+  "codeload.github.com",
+];
+
+/** One repo map read (D-275 (2)): its own id, the project's namespace, the repository and commit. */
+export interface RepoMapJobSpec {
+  /** A fresh id for this read, used in its object names and labels. */
+  mapId: string;
+  projectSlug: string;
+  /** `owner/name`. */
+  repository: string;
+  /** The full commit the map is built at. */
+  commitSha: string;
+}
+
+/** Who the repo map Job's objects belong to, for their labels. */
+const repoMapOwner = (spec: RepoMapJobSpec): JobOwner => ({
+  runId: spec.mapId,
+  projectSlug: spec.projectSlug,
+  role: "repo-map",
+});
+
+function checkRepoMapJob(spec: RepoMapJobSpec): void {
+  checkRunId(spec.mapId);
+  agentNamespace(spec.projectSlug);
+  if (!REPOSITORY.test(spec.repository)) {
+    throw new Error("a repo map needs its repository as owner/name");
+  }
+  if (!SHA.test(spec.commitSha)) throw new Error("a repo map needs its full commit");
+}
+
+/**
+ * The repo map Job's one Secret: the runner App's read token for the one repository (`contents:
+ * read`, D-267), minted for this read only. No other credential exists for the Job.
+ */
+export function repoMapSecret(spec: RepoMapJobSpec, githubToken: string): Secret {
+  checkRepoMapJob(spec);
+  if (githubToken === "") throw new Error("a repo map needs its read token");
+  return {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: repoMapNames(spec.mapId).githubTokenSecret,
+      namespace: agentNamespace(spec.projectSlug),
+      labels: runLabels(repoMapOwner(spec), "repo-map"),
+    },
+    type: "Opaque",
+    immutable: true,
+    stringData: { token: githubToken },
+  };
+}
+
+/**
+ * The repo map Job's stage (D-275 (2), O-87): the QA fetch step's shape, with its own proxy that
+ * allows only `REPO_MAP_HOSTS`, no model provider and no state API route, and the Job, which gets
+ * the read token and nothing else. It downloads the archive at the commit, parses it and prints
+ * the map; it never runs the project's code and writes nothing to the repository.
+ */
+export function repoMapStage(
+  spec: RepoMapJobSpec,
+  settings: KubernetesRunSettings,
+): ProxyStage {
+  checkRepoMapJob(spec);
+  const names = repoMapNames(spec.mapId);
+  const owner = repoMapOwner(spec);
+  const deadline = settings.repoMapMaxMinutes * 60;
+  return proxyStage(owner, settings, {
+    client: "repo-map",
+    proxy: "repo-map-proxy",
+    clientPolicy: names.policy,
+    proxyPolicy: names.proxyPolicy,
+    proxyJob: names.proxyJob,
+    proxyService: names.proxyService,
+    clientDeadlineSeconds: deadline,
+    proxyEnv: {
+      ALLOWED_HOSTS: REPO_MAP_HOSTS.join(","),
+      MODEL_PROVIDERS: "[]",
+      MAX_MODEL_REQUESTS: "1",
+      MAX_REJECTED_MODEL_REQUESTS: "1",
+      STATE_API_UPSTREAM: "",
+    },
+    proxySecretEnv: [],
+    clientJob: (proxyAddress) =>
+      job(owner, settings, names.job, "repo-map", deadline, {
+        image: settings.repoMapImage,
+        env: [
+          ...plainEnv({
+            FOREMAN_RUN_ID: spec.mapId,
+            FOREMAN_REPOSITORY: spec.repository,
+            FOREMAN_COMMIT_SHA: spec.commitSha,
+            TMPDIR: "/tmp",
+          }),
+          ...proxyEnvFor(proxyAddress, settings.proxyPort),
+          secretEnv("GITHUB_TOKEN", names.githubTokenSecret, "token"),
+        ],
+        resources: settings.resources.repoMap,
+        volumes: [{ name: "tmp", emptyDir: { sizeLimit: settings.scratchSizeLimit } }],
+        volumeMounts: [{ name: "tmp", mountPath: "/tmp", readOnly: false }],
+      }),
+  });
+}
+
 /** The provider list exactly as the proxy reads it (MODEL_PROVIDERS). */
 function proxyProvidersJson(spec: KubernetesRunSpec): string {
   return JSON.stringify(
@@ -496,12 +617,22 @@ interface StageParts {
   proxyService: string;
   clientDeadlineSeconds: number;
   proxyEnv: Record<string, string>;
-  modelSecret: string | undefined;
+  /** Secret variables of the proxy: the run's model credentials, or none. */
+  proxySecretEnv: EnvVar[];
   clientJob: (proxyAddress: string) => Job;
 }
 
+/** The proxy's variables for the run's model credentials, from the run's model Secret. */
+function modelSecretEnv(spec: KubernetesRunSpec, secretName: string): EnvVar[] {
+  return spec.providers.flatMap((provider) => {
+    if (!provider.secretPath) return [];
+    const key = secretEnvName(provider.secretPath);
+    return [secretEnv(key, secretName, key)];
+  });
+}
+
 function proxyStage(
-  spec: KubernetesRunSpec,
+  spec: JobOwner,
   settings: KubernetesRunSettings,
   parts: StageParts,
 ): ProxyStage {
@@ -573,19 +704,11 @@ function proxyStage(
     parts.clientDeadlineSeconds +
     settings.terminationGracePeriodSeconds +
     settings.proxyDeadlineMarginSeconds;
-  const modelSecretEnv: EnvVar[] = [];
-  if (parts.modelSecret) {
-    for (const provider of spec.providers) {
-      if (!provider.secretPath) continue;
-      const key = secretEnvName(provider.secretPath);
-      modelSecretEnv.push(secretEnv(key, parts.modelSecret, key));
-    }
-  }
   const proxyJob = job(spec, settings, parts.proxyJob, parts.proxy, proxyDeadline, {
     image: settings.proxyImage,
     env: [
       ...plainEnv({ PORT: String(port), RUN_ID: spec.runId, ...parts.proxyEnv }),
-      ...modelSecretEnv,
+      ...parts.proxySecretEnv,
     ],
     resources: settings.resources.proxy,
     ports: [{ name: "proxy", containerPort: port, protocol: "TCP" }],
@@ -753,7 +876,7 @@ interface ContainerParts {
 
 /** A one-pod Job that Kubernetes never retries (ADR 0106 sections 4 and 6). */
 function job(
-  spec: KubernetesRunSpec,
+  spec: JobOwner,
   settings: KubernetesRunSettings,
   name: string,
   component: Component,

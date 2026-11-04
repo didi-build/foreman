@@ -115,6 +115,17 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+  # The repo map's own Job (D-275 (2)): not an agent, but a job image of the same kind.
+  - package-ecosystem: docker
+    directory: /src/agent-images/repo-map
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # The Claude Code CLI pinned for the Claude Code agent image only.
   - package-ecosystem: npm
@@ -133,6 +144,18 @@ updates:
   # rerun on that version.
   - package-ecosystem: npm
     directory: /src/agent-images/opencode/cli
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # The TypeScript compiler pinned for the repo map Job's image only (D-275 (2)).
+  - package-ecosystem: npm
+    directory: /src/agent-images/repo-map/deps
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
