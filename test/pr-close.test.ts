@@ -14,7 +14,6 @@ import {
   readCloseInput,
   readCloseResult,
 } from "../src/core/pr-close.ts";
-import { seedCloseRouting } from "../src/core/routing-testing.ts";
 import { createRuns, limitsFor, REHEARSAL_RUN_LIMITS } from "../src/core/runs.ts";
 import { createReconcileFixture, REPO } from "./reconcile-fixture.ts";
 
@@ -226,7 +225,6 @@ describe("a close run's admission (unit: memory store, D-318)", () => {
   async function admission() {
     const { f, item } = await cancelledWithPullRequest();
     await f.setting("dry_run", false);
-    await seedCloseRouting(f.store, f.clock.now());
     const runs = createRuns({ ...f.deps, taskLimits: TASK_LIMITS });
     const request = {
       nodeId: item.id,

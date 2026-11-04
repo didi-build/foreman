@@ -5,8 +5,8 @@
 // flow records its outcome on the item and starts nothing more; the reconcile flow's live passes
 // never start a second close run for the same pull request, whatever the first one's end. The
 // switches and admission: dry run plans and writes nothing, the kill switch and a full cluster
-// refuse and the next pass starts it, and a policy without a route for the close task type
-// refuses with `no_route`. The wrapper itself is tested in src/agent-images/opencode/; the rules
+// refuse and the next pass starts it, and a policy without a route for the close task type (as
+// before migration 0019, D-324) refuses with `no_route`. The wrapper itself is tested in src/agent-images/opencode/; the rules
 // in test/pr-close.test.ts. Synthetic data only.
 import { describe, expect, it } from "vitest";
 
@@ -25,7 +25,7 @@ import {
   CLOSE_REPORT_KIND,
   closeReportRef,
 } from "../../src/core/pr-close.ts";
-import { seedCloseRouting } from "../../src/core/routing-testing.ts";
+import { FIRST_ROUTING_POLICY } from "../../src/core/routing-testing.ts";
 import { REPO } from "../reconcile-fixture.ts";
 import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
 
@@ -48,7 +48,6 @@ async function withPullRequest(role: "developer" | "designer" = "developer") {
   const f = await createFlowFixture();
   f.deps.taskLimits = LIMITS;
   await f.live();
-  await seedCloseRouting(f.store, f.clock.now());
   const item = await f.node(
     role === "designer" ? "building_components" : "in_development",
     {
@@ -264,10 +263,12 @@ describe("a cancelled item's pull request closed by its own bot (flow: fake adap
     expect(await f.footprint(item.id)).toBe(before);
   });
 
-  it("refuses with no_route while the routing policy has no entry for the close task type", async () => {
+  it("refuses with no_route when the routing policy has no entry for the close task type", async () => {
     const f = await createFlowFixture();
     f.deps.taskLimits = LIMITS;
     await f.live();
+    // The first policy, before migration 0019 gave the close task types their route (D-324).
+    await f.setting("model_routing_policy", FIRST_ROUTING_POLICY);
     const item = await f.node("in_development");
     const builder = await f.run(item.id, "developer", 10, {
       endedAt: f.clock.now(),

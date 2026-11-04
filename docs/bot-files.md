@@ -119,7 +119,7 @@ The image's wrapper (`src/agent-images/opencode/close.ts`) sees the mode and doe
 
 Its result line is `success` with `structured` `{closeOutcome, pullRequest}`, 0 turns and $0, or `error` with a text naming the step and GitHub's status. The run-end flow records the outcome once on the item, as an `agent_report` by the runner (`runner:pr_close:run-<run id>`, `{kind: "pr_close", outcome, pullRequest}`), or `failed` for any other end or a result it cannot read. No tool, host or permission was added: opening a pull request already needs the token's pull request write access, and closing one and commenting on it need the same.
 
-The seeded routing policy has no entry for the close task types (migration 0005), so until the policy and the output need settings name a route for them, every close dispatch is refused with `no_route` and the daily check shows the pull request waiting for its close run (O-98, open question 1). The route's model is never called.
+A close run is routed like every bot run (D-324): migration 0019 gives `developer:close` and `designer:close` a copy of their role's own entry in `model_routing_policy` and the role's value in `model_output_token_needs`. The route's model is never called, and the run's proxy holds its key as for every builder run. A policy without the entry refuses the close dispatch with `no_route`, and the daily check shows the pull request waiting for its close run.
 
 ## QA's visual comparison (D-242, D-250)
 
