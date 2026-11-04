@@ -39,6 +39,7 @@ const submission = {
   plan: "Plan: a settings page.",
   productDirection: "Settings stay on one page.",
   answers: [],
+  needsDidi: { needed: "yes", reason: "A settings page is a new feature." },
 };
 
 async function send(

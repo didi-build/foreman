@@ -335,7 +335,8 @@ function validateTransition(
  * Checks the parsed contract files the contracts-file adapter produced, merges them and maps
  * them to Contracts, collecting every problem at once (ADR 0105): a file of the wrong shape, an
  * unknown field, a state declared in two files, an unknown state, an unregistered guard, a
- * duplicate move, `any` or `return` outside escalation.yaml, a missing required field.
+ * duplicate move (two runner-only moves with different guards are allowed, D-307), `any` or
+ * `return` outside escalation.yaml, a missing required field.
  * State ids are looked up as own keys only, so names like `toString` are never "known".
  */
 export function validateContracts(
@@ -449,10 +450,17 @@ export function validateContracts(
     for (let b = a + 1; b < transitions.length; b++) {
       const first = transitions[a] as TransitionContract;
       const second = transitions[b] as TransitionContract;
+      // Two runner-only moves between the same states with different guards are two ways in,
+      // each owned by its runner step, which names the one it takes (`guardedBy`, D-307).
+      const twoRunnerWays =
+        first.runnerOnly === true &&
+        second.runnerOnly === true &&
+        [...first.guards].sort().join(",") !== [...second.guards].sort().join(",");
       if (
         first.from === second.from &&
         first.to === second.to &&
-        tracksOverlap(first.tracks, second.tracks)
+        tracksOverlap(first.tracks, second.tracks) &&
+        !twoRunnerWays
       ) {
         problems.push(
           `duplicate move ${first.from} to ${first.to} for overlapping tracks`,

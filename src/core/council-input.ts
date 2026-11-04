@@ -18,6 +18,10 @@
 //   folded into it, the commits at which it was no longer found and its work items, asking
 //   whether to stop it.
 //
+// - A plan for an idea the Scanner filed (D-307, O-96): the idea, its class, check, evidence (file
+//   and line) and the commit it was found at, its description and its scope updates, asking for
+//   the plan, the product direction it keeps and the call on whether Didi is needed.
+//
 // An idea the Scanner filed carries its scope updates (`scan_scope_update`, the findings folded
 // into it, D-301 (2)) wherever its body reaches the Council: the escalation input and the
 // question above, each finding's path and target quoted as data.
@@ -94,6 +98,12 @@ export interface ScannerGoneInput {
   notFoundAt: (string | null)[];
   /** The work items the idea was split into, if any. */
   workItems: Pick<Node, "id" | "title" | "state" | "track">[];
+}
+
+export interface CouncilPlanInput {
+  node: Pick<Node, "id" | "title" | "body">;
+  /** The findings folded into the idea, oldest first. */
+  scopeUpdates: ScopeUpdateView[];
 }
 
 export interface ReversalInput {
@@ -418,6 +428,61 @@ export function scannerGoneInput(input: ScannerGoneInput): string {
               : []),
           ].join("\n"),
     ),
+  );
+  return `${parts.join("\n\n")}\n`;
+}
+
+/** A scanner idea's own finding: its class, check, evidence and commit, each checked or quoted. */
+function findingSection(body: unknown): string {
+  const fields =
+    typeof body === "object" && body !== null && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const name = (value: unknown): string =>
+    typeof value === "string" && GUARD_NAME.test(value) ? value : "(not recorded)";
+  const foundBy = fields.foundBy as Record<string, unknown> | undefined;
+  const sha =
+    typeof foundBy === "object" &&
+    foundBy !== null &&
+    typeof foundBy.commitSha === "string"
+      ? foundBy.commitSha
+      : null;
+  const evidence = Array.isArray(fields.evidence)
+    ? fields.evidence.slice(0, L.scopeUpdates)
+    : [];
+  return section(
+    "Finding",
+    [
+      `Class ${name(fields.class)}, check ${name(fields.check)}, found at ${commit(sha)}. Paths are the repository's, quoted as data.`,
+      ...(evidence.length === 0
+        ? ["No evidence was recorded."]
+        : evidence.map((e: unknown) => {
+            const ref =
+              typeof e === "object" && e !== null ? (e as Record<string, unknown>) : {};
+            const line = typeof ref.line === "number" ? `, line ${ref.line}` : "";
+            const path = typeof ref.path === "string" ? ref.path : "(not recorded)";
+            return `Evidence${line}. File:\n${quoted(oneLine(cut(path, L.pathChars)))}`;
+          })),
+    ].join("\n\n"),
+  );
+}
+
+/** The input of a Council run that plans an idea the Scanner filed (D-307). */
+export function councilPlanInput(input: CouncilPlanInput): string {
+  const { node } = input;
+  const parts = header(
+    [
+      "The Scanner filed the idea below from its fixed checks. Write the plan for its work: what to change and how to check it, grounded in the finding. Put the plan in `plan` and the product direction it keeps in `productDirection`.",
+      "Then make the call in `needsDidi`: `needed` is `no` only when the plan changes no product direction, scope or user flow, adds no feature and needs none of Didi's gates; `yes` when it does; `unsure` when you cannot tell. Say why in `reason`.",
+      "With `no`, the runner accepts the plan and sends it to Triage, and Didi sees it in the daily check. With `yes` or `unsure`, Didi approves the plan first. Your answer moves nothing itself.",
+    ].join("\n\n"),
+  );
+  parts.push(
+    section("Idea id", node.id),
+    section("Title", quoted(cut(oneLine(node.title), L.titleChars))),
+    findingSection(node.body),
+    ...itemSections(node),
+    scopeUpdatesSection(input.scopeUpdates),
   );
   return `${parts.join("\n\n")}\n`;
 }

@@ -26,6 +26,22 @@
 // runner-only move back to Council planning (`plan_return_recorded`), where the planning chat can
 // resubmit; an idea already in Council planning stays there. Each step reads the kill switch and
 // dry run as every runner step does, and is taken once per submission and answer.
+//
+// The Council accepts a non-product plan itself (D-307, O-96). Every plan now carries the
+// Council's call on whether Didi is needed (`needsDidi`: `yes`, `no` or `unsure`, with a reason,
+// the rule of D-247 and the Council's instructions). A plan comes from one of two places: the
+// planning chat's submission (the chat is the Council talking with Didi, so `POST /plans`
+// requires the call), or the Council's planning answer on an idea the Scanner filed
+// (src/core/council.ts, question kind `plan`), which the runner records as a `council_decision`
+// with `scope.kind` `plan_proposal` on the topic `council-plan:<idea id>`, its product direction
+// as a `product_direction` decision by `council`. The idea's latest plan (`latestPlan`) is the
+// newer of the two. When its call is `no`, and Didi was never asked about a plan for the idea, the
+// runner takes the runner-only move into Plan accepted guarded by `council_plan_accepted` and
+// records `plan_accepted` with `acceptedBy` `council` and the Council's reason, without a request
+// for Didi; Triage then starts as before and the daily check lists it. Any other call (`yes`,
+// `unsure`, or a submission recorded before D-307 with no call) goes to Didi as above, and
+// Didi's Approve records `plan_accepted` with `acceptedBy` `didi`. A `plan_accepted` with no
+// `acceptedBy` was recorded before D-307 and reads as Didi's (`planAcceptedBy`).
 import type { Contracts, GuardRegistry } from "./contracts.ts";
 import { latest } from "./guards/evidence.ts";
 import {
@@ -62,9 +78,38 @@ export const planApprovalTopic = (ideaId: string): string =>
 /** The gate kind of a plan-approval request: Didi's scope call (spec section 5). */
 export const PLAN_APPROVAL_KIND: GateKind = "scope";
 
-/** The fixed question on every plan-approval request. */
+/** The fixed question on every plan-approval request for a plan the planning chat submitted. */
 export const PLAN_APPROVAL_QUESTION =
   "The planning chat submitted this plan. Approve to accept it and start Triage; Request changes or Reject, with feedback, to send it back to planning.";
+
+/** The fixed question on a plan-approval request for a plan a Council run wrote (D-307). */
+export const COUNCIL_PLAN_APPROVAL_QUESTION =
+  "The Council wrote this plan for an idea the Scanner filed and says Didi is needed. Approve to accept it and start Triage; Request changes or Reject, with feedback, to send it back to planning.";
+
+/** The topic of the Council's planning question on a scanner idea, and its answer (D-307). */
+export const COUNCIL_PLAN_PREFIX = "council-plan:";
+export const councilPlanTopic = (ideaId: string): string =>
+  `${COUNCIL_PLAN_PREFIX}${ideaId}`;
+
+/** The `scope.kind` of the Council's recorded planning answer (D-307). */
+export const PLAN_PROPOSAL_KIND = "plan_proposal";
+
+/** The guards of the two ways into Plan accepted: Didi's approval, and the Council's (D-307). */
+export const DIDI_ACCEPT_GUARD = "plan_approval_recorded";
+export const COUNCIL_ACCEPT_GUARD = "council_plan_accepted";
+
+/** The Council's call on whether Didi is needed for a plan (D-247, D-307). */
+export const NEEDS_DIDI_CALLS = ["yes", "no", "unsure"] as const;
+export type NeedsDidiCall = (typeof NEEDS_DIDI_CALLS)[number];
+
+export interface NeedsDidi {
+  needed: NeedsDidiCall;
+  /** Why, in the Council's words, kept exactly as given. */
+  reason: string;
+}
+
+/** Who accepted a plan (D-307, D-308 reads it to decide who may cancel). */
+export type PlanAcceptedBy = "didi" | "council";
 
 /** The submission's marker in its `agent_report` payload. */
 export const PLAN_SUBMISSION_KIND = "plan_submission";
@@ -78,6 +123,8 @@ export const PLAN_LIMITS = {
   answers: 30,
   questionChars: 1_000,
   answerChars: 4_000,
+  /** The reason given with the Council's call on whether Didi is needed (D-307). */
+  needsDidiReasonChars: 2_000,
 } as const;
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
@@ -96,6 +143,8 @@ export interface PlanSubmission {
   plan: string;
   productDirection: string;
   answers: PlanAnswer[];
+  /** The Council's call on whether Didi is needed, with its reason (D-307). */
+  needsDidi: NeedsDidi;
 }
 
 const FIELDS = new Set([
@@ -105,6 +154,7 @@ const FIELDS = new Set([
   "plan",
   "productDirection",
   "answers",
+  "needsDidi",
 ]);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -115,6 +165,31 @@ const textWithin = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.trim() !== "" && value.length <= max
     ? value
     : null;
+
+/**
+ * Checks the Council's call on whether Didi is needed: exactly `needed` (`yes`, `no` or
+ * `unsure`) and a non-blank `reason` of at most `needsDidiReasonChars`. Returns the call, or the
+ * problem as a fixed sentence naming the field `at`, never its value (D-307).
+ */
+export function readNeedsDidi(
+  value: unknown,
+  at: string,
+): { needsDidi: NeedsDidi } | { problem: string } {
+  const max = PLAN_LIMITS.needsDidiReasonChars;
+  const problem = `${at} must have exactly needed (yes, no or unsure) and a non-blank reason of at most ${max} characters`;
+  if (!isObject(value)) return { problem };
+  if (Object.keys(value).sort().join(",") !== "needed,reason") return { problem };
+  const { needed } = value;
+  const reason = textWithin(value.reason, max);
+  if (
+    typeof needed !== "string" ||
+    !(NEEDS_DIDI_CALLS as readonly string[]).includes(needed) ||
+    reason === null
+  ) {
+    return { problem };
+  }
+  return { needsDidi: { needed: needed as NeedsDidiCall, reason } };
+}
 
 /**
  * Checks a submission's body. Returns the submission, or the first problem as a fixed sentence
@@ -177,8 +252,18 @@ export function readPlanSubmission(
     }
     answers.push({ question, answer });
   }
+  const call = readNeedsDidi(body.needsDidi, "needsDidi");
+  if ("problem" in call) return call;
   return {
-    submission: { projectSlug: slug, ideaId, title, plan, productDirection, answers },
+    submission: {
+      projectSlug: slug,
+      ideaId,
+      title,
+      plan,
+      productDirection,
+      answers,
+      needsDidi: call.needsDidi,
+    },
   };
 }
 
@@ -210,6 +295,97 @@ export async function latestSubmission(
       isPlanSubmission,
     ),
   );
+}
+
+/** One plan for an idea, from the planning chat or from a Council run (D-307). */
+export interface PlanCandidate {
+  /** The submission's evidence id, or the Council's planning decision id. */
+  id: string;
+  source: "planning_chat" | "council_run";
+  title: string | null;
+  plan: string;
+  productDirection: string;
+  answers: Json;
+  /** Null for a submission recorded before D-307 with no call: it goes to Didi. */
+  needsDidi: NeedsDidi | null;
+  recordedAt: Date;
+}
+
+const storedCall = (value: unknown): NeedsDidi | null => {
+  const read = readNeedsDidi(value, "needsDidi");
+  return "needsDidi" in read ? read.needsDidi : null;
+};
+
+/** The Council's recorded planning answer on the idea (D-307). */
+export function isPlanProposal(decision: Decision, ideaId: string): boolean {
+  return (
+    decision.kind === "council_decision" &&
+    decision.nodeId === ideaId &&
+    decision.byActor === "council" &&
+    isObject(decision.scope) &&
+    decision.scope.kind === PLAN_PROPOSAL_KIND &&
+    decision.scope.topicKey === councilPlanTopic(ideaId)
+  );
+}
+
+function fromSubmission(evidence: Evidence): PlanCandidate {
+  const sent: Record<string, Json> = isObject(evidence.payload)
+    ? (evidence.payload as Record<string, Json>)
+    : {};
+  return {
+    id: evidence.id,
+    source: "planning_chat",
+    title: typeof sent.title === "string" ? sent.title : null,
+    plan: typeof sent.plan === "string" ? sent.plan : "",
+    productDirection:
+      typeof sent.productDirection === "string" ? sent.productDirection : "",
+    answers: sent.answers ?? [],
+    needsDidi: storedCall(sent.needsDidi),
+    recordedAt: evidence.recordedAt,
+  };
+}
+
+function fromProposal(decision: Decision): PlanCandidate {
+  const scope = decision.scope as Record<string, Json>;
+  return {
+    id: decision.id,
+    source: "council_run",
+    title: null,
+    plan: decision.textVerbatim,
+    productDirection:
+      typeof scope.productDirection === "string" ? scope.productDirection : "",
+    answers: [],
+    needsDidi: storedCall(scope.needsDidi),
+    recordedAt: decision.recordedAt,
+  };
+}
+
+/**
+ * The idea's latest plan: the newer of its latest planning-chat submission and the Council's
+ * latest active planning answer on it, the submission on a tie (D-307).
+ */
+export async function latestPlan(
+  store: Pick<StoreOps, "listEvidence" | "listDecisionsForNode">,
+  ideaId: string,
+): Promise<PlanCandidate | undefined> {
+  const submission = await latestSubmission(store, ideaId);
+  const proposal = latest(
+    (await store.listDecisionsForNode(ideaId)).filter(
+      (d) => d.status === "active" && isPlanProposal(d, ideaId),
+    ),
+  );
+  if (!proposal) return submission ? fromSubmission(submission) : undefined;
+  if (!submission) return fromProposal(proposal);
+  return proposal.recordedAt.getTime() > submission.recordedAt.getTime()
+    ? fromProposal(proposal)
+    : fromSubmission(submission);
+}
+
+/** Who accepted a `plan_accepted` decision: the Council only when it says so (D-307). */
+export function planAcceptedBy(decision: Pick<Decision, "scope">): PlanAcceptedBy {
+  return isObject(decision.scope) && decision.scope.acceptedBy === "council"
+    ? "council"
+    : "didi";
 }
 
 /** The newest request on the idea's plan-approval topic, whatever its status. */
@@ -319,6 +495,7 @@ export function createPlanSubmissions(options: PlanSubmissionOptions) {
             plan: submission.plan,
             productDirection: submission.productDirection,
             answers: submission.answers as unknown as Json,
+            needsDidi: submission.needsDidi as unknown as Json,
             directionDecisionId: direction.id,
             answerDecisionIds: answerIds,
           },
@@ -341,7 +518,8 @@ export type PlanApprovalStep =
     }
   | {
       ideaId: string;
-      step: "accepted" | "returned";
+      /** `council_accepted`: the Council accepted the plan itself, with no request (D-307). */
+      step: "accepted" | "returned" | "council_accepted";
       move: { outcome: TransitionOutcome; reason?: string };
     }
   | {
@@ -369,13 +547,17 @@ const ACTOR = { kind: "runner" as const, id: "plan_approval" };
 /** The triggers of the two moves, keyed by Didi's answer, so each is taken once. */
 export const PLAN_APPROVED_TRIGGER = "plan_approved:";
 export const PLAN_RETURNED_TRIGGER = "plan_returned:";
+/** The trigger of the Council's own acceptance, keyed by the plan it accepted (D-307). */
+export const COUNCIL_ACCEPTED_TRIGGER = "council_plan_accepted:";
 
 /** The runner's side: the request, and the moves on Didi's answer (D-266). */
 export function createPlanApprovals(options: PlanApprovalOptions) {
   const { store, ids, clock } = options;
   const library = createLibrary(options);
 
-  async function stopped(tx: StoreOps): Promise<"kill_switch" | "dry_run" | null> {
+  async function stopped(
+    tx: Pick<StoreOps, "getSetting">,
+  ): Promise<"kill_switch" | "dry_run" | null> {
     if ((await tx.getSetting("kill_switch"))?.value === true) return "kill_switch";
     if ((await tx.getSetting("dry_run"))?.value !== false) return "dry_run";
     return null;
@@ -391,15 +573,12 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
       if (!SUBMITTABLE_STATES.includes(idea.state)) {
         return { ideaId, step: "not_planning" };
       }
-      const submission = await latestSubmission(tx, idea.id);
-      if (!submission) return { ideaId, step: "no_submission" };
+      const plan = await latestPlan(tx, idea.id);
+      if (!plan) return { ideaId, step: "no_submission" };
       const newest = await newestPlanRequest(tx, idea);
-      if (newest && requestSubmissionId(newest) === submission.id) {
+      if (newest && requestSubmissionId(newest) === plan.id) {
         return { ideaId, step: "waiting" };
       }
-      const sent: Record<string, Json> = isObject(submission.payload)
-        ? (submission.payload as Record<string, Json>)
-        : {};
       const request = await library.openGateRequestWith(tx, {
         projectId: idea.projectId,
         nodeId: idea.id,
@@ -408,13 +587,18 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
         owner: "didi",
         blocking: true,
         payload: {
-          question: PLAN_APPROVAL_QUESTION,
-          title: sent.title ?? idea.title,
-          plan: sent.plan ?? "",
-          productDirection: sent.productDirection ?? "",
-          answers: sent.answers ?? [],
+          question:
+            plan.source === "council_run"
+              ? COUNCIL_PLAN_APPROVAL_QUESTION
+              : PLAN_APPROVAL_QUESTION,
+          title: plan.title ?? idea.title,
+          plan: plan.plan,
+          productDirection: plan.productDirection,
+          answers: plan.answers,
           ideaId: idea.id,
-          submissionId: submission.id,
+          submissionId: plan.id,
+          source: plan.source,
+          needsDidi: (plan.needsDidi as unknown as Json) ?? null,
         },
       });
       return { ideaId, step: "opened", gateRequestId: request.id };
@@ -431,6 +615,7 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
         trigger: { kind: "event", ref: `${PLAN_APPROVED_TRIGGER}${answer.id}` },
         actor: ACTOR,
         runnerOnly: true,
+        guardedBy: DIDI_ACCEPT_GUARD,
         reason: "Didi approved the plan",
       },
       async (tx) => {
@@ -447,6 +632,7 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
             approvalDecisionId: answer.id,
             submissionId: requestSubmissionId(request) as Json,
             recordedBy: "runner",
+            acceptedBy: "didi",
           },
           textVerbatim: plan,
           byActor: "council",
@@ -457,8 +643,57 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
     );
   }
 
+  /**
+   * The Council accepts the plan itself (D-307): the runner-only move into Plan accepted guarded
+   * by `council_plan_accepted`, with `plan_accepted` recorded in its transaction, `acceptedBy`
+   * `council` and the Council's reason, and no request for Didi. The trigger names the plan, so
+   * it is taken once.
+   */
+  async function councilAccept(idea: Node, plan: PlanCandidate) {
+    return library.requestTransitionOnce(
+      {
+        nodeId: idea.id,
+        toState: PLAN_ACCEPTED_STATE,
+        trigger: { kind: "event", ref: `${COUNCIL_ACCEPTED_TRIGGER}${plan.id}` },
+        actor: ACTOR,
+        runnerOnly: true,
+        guardedBy: COUNCIL_ACCEPT_GUARD,
+        reason: "The Council accepted the plan: Didi is not needed",
+      },
+      async (tx) => {
+        // The guard read the plan before the transaction; a newer one since then waits.
+        if ((await latestPlan(tx, idea.id))?.id !== plan.id) {
+          return "a newer plan was recorded";
+        }
+        await tx.insertDecision({
+          id: ids.next(),
+          projectId: idea.projectId,
+          nodeId: idea.id,
+          kind: "council_decision",
+          scope: {
+            kind: "plan_accepted",
+            submissionId: plan.id,
+            source: plan.source,
+            recordedBy: "runner",
+            acceptedBy: "council",
+            needsDidiReason: plan.needsDidi?.reason ?? "",
+          },
+          textVerbatim: plan.plan,
+          byActor: "council",
+          recordedAt: clock.now(),
+        });
+        return null;
+      },
+    );
+  }
+
+  const moveOf = (move: { outcome: TransitionOutcome; reason?: string }) => ({
+    outcome: move.outcome,
+    ...(move.reason ? { reason: move.reason } : {}),
+  });
+
   return {
-    /** Ideas in Submitted or Council planning with a submission: the ones the pass looks at. */
+    /** Ideas in Submitted or Council planning with a plan: the ones the pass looks at. */
     async pending(): Promise<string[]> {
       const ideas = [
         ...(await store.listNodes({ state: SUBMITTED_STATE })),
@@ -466,14 +701,15 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
       ].filter((n) => n.type === "idea");
       const due: string[] = [];
       for (const idea of ideas) {
-        if (await latestSubmission(store, idea.id)) due.push(idea.id);
+        if (await latestPlan(store, idea.id)) due.push(idea.id);
       }
       return due;
     },
 
     /**
-     * One step for the idea: open the request for a new submission, or take the move Didi's
-     * answer on the latest one calls for. Repeating it writes nothing more.
+     * One step for the idea: the Council's own acceptance of a plan that needs no Didi (D-307),
+     * or open the request for a new plan, or take the move Didi's answer on the latest one calls
+     * for. Repeating it writes nothing more.
      */
     async step(ideaId: string): Promise<PlanApprovalStep> {
       const idea = await store.getNode(ideaId);
@@ -481,10 +717,20 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
       if (!SUBMITTABLE_STATES.includes(idea.state)) {
         return { ideaId, step: "not_planning" };
       }
-      const submission = await latestSubmission(store, idea.id);
-      if (!submission) return { ideaId, step: "no_submission" };
+      const plan = await latestPlan(store, idea.id);
+      if (!plan) return { ideaId, step: "no_submission" };
       const newest = await newestPlanRequest(store, idea);
-      if (!newest || requestSubmissionId(newest) !== submission.id) return open(ideaId);
+      // Didi not needed, and never asked about a plan for this idea: the Council accepts.
+      if (!newest && plan.needsDidi?.needed === "no") {
+        const stop = await stopped(store);
+        if (stop) return { ideaId, step: stop };
+        return {
+          ideaId,
+          step: "council_accepted",
+          move: moveOf(await councilAccept(idea, plan)),
+        };
+      }
+      if (!newest || requestSubmissionId(newest) !== plan.id) return open(ideaId);
       if (newest.status === "open") return { ideaId, step: "waiting" };
       if (newest.status !== "answered" || !newest.decisionId) {
         // Expired or cancelled with no answer: reopening is the gate lifecycle (M4.1).
@@ -495,14 +741,10 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
         return { ideaId, step: "closed_unanswered" };
       }
       if (answer.kind === "approval") {
-        const move = await accept(idea, newest, answer);
         return {
           ideaId,
           step: "accepted",
-          move: {
-            outcome: move.outcome,
-            ...(move.reason ? { reason: move.reason } : {}),
-          },
+          move: moveOf(await accept(idea, newest, answer)),
         };
       }
       if (idea.state !== SUBMITTED_STATE) return { ideaId, step: "kept_in_planning" };
@@ -514,14 +756,7 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
         runnerOnly: true,
         reason: "Didi sent the plan back to planning",
       });
-      return {
-        ideaId,
-        step: "returned",
-        move: {
-          outcome: move.outcome,
-          ...(move.reason ? { reason: move.reason } : {}),
-        },
-      };
+      return { ideaId, step: "returned", move: moveOf(move) };
     },
   };
 }

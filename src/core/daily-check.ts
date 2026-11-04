@@ -50,6 +50,10 @@
 //   alert: D-112's alert after an hour waits for delivery (M4.3). A failing `no_pending_gate`
 //   guard is named without its note, since the note names topic keys (see below); the request
 //   itself shows under questions when it is Didi's.
+// - councilAccepted: the plans the Council accepted itself in the window (D-307, O-96): every
+//   `plan_accepted` recorded on one of the project's ideas with `acceptedBy` `council`, with the
+//   idea, the plan's first line and the Council's reason why Didi was not needed, both quoted as
+//   data. Didi-approved plans are not listed here: Didi saw each one on a request.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
@@ -64,6 +68,7 @@ import {
   type HeldItemWithRequest,
 } from "./held-items.ts";
 import type { Clock } from "./library.ts";
+import { planAcceptedBy } from "./plans.ts";
 import { SCAN_CHECKS, type ScanCheckId } from "./scan.ts";
 import {
   readScanFailure,
@@ -123,6 +128,7 @@ export type DailyCheckStore = Pick<
   | "listRuns"
   | "getSetting"
   | "getLatestScan"
+  | "listDecisionsForNode"
 >;
 
 /**
@@ -254,6 +260,33 @@ export interface StalledSection {
   runs: StalledRunEntry[];
 }
 
+/** A plan the Council accepted itself, with no request for Didi (D-307). */
+export interface CouncilAcceptedPlan {
+  /** The idea. Its title is recorded text, as data. */
+  nodeId: string;
+  title: string;
+  acceptedAt: Date;
+  /** The plan's first non-blank line, cut to `PLAN_FIRST_LINE_CHARS`, as data. */
+  planFirstLine: string;
+  /** The Council's reason why Didi was not needed, as data. */
+  reason: string;
+}
+
+/** How much of a plan's first line the check shows. */
+export const PLAN_FIRST_LINE_CHARS = 200;
+
+/** A plan's first non-blank line, trimmed and cut, saying so. */
+export function planFirstLine(plan: string): string {
+  const line =
+    plan
+      .split(/\r?\n/)
+      .find((l) => l.trim() !== "")
+      ?.trim() ?? "";
+  return line.length <= PLAN_FIRST_LINE_CHARS
+    ? line
+    : `${line.slice(0, PLAN_FIRST_LINE_CHARS)} [cut at ${PLAN_FIRST_LINE_CHARS} characters]`;
+}
+
 export const NO_SCAN_YET =
   "No scan is recorded yet. The Scanner's stage 1 runs once a day before this check, once the runner App is registered and dry run is off.";
 
@@ -272,6 +305,8 @@ export interface ProjectCheck {
   spend: SpendSection;
   scan: ScanSection;
   stalled: StalledSection;
+  /** Plans the Council accepted itself in the window, oldest first (D-307). */
+  councilAccepted: CouncilAcceptedPlan[];
 }
 
 export interface DailyCheck {
@@ -591,6 +626,39 @@ export async function generateDailyCheck(
       runsActive: runs.filter((r) => r.endedAt === null).length,
     };
 
+    const councilAccepted: CouncilAcceptedPlan[] = [];
+    for (const node of projectNodes) {
+      if (node.type !== "idea") continue;
+      for (const d of await store.listDecisionsForNode(node.id)) {
+        const scope = d.scope;
+        if (
+          d.kind !== "council_decision" ||
+          d.nodeId !== node.id ||
+          typeof scope !== "object" ||
+          scope === null ||
+          Array.isArray(scope) ||
+          scope.kind !== "plan_accepted" ||
+          planAcceptedBy(d) !== "council" ||
+          !inWindow(d.recordedAt, from, to)
+        ) {
+          continue;
+        }
+        councilAccepted.push({
+          nodeId: node.id,
+          title: node.title,
+          acceptedAt: d.recordedAt,
+          planFirstLine: planFirstLine(d.textVerbatim),
+          reason:
+            typeof scope.needsDidiReason === "string" ? scope.needsDidiReason : "",
+        });
+      }
+    }
+    councilAccepted.sort(
+      (a, b) =>
+        a.acceptedAt.getTime() - b.acceptedAt.getTime() ||
+        a.nodeId.localeCompare(b.nodeId),
+    );
+
     const blockingGateNodes = new Set(
       openGates.filter((g) => g.blocking && g.nodeId !== null).map((g) => g.nodeId),
     );
@@ -628,6 +696,7 @@ export async function generateDailyCheck(
             title: r.nodeId ? (nodeById.get(r.nodeId)?.title ?? null) : null,
           })),
       },
+      councilAccepted,
     };
     const quiet =
       waitingItems === 0 &&
@@ -646,7 +715,8 @@ export async function generateDailyCheck(
       check.scan.askedCouncil.length === 0 &&
       check.scan.outcome !== "failed" &&
       check.stalled.items.length === 0 &&
-      check.stalled.runs.length === 0;
+      check.stalled.runs.length === 0 &&
+      councilAccepted.length === 0;
     if (quiet) quietProjects.push(project.slug);
     else projects.push(check);
   }
@@ -741,6 +811,13 @@ function renderProject(p: ProjectCheck, to: Date): string[] {
           : "") +
         `, waiting ${duration(q.waitingForMinutes)} (request ${q.gateRequestId})` +
         (q.question !== null ? `: ${quote(q.question)}` : ""),
+    ),
+  );
+  lines.push(
+    `Accepted by the Council (${p.councilAccepted.length}):`,
+    ...p.councilAccepted.map(
+      (a) =>
+        `- ${quote(a.title)} (item ${a.nodeId}), ${when(a.acceptedAt)}. Plan: ${quote(a.planFirstLine)}. Why Didi was not needed: ${quote(a.reason)}`,
     ),
   );
   lines.push(

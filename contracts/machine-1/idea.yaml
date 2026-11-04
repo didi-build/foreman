@@ -17,6 +17,14 @@
 # Submitted to Rejected, is runner_only: only the scan's filing step takes it
 # (src/core/scan-ideas.ts), guarded by scanner_finding_gone, with the trigger naming the scan.
 #
+# The Council accepts a non-product plan itself (D-307): when the idea's latest plan, from the
+# planning chat or from the Council's planning run on a scanner idea, carries the Council's call
+# that Didi is not needed, and Didi was never asked about a plan for the idea, the plan approval
+# step takes a second way into Plan accepted, from Submitted or from Council planning, guarded by
+# council_plan_accepted, and records plan_accepted with acceptedBy council in its transaction.
+# These two moves share their states with Didi's approval moves; the contracts allow that only
+# for runner-only moves with different guards, and the step names the guard of the way it takes.
+#
 # Triage to Handed off is runner_only: only the Triage handoff step applies it, in the one
 # transaction that creates the work items from Triage's checked answer (src/core/triage.ts).
 # An idea in Triage escalates through escalation.yaml's `from: any` move, like any node.
@@ -32,7 +40,7 @@ states:
     purpose: Log a new idea, from Didi, a bot's finding or the Scanner.
     input: A title and a body.
     output: The idea, logged.
-    evidence_to_exit: Didi's answer to the planning chat's plan (D-266). The move to Interview is not built.
+    evidence_to_exit: Didi's answer to the latest plan (D-266), or the Council's call that Didi is not needed (D-307). The move to Interview is not built.
     tools: None.
     budget: not set
     side_effects: None.
@@ -152,6 +160,24 @@ transitions:
     evidence: []
     timeout: None. The request shows again in each daily check.
     fallback: Stays in Council planning until Didi answers the request for the latest plan.
+
+  - from: submitted
+    to: plan_accepted
+    trigger: The Council accepts the plan itself, with its call that Didi is not needed (D-307). The runner records plan_accepted with acceptedBy council in the same transaction.
+    guards: [council_plan_accepted]
+    runner_only: true
+    evidence: []
+    timeout: None.
+    fallback: Stays in Submitted. A plan whose call is yes or unsure goes to Didi's plan-approval request instead.
+
+  - from: council_planning
+    to: plan_accepted
+    trigger: The Council accepts the plan the planning chat submitted again, with its call that Didi is not needed (D-307). The runner records plan_accepted with acceptedBy council in the same transaction.
+    guards: [council_plan_accepted]
+    runner_only: true
+    evidence: []
+    timeout: None.
+    fallback: Stays in Council planning. A plan whose call is yes or unsure goes to Didi's plan-approval request instead.
 
   - from: submitted
     to: council_planning

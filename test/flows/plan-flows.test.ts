@@ -26,6 +26,11 @@ import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
 
 const DIRECTION = "Settings stay on one page. No account changes.";
 const ANSWERS = [{ question: "One page or two?", answer: "One page." }];
+/** The settings page is a new feature, so the Council says Didi is needed (D-307). */
+const NEEDS_DIDI = {
+  needed: "yes" as const,
+  reason: "It adds a settings page, a new feature.",
+};
 
 function ticking(f: FlowFixture) {
   const read = f.clock.now;
@@ -56,6 +61,7 @@ async function submit(
     plan: PLAN,
     productDirection: DIRECTION,
     answers: ANSWERS,
+    needsDidi: NEEDS_DIDI,
     ...change,
   });
   if (!recorded.recorded) throw new Error(`not recorded: ${recorded.reason}`);
