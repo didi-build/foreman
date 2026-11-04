@@ -69,9 +69,9 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     }
   });
 
-  it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes", () => {
+  it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes, and the daily check", () => {
     const scheduled = description.flows.filter((f) => f.trigger === "schedule");
-    expect(scheduled.map((f) => f.name)).toEqual(["reconcile"]);
+    expect(scheduled.map((f) => f.name)).toEqual(["reconcile", "daily_check"]);
     const seed = /\('reconcile_interval_minutes', '(\d+)'/.exec(
       readFileSync("db/migrations/0001_factory_schema.sql", "utf8"),
     );
@@ -144,6 +144,26 @@ describe("the plan-approval flow (unit: repo guard, D-273)", () => {
     expect(flow?.path).toBe(PLAN_APPROVAL_FLOW_PATH);
     expect(flow?.trigger).toBe("called");
     expect(flow?.entry).toBe("flows/plan-approval.ts");
+  });
+});
+
+describe("the daily check flow (unit: repo guard, M4.4, O-91)", () => {
+  it("runs once a day, so it stays within the free plan's run budget (D-164)", () => {
+    const flow = description.flows.find((f) => f.name === "daily_check");
+    expect(flow?.path).toBe("f/foreman/daily_check");
+    expect(flow?.entry).toBe("flows/daily-check.ts");
+    expect(flow?.trigger).toBe("schedule");
+    expect(flow?.schedule).toEqual({
+      every_minutes: 24 * 60,
+      cron: "0 0 6 * * *",
+      timezone: "UTC",
+    });
+    // Reconcile every 2 hours (about 360 runs in a 30-day month) plus one daily check (30)
+    // leaves most of the 1,000 for event-triggered runs and the nightly backup (D-164).
+    const monthly = description.flows
+      .filter((f) => f.schedule)
+      .reduce((sum, f) => sum + (30 * 24 * 60) / (f.schedule?.every_minutes ?? 1), 0);
+    expect(monthly).toBe(360 + 30);
   });
 });
 

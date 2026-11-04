@@ -46,6 +46,29 @@ export interface HeldItem {
   lastNote: HeldItemNote | null;
 }
 
+/**
+ * How Didi asks for a fresh release request for one held item (O-90, D-295): the Windmill path of
+ * the called flow and the input to start it with. A path, not a URL. Nothing starts it on its own.
+ */
+export interface FreshReleaseRequest<Flow extends string = string> {
+  flow: Flow;
+  input: { nodeId: string };
+}
+
+export interface HeldItemWithRequest<Flow extends string = string> extends HeldItem {
+  freshRequest: FreshReleaseRequest<Flow>;
+}
+
+/** Each held item with the flow that opens a fresh release request for it. */
+export const withFreshRequest = <Flow extends string>(
+  items: readonly HeldItem[],
+  flow: Flow,
+): HeldItemWithRequest<Flow>[] =>
+  items.map((item) => ({
+    ...item,
+    freshRequest: { flow, input: { nodeId: item.nodeId } },
+  }));
+
 const MINUTE_MS = 60_000;
 
 const fieldOf = (value: Json | undefined, key: string): Json | undefined =>

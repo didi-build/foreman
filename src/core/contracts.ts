@@ -60,6 +60,20 @@ export interface Contracts {
   transitions: TransitionContract[];
 }
 
+/**
+ * A state with no way out except escalation: Done, or an idea's end. Read from the contracts, so
+ * no caller names the state (essential 7). The reconcile pass and the daily check use it.
+ */
+export function isTerminalState(contracts: Contracts, state: string): boolean {
+  const escalated = Object.hasOwn(contracts.states, state)
+    ? contracts.states[state]?.escalated === true
+    : false;
+  return (
+    !escalated &&
+    !contracts.transitions.some((move) => !move.escalation && move.from === state)
+  );
+}
+
 export interface GuardCheck {
   name: string;
   pass: boolean;

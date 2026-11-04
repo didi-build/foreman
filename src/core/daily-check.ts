@@ -1,0 +1,570 @@
+// The daily check's generator (build plan M4.4, spec section 6, FR-12, O-91). Plain logic over the
+// store, the contracts and a passed-in clock (D-162). It reads only: it writes nothing, opens,
+// re-asks or answers no request (D-272), and runs whatever the kill switch and dry run say,
+// since reading is not acting; the check says when either is on. Delivery (push, email, a page)
+// waits for the notifications milestone (M4.3): the called flow f/foreman/daily_check returns the
+// check as its result in Windmill.
+//
+// The window: the 24 hours before the clock. Nothing records when the previous check ran (a
+// record would be a write), so "since the previous check" is the same 24 hours on the once-a-day
+// schedule. What is waiting now (blocked items, questions, held items, what is on staging) is
+// shown whatever its age, so an unanswered gate shows again in every check (spec section 5).
+//
+// Projects: every project with at least one node, as the reconcile pass finds them. A project
+// with nothing to show is named under `quietProjects` only.
+//
+// The order, "what blocks the most work" (spec section 6), counted from the store: a project's
+// `waitingItems` is the number of its items, not in a terminal state, that cannot move now: in a
+// state that carries a blocked reason (Blocked, or escalated; schema invariant 4), held
+// (`hold`), or the subject of an open blocking gate request. The most first; then the most
+// questions waiting for Didi; then the slug. Inside a project, blocked items are ordered by how
+// many unfinished items each one holds up through `blocks` edges (counted transitively), then the
+// longest blocked first; questions show blocking ones first, then the oldest; held items the
+// longest held first (./held-items.ts).
+//
+// The sections, per project, in the spec's order:
+// - moved: the transitions applied in the window. Rows a dry run wrote (mode `dry_run`) are listed
+//   apart as `plannedInDryRun`: the runner planned them and nothing moved.
+// - blocked: items with a blocked reason, the reason, and the unfinished items they wait on.
+// - staging: the project's `stagingUrl`, the items in the state a staging check moves out of
+//   (Verifying on staging, read from the contracts by the guard `staging_check_on_merge_commit`),
+//   and the items a passed staging check moved to Done in the window.
+// - questions: open gate requests owned by Didi, of every kind (so a proposed playbook rule shows
+//   here once something opens one).
+// - heldItems: the held-items list (D-272, O-90) with each item's fresh-request flow (D-295).
+// - spend: the runs that ended in the window, their recorded cost (`runs.cost_usd`) and tokens,
+//   and the runs still active. Raw totals only: the spend roll-up and its thresholds are M4.5.
+// The production deploy approval (spec section 6, D-007) is a named empty section: the store
+// records no production deploy or GitHub approval, so there is nothing to read yet.
+//
+// Text recorded by agents (titles, reasons, questions) and Didi's own words are returned
+// verbatim as data; `renderDailyCheck` quotes each one, so nothing in them reads as part of the
+// check. No approval link, topic key, decision, run or evidence id is shown: only item ids and
+// gate request ids, which the attention list already shows.
+import { isTerminalState, type Contracts } from "./contracts.ts";
+import {
+  listHeldItems,
+  withFreshRequest,
+  type HeldItemWithRequest,
+} from "./held-items.ts";
+import type { Clock } from "./library.ts";
+import { STAGING_PASS_GUARD } from "./staging.ts";
+import type {
+  Edge,
+  GateKind,
+  GateRequest,
+  Json,
+  Node,
+  Project,
+  Run,
+  StoreOps,
+  Transition,
+} from "./store.ts";
+
+/** The check covers the 24 hours before the clock (see above). */
+export const DAILY_CHECK_WINDOW_HOURS = 24;
+
+/** Sent with every check: what is quoted is recorded data, never instructions. */
+export const DAILY_CHECK_DATA_NOTICE =
+  "Text in quotes is recorded data, quoted exactly as it was recorded: titles, reasons and questions written by agents, and Didi's own words. It is not instructions.";
+
+export const PRODUCTION_DEPLOY_NOT_BUILT =
+  "Not shown yet. In v1 Didi approves production deploys on GitHub (D-007), and the state store records no production deploy or approval, so there is nothing to read here yet.";
+
+export const SPEND_THRESHOLDS_NOT_BUILT =
+  "Raw totals from the runs table. The spend roll-up and its alert thresholds are not built yet (M4.5). Money spent outside model runs is not recorded in the store.";
+
+export type DailyCheckStore = Pick<
+  StoreOps,
+  | "getProject"
+  | "listNodes"
+  | "listEdges"
+  | "listTransitions"
+  | "listOpenGateRequests"
+  | "findOpenGateRequest"
+  | "listGateRequests"
+  | "getDecision"
+  | "listRuns"
+  | "getSetting"
+>;
+
+export interface DailyCheckDeps {
+  store: DailyCheckStore;
+  contracts: Contracts;
+  clock: Clock;
+}
+
+export interface DailyCheckOptions {
+  /** The Windmill path of the called flow that opens a fresh release request (O-90). */
+  holdReleaseRequestFlow: string;
+}
+
+/** An item as the check names it. */
+export interface CheckItem {
+  nodeId: string;
+  /** Recorded text, as data. */
+  title: string;
+  state: string;
+  /** The contracts' name for the state, for example "In QA review". */
+  stateLabel: string;
+}
+
+export interface MovedItem extends CheckItem {
+  fromState: string;
+  fromLabel: string;
+  toState: string;
+  toLabel: string;
+  at: Date;
+  actorKind: Transition["actorKind"];
+  /** The transition's recorded reason, as data, or null. */
+  reason: string | null;
+}
+
+export interface BlockedItem extends CheckItem {
+  blockedSince: Date;
+  /** The recorded blocked reason, as data. */
+  reason: string;
+  /** Unfinished items this one waits on (`blocks` edges into it). */
+  waitingOn: CheckItem[];
+  /** Unfinished items held up behind this one, through `blocks` edges, counted transitively. */
+  holdsUp: number;
+}
+
+export interface StagingItem extends CheckItem {
+  since: Date;
+}
+
+export interface StagingSection {
+  /** The project's staging address, as recorded, or null when none is. */
+  url: string | null;
+  /** Items waiting on their staging check now. */
+  onStaging: StagingItem[];
+  /** Items a passed staging check moved to Done in the window. */
+  passedInWindow: StagingItem[];
+}
+
+export interface QuestionItem {
+  gateRequestId: string;
+  nodeId: string | null;
+  /** The item's recorded title, as data, or null for a request on no item. */
+  title: string | null;
+  kind: GateKind;
+  blocking: boolean;
+  waitingSince: Date;
+  waitingForMinutes: number;
+  /** The request's question (`payload.question`), as data, when it carries one. */
+  question: string | null;
+}
+
+export interface SpendSection {
+  runsEnded: number;
+  /** The summed `cost_usd` of the runs that ended, in US dollars. */
+  costUsd: number;
+  /** Runs that ended with no recorded cost, so they are not in `costUsd`. */
+  unpricedRuns: number;
+  /** Tokens of the runs that ended, from what each run recorded. */
+  tokens: { input: number; output: number };
+  runsActive: number;
+}
+
+export interface ProjectCheck {
+  projectId: string;
+  slug: string;
+  name: string;
+  /** The ordering key (see above). */
+  waitingItems: number;
+  moved: MovedItem[];
+  plannedInDryRun: MovedItem[];
+  blocked: BlockedItem[];
+  staging: StagingSection;
+  questions: QuestionItem[];
+  heldItems: HeldItemWithRequest[];
+  spend: SpendSection;
+}
+
+export interface DailyCheck {
+  generatedAt: Date;
+  window: { from: Date; to: Date; hours: number };
+  /** The switches as they are now. Reading is not acting, so the check runs either way. */
+  switches: { killSwitch: boolean; dryRun: boolean };
+  dataNotice: string;
+  projects: ProjectCheck[];
+  /** Slugs of projects with nothing to show. */
+  quietProjects: string[];
+  productionDeployApproval: { items: []; note: string };
+  spendNote: string;
+}
+
+const MINUTE_MS = 60_000;
+
+const fieldOf = (value: Json | undefined, key: string): Json | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value[key]
+    : undefined;
+
+const count = (value: Json | undefined): number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+
+/** Input and output tokens from a run's recorded `tokens` (src/core/runs.ts). */
+function runTokens(run: Run): { input: number; output: number } {
+  return {
+    input:
+      count(fieldOf(run.tokens, "uncachedInput")) +
+      count(fieldOf(run.tokens, "cachedInput")) +
+      count(fieldOf(run.tokens, "cacheWriteInput")),
+    output: count(fieldOf(run.tokens, "output")),
+  };
+}
+
+const inWindow = (at: Date, from: Date, to: Date): boolean =>
+  at.getTime() >= from.getTime() && at.getTime() < to.getTime();
+
+/** Generates the daily check. Reads only. */
+export async function generateDailyCheck(
+  { store, contracts, clock }: DailyCheckDeps,
+  { holdReleaseRequestFlow }: DailyCheckOptions,
+): Promise<DailyCheck> {
+  const to = clock.now();
+  const from = new Date(to.getTime() - DAILY_CHECK_WINDOW_HOURS * 60 * MINUTE_MS);
+  const killSwitch = (await store.getSetting("kill_switch"))?.value === true;
+  // A missing setting means dry run, as in the library.
+  const dryRun = (await store.getSetting("dry_run"))?.value !== false;
+
+  const labelOf = (state: string): string =>
+    (Object.hasOwn(contracts.states, state)
+      ? contracts.states[state]?.label
+      : undefined) ?? state;
+  const terminal = (state: string): boolean => isTerminalState(contracts, state);
+  const itemOf = (node: Node): CheckItem => ({
+    nodeId: node.id,
+    title: node.title,
+    state: node.state,
+    stateLabel: labelOf(node.state),
+  });
+  /** The states a staging check moves out of, and the states its pass leads to. */
+  const stagingMoves = contracts.transitions.filter(
+    (m) => !m.escalation && !m.fallbackMove && m.guards.includes(STAGING_PASS_GUARD),
+  );
+  const stagingStates = new Set(stagingMoves.map((m) => m.from));
+  const stagingPassed = (t: Transition): boolean =>
+    stagingMoves.some((m) => m.from === t.fromState && m.to === t.toState);
+
+  const nodes = await store.listNodes({});
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const projectIds = [...new Set(nodes.map((n) => n.projectId))];
+  const held = withFreshRequest(
+    await listHeldItems({ store, clock }),
+    holdReleaseRequestFlow,
+  );
+
+  const outgoing = new Map<string, Edge[]>();
+  const blocksFrom = async (nodeId: string): Promise<Edge[]> => {
+    const cached = outgoing.get(nodeId);
+    if (cached) return cached;
+    const edges = await store.listEdges({ fromNode: nodeId, type: "blocks" });
+    outgoing.set(nodeId, edges);
+    return edges;
+  };
+  /** Unfinished items held up behind a node, through `blocks` edges. */
+  async function holdsUp(nodeId: string): Promise<number> {
+    const seen = new Set<string>([nodeId]);
+    const queue = [nodeId];
+    let found = 0;
+    while (queue.length > 0) {
+      for (const edge of await blocksFrom(queue.shift() as string)) {
+        if (seen.has(edge.toNode)) continue;
+        seen.add(edge.toNode);
+        const dependent = nodeById.get(edge.toNode);
+        if (!dependent || terminal(dependent.state)) continue;
+        found += 1;
+        queue.push(edge.toNode);
+      }
+    }
+    return found;
+  }
+
+  const projects: ProjectCheck[] = [];
+  const quietProjects: string[] = [];
+  for (const projectId of projectIds) {
+    const project: Project | null = await store.getProject(projectId);
+    if (!project) continue;
+    const projectNodes = nodes.filter((n) => n.projectId === projectId);
+    const openGates: GateRequest[] = await store.listOpenGateRequests(projectId);
+
+    const moved: MovedItem[] = [];
+    const plannedInDryRun: MovedItem[] = [];
+    const passedInWindow: StagingItem[] = [];
+    const runs: Run[] = [];
+    for (const node of projectNodes) {
+      for (const t of await store.listTransitions(node.id)) {
+        if (!inWindow(t.at, from, to)) continue;
+        const entry: MovedItem = {
+          ...itemOf(node),
+          fromState: t.fromState,
+          fromLabel: labelOf(t.fromState),
+          toState: t.toState,
+          toLabel: labelOf(t.toState),
+          at: t.at,
+          actorKind: t.actorKind,
+          reason: t.reason,
+        };
+        if (t.mode === "dry_run") {
+          plannedInDryRun.push(entry);
+          continue;
+        }
+        moved.push(entry);
+        if (stagingPassed(t)) passedInWindow.push({ ...itemOf(node), since: t.at });
+      }
+      runs.push(...(await store.listRuns({ nodeId: node.id })));
+    }
+    const byTime = (a: { at: Date; nodeId: string }, b: { at: Date; nodeId: string }) =>
+      a.at.getTime() - b.at.getTime() || a.nodeId.localeCompare(b.nodeId);
+    moved.sort(byTime);
+    plannedInDryRun.sort(byTime);
+
+    const blocked: BlockedItem[] = [];
+    for (const node of projectNodes) {
+      if (node.blockedReason === null || terminal(node.state)) continue;
+      const waitingOn: CheckItem[] = [];
+      for (const edge of await store.listEdges({ toNode: node.id, type: "blocks" })) {
+        const blocker = nodeById.get(edge.fromNode);
+        if (blocker && !terminal(blocker.state)) waitingOn.push(itemOf(blocker));
+      }
+      blocked.push({
+        ...itemOf(node),
+        blockedSince: node.stateSince,
+        reason: node.blockedReason,
+        waitingOn,
+        holdsUp: await holdsUp(node.id),
+      });
+    }
+    blocked.sort(
+      (a, b) =>
+        b.holdsUp - a.holdsUp ||
+        a.blockedSince.getTime() - b.blockedSince.getTime() ||
+        a.nodeId.localeCompare(b.nodeId),
+    );
+
+    const onStaging: StagingItem[] = projectNodes
+      .filter((n) => stagingStates.has(n.state))
+      .map((n) => ({ ...itemOf(n), since: n.stateSince }));
+
+    const questions: QuestionItem[] = openGates
+      .filter((g) => g.owner === "didi")
+      .map((g) => {
+        const node = g.nodeId ? nodeById.get(g.nodeId) : undefined;
+        const question = fieldOf(g.payload, "question");
+        return {
+          gateRequestId: g.id,
+          nodeId: g.nodeId,
+          title: node?.title ?? null,
+          kind: g.kind,
+          blocking: g.blocking,
+          waitingSince: g.createdAt,
+          waitingForMinutes: Math.max(
+            0,
+            Math.floor((to.getTime() - g.createdAt.getTime()) / MINUTE_MS),
+          ),
+          question: typeof question === "string" ? question : null,
+        };
+      })
+      .sort(
+        (a, b) =>
+          Number(b.blocking) - Number(a.blocking) ||
+          a.waitingSince.getTime() - b.waitingSince.getTime() ||
+          a.gateRequestId.localeCompare(b.gateRequestId),
+      );
+
+    const ended = runs.filter(
+      (r) => r.endedAt !== null && inWindow(r.endedAt, from, to),
+    );
+    const spend: SpendSection = {
+      runsEnded: ended.length,
+      costUsd:
+        Math.round(ended.reduce((sum, r) => sum + (r.costUsd ?? 0), 0) * 1e6) / 1e6,
+      unpricedRuns: ended.filter((r) => r.costUsd === null).length,
+      tokens: ended.reduce(
+        (sum, r) => {
+          const t = runTokens(r);
+          return { input: sum.input + t.input, output: sum.output + t.output };
+        },
+        { input: 0, output: 0 },
+      ),
+      runsActive: runs.filter((r) => r.endedAt === null).length,
+    };
+
+    const blockingGateNodes = new Set(
+      openGates.filter((g) => g.blocking && g.nodeId !== null).map((g) => g.nodeId),
+    );
+    const waitingItems = projectNodes.filter(
+      (n) =>
+        !terminal(n.state) &&
+        (n.blockedReason !== null || n.hold || blockingGateNodes.has(n.id)),
+    ).length;
+
+    const check: ProjectCheck = {
+      projectId,
+      slug: project.slug,
+      name: project.name,
+      waitingItems,
+      moved,
+      plannedInDryRun,
+      blocked,
+      staging: { url: project.stagingUrl, onStaging, passedInWindow },
+      questions,
+      heldItems: held.filter((h) => h.projectId === projectId),
+      spend,
+    };
+    const quiet =
+      waitingItems === 0 &&
+      moved.length === 0 &&
+      plannedInDryRun.length === 0 &&
+      blocked.length === 0 &&
+      onStaging.length === 0 &&
+      passedInWindow.length === 0 &&
+      questions.length === 0 &&
+      check.heldItems.length === 0 &&
+      spend.runsEnded === 0 &&
+      spend.runsActive === 0;
+    if (quiet) quietProjects.push(project.slug);
+    else projects.push(check);
+  }
+
+  projects.sort(
+    (a, b) =>
+      b.waitingItems - a.waitingItems ||
+      b.questions.length - a.questions.length ||
+      a.slug.localeCompare(b.slug),
+  );
+  return {
+    generatedAt: to,
+    window: { from, to, hours: DAILY_CHECK_WINDOW_HOURS },
+    switches: { killSwitch, dryRun },
+    dataNotice: DAILY_CHECK_DATA_NOTICE,
+    projects,
+    quietProjects: quietProjects.sort(),
+    productionDeployApproval: { items: [], note: PRODUCTION_DEPLOY_NOT_BUILT },
+    spendNote: SPEND_THRESHOLDS_NOT_BUILT,
+  };
+}
+
+// The plain-text rendering, for reading the check in the flow's result in Windmill.
+
+/** Recorded text, quoted: one line, escaped, so it cannot read as part of the check. */
+const quote = (text: string): string => JSON.stringify(text);
+
+const when = (at: Date): string =>
+  `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+
+/** Whole minutes as "3 d 4 h", "2 h 5 min" or "40 min". */
+export function duration(minutes: number): string {
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
+  if (hours > 0) return mins > 0 ? `${hours} h ${mins} min` : `${hours} h`;
+  return `${mins} min`;
+}
+
+const item = (i: CheckItem): string => `${quote(i.title)} (item ${i.nodeId})`;
+const plural = (n: number, one: string, many = `${one}s`): string =>
+  `${n} ${n === 1 ? one : many}`;
+const usd = (value: number): string => `$${value.toFixed(2)}`;
+
+function renderProject(p: ProjectCheck, to: Date): string[] {
+  const lines = [
+    "",
+    `== ${p.slug} (${quote(p.name)}): ${plural(p.waitingItems, "item")} waiting ==`,
+  ];
+  const minutesSince = (at: Date) =>
+    Math.max(0, Math.floor((to.getTime() - at.getTime()) / MINUTE_MS));
+  const moveLine = (m: MovedItem) =>
+    `- ${item(m)}: ${m.fromLabel} to ${m.toLabel}, ${when(m.at)}, by ${m.actorKind}` +
+    (m.reason ? `. Reason: ${quote(m.reason)}` : "");
+
+  lines.push(`Moved (${p.moved.length}):`, ...p.moved.map(moveLine));
+  if (p.plannedInDryRun.length > 0) {
+    lines.push(
+      `Planned in dry run, nothing moved (${p.plannedInDryRun.length}):`,
+      ...p.plannedInDryRun.map(moveLine),
+    );
+  }
+  lines.push(
+    `Blocked (${p.blocked.length}):`,
+    ...p.blocked.map(
+      (b) =>
+        `- ${item(b)} in ${b.stateLabel} for ${duration(minutesSince(b.blockedSince))}, holds up ${plural(b.holdsUp, "item")}. Why: ${quote(b.reason)}` +
+        (b.waitingOn.length > 0
+          ? `. Waits on: ${b.waitingOn.map(item).join(", ")}`
+          : ""),
+    ),
+  );
+  lines.push(
+    `Staging: ${p.staging.url ?? "no staging address recorded"}`,
+    ...p.staging.onStaging.map(
+      (s) => `- on staging, waiting on its check: ${item(s)} since ${when(s.since)}`,
+    ),
+    ...p.staging.passedInWindow.map(
+      (s) => `- passed its staging check: ${item(s)} at ${when(s.since)}`,
+    ),
+  );
+  lines.push(
+    `Questions waiting for Didi (${p.questions.length}):`,
+    ...p.questions.map(
+      (q) =>
+        `- ${q.blocking ? "[blocking] " : ""}${q.kind}` +
+        (q.nodeId
+          ? ` on ${q.title !== null ? quote(q.title) : "an item"} (item ${q.nodeId})`
+          : "") +
+        `, waiting ${duration(q.waitingForMinutes)} (request ${q.gateRequestId})` +
+        (q.question !== null ? `: ${quote(q.question)}` : ""),
+    ),
+  );
+  lines.push(
+    `Held with no open release request (${p.heldItems.length}):`,
+    ...p.heldItems.map(
+      (h) =>
+        `- ${quote(h.title)} (item ${h.nodeId}), held ${duration(h.heldForMinutes)}` +
+        (h.reworkOf ? `, rework of item ${h.reworkOf}` : "") +
+        (h.lastNote
+          ? `. Didi's last note (${h.lastNote.outcome}, ${when(h.lastNote.answeredAt)}): ${quote(h.lastNote.text)}`
+          : ". No note from Didi") +
+        `. To ask for a fresh release request, start ${h.freshRequest.flow} with ${JSON.stringify(h.freshRequest.input)}`,
+    ),
+  );
+  const s = p.spend;
+  lines.push(
+    `Spend: ${plural(s.runsEnded, "run")} ended, ${usd(s.costUsd)}` +
+      (s.unpricedRuns > 0
+        ? ` (${plural(s.unpricedRuns, "run")} with no recorded cost)`
+        : "") +
+      `, ${s.tokens.input} input and ${s.tokens.output} output tokens; ${plural(s.runsActive, "run")} active`,
+  );
+  return lines;
+}
+
+/** The check as short plain text, for the flow's result. */
+export function renderDailyCheck(check: DailyCheck): string {
+  const { killSwitch, dryRun } = check.switches;
+  const lines = [
+    `Daily check, ${when(check.generatedAt)}, covering the ${check.window.hours} hours from ${when(check.window.from)}.`,
+    `Kill switch: ${killSwitch ? "on (the runner acts on nothing)" : "off"}. Dry run: ${dryRun ? "on (the runner plans moves and makes none)" : "off"}.`,
+    check.dataNotice,
+  ];
+  if (check.projects.length === 0) {
+    lines.push("", "Nothing moved and nothing is waiting.");
+  }
+  for (const project of check.projects) {
+    lines.push(...renderProject(project, check.generatedAt));
+  }
+  const totalCost = check.projects.reduce((sum, p) => sum + p.spend.costUsd, 0);
+  lines.push(
+    "",
+    `Spend across projects: ${usd(totalCost)}. ${check.spendNote}`,
+    `Production deploy approval: ${check.productionDeployApproval.note}`,
+  );
+  if (check.quietProjects.length > 0) {
+    lines.push(`Nothing to show for: ${check.quietProjects.join(", ")}.`);
+  }
+  return lines.join("\n");
+}
