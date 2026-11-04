@@ -2,8 +2,8 @@
 // generator (src/core/daily-check.ts, flows/daily-check.ts, O-91) reads the same list and adds the
 // same fresh-request entry through `withFreshRequest`. Each entry names the called flow that opens
 // a fresh release request for that one item and the input to start it with: a Windmill path, not
-// a URL. Didi starts that flow from its Windmill page, signed in (D-295); the daily check's
-// delivery (M4.3, M4.4) links to the same page.
+// a URL. Didi starts that flow from its Windmill page, signed in (D-295); the daily check's page
+// links to the same page (D-320, O-100).
 //
 // The same result carries both kinds of stalled work (D-302, O-94) from the one read-only stall
 // check the reconcile pass's step 5 and the daily check read (src/core/stalls.ts): active runs
@@ -24,6 +24,14 @@ import type { FlowDeps } from "./compose.ts";
 
 /** The called flow that opens a fresh release request for one held item (flows/windmill.yaml). */
 export const HOLD_RELEASE_REQUEST_FLOW_PATH = "f/foreman/hold_release_request";
+
+/**
+ * Its Windmill page, as a path on Windmill's own origin, behind Windmill's sign-in (D-295): never
+ * a public or signed-token link. Each entry in flows/windmill.yaml is pushed as a script at its
+ * path, so this is Windmill's page for the script at that path. Not yet checked against a running
+ * Windmill (O-100, first-hosting runbook, "Reading the daily check").
+ */
+export const HOLD_RELEASE_REQUEST_PAGE = `/scripts/get/${HOLD_RELEASE_REQUEST_FLOW_PATH}`;
 
 /** A held item with how Didi asks for a fresh release request for it. Nothing starts it on its own. */
 export type HeldItemEntry = HeldItemWithRequest<typeof HOLD_RELEASE_REQUEST_FLOW_PATH>;

@@ -60,11 +60,13 @@ flows:
     entry: flows/daily-check.ts
     trigger: schedule
     # Didi's daily check (spec section 6, M4.4, O-91): once a day, about 30 runs a month next to
-    # the reconcile flow's 360 (D-164). Its result is the check as JSON plus short plain text,
-    # read in the job's result in Windmill; it can also be started by hand from its page. It
-    # reads only: it writes nothing, opens or answers no request (D-272), and runs whatever the
-    # switches say, noting them. At 06:00 Toronto time, daylight saving included (D-297). Delivery (push, email,
-    # a page) waits for M4.3; nothing here sends anything.
+    # the reconcile flow's 360 (D-164). Its run's result is the page Didi reads (D-319, D-320,
+    # O-100): Windmill's `render_all` with the check as a page for a phone first, then the check
+    # as JSON plus short plain text. Didi bookmarks this flow's run list, signed in, and opens the
+    # latest run; it can also be started by hand from its page. It reads only: it writes nothing,
+    # opens or answers no request (D-272), and runs whatever the switches say, noting them. At
+    # 06:00 Toronto time, daylight saving included (D-297). Nothing here sends anything: no push
+    # alert and no email (D-319).
     schedule:
       every_minutes: 1440
       cron: "0 0 6 * * *"
@@ -135,8 +137,8 @@ flows:
     # input. No schedule, pass or other flow starts it, so nothing re-asks Didi on a timer. It
     # opens the same request the Triage handoff opens, and refuses an item that is not held, one
     # with an open request and one whose release is due; the kill switch and dry run write
-    # nothing. How Didi reaches it from the daily check is open (O-90): until that is settled,
-    # Didi starts it from its page in the Windmill workspace, signed in. No new credential.
+    # nothing. Didi starts it from its page in the Windmill workspace, signed in (D-295); the
+    # daily check's page links each held item to that page (D-320, O-100). No new credential.
     trigger: called
 
   - name: cancel_item

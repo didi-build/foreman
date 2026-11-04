@@ -239,6 +239,7 @@ Rules:
 - The `transitions` log explains every state. The `evidence` table explains every guard.
 - The `runs` table records model, turns, minutes, cost and outcome. Spend and stall checks read it.
 - The daily check is generated from the store, grouped by project and ordered by what blocks the most work.
+- For now it is delivered as a page Didi opens, with no alert (D-319, D-320, O-100): the daily check flow's own run in Windmill, behind Windmill's sign-in. Its result is rendered by Windmill (`render_all`): a page for reading on a phone, then the check as JSON and plain text. The page escapes every recorded value and links only to a project's `https:` staging address and to Windmill's own page for a held item's fresh release request (D-295). A push alert linking to the page comes with the proper frontend.
 - The attention list is a view of `gate_requests` and stalls. Channels only render it.
 - Alerts: push for blocking gates and long stalls; a phone call for a failed production health check, data loss or PII exposure flagged by a bot, and daily spend over the set amount.
 
