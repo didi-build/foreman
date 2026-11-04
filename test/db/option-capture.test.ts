@@ -111,7 +111,9 @@ describe.skipIf(!adminUrl)(
         (await store.listEvidence({ nodeId: c.nodeId, kind: "failure_count" })).map(
           (e) => [e.ref, e.commitSha, e.runId],
         ),
-      ).toEqual([[captureRefusalKey(c.nodeId, HEAD), HEAD, c.designerRun.id]]);
+      ).toEqual([
+        [captureRefusalKey(c.nodeId, HEAD, c.designerRun.id), HEAD, c.designerRun.id],
+      ]);
     });
 
     it("supersedes the older open request for a newer head", async () => {

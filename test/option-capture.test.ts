@@ -564,7 +564,7 @@ describe("capture refusals and the failure count (unit: memory store, O-89)", ()
         expect.objectContaining({
           runId: t.c.designerRun.id,
           commitSha: HEAD,
-          ref: captureRefusalKey(t.c.nodeId, HEAD),
+          ref: captureRefusalKey(t.c.nodeId, HEAD, t.c.designerRun.id),
           recordedBy: "runner",
           payload: {
             cause: "capture_refused",
@@ -598,11 +598,15 @@ describe("capture refusals and the failure count (unit: memory store, O-89)", ()
     },
   );
 
-  it("a fix round that pushes nothing counts nothing more on the same head; a new head counts again", async () => {
+  it("a pass asking again counts nothing more; a fix round that pushes nothing counts once more (D-293); a new head counts again", async () => {
     const t = await setup({ names: ["a"] });
     await started(t, t.c.designerRun.id);
     await t.captures.capture(t.c.nodeId);
-    // The fix round's run ends on the same head.
+    // The reconcile pass asking again for the same run and head counts nothing more.
+    expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
+      failureCount: { counted: "already_counted", failures: 1 },
+    });
+    // The fix round's run ends on the same head: one more failure, and another fix round is due.
     t.f.advanceMinutes(10);
     const again = await t.f.run(t.c.nodeId, "designer", 0, {
       endedAt: t.f.clock.now(),
@@ -610,23 +614,26 @@ describe("capture refusals and the failure count (unit: memory store, O-89)", ()
     });
     await started(t, again.id);
     expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
-      failureCount: { counted: "already_counted", failures: 1 },
+      failureCount: { counted: true, failures: 2 },
+    });
+    expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
+      failureCount: { counted: "already_counted", failures: 2 },
     });
     expect(await createBuilderRuns(t.f.deps).check(t.c.nodeId)).toMatchObject({
-      due: false,
-      reason: "not_due",
+      due: true,
+      cause: "refused",
     });
-    // A new head with the same mistake is a new failure.
+    // A new head with the same mistake is a new failure; the third escalates to the Council.
     t.f.advanceMinutes(1);
     await t.c.ciAt(NEXT, ["a"]);
     t.c.putOptions(["a"], { sha: NEXT });
     expect(await t.captures.capture(t.c.nodeId)).toMatchObject({
       reason: "too_few_options",
-      failureCount: { counted: true, failures: 2 },
-    });
-    expect(await createBuilderRuns(t.f.deps).returnReason(t.c.nodeId)).toMatchObject({
-      kind: "capture_refused",
-      commitSha: NEXT,
+      failureCount: {
+        counted: true,
+        failures: 3,
+        escalation: { outcome: "applied", toState: "escalated_to_council" },
+      },
     });
   });
 

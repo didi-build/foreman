@@ -45,7 +45,7 @@
 // Refusals and waits write nothing, except that a refusal the Designer caused counts (O-89): too
 // few or too many options, options of more than one feature, no option folder, or a PR that
 // changes the screenshot pipeline (`DESIGNER_REFUSALS`). Such a refusal adds one to the item's
-// `failure` counter once per head (src/core/failures.ts), as the contract's fallback says ("the
+// `failure` counter once per head and Designer run (src/core/failures.ts, D-293), as the contract's fallback says ("the
 // failure counter goes up by one"), and the fix round that follows shows the Designer the
 // refusal's fixed text (src/core/builder-runs.ts). The flows start that round
 // (flows/lib/option-capture.ts). Every other refusal is not the Designer's and counts nothing.
@@ -141,7 +141,7 @@ export type CaptureRefusal =
   | "no_private_link";
 
 /**
- * The refusals the Designer caused, which count one failure once per head and start a fix round
+ * The refusals the Designer caused, which count one failure once per head and Designer run (D-293) and start a fix round
  * (O-89). The rest are CI's, GitHub's or the runner's and count nothing.
  */
 export const DESIGNER_REFUSALS: readonly CaptureRefusal[] = [
@@ -193,7 +193,7 @@ export type CaptureStep =
       step: "refused";
       reason: CaptureRefusal;
       text: string;
-      /** A refusal the Designer caused: its count toward `failure`, once per head (O-89). */
+      /** A refusal the Designer caused: its count toward `failure`, once per head and Designer run (O-89, D-293). */
       failureCount?: FailureCount;
     }
   | {
@@ -305,7 +305,7 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
   });
 
   /**
-   * A refusal the Designer caused: counted once per head toward `failure`, with the Designer
+   * A refusal the Designer caused: counted once per head and Designer run toward `failure`, with the Designer
    * run the capture was for, then the escalation asked for (src/core/failures.ts, O-89).
    */
   async function refuseDesigner(

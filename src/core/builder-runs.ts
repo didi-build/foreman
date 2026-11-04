@@ -177,7 +177,7 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
       (e) =>
         e.runId === runId &&
         e.commitSha !== null &&
-        e.ref === captureRefusalKey(node.id, e.commitSha) &&
+        e.ref === captureRefusalKey(node.id, e.commitSha, runId) &&
         field(e.payload, "cause") === "capture_refused",
     );
   }

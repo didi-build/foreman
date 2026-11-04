@@ -4,7 +4,7 @@
 // runner refused on its guards, a repeated failed start, and an option capture refused for a
 // reason the Designer caused (src/core/option-capture.ts). Each is recorded as `failure_count`
 // evidence on the node under a key that names its cause and run (for a capture refusal, its node
-// and head, so it counts once per head), in the transaction that adds one to `failure`, so the
+// head and run, so a pass asking again counts once and each empty fix round once more, D-293), in the transaction that adds one to `failure`, so the
 // row and the count commit together and a repeated report or a retried flow counts once. After a count the
 // runner asks for the escalation with the same trigger, which `escalation_trigger_met` allows once
 // `failure` reaches `failure_threshold`; asking again after a count is how a call cut short
@@ -28,9 +28,16 @@ export const failureCountKey = (
   runId: string,
 ): string => `runner:failure_count:${cause}:run-${runId}`;
 
-/** The key a capture refusal is counted under: one per item and head, whatever the run (O-89). */
-export const captureRefusalKey = (nodeId: string, headSha: string): string =>
-  `runner:failure_count:capture_refused:${nodeId}:${headSha}`;
+/**
+ * The key a capture refusal is counted under: one per item, head and Designer run (O-89, D-293),
+ * so a pass asking again counts nothing more, but each fix round that ends on the same refused
+ * head counts once.
+ */
+export const captureRefusalKey = (
+  nodeId: string,
+  headSha: string,
+  runId: string,
+): string => `runner:failure_count:capture_refused:${nodeId}:${headSha}:run-${runId}`;
 
 /**
  * How many failed starts in a row on an item make a dispatch failure "repeated" (P-03, O-44): the
@@ -202,8 +209,9 @@ export function createFailures(options: FailuresOptions) {
 
     /**
      * An option capture the runner refused for a reason the Designer caused (O-89): `failure` up
-     * by one, once per item and head, so the reconcile pass asking again, or a fix round that
-     * pushes nothing, counts nothing more on the same head. The row names the Designer run whose
+     * by one, once per item, head and Designer run (D-293), so the reconcile pass asking again
+     * counts nothing more, while a fix round that ends without a new head counts once more and
+     * repeated empty rounds escalate. The row names the Designer run whose
      * report the capture was for, so the fix round goes on from it (src/core/builder-runs.ts), and
      * the refusal by its code only. The caller (src/core/option-capture.ts) decides the refusal
      * is the Designer's. The escalation's trigger names the head.
@@ -221,9 +229,9 @@ export function createFailures(options: FailuresOptions) {
         "capture_refused",
         { refusal, failedGuards },
         headSha,
-        { kind: "event", ref: `capture_refused:${headSha}` },
+        { kind: "event", ref: `capture_refused:${headSha}:run-${run.id}` },
         "the runner refused to capture the Designer's options, and the failure counter reached its limit",
-        captureRefusalKey(run.nodeId, headSha),
+        captureRefusalKey(run.nodeId, headSha, run.id),
       );
     },
   };

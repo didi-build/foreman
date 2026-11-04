@@ -143,7 +143,7 @@ describe("option capture through the flows (flow: fake adapters, O-88)", () => {
     expect((await reconcileFlow(f.deps)).optionCaptures).toEqual([]);
   });
 
-  it("a refusal the Designer caused counts one failure and starts the fix round with the refusal's text; a repeat on the head counts nothing more (O-89)", async () => {
+  it("a refusal the Designer caused counts one failure and starts the fix round with the refusal's text; a pass repeat counts nothing more, an empty fix round counts once more (O-89, D-293)", async () => {
     const { f, c } = await setup(true, ["a"]);
     const ended = await finish(f, c.designerRun.id);
     expect(ended).toMatchObject({
@@ -168,23 +168,28 @@ describe("option capture through the flows (flow: fake adapters, O-88)", () => {
     expect(fixRound?.input).toContain(CAPTURE_REFUSAL_TEXT.too_few_options);
     expect(fixRound?.input).not.toMatch(/https?:/);
 
-    // The fix round's run ends without a new head: the capture pass counts nothing more and
-    // starts nothing.
+    // While the fix round runs, a capture pass waits and counts nothing.
+    expect(await optionCaptureFlow(f.deps, { nodeId: c.nodeId })).toMatchObject([
+      { capture: { step: "designer_running" } },
+    ]);
+    expect(await failures(f, c.nodeId)).toBe(1);
+    // The fix round's run ends without a new head: it counts once more (D-293) and the next
+    // fix round starts, so repeated empty rounds reach the Council.
     const fixRunId = fixRound!.run.id;
     f.advanceMinutes(5);
-    await finish(f, fixRunId);
-    expect(await failures(f, c.nodeId)).toBe(1);
-    const pass = await optionCaptureFlow(f.deps, { nodeId: c.nodeId });
-    expect(pass).toMatchObject([
-      {
-        capture: {
-          step: "refused",
-          failureCount: { counted: "already_counted", failures: 1 },
-        },
-        builderRuns: [],
+    const ended2 = await finish(f, fixRunId);
+    expect(ended2).toMatchObject({
+      optionCapture: {
+        step: "refused",
+        failureCount: { counted: true, failures: 2 },
       },
-    ]);
-    expect(f.runtime.started).toHaveLength(1);
+    });
+    expect(await failures(f, c.nodeId)).toBe(2);
+    expect(f.runtime.started).toHaveLength(2);
+    // A capture pass asking again for the same run and head counts nothing more.
+    const pass = await optionCaptureFlow(f.deps, { nodeId: c.nodeId });
+    expect(JSON.stringify(pass)).not.toContain('"counted":true');
+    expect(await failures(f, c.nodeId)).toBe(2);
   });
 
   it("a public repository opens nothing, counts nothing and starts nothing (O-89)", async () => {
