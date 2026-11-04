@@ -43,7 +43,17 @@ export interface AgentTaskFile {
    * approval (D-270): the option screenshots, one per option, each with the runner's own label.
    */
   images?: TaskImage[];
+  /**
+   * Developer and Designer only: `close_pull_request` for the close-only run of a cancelled item's
+   * pull request (D-318). The wrapper then starts no model: its input names the one pull request
+   * and the fixed comment (src/core/pr-close.ts), and its branch is the item's branch.
+   */
+  mode?: TaskMode;
 }
+
+/** The one mode a task may name. Without it a builder's run is its model's work. */
+export const CLOSE_MODE = "close_pull_request";
+export type TaskMode = typeof CLOSE_MODE;
 
 /** The roles whose task may carry images: QA's visual comparison and the Council's visual call. */
 const IMAGE_ROLES: readonly AgentRole[] = ["qa", "council"];
@@ -103,11 +113,15 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     if (!BRANCH.test(task.branch ?? "") || (task.branch ?? "").endsWith(".lock")) {
       throw new Error(`a ${role} task needs its branch`);
     }
+    if (task.mode !== undefined && task.mode !== CLOSE_MODE) {
+      throw new Error(`a ${role} task's mode must be ${CLOSE_MODE}`);
+    }
   } else {
     if (task.allowedTools !== undefined) {
       throw new Error(`a ${role} run has no Claude Code tools`);
     }
     if (task.branch !== undefined) throw new Error(`a ${role} task has no branch`);
+    if (task.mode !== undefined) throw new Error(`a ${role} task has no mode`);
   }
   if (role === "qa") {
     if (!UUID.test(task.nodeId ?? "")) throw new Error("a QA task needs its node id");

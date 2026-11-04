@@ -60,7 +60,8 @@
 //   who decided (the Council on a plan it accepted, Didi confirming the Council's recommendation,
 //   or Didi), the Council's note or Didi's reason quoted as data, each work item it covers with
 //   its state (a merged one finishes normally), the pull request the store records for each item
-//   (left open: the close run is not built, O-97), the idea's move to Rejected, and that reopening
+//   with its close (D-318, ./pr-close.ts: closed until the item is cancelled, no close run yet,
+//   the close run in progress, or its outcome), the idea's move to Rejected, and that reopening
 //   comes with the attention list (D-314). A Council stop waiting for Didi's confirmation shows
 //   under questions, as Didi's open request.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
@@ -74,6 +75,7 @@ import { isTerminalState, type Contracts } from "./contracts.ts";
 import {
   CANCEL_TRIGGER_PREFIX,
   CANCELLED_IDEA_STATE,
+  CANCELLED_STATE,
   ideaOf,
   ITEM_END_STATES,
   readCancelOn,
@@ -81,6 +83,7 @@ import {
   workItemsOf,
   type CancelHow,
 } from "./cancel.ts";
+import { closeOf, type CloseStatus } from "./pr-close.ts";
 import {
   listHeldItems,
   withFreshRequest,
@@ -326,8 +329,10 @@ export interface CancelEntry {
   /** The idea, when the cancel moved it to Rejected, and when. */
   ideaRejected: { nodeId: string; title: string; at: Date } | null;
   items: (CheckItem & {
-    /** The pull request number the store records for the item, left open (O-97). */
+    /** The pull request number the store records for the item. */
     pullRequest: number | null;
+    /** Its close run (D-318), once the item is Cancelled; null before, or with no pull request. */
+    close: CloseStatus | null;
   })[];
 }
 
@@ -529,12 +534,17 @@ async function cancelSection(
     if (finished && (!lastAt || !inWindow(lastAt, from, to))) continue;
     const items: CancelEntry["items"] = [];
     for (const item of covered) {
+      const pullRequest = (await recordedPullRequest(store, item.id))?.number ?? null;
       items.push({
         nodeId: item.id,
         title: item.title,
         state: item.state,
         stateLabel: labelOf(item.state),
-        pullRequest: (await recordedPullRequest(store, item.id))?.number ?? null,
+        pullRequest,
+        close:
+          pullRequest !== null && item.state === CANCELLED_STATE
+            ? await closeOf(store, item.id, pullRequest)
+            : null,
       });
     }
     entries.push({
@@ -1000,6 +1010,31 @@ const CANCEL_WHO: Record<CancelHow, string> = {
   didi: "Didi cancelled it",
 };
 
+/** What the check says of a close run's outcome (D-318). */
+const CLOSE_TEXT: Record<Extract<CloseStatus, { status: "ended" }>["outcome"], string> =
+  {
+    closed: "closed by its bot's close run",
+    already_closed: "was already closed when its bot's close run read it",
+    already_merged: "was already merged when its bot's close run read it",
+    not_found: "was not found on GitHub by its bot's close run",
+    refused:
+      "left open: its head is not the item's branch, so its bot's close run refused it; close it by hand if it should be closed",
+    failed:
+      "left open: its bot's close run failed, and none is started again; close it by hand",
+  };
+
+/** An item's pull request and its close, for the Stopped list. Merged items have none to close. */
+function pullRequestLine(i: CancelEntry["items"][number]): string {
+  if (i.pullRequest === null || i.state === "verifying_on_staging") return "";
+  const pr = `, its pull request #${i.pullRequest}`;
+  if (i.close === null) return `${pr} is closed by its bot once the item is cancelled`;
+  if (i.close.status === "none")
+    return `${pr} waits for its bot's close run, which starts once admitted`;
+  if (i.close.status === "running")
+    return `${pr} is being closed by its bot's close run`;
+  return `${pr} ${CLOSE_TEXT[i.close.outcome]}`;
+}
+
 function renderCancel(c: CancelEntry): string {
   const items =
     c.items.length === 0
@@ -1011,9 +1046,7 @@ function renderCancel(c: CancelEntry): string {
               (i.state === "verifying_on_staging"
                 ? " (merged: it finishes normally)"
                 : "") +
-              (i.pullRequest !== null
-                ? `, its pull request #${i.pullRequest} left open (no close run: the bot's close run is not built, O-97)`
-                : ""),
+              pullRequestLine(i),
           )
           .join("; ");
   const words = c.how === "didi" ? "Didi's reason" : "The Council's note";

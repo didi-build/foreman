@@ -117,11 +117,15 @@ Set `TF_VAR_expose_planning_route=true`, plan, and check the plan changes only `
 
 Create the Anthropic API key for agent runs with a monthly spending limit at the provider (D-143, D-185). Store it at its secret path in Windmill resources. The runner puts it only into each run's egress proxy Secret; no agent holds it.
 
+The visual task types (`council:visual`, `qa:visual`) have no entry in `model_routing_policy` or `model_output_token_needs` yet, so a visual call or visual QA run is refused with `no_route` until they do. Once the vision model test at this step picks the model, add both entries with a reviewed migration, as 0019 did for the close runs.
+
 ## 13. The GitHub Apps (D-178)
 
 Register the GitHub Apps of D-156 together, each with its own identity. The runner App's webhook URL is `https://<receiver host name>/github/webhook`, with the webhook secret from step 10. Their private keys stay with the runner, never on the cluster.
 
 The runner App's permissions are the ones in D-127 plus two read-only ones from D-267: `contents: read` (the repo map's checkout) and `actions: read` (CI's screenshot bundles). Check the App's permission page shows nothing wider before installing it.
+
+The Developer's and Designer's runs open their own pull requests with their run's token (D-235), and a cancelled item's close run comments on and closes one with the same token (D-318, O-98). Both need the Apps' pull request write permission and nothing more; check each App's permission page shows it, and nothing wider than the decisions name. Migration 0019 gives `developer:close` and `designer:close` their role's own route (D-324); if an operator removes those entries, each close run is refused with `no_route` and the daily check shows the pull request waiting for its close run.
 
 In each project repository, protect builder branches against force pushes (a branch ruleset covering the runner's branch names), so the rule in the Developer's and Designer's instructions is also enforced by GitHub (D-245).
 

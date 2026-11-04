@@ -1,5 +1,6 @@
 // Test helper: an in-memory stand-in for the few GitHub REST endpoints the OpenCode wrapper uses
-// (N-44): read a branch, list a branch's pull requests, read the repository, open a pull request.
+// (N-44): read a branch, list a branch's pull requests, read the repository, open a pull request,
+// and for the close-only mode (D-318) read one pull request, comment on it and close it.
 // It is a plain HTTP request handler, never bound to a port of its own: the fake egress proxy
 // hands it each CONNECT tunnel (./fake-proxy.ts). No real GitHub and no network.
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -18,6 +19,8 @@ export interface FakePull {
   base: { ref: string };
   title: string;
   body: string;
+  /** Set for a merged one (its state is then closed). */
+  merged?: boolean;
 }
 
 export interface FakeGitHub {
@@ -26,6 +29,8 @@ export interface FakeGitHub {
   /** Pushed branches and their head commits. */
   branches: Map<string, string>;
   pulls: FakePull[];
+  /** Comments posted on a pull request, by its number. */
+  comments: { number: number; body: string }[];
   calls: GitHubCall[];
   /** A status to answer instead, by `METHOD /path` with the query left out. */
   failures: Map<string, number>;
@@ -48,6 +53,7 @@ export function createFakeGitHub(repository: string): FakeGitHub {
     defaultBranch: "main",
     branches: new Map(),
     pulls: [],
+    comments: [],
     calls: [],
     failures: new Map(),
   };
@@ -110,6 +116,29 @@ export function createFakeGitHub(repository: string): FakeGitHub {
         };
         state.pulls.push(pull);
         return send(201, pull);
+      }
+      const rest = url.pathname.startsWith(`${repo}/`)
+        ? url.pathname.slice(repo.length)
+        : "";
+      const one = /^\/pulls\/(\d+)$/.exec(rest);
+      const pull = one
+        ? state.pulls.find((p) => p.number === Number(one[1]))
+        : undefined;
+      const shown = (p: FakePull) => ({ ...p, merged: p.merged === true });
+      if (call.method === "GET" && one) {
+        return pull ? send(200, shown(pull)) : send(404, { message: "Not Found" });
+      }
+      if (call.method === "PATCH" && one && pull) {
+        if (call.body?.state === "closed") pull.state = "closed";
+        return send(200, shown(pull));
+      }
+      const commented = /^\/issues\/(\d+)\/comments$/.exec(rest);
+      if (call.method === "POST" && commented) {
+        const number = Number(commented[1]);
+        if (!state.pulls.some((p) => p.number === number))
+          return send(404, { message: "Not Found" });
+        state.comments.push({ number, body: String(call.body?.body) });
+        return send(201, { id: state.comments.length });
       }
       return send(404, { message: "Not Found" });
     })();

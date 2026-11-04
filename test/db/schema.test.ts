@@ -7,6 +7,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { chooseRoute } from "../../src/core/routing.ts";
+import {
+  SEEDED_OUTPUT_TOKEN_NEEDS,
+  SEEDED_ROUTING_POLICY,
+} from "../../src/core/routing-testing.ts";
+import type { Json } from "../../src/core/store.ts";
 import {
   adminUrl,
   createTestDatabase,
@@ -222,6 +228,107 @@ describe.skipIf(!adminUrl)(
       expect(values.out).toBe(
         "reconcile_interval_minutes=120,windmill_alert_percent=80,windmill_monthly_execution_limit=1000",
       );
+    });
+
+    describe("the close runs' routes (migration 0019, D-318, D-324)", () => {
+      const CLOSE_ROUTES = "db/migrations/0019_close_routes.sql";
+      const ROUTING_KEYS =
+        "'model_routing_policy', 'model_catalog', 'model_providers_approved', 'model_output_token_needs'";
+      const settings = (): Record<string, Json> => {
+        const read = sql(
+          `select json_object_agg(key, value) from factory.settings where key in (${ROUTING_KEYS});`,
+        );
+        expect(read.ok, read.err).toBe(true);
+        return JSON.parse(read.out) as Record<string, Json>;
+      };
+      const logged = (): string =>
+        sql(
+          "select count(*) from factory.settings_log where key in ('model_routing_policy', 'model_output_token_needs');",
+        ).out;
+      const route = (role: "developer" | "designer", taskType: string) => {
+        const s = settings();
+        return chooseRoute({
+          role,
+          taskType,
+          earlierRuns: [],
+          settings: {
+            policy: s.model_routing_policy ?? null,
+            catalog: s.model_catalog ?? null,
+            providers: s.model_providers_approved ?? null,
+            outputNeeds: s.model_output_token_needs ?? null,
+          },
+        });
+      };
+
+      it("gives both close task types their role's own route, logged, under a new policy version", () => {
+        for (const [role, closeType, own] of [
+          ["developer", "developer:close", "developer:code"],
+          ["designer", "designer:close", "designer"],
+        ] as const) {
+          const close = route(role, closeType);
+          const theirs = route(role, own);
+          if (!close.routed || !theirs.routed) throw new Error("no route");
+          expect(close.route).toEqual({ ...theirs.route, taskType: closeType });
+          expect(close.route.policyVersion).toBe("2026-11-04.1");
+        }
+        const s = settings();
+        expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
+        expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
+        expect(
+          sql(
+            "select count(*) from factory.settings_log where key = 'model_routing_policy' and changed_by = 'migration' and old_value is not null;",
+          ).out,
+        ).toBe("1");
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = settings();
+        const count = logged();
+        const again = sql(readFileSync(CLOSE_ROUTES, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        expect(settings()).toEqual(before);
+        expect(logged()).toBe(count);
+      });
+
+      it("never replaces an entry an operator set, and adds only what is missing", () => {
+        const before = settings();
+        const own = {
+          candidates: [
+            { provider: "anthropic", model: "claude-opus-5-5", tier: "standard" },
+          ],
+          onCapacity: "wait",
+        };
+        const changed = sql(
+          `update factory.settings
+             set value = jsonb_set(value #- '{taskTypes,designer:close}', '{taskTypes,developer:close}', '${JSON.stringify(own)}'::jsonb)
+                         || '{"version": "operator.1"}'::jsonb,
+                 updated_by = 'didi', updated_at = ${AT}
+             where key = 'model_routing_policy';
+           update factory.settings set value = value || '{"developer:close": 8000}'::jsonb,
+                 updated_by = 'didi', updated_at = ${AT}
+             where key = 'model_output_token_needs';`,
+        );
+        expect(changed.ok, changed.err).toBe(true);
+        const migrated = sql(readFileSync(CLOSE_ROUTES, "utf8"));
+        expect(migrated.ok, migrated.err).toBe(true);
+        const policy = settings().model_routing_policy as {
+          version: string;
+          taskTypes: Record<string, Json>;
+        };
+        expect(policy.taskTypes["developer:close"]).toEqual(own);
+        expect(policy.taskTypes["designer:close"]).toEqual(policy.taskTypes.designer);
+        expect(policy.version).toBe("operator.1+d324");
+        expect(settings().model_output_token_needs).toMatchObject({
+          "developer:close": 8000,
+          "designer:close": 16000,
+        });
+        // Back to the migrated values for the rest of the file.
+        const restored = sql(
+          `update factory.settings set value = '${JSON.stringify(before.model_routing_policy)}'::jsonb where key = 'model_routing_policy';
+           update factory.settings set value = '${JSON.stringify(before.model_output_token_needs)}'::jsonb where key = 'model_output_token_needs';`,
+        );
+        expect(restored.ok, restored.err).toBe(true);
+      });
     });
 
     it("seeds the usage-exhausted wait and leaves the cluster run limit to be set (migration 0003)", () => {

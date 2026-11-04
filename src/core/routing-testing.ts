@@ -1,6 +1,6 @@
-// Test support for model routing (ADR 0114): the routing settings migration 0005 seeds, the task
-// types in contracts/task-types.yaml and the bot files, and the route columns of a run on the
-// first policy. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
+// Test support for model routing (ADR 0114): the routing settings migrations 0005 and 0019 seed,
+// the task types in contracts/task-types.yaml and the bot files, and the route columns of a run on
+// the seeded policy. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
 import { ROUTING_SETTINGS, type RunPrice } from "./routing.ts";
@@ -67,13 +67,34 @@ export const FIRST_OUTPUT_TOKEN_NEEDS = {
   triage: 16000,
 } satisfies Json;
 
-/** Seeds the four routing settings as migration 0005 does. */
+/**
+ * The routing policy and output needs as migration 0019 leaves the first ones (D-324): the close
+ * task types copy their role's own entry, and the policy's version moves on. These are what a
+ * migrated store holds, so the tests seed them; test/db/runs.test.ts checks they are equal.
+ */
+export const SEEDED_ROUTING_POLICY = {
+  ...FIRST_ROUTING_POLICY,
+  version: "2026-11-04.1",
+  taskTypes: {
+    ...FIRST_ROUTING_POLICY.taskTypes,
+    "developer:close": FIRST_ROUTING_POLICY.taskTypes["developer:code"],
+    "designer:close": FIRST_ROUTING_POLICY.taskTypes.designer,
+  },
+} satisfies Json;
+
+export const SEEDED_OUTPUT_TOKEN_NEEDS = {
+  ...FIRST_OUTPUT_TOKEN_NEEDS,
+  "developer:close": FIRST_OUTPUT_TOKEN_NEEDS["developer:code"],
+  "designer:close": FIRST_OUTPUT_TOKEN_NEEDS.designer,
+} satisfies Json;
+
+/** Seeds the four routing settings as migrations 0005 and 0019 leave them. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
-    [ROUTING_SETTINGS.policy, FIRST_ROUTING_POLICY],
+    [ROUTING_SETTINGS.policy, SEEDED_ROUTING_POLICY],
     [ROUTING_SETTINGS.catalog, FIRST_MODEL_CATALOG],
     [ROUTING_SETTINGS.providers, FIRST_APPROVED_PROVIDERS],
-    [ROUTING_SETTINGS.outputNeeds, FIRST_OUTPUT_TOKEN_NEEDS],
+    [ROUTING_SETTINGS.outputNeeds, SEEDED_OUTPUT_TOKEN_NEEDS],
   ] as const) {
     await store.setSetting({ key, value, updatedBy: "test", updatedAt: at });
   }
@@ -86,7 +107,11 @@ export const TEST_TASK_TYPES: TaskTypes = {
     "developer:code": "Developer work on application code. The Developer's default.",
     "developer:infra":
       "Developer work on infrastructure code, workflows or migrations.",
+    "developer:close":
+      "The Developer's close-only run of a cancelled item's pull request, with no model (D-318).",
     designer: "Designer work.",
+    "designer:close":
+      "The Designer's close-only run of a cancelled item's pull request, with no model (D-318).",
     "qa:review": "QA review of a pull request.",
     "qa:visual":
       "QA's visual comparison of a design item's components with the approved option (D-242).",
@@ -97,10 +122,10 @@ export const TEST_TASK_TYPES: TaskTypes = {
   },
   roles: {
     developer: {
-      allowed: ["developer:code", "developer:infra"],
+      allowed: ["developer:code", "developer:infra", "developer:close"],
       default: "developer:code",
     },
-    designer: { allowed: ["designer"], default: "designer" },
+    designer: { allowed: ["designer", "designer:close"], default: "designer" },
     qa: { allowed: ["qa:review", "qa:visual"], default: "qa:review" },
     council: { allowed: ["council", "council:visual"], default: "council" },
     triage: { allowed: ["triage"], default: "triage" },
@@ -146,7 +171,7 @@ export function testRouteColumns(
     modelFamily: "claude",
     serviceTierRequested: "standard",
     serviceTierServed: null,
-    routingPolicyVersion: FIRST_ROUTING_POLICY.version,
+    routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
     modelCatalogVersion: FIRST_MODEL_CATALOG.version,
     capacityRetries: null,
     capacityWaitSeconds: null,

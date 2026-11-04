@@ -11,8 +11,9 @@ import { hashRunToken, RUN_TOKEN_MARGIN_MINUTES } from "./run-tokens.ts";
 import {
   FIRST_APPROVED_PROVIDERS,
   FIRST_MODEL_CATALOG,
-  FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
+  SEEDED_OUTPUT_TOKEN_NEEDS,
+  SEEDED_ROUTING_POLICY,
   firstRunPrice,
   seedRoutingSettings,
   TEST_TASK_TYPES,
@@ -521,7 +522,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
         modelFamily: "claude",
         serviceTierRequested: "standard",
         serviceTierServed: null,
-        routingPolicyVersion: FIRST_ROUTING_POLICY.version,
+        routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
         modelCatalogVersion: FIRST_MODEL_CATALOG.version,
         capacityRetries: null,
         capacityWaitSeconds: null,
@@ -552,7 +553,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
         model: "claude-sonnet-5-5",
         family: "claude",
         tier: "standard",
-        policyVersion: FIRST_ROUTING_POLICY.version,
+        policyVersion: SEEDED_ROUTING_POLICY.version,
         catalogVersion: FIRST_MODEL_CATALOG.version,
       },
     });
@@ -563,10 +564,10 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
         taskType: "developer:code",
         earlierRuns: [],
         settings: {
-          policy: FIRST_ROUTING_POLICY,
+          policy: SEEDED_ROUTING_POLICY,
           catalog: FIRST_MODEL_CATALOG,
           providers: FIRST_APPROVED_PROVIDERS,
-          outputNeeds: FIRST_OUTPUT_TOKEN_NEEDS,
+          outputNeeds: SEEDED_OUTPUT_TOKEN_NEEDS,
         },
       }),
     );
@@ -631,7 +632,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
       reason: "no_route",
       noRoute: { rejected: [{ failed: [{ rule: "qa_independence" }] }] },
     });
-    await t.setting("model_routing_policy", FIRST_ROUTING_POLICY);
+    await t.setting("model_routing_policy", SEEDED_ROUTING_POLICY);
     const result = await t.runs.dispatch(t.request(nodeId, "qa"), credential());
     expect(result.admitted && result.run.model).toBe("claude-opus-5-5");
   });

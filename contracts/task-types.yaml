@@ -5,14 +5,17 @@
 # Each role's allowed task types and its default are in its bot file (contracts/bots/<role>.yaml,
 # `task_types`), as ADR 0114 says. At dispatch the core takes the role's default. Who sets another
 # allowed class on an item is settled with M3.6, so until then every Developer run is
-# `developer:code`.
+# `developer:code`. The runner itself asks for a close task type only for the close-only run of a
+# cancelled item's pull request (D-318), which starts no model.
 #
 # Add a task type only when the scorecard shows that one type hides two different results.
 
 task_types:
   "developer:code": Developer work on application code. The Developer's default.
   "developer:infra": Developer work on infrastructure code, workflows or migrations.
+  "developer:close": The Developer's close-only run of a cancelled item's pull request, with no model (D-318).
   designer: Designer work.
+  "designer:close": The Designer's close-only run of a cancelled item's pull request, with no model (D-318).
   "qa:review": QA review of a pull request.
   "qa:visual": QA's visual comparison of a design item's components with the approved option (D-242).
   council: A Council question.

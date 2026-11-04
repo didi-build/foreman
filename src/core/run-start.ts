@@ -8,7 +8,9 @@
 // The dispatch move of a node is the contract move out of its state that the dispatch guard
 // (`agent_ready_not_on_hold`) guards, as in the reconcile pass. A node with no such move (QA in
 // review, a Developer run resumed after `usage_exhausted` in In development) gets no move, only
-// its handle and, for a role that pushes, a fresh `dispatch_record`.
+// its handle and, for a role that pushes, a fresh `dispatch_record`. A close run (D-318,
+// ./pr-close.ts) pushes nothing, so it records no `dispatch_record`: the item's latest one still
+// names the run that pushed its branch. Its item is in Cancelled, which has no dispatch move.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import {
   createLibrary,
@@ -19,6 +21,7 @@ import {
 } from "./library.ts";
 import type { AgentRole, Evidence, Json, Node, Run, Store } from "./store.ts";
 import { PUSHING_ROLES, runBranch } from "./task-input.ts";
+import { isCloseTaskType } from "./task-types.ts";
 
 /** The guard that marks a move as the dispatch of a ready node (contracts/machine-2). */
 export const DISPATCH_GUARD = "agent_ready_not_on_hold";
@@ -105,7 +108,9 @@ export function createRunStart(options: RunStartOptions) {
       const node = await nodeOf(run.nodeId);
       const project = await store.getProject(node.projectId);
       if (!project) throw new Error("the run's project does not exist");
-      const evidence: Evidence | null = PUSHING_ROLES.includes(run.bot as AgentRole)
+      const pushes =
+        PUSHING_ROLES.includes(run.bot as AgentRole) && !isCloseTaskType(run.taskType);
+      const evidence: Evidence | null = pushes
         ? {
             id: ids.next(),
             nodeId: node.id,

@@ -9,12 +9,15 @@
 // staging finishes normally. With `askCouncil` it records nothing of Didi's and opens the item's
 // "is this still needed?" question for the Council instead, with Didi's words as data
 // (src/core/still-needed.ts), and starts its run; the Council's answer then follows the approver
-// rule like any other. The kill switch and dry run write nothing; dry run says what would happen.
+// rule like any other. Then the item's close run starts if due (D-318, ./lib/close-runs.ts). The
+// kill switch and dry run write nothing; dry run says what would happen.
 import { createCancels, type DidiCancel } from "../src/core/cancel.ts";
 import { stillNeededTopic } from "../src/core/cancel.ts";
 import { createStillNeeded, type StillNeededOpen } from "../src/core/still-needed.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
+import { closePass } from "./lib/close-runs.ts";
 import { councilPass, type CouncilPassStep } from "./lib/council-runs.ts";
+import type { CloseRunStart } from "../src/core/pr-close.ts";
 import { windmillEnvironment } from "./lib/windmill.ts";
 
 export interface CancelItemInput {
@@ -27,7 +30,7 @@ export interface CancelItemInput {
 }
 
 export type CancelItemResult =
-  | { mode: "cancel"; cancel: DidiCancel }
+  | { mode: "cancel"; cancel: DidiCancel; closeRuns: CloseRunStart[] }
   | { mode: "ask_council"; question: StillNeededOpen; council: CouncilPassStep[] };
 
 export async function run(
@@ -47,10 +50,8 @@ export async function run(
         : [],
     };
   }
-  return {
-    mode: "cancel",
-    cancel: await createCancels(deps).cancelByDidi(input.nodeId, input.reason),
-  };
+  const cancel = await createCancels(deps).cancelByDidi(input.nodeId, input.reason);
+  return { mode: "cancel", cancel, closeRuns: await closePass(deps, [input.nodeId]) };
 }
 
 export const main = (input: CancelItemInput): Promise<CancelItemResult> =>

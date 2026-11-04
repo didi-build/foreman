@@ -20,6 +20,7 @@ import {
   botTaskTypes,
   readBotFiles,
   runLimits,
+  taskTypeLimits,
 } from "../../src/adapters/contracts-file/bot-files.ts";
 import {
   loadAllContractFiles,
@@ -356,6 +357,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     appLogins,
     runnerAppSlug,
     limits: runLimits(botFiles),
+    taskLimits: taskTypeLimits(botFiles),
     bots: botProfiles(botFiles),
     taskTypes: checked.taskTypes,
     runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),

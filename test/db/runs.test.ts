@@ -14,9 +14,9 @@ import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
   FIRST_APPROVED_PROVIDERS,
   FIRST_MODEL_CATALOG,
-  FIRST_OUTPUT_TOKEN_NEEDS,
-  FIRST_ROUTING_POLICY,
   firstRunPrice,
+  SEEDED_OUTPUT_TOKEN_NEEDS,
+  SEEDED_ROUTING_POLICY,
   TEST_TASK_TYPES,
 } from "../../src/core/routing-testing.ts";
 import {
@@ -269,7 +269,7 @@ describe.skipIf(!adminUrl)(
     });
 
     it("records a capacity end with what the runtime measured, and takes the next candidate at once (ADR 0114)", async () => {
-      const policy = FIRST_ROUTING_POLICY;
+      const policy = SEEDED_ROUTING_POLICY;
       await setting(ROUTING_SETTINGS.policy, {
         ...policy,
         taskTypes: {
@@ -324,13 +324,13 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("seeds the first routing policy, catalog, approved providers and output needs (migration 0005)", async () => {
+    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005 and 0019)", async () => {
       const value = async (key: string) => (await store.getSetting(key))?.value;
-      expect(await value(ROUTING_SETTINGS.policy)).toEqual(FIRST_ROUTING_POLICY);
+      expect(await value(ROUTING_SETTINGS.policy)).toEqual(SEEDED_ROUTING_POLICY);
       expect(await value(ROUTING_SETTINGS.catalog)).toEqual(FIRST_MODEL_CATALOG);
       expect(await value(ROUTING_SETTINGS.providers)).toEqual(FIRST_APPROVED_PROVIDERS);
       expect(await value(ROUTING_SETTINGS.outputNeeds)).toEqual(
-        FIRST_OUTPUT_TOKEN_NEEDS,
+        SEEDED_OUTPUT_TOKEN_NEEDS,
       );
     });
 
@@ -397,7 +397,7 @@ describe.skipIf(!adminUrl)(
         modelFamily: "claude",
         serviceTierRequested: "standard",
         serviceTierServed: null,
-        routingPolicyVersion: "2026-10-31.1",
+        routingPolicyVersion: "2026-11-04.1",
         modelCatalogVersion: "2026-10-31.1",
         capacityRetries: null,
         reportedCostUsd: null,
