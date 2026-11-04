@@ -26,7 +26,7 @@ import {
 import type { Node, Store } from "../src/core/store.ts";
 import { scannerGoneTopic } from "../src/core/scan-ideas.ts";
 import { createLibrary } from "../src/core/library.ts";
-import { planApprovalTopic } from "../src/core/plans.ts";
+import { councilPlanTopic, planApprovalTopic } from "../src/core/plans.ts";
 import { createReconcileFixture } from "./reconcile-fixture.ts";
 
 const SHA = "c".repeat(40);
@@ -659,6 +659,45 @@ describe("how scanner ideas change over time (unit: D-301, O-93)", () => {
     expect(
       await f.store.listGateRequests(f.projectId, planApprovalTopic(gone.id)),
     ).toHaveLength(2);
+  });
+
+  it("cancels Didi's open no-plan request of an idea it withdraws, but not the Council's question (D-322)", async () => {
+    const f = await d301();
+    await f.scans.file(
+      f.projectId,
+      scanOf([link(1), { ...link(2), path: "docs/b.md" }]),
+    );
+    const one = (await f.keyed(scanDedupeKey(link(1)))) as Node;
+    const two = (await f.keyed(
+      scanDedupeKey({ ...link(2), path: "docs/b.md" }),
+    )) as Node;
+    const library = createLibrary(f.deps);
+    // One open request per topic: Didi's on one idea, the Council's question on the other.
+    const onPlanningTopic = (ideaId: string, owner: "didi" | "council") =>
+      library.openGateRequest({
+        projectId: f.projectId,
+        nodeId: ideaId,
+        topicKey: councilPlanTopic(ideaId),
+        kind: "escalation",
+        owner,
+        blocking: false,
+        payload: { question: "The Council gave no usable plan for this idea." },
+      });
+    const didi = await onPlanningTopic(one.id, "didi");
+    const council = await onPlanningTopic(two.id, "council");
+    f.day();
+    const next = await f.scans.file(f.projectId, scanAt(OTHER_SHA, []));
+    expect(next).toMatchObject({
+      withdrawals: expect.arrayContaining([
+        { nodeId: one.id, outcome: "applied" },
+        { nodeId: two.id, outcome: "applied" },
+      ]),
+    });
+    expect(await f.store.getGateRequest(didi.id)).toMatchObject({
+      status: "cancelled",
+      decisionId: null,
+    });
+    expect((await f.store.getGateRequest(council.id))?.status).toBe("open");
   });
 
   it("leaves the plan-approval request open when the withdrawal is not applied", async () => {
