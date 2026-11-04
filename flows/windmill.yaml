@@ -36,6 +36,21 @@ flows:
       cron: "0 0 */2 * * *"
       timezone: UTC
 
+  - name: daily_check
+    path: f/foreman/daily_check
+    entry: flows/daily-check.ts
+    trigger: schedule
+    # Didi's daily check (spec section 6, M4.4, O-91): once a day, about 30 runs a month next to
+    # the reconcile flow's 360 (D-164). Its result is the check as JSON plus short plain text,
+    # read in the job's result in Windmill; it can also be started by hand from its page. It
+    # reads only: it writes nothing, opens or answers no request (D-272), and runs whatever the
+    # switches say, noting them. At 06:00 Toronto time, daylight saving included (D-297). Delivery (push, email,
+    # a page) waits for M4.3; nothing here sends anything.
+    schedule:
+      every_minutes: 1440
+      cron: "0 0 6 * * *"
+      timezone: America/Toronto
+
   - name: dispatch
     path: f/foreman/dispatch
     entry: flows/dispatch.ts

@@ -29,11 +29,12 @@
 // The bot to dispatch is the owner of the state, from the contracts. The merge and the staging
 // check are never done here: in live mode the reconcile flow runs the merge pass, the staging pass
 // and the builder runs pass (flows/reconcile.ts, O-31, O-37, O-41).
-import type {
-  Contracts,
-  GuardCheck,
-  GuardRegistry,
-  TransitionContract,
+import {
+  isTerminalState,
+  type Contracts,
+  type GuardCheck,
+  type GuardRegistry,
+  type TransitionContract,
 } from "./contracts.ts";
 import { createBuilderRuns } from "./builder-runs.ts";
 import type { GitHub } from "./github.ts";
@@ -376,9 +377,7 @@ export async function reconcile(
         (!move.tracks || (node.track !== null && move.tracks.includes(node.track))),
     );
   /** A state with no way out except escalation: Done. */
-  const isTerminal = (state: string): boolean =>
-    !stateOf(state)?.escalated &&
-    !contracts.transitions.some((move) => !move.escalation && move.from === state);
+  const isTerminal = (state: string): boolean => isTerminalState(contracts, state);
 
   const nodes = await store.listNodes({});
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
