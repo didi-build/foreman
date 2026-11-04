@@ -23,9 +23,12 @@ export interface GitHubResponse {
   body: unknown;
 }
 
-/** One request to GitHub's API: a path such as `/repos/o/r/pulls`, and a JSON body to send. */
+/**
+ * One request to GitHub's API: a path such as `/repos/o/r/pulls`, and a JSON body to send.
+ * `PATCH` is only the close-only run's close of one pull request (./close.ts, D-318).
+ */
 export type GitHubApi = (
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH",
   path: string,
   body?: unknown,
 ) => Promise<GitHubResponse>;

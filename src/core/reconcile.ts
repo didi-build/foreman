@@ -57,6 +57,7 @@ import {
   type DispatchRefusal,
   type DispatchRequest,
   type RoleRunLimits,
+  type RunLimits,
 } from "./runs.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import { createStaging, type StagingResult } from "./staging.ts";
@@ -109,6 +110,8 @@ export interface ReconcileDeps {
   /** The runner App's slug (D-156), for the polling backstop. */
   runnerAppSlug: string;
   limits: RoleRunLimits;
+  /** Limits by task type, from the bot files' `task_limits`: the close runs (D-318). */
+  taskLimits?: Readonly<Record<string, RunLimits>>;
   bots: Record<AgentRole, BotProfile>;
   /** The task types at the spec version (contracts/task-types.yaml, ADR 0114 section 1). */
   taskTypes: TaskTypes;

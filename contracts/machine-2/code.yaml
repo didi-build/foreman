@@ -105,7 +105,7 @@ states:
     owner: Runner
     purpose: End a work item that is no longer needed (D-308), cancelled by the Council on a plan it accepted or by Didi.
     input: The item's cancel, and no active run on the item.
-    output: Nothing. The item's branch and any open pull request are left as they are. Reopening comes with the attention list (D-314).
+    output: Nothing. The item's branch is left as it is. Its open pull request is closed by the item's own bot in a close-only run with no model (D-318). Reopening comes with the attention list (D-314).
     evidence_to_exit: None. Cancelled is terminal.
     tools: None.
     budget: not set

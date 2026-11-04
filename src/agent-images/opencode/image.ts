@@ -7,6 +7,11 @@
 // status `error`, so the runner always reads an end. Nothing is written before the settings and
 // the task are read. Prompts, keys and tokens are never logged: the result line is the only
 // output, with every credential value removed.
+//
+// A task in the close-only mode (`close_pull_request`, D-318) never starts OpenCode: once the
+// settings and the task are read, the wrapper closes the one pull request its input names with
+// the run's GitHub token (./close.ts) and prints that as its result line. Nothing is written to
+// disk and the checkout is not read.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,6 +23,8 @@ import {
 } from "../shared/result.ts";
 import { secretValues } from "../shared/settings.ts";
 import { readTask } from "../shared/task.ts";
+import { CLOSE_MODE } from "../../adapters/agent-runtime/kubernetes/task.ts";
+import { closePullRequest, closeResult } from "./close.ts";
 import { refuseRepositoryConfig } from "./checkout.ts";
 import { openCodeCommand } from "./command.ts";
 import { capTier, openCodeConfig } from "./config.ts";
@@ -57,6 +64,24 @@ export async function runOpenCodeImage(
     // The task file check already refused a Developer or Designer task without these.
     const nodeId = task.nodeId as string;
     const branch = task.branch as string;
+    const github = proxiedGitHub({
+      proxyUrl: settings.egressProxyUrl,
+      token: settings.githubToken,
+      ...(deps.secureTunnel ? { secure: deps.secureTunnel } : {}),
+    });
+    if (task.mode === CLOSE_MODE) {
+      // No model: the close is plain code with the run's own token (D-318).
+      result = closeResult(
+        await closePullRequest({
+          github,
+          repository: settings.repository,
+          branch,
+          input: task.input,
+        }),
+      );
+      printResult(result, secrets, deps.write);
+      return exitCode(result);
+    }
     refuseRepositoryConfig(settings.workDir);
     const tmpDir = env.TMPDIR ?? "/tmp";
     // The config and instructions live outside the repository, readable by this user only. The
@@ -105,11 +130,7 @@ export async function runOpenCodeImage(
         settings.serviceTier,
       ),
       {
-        github: proxiedGitHub({
-          proxyUrl: settings.egressProxyUrl,
-          token: settings.githubToken,
-          ...(deps.secureTunnel ? { secure: deps.secureTunnel } : {}),
-        }),
+        github,
         repository: settings.repository,
         branch,
         nodeId,

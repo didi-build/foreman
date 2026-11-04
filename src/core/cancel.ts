@@ -34,12 +34,10 @@
 // run in progress is never stopped: the item waits, and the run-end flow or the next reconcile
 // pass takes the step again (flows/lib/council-runs.ts).
 //
-// Pull requests: a cancelled item's open pull request is not closed. D-308 (5) asks the item's
-// own bot to close it in a short run, and neither the Developer's nor the Designer's run can do
-// that today: their tools are git and npm only, their instructions have no close step, and the
-// image's wrapper opens or reuses the branch's pull request after every successful run. That
-// part waits for Didi's choice (O-97). The step reports the pull request the store records for
-// each item, and the daily check lists it as left open.
+// Pull requests: the step reports the pull request the store records for each item. Once the item
+// is Cancelled, that pull request is closed by the item's own bot in a close-only run with no
+// model (D-308 (5), D-318, ./pr-close.ts), which the flows start after the step
+// (flows/lib/close-runs.ts) and record in `closeRuns`; this module starts nothing.
 //
 // Switches: under the kill switch nothing is read past the switch and nothing is written; in dry
 // run nothing is written and the step reports what it would cancel or ask.
@@ -65,6 +63,7 @@ import type {
   Store,
   StoreOps,
 } from "./store.ts";
+import type { CloseRunStart } from "./pr-close.ts";
 import { cut } from "./task-input.ts";
 
 /** The guard on every move of a cancel. */
@@ -472,7 +471,7 @@ export interface CancelItemStep {
   how?: CancelHow;
   reason?: string;
   failedGuards?: string[];
-  /** The pull request the store records for it, left open (O-97). */
+  /** The pull request the store records for it, which its close run closes (D-318). */
   pullRequest: { repo: string; number: number } | null;
 }
 
@@ -512,6 +511,8 @@ export type CancelStep =
         | "waits"
         /** No idea, or the idea has no cancel move out of its state. */
         | null;
+      /** The close runs the flows started after the step, one per pull request (D-318). */
+      closeRuns?: CloseRunStart[];
     };
 
 export interface CancelDeps {

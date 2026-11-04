@@ -8,9 +8,10 @@
 import type { RunCapacityLimits } from "../../../core/runs.ts";
 import type { AgentRole, Run } from "../../../core/store.ts";
 import { PUSHING_ROLES, runBranch } from "../../../core/task-input.ts";
+import { isCloseTaskType } from "../../../core/task-types.ts";
 import type { ModelProviderSetting } from "./manifests.ts";
 import type { KubernetesAgentTask } from "./runtime.ts";
-import type { AgentTaskFile, TaskImage } from "./task.ts";
+import { CLOSE_MODE, type AgentTaskFile, type TaskImage } from "./task.ts";
 
 /** What a bot file gives a Kubernetes run (ADR 0107). No credential value is in it. */
 export interface KubernetesBotFile {
@@ -40,6 +41,7 @@ export interface KubernetesTaskParts {
     | "nodeId"
     | "headSha"
     | "prNumber"
+    | "taskType"
   >;
   /** From the settings (migration 0007), read when the run is started. */
   capacity: RunCapacityLimits;
@@ -106,6 +108,8 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
     if (!run.nodeId) throw new Error(`a ${role} run needs its node`);
     task.nodeId = run.nodeId;
     task.branch = runBranch(run.nodeId);
+    // The close-only run of a cancelled item's pull request starts no model (D-318).
+    if (isCloseTaskType(run.taskType)) task.mode = CLOSE_MODE;
   }
   if (role === "qa") {
     task.nodeId = run.nodeId ?? "";

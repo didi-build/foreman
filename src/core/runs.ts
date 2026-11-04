@@ -7,6 +7,12 @@
 // on the run, with its P-11 decision record, in the same transaction that inserts the run. The
 // run's state API token is stored there too, as its hash (ADR 0102), and ending the run revokes it.
 //
+// A run's limits are its role's (the bot file's `limits`), except a task type with limits of its
+// own (the bot file's `task_limits`): the close-only run of a cancelled item's pull request,
+// `developer:close` and `designer:close` (D-318, ./pr-close.ts), which must have its own. A close
+// run names its pull request, and admission refuses a second close run for the same pull request
+// on the item, whatever the first one's end (`close_already_run`), under the admission lock.
+//
 // After a capacity end, a task type whose policy says `onCapacity: "next_candidate"` is not held
 // by the usage-exhausted wait when a later candidate passes the hard rules: the next dispatch takes
 // that candidate at once. Otherwise the dispatch waits as for `wait` (D-221).
@@ -36,7 +42,7 @@ import type {
 } from "./store.ts";
 import { parseRunPrice, runCostUsd } from "./run-cost.ts";
 import { RUN_TOKEN_HASH, runTokenExpiry } from "./run-tokens.ts";
-import { taskTypeFor, type TaskTypes } from "./task-types.ts";
+import { isCloseTaskType, taskTypeFor, type TaskTypes } from "./task-types.ts";
 import { VISUAL_CALL_PREFIX, VISUAL_CALL_TASK_TYPE } from "./visual-call.ts";
 
 /** The limits a run is started with (ADR 0107). Recorded in `runs.budget`. */
@@ -99,6 +105,8 @@ export type DispatchRefusal =
   | "developer_limit"
   | "cluster_limit_unset"
   | "cluster_full"
+  /** A close run for this pull request was already started on the item (D-318). */
+  | "close_already_run"
   | "no_route";
 
 /** The run's state API token as the core sees it: only its SHA-256 hash (src/core/run-tokens.ts). */
@@ -190,8 +198,31 @@ export interface RunsOptions {
   clock: Clock;
   ids: IdSource;
   limits: RoleRunLimits;
+  /**
+   * Limits by task type, from the bot files' `task_limits`, for a task type whose runs are not
+   * sized like its role's: the close runs (D-318). A close run with no entry here is refused.
+   */
+  taskLimits?: Readonly<Record<string, RunLimits>>;
   /** The task types at the spec version (contracts/task-types.yaml). */
   taskTypes: TaskTypes;
+}
+
+/**
+ * The limits a run of `role` and `taskType` is started with: the task type's own when the bot
+ * file gives them, else the role's. A close run needs its own (D-318): it is never sized like
+ * the role's work.
+ */
+export function limitsFor(
+  options: Pick<RunsOptions, "limits" | "taskLimits">,
+  role: AgentRole,
+  taskType: string,
+): RunLimits {
+  const own = options.taskLimits?.[taskType];
+  if (own) return own;
+  if (isCloseTaskType(taskType)) {
+    throw new LibraryError("A close run needs the limits of its task type");
+  }
+  return options.limits[role];
 }
 
 const isCount = (value: unknown): value is number =>
@@ -346,6 +377,14 @@ function checkDispatchRequest(request: DispatchRequest): void {
     throw new LibraryError(
       "A Council visual call has task type council:visual, and only it has",
     );
+  }
+  if (isCloseTaskType(request.taskType)) {
+    if (request.role !== "developer" && request.role !== "designer") {
+      throw new LibraryError("Only a Developer or Designer run closes a pull request");
+    }
+    if (!(isCount(request.prNumber) && request.prNumber > 0)) {
+      throw new LibraryError("A close run needs its pull request number");
+    }
   }
   if (request.role !== "qa") return;
   const prNumber = request.prNumber;
@@ -543,6 +582,15 @@ async function admission(
   if (queued && !queued.ready) {
     return { admitted: false, reason: "usage_exhausted_wait" };
   }
+  // One close run per pull request on the item, whatever its end (D-318).
+  if (
+    isCloseTaskType(request.taskType) &&
+    (await store.listRuns({ nodeId: node.id })).some(
+      (r) => r.taskType === request.taskType && r.prNumber === request.prNumber,
+    )
+  ) {
+    return { admitted: false, reason: "close_already_run" };
+  }
   const refusal = admissionRefusal(
     request,
     node,
@@ -568,7 +616,20 @@ async function admission(
 export const plannedRunId = (nodeId: string, role: AgentRole): string =>
   `planned:${role}:${nodeId}`;
 
-export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions) {
+export function createRuns({
+  store,
+  clock,
+  ids,
+  limits,
+  taskLimits,
+  taskTypes,
+}: RunsOptions) {
+  const budgetOf = (request: DispatchRequest): RunLimits =>
+    limitsFor(
+      { limits, ...(taskLimits ? { taskLimits } : {}) },
+      request.role,
+      taskTypeFor(taskTypes, request.role, request.taskType),
+    );
   /**
    * Records how a run ended and revokes its state API token, in one transaction (ADR 0102:
    * ending a run revokes its token). Returns false, changing nothing, if the run had already
@@ -617,7 +678,7 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
       if (!RUN_TOKEN_HASH.test(credential.tokenHash)) {
         throw new LibraryError("tokenHash must be a hex SHA-256");
       }
-      const budget = limits[request.role];
+      const budget = budgetOf(request);
       return store.transaction(async (tx) => {
         await tx.lockRunAdmission();
         const now = clock.now();
@@ -668,7 +729,7 @@ export function createRuns({ store, clock, ids, limits, taskTypes }: RunsOptions
       const id = plannedRunId(node.id, request.role);
       return {
         admitted: true,
-        run: newRun(id, node, request, route, limits[request.role], now),
+        run: newRun(id, node, request, route, budgetOf(request), now),
       };
     },
 

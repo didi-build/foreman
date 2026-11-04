@@ -33,6 +33,19 @@ const ROLES: readonly AgentRole[] = [
   "triage",
 ];
 
+/**
+ * Each builder role's close task type: the close-only run of a cancelled item's pull request,
+ * which starts no model (D-318, ./pr-close.ts). Both files list them; this names them for code.
+ */
+export const CLOSE_TASK_TYPES = {
+  developer: "developer:close",
+  designer: "designer:close",
+} as const satisfies Partial<Record<AgentRole, string>>;
+export type CloseRole = keyof typeof CLOSE_TASK_TYPES;
+
+export const isCloseTaskType = (taskType: string | null | undefined): boolean =>
+  Object.values(CLOSE_TASK_TYPES).includes(taskType as never);
+
 /** A role name, optionally followed by a colon and a task class, for example `developer:code`. */
 export const TASK_TYPE_ID = /^[a-z]+(:[a-z]+)?$/;
 

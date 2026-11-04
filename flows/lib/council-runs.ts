@@ -60,7 +60,13 @@
 // Rejected. A run in progress is never stopped: the item waits. So the pass runs right after the
 // Council run's end, after the end of any run on the idea or one of its work items (the run-end
 // flow), after Didi's answer on the request (./approval.ts), and in the reconcile flow's live
-// passes. It closes no pull request (O-97).
+// passes. For each item it cancels now, it then starts the item's bot's close-only run for the
+// item's pull request (D-318, ./close-runs.ts).
+//
+// A close run's end (D-318, src/core/pr-close.ts): before the end is recorded, the runner records
+// the run's outcome on its item once (the wrapper's, or `failed`), and a success whose result it
+// cannot read ends the run `fail`. Nothing else follows it: its item is Cancelled, so its report
+// triggers no move, and no finding, capture or question is taken from it.
 //
 // The questions on a work item (D-308 (3), src/core/still-needed.ts): after a QA run whose report
 // merged its item, each open item touching the same design feature folder is asked about, and
@@ -116,7 +122,10 @@ import {
   type AfterReport,
   type BuilderRunStart,
 } from "./builder-runs.ts";
+import { createPullRequestCloses, type CloseStatus } from "../../src/core/pr-close.ts";
+import { isCloseTaskType } from "../../src/core/task-types.ts";
 import { cancelRun } from "./cancel-runs.ts";
+import { closePass } from "./close-runs.ts";
 import { countedRefusal } from "./option-capture.ts";
 import type { FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
@@ -219,6 +228,14 @@ export async function cancelPass(
   const steps: CancelStep[] = [];
   for (const ideaId of ideaIds ?? (await cancels.pending())) {
     const step = await cancels.step(ideaId);
+    if (step.step === "acted") {
+      // Each item cancelled now gets its bot's close run for its pull request (D-318).
+      const cancelled = step.items
+        .filter((i) => i.result === "cancelled" && i.pullRequest !== null)
+        .map((i) => i.nodeId);
+      const closeRuns = cancelled.length > 0 ? await closePass(deps, cancelled) : [];
+      if (closeRuns.length > 0) step.closeRuns = closeRuns;
+    }
     if (step.step !== "not_due") steps.push(step);
   }
   return steps;
@@ -376,6 +393,8 @@ export type AfterRunEnd = AfterReport &
     triage?: TriagePassStep[];
     /** After a run on an item a cancel waits on: the cancel's next step (D-308). */
     cancels?: CancelStep[];
+    /** After a close run (D-318): its outcome as recorded on the item. */
+    closeRun?: { nodeId: string; close: CloseStatus };
     /**
      * The "is this still needed?" questions the run's end opened (D-308 (3)): after a merge, on
      * each item touching the same feature; after a builder's already-done stop, on its item. With
@@ -441,10 +460,22 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
   const isCouncil = run.bot === "council";
   const isTriage = run.bot === "triage";
   const isVisual = run.bot === "qa" && run.taskType === VISUAL_TASK_TYPE;
+  const isClose = isCloseTaskType(run.taskType);
   async function reportToRecord(
     result: AgentRunResult,
     report: RunReport,
   ): Promise<RunReport> {
+    if (isClose) {
+      // The runner records the close's outcome on the item itself, once (D-318). A success whose
+      // result it cannot read ends the run `fail`, recorded as `failed`.
+      const outcome = await createPullRequestCloses(deps).recordOutcome(
+        run.id,
+        report.outcome === "success" ? (result.structured ?? null) : null,
+      );
+      return report.outcome === "success" && outcome === "failed"
+        ? { ...report, outcome: "fail" }
+        : report;
+    }
     if (result.detail === "needs_decision" && report.outcome === "success") {
       // A builder stopped because the item needs a decision (D-237, O-63): its reason is
       // recorded as its request to escalate, and its report then asks for the escalation. Any
@@ -491,12 +522,30 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
   return {
     async record(result: AgentRunResult, report: RunReport): Promise<RunReport> {
       const recorded = await reportToRecord(result, report);
-      if (recorded.outcome === "success" && result.detail !== "needs_decision") {
+      if (
+        recorded.outcome === "success" &&
+        result.detail !== "needs_decision" &&
+        !isClose
+      ) {
         findingIdeas = await createFindingIdeas(deps).submit(run.id, result.structured);
       }
       return recorded;
     },
     async after(): Promise<AfterRunEnd> {
+      if (isClose && run.nodeId && run.prNumber !== null) {
+        // A close run's item is Cancelled: its report triggers no move (Cancelled is the
+        // runner's), and nothing else follows it.
+        return {
+          ...(await reportedMoveAndFixRound(deps, run.id)),
+          closeRun: {
+            nodeId: run.nodeId,
+            close: await createPullRequestCloses(deps).closeOf(
+              run.nodeId,
+              run.prNumber,
+            ),
+          },
+        };
+      }
       // A run on an idea or a work item a cancel waits on: the cancel takes its next step first,
       // so the item it waited on is cancelled before any next run of it could start (D-308). A
       // Council run's own stop is taken after its answer, below.

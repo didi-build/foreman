@@ -34,6 +34,7 @@ function parts(extra: Partial<KubernetesTaskParts> = {}): KubernetesTaskParts {
       nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
       headSha: null,
       prNumber: null,
+      taskType: "developer:code",
     },
     projectSlug: "rehearsal",
     repository: "didi-build/rehearsal",
@@ -111,6 +112,16 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     );
   });
 
+  it("marks a close run's task with the close-only mode and nothing else (D-318)", () => {
+    const base = parts();
+    const task = buildKubernetesTask(
+      parts({ run: { ...base.run, taskType: "developer:close", prNumber: 7 } }),
+    );
+    expect(task.task.mode).toBe("close_pull_request");
+    expect(task.task.branch).toBe("foreman/1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b");
+    expect(buildKubernetesTask(parts()).task.mode).toBeUndefined();
+  });
+
   it("refuses a run whose provider has no provider setting", () => {
     const others = parts().providers.filter((p) => p.name !== "anthropic");
     expect(() => buildKubernetesTask(parts({ providers: others }))).toThrow(
@@ -131,6 +142,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
           nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
           headSha: QA.headSha ?? null,
           prNumber: QA.prNumber ?? null,
+          taskType: "qa:review",
         },
         bot: {
           image: QA.image,
@@ -171,6 +183,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
           nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
           headSha: QA.headSha ?? null,
           prNumber: QA.prNumber ?? null,
+          taskType: "qa:review",
         },
         bot: {
           image: QA.image,

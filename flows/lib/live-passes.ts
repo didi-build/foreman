@@ -31,7 +31,9 @@
 // (D-308 (3), src/core/still-needed.ts), once per pair, before the Council pass starts the runs.
 // The cancel pass runs right after the redo pass: it opens Didi's request to confirm each
 // Council stop on a plan Didi approved, cancels each work item a cancel stands on once no run is
-// active on it, and then moves the idea to Rejected (D-308, ./council-runs.ts).
+// active on it, and then moves the idea to Rejected (D-308, ./council-runs.ts). The close pass runs
+// right after it: it starts the close-only run of each cancelled item's pull request that has had
+// none, which a refused start, or a pass cut short, left due (D-318, ./close-runs.ts).
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import {
   createHoldReleases,
@@ -55,6 +57,8 @@ import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans
 import type { FlowDeps } from "./compose.ts";
 import type { FollowUpStep } from "../../src/core/council.ts";
 import type { CancelStep } from "../../src/core/cancel.ts";
+import type { CloseRunStart } from "../../src/core/pr-close.ts";
+import { closePass } from "./close-runs.ts";
 import {
   councilPass,
   cancelPass,
@@ -84,6 +88,8 @@ export interface LivePasses {
    * do, from the dry-run pass.
    */
   cancels: CancelStep[] | null;
+  /** The close runs the close pass started for cancelled items' pull requests (D-318). */
+  closes: CloseRunStart[] | null;
   /** What the plan approval pass did for each idea with a plan from the planning chat (D-266). */
   plans: PlanApprovalStep[] | null;
   /** What the Triage pass did for each idea in Plan accepted or Triage (M3.6). */
@@ -114,6 +120,7 @@ export async function runLivePasses(
       stillNeeded: null,
       // In dry run, what the cancel step would do (D-308); nothing under the kill switch.
       cancels: stopped === null ? wouldStop : null,
+      closes: null,
       plans: null,
       triage: null,
       holdReleases: null,
@@ -132,6 +139,7 @@ export async function runLivePasses(
   const councilRuns = await councilPass(deps);
   const redos = await redoPass(deps);
   const cancels = await cancelPass(deps);
+  const closes = await closePass(deps);
   const planApprovals = createPlanApprovals(deps);
   const plans: PlanApprovalStep[] = [];
   for (const ideaId of await planApprovals.pending()) {
@@ -155,6 +163,7 @@ export async function runLivePasses(
     redos,
     stillNeeded,
     cancels,
+    closes,
     plans,
     triage,
     holdReleases,

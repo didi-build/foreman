@@ -14,6 +14,7 @@ import {
   renderDailyCheck,
 } from "../src/core/daily-check.ts";
 import { createCancels } from "../src/core/cancel.ts";
+import { createPullRequestCloses } from "../src/core/pr-close.ts";
 import { holdReleaseRequest } from "../src/core/hold-release.ts";
 import { createLibrary } from "../src/core/library.ts";
 import type {
@@ -834,7 +835,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     );
   });
 
-  it("reports each cancel: who decided, the note quoted as data, the items, the pull request left open, and that reopening comes later (D-308, O-97, D-314)", async () => {
+  it("reports each cancel: who decided, the note quoted as data, the items, the pull request waiting for its close run, and that reopening comes later (D-308, O-97, D-314, D-318)", async () => {
     const f = await fixture();
     await f.setting("dry_run", false);
     const idea = await f.node("handed_off", {
@@ -903,6 +904,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
             state: "cancelled",
             stateLabel: "Cancelled",
             pullRequest: 12,
+            close: { status: "none" },
           },
           {
             nodeId: waiting.id,
@@ -910,6 +912,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
             state: "in_development",
             stateLabel: "In development",
             pullRequest: null,
+            close: null,
           },
         ],
       },
@@ -919,7 +922,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     expect(text).toContain("the Council cancelled it, on a plan the Council accepted.");
     expect(text).toContain(`The Council's note: ${JSON.stringify(note)}.`);
     expect(text).toContain(
-      `"Fix the link" (item ${done.id}) Cancelled, its pull request #12 left open (no close run: the bot's close run is not built, O-97)`,
+      `"Fix the link" (item ${done.id}) Cancelled, its pull request #12 waits for its bot's close run, which starts once admitted`,
     );
     expect(text).toContain("Still being cancelled");
     expect(text).toContain("Reopening comes with the attention list (D-314).");
@@ -964,6 +967,89 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     // A day later the finished cancel is no longer listed.
     f.advanceMinutes(25 * 60);
     expect((await f.generate()).projects[0]?.cancels ?? []).toEqual([]);
+  });
+
+  it("shows each item's close run: in progress, then its outcome, and a failed one to close by hand (D-318)", async () => {
+    const f = await fixture();
+    await f.setting("dry_run", false);
+    const items: Node[] = [];
+    for (const title of ["Closed one", "Refused one", "Failed one", "Running one"]) {
+      const item = await f.node("in_development", { title });
+      const builder = await f.run(item.id, "developer", 0, {
+        endedAt: f.clock.now(),
+        outcome: "success",
+      });
+      await f.evidence(
+        item.id,
+        "dispatch_record",
+        { repo: "didi-build/rehearsal", branch: `foreman/${item.id}` },
+        { runId: builder.id },
+      );
+      await f.evidence(
+        item.id,
+        "ci_run",
+        { conclusion: "success", pr: 20 + items.length, changedPaths: [] },
+        { commitSha: "b".repeat(40) },
+      );
+      expect(
+        await createCancels(f.deps).cancelByDidi(item.id, "Not needed."),
+      ).toMatchObject({ recorded: true });
+      expect((await f.store.getNode(item.id))?.state).toBe("cancelled");
+      items.push(item);
+    }
+    const closes = createPullRequestCloses(f.deps);
+    const outcomes = [
+      { closeOutcome: "closed", pullRequest: 20 },
+      { closeOutcome: "refused", pullRequest: 21 },
+      null,
+    ];
+    for (const [i, result] of outcomes.entries()) {
+      const item = items[i] as Node;
+      const close = await f.run(item.id, "developer", 0, {
+        taskType: "developer:close",
+        prNumber: 20 + i,
+      });
+      await f.store.endRun(close.id, {
+        endedAt: f.clock.now(),
+        outcome: result ? "success" : "fail",
+        turns: 0,
+        minutes: 1,
+        costUsd: null,
+        tokens: null,
+        transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
+        serviceTierServed: null,
+        capacityRetries: null,
+        capacityWaitSeconds: null,
+        firstTokenMs: null,
+        reportedCostUsd: null,
+      });
+      expect(await closes.recordOutcome(close.id, result)).toBe(
+        result ? result.closeOutcome : "failed",
+      );
+    }
+    await f.run((items[3] as Node).id, "developer", 0, {
+      taskType: "developer:close",
+      prNumber: 23,
+    });
+    f.advanceMinutes(1);
+    const check = await f.generate(readOnly(f.store));
+    expect(
+      check.projects[0]?.cancels.map((c) => c.items.map((i) => i.close?.status)),
+    ).toEqual([["ended"], ["ended"], ["ended"], ["running"]]);
+    const text = renderDailyCheck(check);
+    expect(text).toContain("its pull request #20 closed by its bot's close run");
+    expect(text).toContain(
+      "its pull request #21 left open: its head is not the item's branch, so its bot's close run refused it",
+    );
+    expect(text).toContain(
+      "its pull request #22 left open: its bot's close run failed, and none is started again; close it by hand",
+    );
+    expect(text).toContain(
+      "its pull request #23 is being closed by its bot's close run",
+    );
+    expect(text).not.toContain("close run is not built");
   });
 
   it("names Didi when Didi cancelled, with Didi's reason quoted", async () => {

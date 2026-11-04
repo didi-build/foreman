@@ -20,6 +20,7 @@ import {
   readBotFiles,
   runLimits,
   secretPathFor,
+  taskTypeLimits,
   validateBotFiles,
   type RawBotFile,
 } from "./bot-files.ts";
@@ -379,6 +380,65 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     ).toEqual([
       "developer.yaml: task_instructions: a developer run has only its instructions",
     ]);
+  });
+
+  it("give the builders' close task type its own small limits and no new tool, and no other role any (D-318)", () => {
+    const bots = readBotFiles();
+    const small = { maxTurns: 1, maxMinutes: 5, maxUsd: 0.01 };
+    expect(taskTypeLimits(bots)).toEqual({
+      "developer:close": small,
+      "designer:close": small,
+    });
+    // The close run uses the role's own tools list unchanged: no GitHub tool is added.
+    expect(bots.developer.allowedTools).toEqual(D196);
+    expect(bots.designer.allowedTools).toEqual(D196);
+    expect(bots.developer.taskTypes).toMatchObject({
+      allowed: expect.arrayContaining(["developer:close"]) as unknown,
+      default: "developer:code",
+    });
+    expect(bots.designer.taskTypes).toMatchObject({
+      allowed: expect.arrayContaining(["designer:close"]) as unknown,
+      default: "designer",
+    });
+    expect(
+      validateBotFiles(
+        withData("developer", (d) => {
+          d.task_types = {
+            allowed: ["developer:code", "developer:infra"],
+            default: "developer:code",
+          };
+        }),
+      ).problems,
+    ).toEqual([
+      "developer.yaml: task_limits.developer:close must be an allowed task type other than the default",
+    ]);
+    expect(
+      validateBotFiles(
+        withData("designer", (d) => {
+          delete d.task_limits;
+        }),
+      ).problems,
+    ).toEqual(["designer.yaml: task_limits must give exactly: designer:close"]);
+    expect(
+      validateBotFiles(
+        withData("developer", (d) => {
+          d.task_limits = {
+            "developer:close": { max_turns: 1, max_minutes: 60, max_usd: 0, extra: 1 },
+          };
+        }),
+      ).problems,
+    ).toEqual([
+      "developer.yaml: task_limits.developer:close: unknown field extra",
+      "developer.yaml: task_limits.developer:close.max_minutes must stay below 60, the GitHub token's lifetime",
+      "developer.yaml: task_limits.developer:close.max_usd must be an amount above 0",
+    ]);
+    expect(
+      validateBotFiles(
+        withData("qa", (d) => {
+          d.task_limits = { "qa:visual": { max_turns: 1, max_minutes: 5, max_usd: 1 } };
+        }),
+      ).problems,
+    ).toEqual(["qa.yaml: task_limits: a qa run has only its limits"]);
   });
 
   it("give the Council's visual call its answer schema and its own reviewed instructions (D-270, D-287)", () => {

@@ -67,6 +67,32 @@ export const FIRST_OUTPUT_TOKEN_NEEDS = {
   triage: 16000,
 } satisfies Json;
 
+/**
+ * The close task types' entries (D-318), which the first policy does not have: tests of the close
+ * run add them, as a settings change would. Each names the role's own route.
+ */
+export async function seedCloseRouting(store: StoreOps, at: Date): Promise<void> {
+  const policy = {
+    ...FIRST_ROUTING_POLICY,
+    taskTypes: {
+      ...FIRST_ROUTING_POLICY.taskTypes,
+      "developer:close": anthropic(SONNET),
+      "designer:close": anthropic(SONNET),
+    },
+  };
+  const needs = {
+    ...FIRST_OUTPUT_TOKEN_NEEDS,
+    "developer:close": 16000,
+    "designer:close": 16000,
+  };
+  for (const [key, value] of [
+    [ROUTING_SETTINGS.policy, policy],
+    [ROUTING_SETTINGS.outputNeeds, needs],
+  ] as const) {
+    await store.setSetting({ key, value, updatedBy: "test", updatedAt: at });
+  }
+}
+
 /** Seeds the four routing settings as migration 0005 does. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
@@ -86,7 +112,11 @@ export const TEST_TASK_TYPES: TaskTypes = {
     "developer:code": "Developer work on application code. The Developer's default.",
     "developer:infra":
       "Developer work on infrastructure code, workflows or migrations.",
+    "developer:close":
+      "The Developer's close-only run of a cancelled item's pull request, with no model (D-318).",
     designer: "Designer work.",
+    "designer:close":
+      "The Designer's close-only run of a cancelled item's pull request, with no model (D-318).",
     "qa:review": "QA review of a pull request.",
     "qa:visual":
       "QA's visual comparison of a design item's components with the approved option (D-242).",
@@ -97,10 +127,10 @@ export const TEST_TASK_TYPES: TaskTypes = {
   },
   roles: {
     developer: {
-      allowed: ["developer:code", "developer:infra"],
+      allowed: ["developer:code", "developer:infra", "developer:close"],
       default: "developer:code",
     },
-    designer: { allowed: ["designer"], default: "designer" },
+    designer: { allowed: ["designer", "designer:close"], default: "designer" },
     qa: { allowed: ["qa:review", "qa:visual"], default: "qa:review" },
     council: { allowed: ["council", "council:visual"], default: "council" },
     triage: { allowed: ["triage"], default: "triage" },

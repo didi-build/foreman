@@ -109,6 +109,7 @@ export const STALL_WAIT_TEXT: Record<StallWaitCode, string> = {
     "the cluster's active-run limit (agent_cluster_max_active_runs) is not set",
   cluster_full: "the cluster's active-run limit is reached",
   no_route: "no model route passes for its task type",
+  close_already_run: "a close run for its pull request was already started",
   nothing_found: "nothing found: the runner should have started it",
 };
 

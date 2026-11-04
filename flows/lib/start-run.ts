@@ -11,15 +11,18 @@
 //    runner's visual comparison instead: the image pairs with their located differences and the
 //    spec sections, and the visual answer schema (src/core/visual-comparison.ts, D-242, D-250); a
 //    comparison that cannot be built (no approved option, a screenshot missing or changed)
-//    refuses here.
+//    refuses here. The close-only run of a cancelled item's pull request (D-318, task type
+//    `developer:close` or `designer:close`, src/core/pr-close.ts) gets the close input instead: the
+//    run's repository, the pull request and the fixed comment; one no longer due refuses here.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
 // 3. Mint the state API token and admit the run (`runs.dispatch`): the run, its route and the
 //    token's hash commit together.
-// 4. Build the task and `start` it. If either fails, nothing runs: the run ends `fail` and its
-//    token is revoked. When the run before it on the item failed to start too, that counts one
-//    toward `failure` and asks for the escalation (P-03, src/core/failures.ts, O-44).
+// 4. Build the task and `start` it with the run's limits (its task type's own for a close run). If
+//    either fails, nothing runs: the run ends `fail` and its token is revoked. When the run before
+//    it on the item failed to start too, that counts one toward `failure` and asks for the
+//    escalation (P-03, src/core/failures.ts, O-44); not for a close run, whose item is Cancelled.
 // 5. Record the start (`recordStart`): the handle, the `dispatch_record` and the move, in one
 //    transaction. If it refuses (the kill switch, dry run, a guard, or the run was ended by the
 //    kill switch's cancel pass meanwhile) or fails, the started run is cancelled through the
@@ -37,6 +40,7 @@ import {
   VISUAL_CALL_TASK_TYPE,
 } from "../../src/core/visual-call.ts";
 import { createFailures } from "../../src/core/failures.ts";
+import { createPullRequestCloses } from "../../src/core/pr-close.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { createTriage } from "../../src/core/triage.ts";
 import {
@@ -49,6 +53,7 @@ import { pngCodec } from "../../src/adapters/screenshots/png.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
   createRuns,
+  limitsFor,
   runCapacityLimits,
   type DispatchRefusal,
   type Runs,
@@ -61,6 +66,7 @@ import {
   runBranch,
   taskInput,
 } from "../../src/core/task-input.ts";
+import { isCloseTaskType } from "../../src/core/task-types.ts";
 import type { FlowDeps } from "./compose.ts";
 import { dryRunOn } from "./switches.ts";
 
@@ -71,7 +77,11 @@ export interface StartRunInput {
   prNumber?: number | null;
   /** Council: the topic key of the question the run answers. */
   questionTopic?: string | null;
-  /** QA: `qa:visual` for the visual comparison (D-242); left out for the review. */
+  /**
+   * QA: `qa:visual` for the visual comparison (D-242); left out for the review. Developer and
+   * Designer: their close task type for the close-only run, with the pull request's number
+   * (D-318).
+   */
   taskType?: string | null;
 }
 
@@ -134,8 +144,21 @@ export async function startRun(
   if (!node || !project)
     return { outcome: "not_started", reason: "no_node", failedGuards: [] };
   const branch = PUSHING_ROLES.includes(input.role) ? runBranch(node.id) : null;
+  // The close-only run's input names the pull request the store records (D-318).
+  const isClose = isCloseTaskType(input.taskType);
+  const close = isClose ? await createPullRequestCloses(deps).target(node.id) : null;
+  if (close && "why" in close) {
+    return { outcome: "not_started", reason: close.why, failedGuards: [] };
+  }
+  if (
+    close &&
+    (close.role !== input.role || close.pullRequest.number !== input.prNumber)
+  ) {
+    return { outcome: "not_started", reason: "close_target_changed", failedGuards: [] };
+  }
   // A fix round's input says why the item came back (D-213, O-41).
-  const returned = branch ? await createBuilderRuns(deps).returnReason(node.id) : null;
+  const returned =
+    branch && !isClose ? await createBuilderRuns(deps).returnReason(node.id) : null;
   const councilTask =
     input.role === "council" && input.questionTopic
       ? await createCouncil(deps).taskFor(input.questionTopic)
@@ -175,33 +198,35 @@ export async function startRun(
     }
     visual = built;
   }
-  const text = council
-    ? council.input
-    : triage
-      ? triage.input
-      : visual
-        ? visual.input
-        : taskInput({
-            ...input,
-            node,
-            project,
-            branch: branch ?? undefined,
-            returned,
-            // The Designer's step comes from the item's state (D-238): the state as the contracts
-            // name it and its label, never a database id. It also gets the option Didi approved,
-            // once one is recorded (D-242, D-243 rule 3).
-            ...(input.role === "designer"
-              ? {
-                  approvedOption: await approvedOptionRecord(deps.store, node.id),
-                  state: {
-                    name: node.state,
-                    label: Object.hasOwn(deps.contracts.states, node.state)
-                      ? (deps.contracts.states[node.state]?.label ?? node.state)
-                      : node.state,
-                  },
-                }
-              : {}),
-          });
+  const text = close
+    ? close.input
+    : council
+      ? council.input
+      : triage
+        ? triage.input
+        : visual
+          ? visual.input
+          : taskInput({
+              ...input,
+              node,
+              project,
+              branch: branch ?? undefined,
+              returned,
+              // The Designer's step comes from the item's state (D-238): the state as the contracts
+              // name it and its label, never a database id. It also gets the option Didi approved,
+              // once one is recorded (D-242, D-243 rule 3).
+              ...(input.role === "designer"
+                ? {
+                    approvedOption: await approvedOptionRecord(deps.store, node.id),
+                    state: {
+                      name: node.state,
+                      label: Object.hasOwn(deps.contracts.states, node.state)
+                        ? (deps.contracts.states[node.state]?.label ?? node.state)
+                        : node.state,
+                    },
+                  }
+                : {}),
+            });
 
   const starts = createRunStart(deps);
   const check = await starts.checkStart(node.id, input.role);
@@ -237,14 +262,17 @@ export async function startRun(
       ...(council?.images ? { images: council.images } : {}),
       ...(visual ? { outputSchema: visual.outputSchema, images: visual.images } : {}),
     });
-    handle = await deps.runtime.start(task, deps.limits[input.role]);
+    handle = await deps.runtime.start(task, limitsFor(deps, input.role, run.taskType));
   } catch (error) {
     // Nothing was started: the run ends `fail`, which also revokes its token. A failed start
     // after another one in a row counts toward `failure` and asks for the escalation (P-03, O-44).
+    // A close run's item is Cancelled: nothing is counted, and its end is its outcome (D-318).
     await runs.recordRunnerEnd(run.id, "fail").catch(() => false);
-    await createFailures(deps)
-      .dispatchFailed(run.id)
-      .catch(() => undefined);
+    if (!isClose) {
+      await createFailures(deps)
+        .dispatchFailed(run.id)
+        .catch(() => undefined);
+    }
     throw error;
   }
 

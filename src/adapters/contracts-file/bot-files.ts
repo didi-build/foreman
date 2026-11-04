@@ -6,7 +6,10 @@
 // image, its tools, its hosts, its model providers with each key's secret path (D-142, D-143), its
 // per-run limits (D-185), its task types and, for the Council, Triage and QA's visual comparison,
 // its output schemas. A task type other than the role's default may have its own instructions
-// (`task_instructions`, QA's `qa:visual`, D-242, and the Council's `council:visual`, D-270). It never holds a model (each run's route names it, ADR 0114) or a credential value.
+// (`task_instructions`, QA's `qa:visual`, D-242, and the Council's `council:visual`, D-270), and
+// limits of its own (`task_limits`: only the Developer's and the Designer's close task type, the
+// close-only run of a cancelled item's pull request, D-318, which must have them). It never holds
+// a model (each run's route names it, ADR 0114) or a credential value.
 //
 // The check is strict and collects every problem: an unknown field is refused, and a problem names
 // the file and the field, never a value from the file, so a key pasted into the wrong place cannot
@@ -30,6 +33,7 @@ import { outputSchemaProblems, type OutputSchema } from "../../core/output-schem
 import type { BotProfile } from "../../core/reconcile.ts";
 import type { RoleRunLimits, RunLimits } from "../../core/runs.ts";
 import type { AgentRole } from "../../core/store.ts";
+import { CLOSE_TASK_TYPES } from "../../core/task-types.ts";
 import { canonicalHost } from "../../egress-proxy/hosts.ts";
 import { CREDENTIAL_STYLES, parseProviders } from "../../egress-proxy/providers.ts";
 import {
@@ -79,6 +83,14 @@ const TASK_INSTRUCTIONS: Partial<Record<AgentRole, readonly string[]>> = {
   qa: ["qa:visual"],
   council: ["council:visual"],
 };
+/**
+ * Task types whose runs have limits of their own, which they must give: the close runs (D-318).
+ * No other task type may set them.
+ */
+const TASK_LIMITS: Partial<Record<AgentRole, readonly string[]>> = {
+  developer: [CLOSE_TASK_TYPES.developer],
+  designer: [CLOSE_TASK_TYPES.designer],
+};
 /** ADR 0106 section 5: an installation token lasts at most an hour. */
 const GITHUB_TOKEN_MINUTES = 60;
 const MAX_INSTRUCTION_CHARS = 32_000;
@@ -96,6 +108,7 @@ const FIELDS = [
   "fetch_allowed_hosts",
   "output_schemas",
   "task_instructions",
+  "task_limits",
 ] as const;
 
 /** One role's bot file, checked. No credential value is in it. */
@@ -126,6 +139,8 @@ export interface BotFile {
    * Council's `council:visual`).
    */
   taskInstructions?: Record<string, string>;
+  /** Limits by task type, for the close task type only (D-318). */
+  taskLimits?: Record<string, RunLimits>;
 }
 
 export type BotFiles = Record<AgentRole, BotFile>;
@@ -183,14 +198,19 @@ export function secretPathFor(template: string, projectSlug: string): string {
   return template.split(PROJECT_PLACEHOLDER).join(projectSlug);
 }
 
-function checkLimits(role: AgentRole, raw: unknown, add: (p: string) => void) {
+function checkLimits(
+  role: AgentRole,
+  raw: unknown,
+  add: (p: string) => void,
+  field = "limits",
+) {
   if (!isRecord(raw)) {
-    add("limits needs max_turns, max_minutes and max_usd");
+    add(`${field} needs max_turns, max_minutes and max_usd`);
     return undefined;
   }
   for (const key of Object.keys(raw)) {
     if (!["max_turns", "max_minutes", "max_usd"].includes(key)) {
-      add(`limits: unknown field ${key}`);
+      add(`${field}: unknown field ${key}`);
     }
   }
   const { max_turns: turns, max_minutes: minutes, max_usd: usd } = raw;
@@ -198,18 +218,18 @@ function checkLimits(role: AgentRole, raw: unknown, add: (p: string) => void) {
     Number.isSafeInteger(v) && (v as number) >= 1;
   let ok = true;
   if (!whole(turns)) {
-    add("limits.max_turns must be a whole number above 0");
+    add(`${field}.max_turns must be a whole number above 0`);
     ok = false;
   }
   if (!whole(minutes)) {
-    add("limits.max_minutes must be a whole number above 0");
+    add(`${field}.max_minutes must be a whole number above 0`);
     ok = false;
   } else if (PUSHING.includes(role) && minutes >= GITHUB_TOKEN_MINUTES) {
-    add("limits.max_minutes must stay below 60, the GitHub token's lifetime");
+    add(`${field}.max_minutes must stay below 60, the GitHub token's lifetime`);
     ok = false;
   }
   if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
-    add("limits.max_usd must be an amount above 0");
+    add(`${field}.max_usd must be an amount above 0`);
     ok = false;
   }
   return ok
@@ -445,6 +465,41 @@ function checkTaskInstructions(
   return ok ? { ...(raw as Record<string, string>) } : undefined;
 }
 
+/** The close task type's own limits (D-318): exactly the role's listed task types, each allowed. */
+function checkTaskLimits(
+  role: AgentRole,
+  raw: unknown,
+  taskTypes: unknown,
+  add: (p: string) => void,
+): Record<string, RunLimits> | undefined {
+  const names = TASK_LIMITS[role] ?? [];
+  if (names.length === 0) {
+    if (raw !== undefined) add(`task_limits: a ${role} run has only its limits`);
+    return undefined;
+  }
+  if (!isRecord(raw) || Object.keys(raw).sort().join() !== [...names].sort().join()) {
+    add(`task_limits must give exactly: ${names.join(", ")}`);
+    return undefined;
+  }
+  const allowed =
+    isRecord(taskTypes) && Array.isArray(taskTypes.allowed) ? taskTypes.allowed : [];
+  const limits: Record<string, RunLimits> = {};
+  let ok = true;
+  for (const name of names) {
+    if (
+      !allowed.includes(name) ||
+      (isRecord(taskTypes) && taskTypes.default === name)
+    ) {
+      add(`task_limits.${name} must be an allowed task type other than the default`);
+      ok = false;
+    }
+    const checked = checkLimits(role, raw[name], add, `task_limits.${name}`);
+    if (checked) limits[name] = checked;
+    else ok = false;
+  }
+  return ok ? limits : undefined;
+}
+
 /** Checks one role's parsed bot file. Every problem names the file and the field. */
 function checkBotFile(
   role: AgentRole,
@@ -522,6 +577,8 @@ function checkBotFile(
     add,
   );
   if (taskInstructions) bot.taskInstructions = taskInstructions;
+  const taskLimits = checkTaskLimits(role, data.task_limits, data.task_types, add);
+  if (taskLimits) bot.taskLimits = taskLimits;
 
   if (problems.length > before) return null;
   return {
@@ -577,6 +634,17 @@ export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
 export function runLimits(bots: BotFiles): RoleRunLimits {
   const limits = {} as RoleRunLimits;
   for (const role of BOT_ROLES) limits[role] = { ...bots[role].limits };
+  return limits;
+}
+
+/** The limits of the task types that have their own (D-318), by task type. */
+export function taskTypeLimits(bots: BotFiles): Record<string, RunLimits> {
+  const limits: Record<string, RunLimits> = {};
+  for (const role of BOT_ROLES) {
+    for (const [taskType, own] of Object.entries(bots[role].taskLimits ?? {})) {
+      limits[taskType] = { ...own };
+    }
+  }
   return limits;
 }
 

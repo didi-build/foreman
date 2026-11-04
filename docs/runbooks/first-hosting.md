@@ -123,6 +123,8 @@ Register the GitHub Apps of D-156 together, each with its own identity. The runn
 
 The runner App's permissions are the ones in D-127 plus two read-only ones from D-267: `contents: read` (the repo map's checkout) and `actions: read` (CI's screenshot bundles). Check the App's permission page shows nothing wider before installing it.
 
+The Developer's and Designer's runs open their own pull requests with their run's token (D-235), and a cancelled item's close run comments on and closes one with the same token (D-318, O-98). Both need the Apps' pull request write permission and nothing more; check each App's permission page shows it, and nothing wider than the decisions name. The close runs start only once `model_routing_policy` and `model_output_token_needs` name a route for `developer:close` and `designer:close` (O-98, open question 1); until then each is refused with `no_route` and the daily check shows the pull request waiting for its close run.
+
 In each project repository, protect builder branches against force pushes (a branch ruleset covering the runner's branch names), so the rule in the Developer's and Designer's instructions is also enforced by GitHub (D-245).
 
 ## 14. Set `agent_cluster_max_active_runs`

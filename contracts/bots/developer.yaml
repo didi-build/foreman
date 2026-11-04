@@ -11,7 +11,7 @@ role: developer
 image: opencode
 
 task_types:
-  allowed: ["developer:code", "developer:infra"]
+  allowed: ["developer:code", "developer:infra", "developer:close"]
   default: "developer:code"
 
 # D-185, ADR 0106 section 6. Minutes stay below 60: the GitHub token lasts at most an hour.
@@ -19,6 +19,16 @@ limits:
   max_turns: 100
   max_minutes: 50
   max_usd: 5
+
+# The close-only run of a cancelled item's pull request (D-318, O-98): the image's wrapper starts
+# no model, posts one fixed comment and closes that one pull request with the run's GitHub token.
+# So the smallest limits: a few minutes, one turn, and the smallest dollar cap the loader and the
+# runtime accept, which nothing spends.
+task_limits:
+  "developer:close":
+    max_turns: 1
+    max_minutes: 5
+    max_usd: 0.01
 
 # D-196. Run with every other tool denied.
 allowed_tools: [Read, Edit, Write, Glob, Grep, "Bash(git *)", "Bash(npm *)"]

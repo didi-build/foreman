@@ -304,6 +304,7 @@ describe("the called flow f/foreman/cancel_item (flow: fake adapters, D-308 (2))
     expect(await cancelItem(f.deps, { nodeId: item.id, reason: "x" })).toEqual({
       mode: "cancel",
       cancel: { recorded: false, reason: "kill_switch" },
+      closeRuns: [],
     });
     expect(
       await cancelItem(f.deps, { nodeId: item.id, reason: "x", askCouncil: true }),
