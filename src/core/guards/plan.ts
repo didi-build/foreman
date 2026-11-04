@@ -3,8 +3,9 @@
 // answer on a scanner idea) and the newest request on its plan-approval topic, and pass only when
 // that request shows the latest plan and Didi answered it, so an answer to an older plan never
 // moves the idea. The Council's (`council_plan_accepted`) passes only when the latest plan
-// carries the Council's call that Didi is not needed, and Didi was never asked about a plan for
-// the idea: no request was ever opened on its plan-approval topic.
+// carries the Council's call that Didi is not needed, and no request to Didi blocks it (D-315):
+// none is open on the idea's plan-approval topic, and the newest one, if any, was for an older
+// plan, so Didi's answer on the latest plan always comes first.
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { CurrentDecision } from "../store.ts";
 import {
@@ -95,10 +96,10 @@ export async function planReturnRecorded(ctx: GuardContext): Promise<GuardCheck>
 }
 
 /**
- * The Council accepted the idea's latest plan itself (D-307): its recorded call is that Didi is
- * not needed, and no plan-approval request was ever opened for the idea. Anything else, `yes`,
- * `unsure`, a plan with no call, or an idea Didi was already asked about, fails, so the plan goes
- * to Didi.
+ * The Council accepted the idea's latest plan itself (D-307, D-315): its recorded call is that
+ * Didi is not needed, and no request to Didi blocks it: none is open, and the newest one, if any,
+ * was for an older plan. Anything else, `yes`, `unsure`, a plan with no call, an open request, or
+ * a request for this very plan, fails, so the plan goes to Didi or waits for Didi's answer.
  */
 export async function councilPlanAccepted(ctx: GuardContext): Promise<GuardCheck> {
   const fail = (detail: string) => result(COUNCIL_ACCEPT_GUARD, false, [], detail);
@@ -113,8 +114,12 @@ export async function councilPlanAccepted(ctx: GuardContext): Promise<GuardCheck
         : "the Council is unsure, so Didi is needed",
     );
   }
-  if (await newestPlanRequest(ctx.store, ctx.node)) {
-    return fail("Didi was already asked about a plan for this idea");
+  const newest = await newestPlanRequest(ctx.store, ctx.node);
+  if (newest?.status === "open") {
+    return fail("a plan-approval request is open: Didi's answer comes first");
+  }
+  if (newest && requestSubmissionId(newest) === plan.id) {
+    return fail("Didi was asked about this plan");
   }
   return result(
     COUNCIL_ACCEPT_GUARD,

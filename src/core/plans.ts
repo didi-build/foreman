@@ -35,7 +35,8 @@
 // (src/core/council.ts, question kind `plan`), which the runner records as a `council_decision`
 // with `scope.kind` `plan_proposal` on the topic `council-plan:<idea id>`, its product direction
 // as a `product_direction` decision by `council`. The idea's latest plan (`latestPlan`) is the
-// newer of the two. When its call is `no`, and Didi was never asked about a plan for the idea, the
+// newer of the two. When its call is `no`, and no request to Didi blocks it (none open, none for this plan, D-315),
+// the
 // runner takes the runner-only move into Plan accepted guarded by `council_plan_accepted` and
 // records `plan_accepted` with `acceptedBy` `council` and the Council's reason, without a request
 // for Didi; Triage then starts as before and the daily check lists it. Any other call (`yes`,
@@ -720,8 +721,13 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
       const plan = await latestPlan(store, idea.id);
       if (!plan) return { ideaId, step: "no_submission" };
       const newest = await newestPlanRequest(store, idea);
-      // Didi not needed, and never asked about a plan for this idea: the Council accepts.
-      if (!newest && plan.needsDidi?.needed === "no") {
+      // Didi not needed, and no request to Didi blocks it (none open, none for this plan): the
+      // Council accepts (D-307, D-315).
+      if (
+        plan.needsDidi?.needed === "no" &&
+        (!newest ||
+          (newest.status !== "open" && requestSubmissionId(newest) !== plan.id))
+      ) {
         const stop = await stopped(store);
         if (stop) return { ideaId, step: stop };
         return {
