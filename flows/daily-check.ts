@@ -1,7 +1,8 @@
 // The daily check flow (build plan M4.4, spec section 6, O-91). Once a day on the schedule in
 // flows/windmill.yaml, or started by hand from its Windmill page, it generates Didi's daily check
-// from the store (src/core/daily-check.ts) and returns it as structured JSON plus a short
-// plain-text rendering, which Didi reads in the job's result in Windmill. It writes nothing and
+// from the store (src/core/daily-check.ts), with the last Scanner scan per project (O-92), and
+// returns it as structured JSON plus a short plain-text rendering, which Didi reads in the job's
+// result in Windmill. It writes nothing and
 // opens, re-asks or answers no request (D-272). It runs whatever the kill switch and dry run say,
 // since reading is not acting, and the result says when either is on. Delivery (push, email, a
 // page) waits for the notifications milestone (M4.3); nothing here sends anything.

@@ -158,21 +158,34 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
     expect(ignoresMajor(entry("npm", "/src/agent-images/opencode/cli"))).toBe(true);
   });
 
-  it("pins the repo map image's TypeScript compiler in its own lockfile, sends fetch through the proxy and holds no model SDK (D-275 (2))", () => {
+  it("pins the repo map image's TypeScript compiler and YAML parser in its own lockfile, at the root's versions, sends fetch through the proxy and holds no model SDK (D-275 (2), O-92)", () => {
     const deps = JSON.parse(
       readFileSync(join(ROOT, "repo-map", "deps", "package.json"), "utf8"),
     ) as { type: string; dependencies: Record<string, string> };
     expect(deps.type).toBe("module");
-    expect(Object.keys(deps.dependencies)).toEqual(["typescript"]);
-    expect(deps.dependencies.typescript).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(Object.keys(deps.dependencies)).toEqual(["typescript", "yaml"]);
+    const root = JSON.parse(readFileSync("package.json", "utf8")) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
     const lock = JSON.parse(
       readFileSync(join(ROOT, "repo-map", "deps", "package-lock.json"), "utf8"),
     ) as { packages: Record<string, { version?: string; integrity?: string }> };
-    expect(Object.keys(lock.packages).sort()).toEqual(["", "node_modules/typescript"]);
-    expect(lock.packages["node_modules/typescript"]?.version).toBe(
-      deps.dependencies.typescript,
-    );
-    expect(lock.packages["node_modules/typescript"]?.integrity).toMatch(/^sha512-/);
+    expect(Object.keys(lock.packages).sort()).toEqual([
+      "",
+      "node_modules/typescript",
+      "node_modules/yaml",
+    ]);
+    for (const name of ["typescript", "yaml"]) {
+      expect(deps.dependencies[name]).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(deps.dependencies[name]).toBe(
+        root.dependencies[name] ?? root.devDependencies[name],
+      );
+      expect(lock.packages[`node_modules/${name}`]?.version).toBe(
+        deps.dependencies[name],
+      );
+      expect(lock.packages[`node_modules/${name}`]?.integrity).toMatch(/^sha512-/);
+    }
     const text = dockerfile("repo-map");
     expect(text).toContain("npm ci --omit=dev --ignore-scripts");
     expect(text).toContain("ENV NODE_USE_ENV_PROXY=1");

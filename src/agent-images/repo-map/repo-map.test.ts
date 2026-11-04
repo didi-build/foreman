@@ -25,9 +25,11 @@ import {
   FIXTURE_ENTRIES,
   FIXTURE_REPO as REPO,
   FIXTURE_SHA as SHA,
+  SCAN_FIXTURE_ENTRIES,
   tarball,
 } from "../../adapters/repo-map/fixtures.ts";
 import { decodeRepoMapResult } from "../../adapters/repo-map/result.ts";
+import { checkScanResult } from "../../core/scan.ts";
 import { CONNECT_TRIES, runRepoMapImage } from "./image.ts";
 
 const TOKEN = "github-token-value-not-real-0123456789";
@@ -166,6 +168,50 @@ describe("the repo map image (unit with fakes, D-275 (2))", () => {
   });
 });
 
+describe("the image's scan mode (unit with fakes, D-300, O-92)", () => {
+  it("reads the same archive the same way and prints the scan's findings, which the runner reads back", async () => {
+    const github = fakeGitHub(async () => tarball(SCAN_FIXTURE_ENTRIES));
+    const { code, lines, result } = await run(
+      { ...ENV, FOREMAN_JOB_MODE: "scan" },
+      github.http,
+    );
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(github.asked.map((a) => [a.path, a.accept, a.token])).toEqual([
+      [`/repos/${REPO}/tarball/${SHA}`, "raw", TOKEN],
+    ]);
+    const scan = checkScanResult(result?.structured, SHA);
+    expect(scan.findings.map((f) => f.check)).toEqual([
+      "design_index_link_missing",
+      "design_spec_not_indexed",
+      "gallery_spec_missing",
+      "gallery_entry_unregistered",
+      "contract_unparsable",
+      "doc_link_missing",
+    ]);
+    expect(lines.join("\n")).not.toContain(TOKEN);
+  });
+
+  it("prints the map when the mode is map or left out", async () => {
+    const github = fakeGitHub(async () => tarball(FIXTURE_ENTRIES));
+    for (const env of [ENV, { ...ENV, FOREMAN_JOB_MODE: "map" }]) {
+      const { result } = await run(env, github.http);
+      expect(decodeRepoMapResult(result?.structured, SHA).commitSha).toBe(SHA);
+    }
+  });
+
+  it("refuses an unknown mode before any request", async () => {
+    const github = fakeGitHub(async () => tarball(FIXTURE_ENTRIES));
+    const { code, result } = await run(
+      { ...ENV, FOREMAN_JOB_MODE: "shell" },
+      github.http,
+    );
+    expect(code).toBe(1);
+    expect(result?.errorText).toMatch(/FOREMAN_JOB_MODE is not map or scan/);
+    expect(github.asked).toEqual([]);
+  });
+});
+
 describe("the image starts from the files its Dockerfile copies (integration, D-275 (2))", () => {
   it("with no settings, exits 1 with a result line naming FOREMAN_RUN_ID as its last line", () => {
     const dockerfile = readFileSync("src/agent-images/repo-map/Dockerfile", "utf8");
@@ -184,12 +230,15 @@ describe("the image starts from the files its Dockerfile copies (integration, D-
           cpSync(source, to);
         }
       }
-      // `npm ci` in the image installs the compiler; here the repository's own copy stands in.
+      // `npm ci` in the image installs the compiler and the YAML parser; here the repository's
+      // own copies stand in.
       mkdirSync(join(dir, "node_modules"));
-      symlinkSync(
-        realpathSync("node_modules/typescript"),
-        join(dir, "node_modules", "typescript"),
-      );
+      for (const name of ["typescript", "yaml"]) {
+        symlinkSync(
+          realpathSync(`node_modules/${name}`),
+          join(dir, "node_modules", name),
+        );
+      }
       const started = spawnSync(
         process.execPath,
         ["src/agent-images/repo-map/main.ts"],

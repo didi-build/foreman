@@ -9,7 +9,10 @@ import type {
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
-import { createFakeRepoMaps } from "../../src/adapters/repo-map/fake.ts";
+import {
+  createFakeRepoMaps,
+  createFakeRepoScans,
+} from "../../src/adapters/repo-map/fake.ts";
 import {
   createFakeRepoFolders,
   createFakeRepoVisibility,
@@ -85,6 +88,7 @@ export function flowDepsFor(
   const repoFolders = createFakeRepoFolders();
   const repoVisibility = createFakeRepoVisibility();
   const repoMaps = createFakeRepoMaps();
+  const repoScans = createFakeRepoScans();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
@@ -96,6 +100,7 @@ export function flowDepsFor(
     repoFolders,
     repoVisibility,
     repoMaps,
+    repoScans,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -127,6 +132,7 @@ export function flowDepsFor(
     repoFolders,
     repoVisibility,
     repoMaps,
+    repoScans,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {
@@ -145,6 +151,7 @@ export async function createFlowFixture() {
     repoFolders,
     repoVisibility,
     repoMaps,
+    repoScans,
     tasksFor,
     tokens,
     setExecutions,
@@ -172,6 +179,7 @@ export async function createFlowFixture() {
     repoFolders,
     repoVisibility,
     repoMaps,
+    repoScans,
     tasksFor,
     tokens,
     setExecutions,

@@ -499,10 +499,17 @@ export const REPO_MAP_HOSTS: readonly string[] = [
   "codeload.github.com",
 ];
 
+/**
+ * What the repo map Job prints: the map (D-275 (2)), or the Scanner's stage 1 findings over the
+ * same archive (`scan`, O-92). The Job, its isolation and its one token are the same either way.
+ */
+export type RepoReadMode = "map" | "scan";
+
 /** One repo map read (D-275 (2)): its own id, the project's namespace, the repository and commit. */
 export interface RepoMapJobSpec {
   /** A fresh id for this read, used in its object names and labels. */
   mapId: string;
+  mode: RepoReadMode;
   projectSlug: string;
   /** `owner/name`. */
   repository: string;
@@ -524,6 +531,9 @@ function checkRepoMapJob(spec: RepoMapJobSpec): void {
     throw new Error("a repo map needs its repository as owner/name");
   }
   if (!SHA.test(spec.commitSha)) throw new Error("a repo map needs its full commit");
+  if (spec.mode !== "map" && spec.mode !== "scan") {
+    throw new Error("a repo map Job is in map or scan mode");
+  }
 }
 
 /**
@@ -551,7 +561,8 @@ export function repoMapSecret(spec: RepoMapJobSpec, githubToken: string): Secret
  * The repo map Job's stage (D-275 (2), O-87): the QA fetch step's shape, with its own proxy that
  * allows only `REPO_MAP_HOSTS`, no model provider and no state API route, and the Job, which gets
  * the read token and nothing else. It downloads the archive at the commit, parses it and prints
- * the map; it never runs the project's code and writes nothing to the repository.
+ * the map, or in scan mode the Scanner's stage 1 findings (O-92); it never runs the project's code
+ * and writes nothing to the repository.
  */
 export function repoMapStage(
   spec: RepoMapJobSpec,
@@ -585,6 +596,7 @@ export function repoMapStage(
             FOREMAN_RUN_ID: spec.mapId,
             FOREMAN_REPOSITORY: spec.repository,
             FOREMAN_COMMIT_SHA: spec.commitSha,
+            FOREMAN_JOB_MODE: spec.mode,
             TMPDIR: "/tmp",
           }),
           ...proxyEnvFor(proxyAddress, settings.proxyPort),

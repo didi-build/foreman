@@ -305,6 +305,22 @@ One row per GitHub webhook delivery the receiver authenticated (ADR 0113 section
 
 Roles: the receiver's `factory_ingest` inserts rows and can read only `delivery_id` (needed to skip a known id). The runner reads them for the daily check.
 
+## scans (append-only, migration 0017)
+
+One row per run of the Scanner's stage 1 over one project's repository (D-299, D-300, O-92). A scan is about a project, not a node, so it is not evidence.
+
+| Column      | Type        | Notes                                                                                                                                                                                     |
+| ----------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id          | uuid pk     |                                                                                                                                                                                           |
+| project_id  | uuid fk     |                                                                                                                                                                                           |
+| commit_sha  | text null   | The full commit scanned. Required when `outcome` is `scanned`                                                                                                                             |
+| outcome     | text        | `scanned` or `failed`                                                                                                                                                                     |
+| summary     | jsonb       | `scanned`: findings by check, the total, the new ideas (node id, title, check, class), merged and over-cap counts and the cap. `failed`: the fixed name of the step that failed. No token |
+| recorded_by | text        | `runner:scanner`                                                                                                                                                                          |
+| recorded_at | timestamptz |                                                                                                                                                                                           |
+
+Roles: only the runner (`factory_runner`) inserts and reads them; the daily check reads the latest per project. `factory_api` and `factory_ingest` have no access.
+
 ## spec_versions
 
 | Column       | Type        | Notes                                    |

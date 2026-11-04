@@ -44,6 +44,14 @@ const REPO_MAP: RepoMapJobSpec = {
   projectSlug: "rehearsal",
   repository: "didi-build/rehearsal",
   commitSha: "0123456789abcdef0123456789abcdef01234567",
+  mode: "map",
+};
+
+/** The same Job in the Scanner's scan mode (O-92), with its own read id. */
+const REPO_SCAN: RepoMapJobSpec = {
+  ...REPO_MAP,
+  mapId: "8b7c6d5e-4f3a-4b2c-8d9e-0f1a2b3c4d5e",
+  mode: "scan",
 };
 
 function envOf(job: Job): Map<string, EnvVar> {
@@ -69,7 +77,8 @@ function everything(): { jobs: Job[]; objects: RunObject[] } {
   const qa = agentStage(QA, QA_LIMITS, SETTINGS);
   const fetch = fetchStage(QA, SETTINGS);
   const repoMap = repoMapStage(REPO_MAP, SETTINGS);
-  const stages = [dev, council, qa, fetch, repoMap];
+  const repoScan = repoMapStage(REPO_SCAN, SETTINGS);
+  const stages = [dev, council, qa, fetch, repoMap, repoScan];
   const jobs = stages.flatMap((s) => [s.proxyJob, s.clientJob(PROXY_IP)]);
   const objects: RunObject[] = [
     ...jobs,
@@ -78,6 +87,7 @@ function everything(): { jobs: Job[]; objects: RunObject[] } {
     ...runSecrets(QA, credentialsFor(QA)),
     ...runSecrets(COUNCIL, credentialsFor(COUNCIL)),
     repoMapSecret(REPO_MAP, GITHUB_TOKEN),
+    repoMapSecret(REPO_SCAN, GITHUB_TOKEN),
     workspaceClaim(QA, SETTINGS),
   ];
   return { jobs, objects };
@@ -474,6 +484,7 @@ describe("the repo map Job (unit: D-275 (2), O-87)", () => {
     });
     expect([...envOf(mapJob).keys()].sort()).toEqual([
       "FOREMAN_COMMIT_SHA",
+      "FOREMAN_JOB_MODE",
       "FOREMAN_REPOSITORY",
       "FOREMAN_RUN_ID",
       "GITHUB_TOKEN",
@@ -563,6 +574,7 @@ describe("the repo map Job (unit: D-275 (2), O-87)", () => {
     ["a bad project slug", { projectSlug: "Bad_Slug" }],
     ["a bad repository", { repository: "../x" }],
     ["a short commit", { commitSha: "abc" }],
+    ["an unknown mode", { mode: "run" as RepoMapJobSpec["mode"] }],
   ])("refuses %s", (_label, change) => {
     expect(() => repoMapStage({ ...REPO_MAP, ...change }, SETTINGS)).toThrow();
     expect(() => repoMapSecret({ ...REPO_MAP, ...change }, GITHUB_TOKEN)).toThrow();
@@ -579,6 +591,69 @@ describe("the repo map Job (unit: D-275 (2), O-87)", () => {
     expect(() => checkSettings({ ...SETTINGS, repoMapMaxMinutes: 0 })).toThrow(
       /repoMapMaxMinutes/,
     );
+  });
+});
+
+describe("the scan Job (unit: the repo map Job in scan mode, D-300, O-92)", () => {
+  /** The object with its read's id replaced, so two reads' objects compare. */
+  const strip = <T>(object: T, id: string): T =>
+    JSON.parse(JSON.stringify(object).split(id).join("ID")) as T;
+
+  it("is the repo map Job with only its mode changed: same image, deadline, resources, credential and network", () => {
+    const map = repoMapStage(REPO_MAP, SETTINGS);
+    const scan = repoMapStage(REPO_SCAN, SETTINGS);
+    const scanJob = scan.clientJob(PROXY_IP);
+    expect(value(scanJob, "FOREMAN_JOB_MODE")).toBe("scan");
+    expect(value(map.clientJob(PROXY_IP), "FOREMAN_JOB_MODE")).toBe("map");
+    const mapJob = strip(map.clientJob(PROXY_IP), REPO_MAP.mapId);
+    const sameJob = strip(scanJob, REPO_SCAN.mapId);
+    const container = sameJob.spec.template.spec.containers[0];
+    const mapContainer = mapJob.spec.template.spec.containers[0];
+    expect({
+      ...sameJob,
+      spec: {
+        ...sameJob.spec,
+        template: {
+          ...sameJob.spec.template,
+          spec: {
+            ...sameJob.spec.template.spec,
+            containers: [
+              {
+                ...container,
+                env: container?.env?.filter((e) => e.name !== "FOREMAN_JOB_MODE"),
+              },
+            ],
+          },
+        },
+      },
+    }).toEqual({
+      ...mapJob,
+      spec: {
+        ...mapJob.spec,
+        template: {
+          ...mapJob.spec.template,
+          spec: {
+            ...mapJob.spec.template.spec,
+            containers: [
+              {
+                ...mapContainer,
+                env: mapContainer?.env?.filter((e) => e.name !== "FOREMAN_JOB_MODE"),
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(strip(scan.proxyJob, REPO_SCAN.mapId)).toEqual(
+      strip(map.proxyJob, REPO_MAP.mapId),
+    );
+    expect(scan.policies.map((p) => strip(p, REPO_SCAN.mapId))).toEqual(
+      map.policies.map((p) => strip(p, REPO_MAP.mapId)),
+    );
+    expect(secretRefs(scanJob)).toEqual([
+      repoMapNames(REPO_SCAN.mapId).githubTokenSecret,
+    ]);
+    expect(value(scan.proxyJob, "ALLOWED_HOSTS")).toBe(REPO_MAP_HOSTS.join(","));
   });
 });
 

@@ -20,6 +20,7 @@ import {
   type Project,
   type Run,
   type RunToken,
+  type ScanRecord,
   type Setting,
   type SpecVersion,
   type Store,
@@ -49,6 +50,7 @@ interface State {
   settings: Map<string, Setting>;
   decisionPointRecords: Map<string, DecisionPointRecord>;
   decisionPointOutcomes: Map<string, DecisionPointOutcome>;
+  scans: Map<string, ScanRecord>;
 }
 
 const emptyState = (): State => ({
@@ -71,6 +73,7 @@ const emptyState = (): State => ({
   settings: new Map(),
   decisionPointRecords: new Map(),
   decisionPointOutcomes: new Map(),
+  scans: new Map(),
 });
 
 /** Copies on the way in and out, so callers can never change stored rows by reference. */
@@ -144,6 +147,15 @@ function ops(state: State): StoreOps {
     },
     async getProjectBySlug(slug) {
       return copy([...state.projects.values()].find((p) => p.slug === slug) ?? null);
+    },
+    async listProjects() {
+      return [...state.projects.values()]
+        .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+        .map(copy);
+    },
+    // Every transaction here already runs alone, so there is nothing to lock.
+    async lockProject(id) {
+      return state.projects.has(id);
     },
 
     async insertNode(n) {
@@ -454,6 +466,19 @@ function ops(state: State): StoreOps {
         "decision_point_outcomes_pkey",
       );
     },
+
+    async insertScan(scan) {
+      if (!state.projects.has(scan.projectId)) {
+        throw new Error("scans.project_id must name a project");
+      }
+      insertUnique(state.scans, scan.id, scan, "scans_pkey");
+    },
+    async getLatestScan(projectId) {
+      const scans = [...state.scans.values()]
+        .filter((scan) => scan.projectId === projectId)
+        .sort(byTimeThenId<ScanRecord>((scan) => scan.recordedAt));
+      return copy(scans.at(-1) ?? null);
+    },
   };
 }
 
@@ -478,6 +503,7 @@ function cloneState(state: State): State {
     settings: new Map(state.settings),
     decisionPointRecords: new Map(state.decisionPointRecords),
     decisionPointOutcomes: new Map(state.decisionPointOutcomes),
+    scans: new Map(state.scans),
   };
 }
 

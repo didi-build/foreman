@@ -348,6 +348,23 @@ export interface Dispatch {
   branch: string;
 }
 
+/**
+ * One run of the Scanner's stage 1 over a project's repository (migration 0017, D-300, O-92),
+ * written by the runner only. `summary` is what the daily check shows: for `scanned`, the
+ * findings by check and which became ideas, were merged or were over the cap; for `failed`, the
+ * fixed name of the step that failed. Append-only.
+ */
+export interface ScanRecord {
+  id: string;
+  projectId: string;
+  /** The commit scanned; null when the scan failed before it knew one. */
+  commitSha: string | null;
+  outcome: "scanned" | "failed";
+  summary: Json;
+  recordedBy: string;
+  recordedAt: Date;
+}
+
 /** A write the store refused because of a uniqueness rule, for example a second open gate request. */
 export class StoreConflictError extends Error {
   readonly constraint: string;
@@ -364,6 +381,13 @@ export interface StoreOps {
   getProject(id: string): Promise<Project | null>;
   /** The project with this slug (unique, schema), or null. */
   getProjectBySlug(slug: string): Promise<Project | null>;
+  /** Every project, by slug. */
+  listProjects(): Promise<Project[]>;
+  /**
+   * Locks the project row until the transaction ends, so two writers that read the project's
+   * nodes and then insert (the Scanner's dedupe, O-92) take turns. Use inside `transaction`.
+   */
+  lockProject(id: string): Promise<boolean>;
 
   insertNode(node: Node): Promise<void>;
   getNode(id: string): Promise<Node | null>;
@@ -475,6 +499,11 @@ export interface StoreOps {
 
   insertDecisionPointRecord(record: DecisionPointRecord): Promise<void>;
   insertDecisionPointOutcome(outcome: DecisionPointOutcome): Promise<void>;
+
+  /** Records one scan (migration 0017). */
+  insertScan(scan: ScanRecord): Promise<void>;
+  /** The project's most recent scan, by `recordedAt` then id, or null. */
+  getLatestScan(projectId: string): Promise<ScanRecord | null>;
 }
 
 export interface Store extends StoreOps {

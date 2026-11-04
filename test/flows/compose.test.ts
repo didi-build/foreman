@@ -150,6 +150,8 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         NotBuiltError,
       );
       await expect(deps.repoMaps.read(project)).rejects.toThrow(/runner App/);
+      // The Scanner's stage 1 uses the same Job in scan mode, so it refuses the same way (O-92).
+      await expect(deps.repoScans.scan(project)).rejects.toThrow(NotBuiltError);
       await expect(
         deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
       ).rejects.toThrow(NotBuiltError);

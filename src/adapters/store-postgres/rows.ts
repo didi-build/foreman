@@ -12,6 +12,7 @@ import type {
   Project,
   Run,
   RunToken,
+  ScanRecord,
   Setting,
   SpecVersion,
   Transition,
@@ -202,4 +203,14 @@ export const toSetting = (r: Row): Setting => ({
   value: r.value as Json,
   updatedBy: r.updated_by as string,
   updatedAt: r.updated_at as Date,
+});
+
+export const toScanRecord = (r: Row): ScanRecord => ({
+  id: r.id as string,
+  projectId: r.project_id as string,
+  commitSha: r.commit_sha as string | null,
+  outcome: r.outcome as ScanRecord["outcome"],
+  summary: r.summary as Json,
+  recordedBy: r.recorded_by as string,
+  recordedAt: r.recorded_at as Date,
 });

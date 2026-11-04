@@ -2,10 +2,11 @@
   "name": "foreman-repo-map-image",
   "version": "0.0.0",
   "private": true,
-  "description": "The TypeScript compiler pinned for the repo map Job's image only (D-275). The image runs its .ts files as ES modules.",
+  "description": "The TypeScript compiler and the YAML parser pinned for the repo map Job's image only (D-275, O-92). The image runs its .ts files as ES modules.",
   "license": "UNLICENSED",
   "type": "module",
   "dependencies": {
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "yaml": "2.9.1"
   }
 }

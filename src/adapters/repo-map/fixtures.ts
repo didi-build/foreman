@@ -70,3 +70,42 @@ export const FIXTURE_ENTRIES: TarEntry[] = [
   { path: `${FIXTURE_TOP}/.git/config`, text: "[core]" },
   { path: `${FIXTURE_TOP}/src/link.ts`, type: "2" },
 ];
+
+/**
+ * A small checkout for the Scanner's stage 1 (O-92) with one finding of each check: an index link
+ * to a missing spec, a spec missing from the index, a gallery entry naming a missing spec, an
+ * entry the registry does not import, a contract that is not YAML and a broken doc link.
+ */
+export const SCAN_FIXTURE_ENTRIES: TarEntry[] = [
+  ...FIXTURE_ENTRIES,
+  {
+    path: `${FIXTURE_TOP}/design/README.md`,
+    text: "# Design\n\n- [Button](gallery/button/spec.md)\n- [Old](gallery/old/spec.md)\n",
+  },
+  { path: `${FIXTURE_TOP}/design/gallery/button/spec.md`, text: "# Button\n" },
+  { path: `${FIXTURE_TOP}/design/gallery/card/spec.md`, text: "# Card\n" },
+  {
+    path: `${FIXTURE_TOP}/components/button/button.gallery.ts`,
+    text: 'export const button = {\n  specPath: "design/gallery/button/spec.md",\n};\n',
+  },
+  {
+    path: `${FIXTURE_TOP}/components/card/card.gallery.ts`,
+    text: 'export const card = {\n  specPath: "design/gallery/kard/spec.md",\n};\n',
+  },
+  {
+    path: `${FIXTURE_TOP}/gallery/registry.ts`,
+    text: 'import { button } from "../components/button/button.gallery.js";\nexport const entries = [button];\n',
+  },
+  {
+    path: `${FIXTURE_TOP}/contracts/machine-2/code.yaml`,
+    text: "states:\n  ready: {}\n",
+  },
+  {
+    path: `${FIXTURE_TOP}/contracts/machine-2/broken.yaml`,
+    text: "states:\n  ready: [\n",
+  },
+  {
+    path: `${FIXTURE_TOP}/docs/guide.md`,
+    text: "# Guide\n\n[map](../README.md) and [gone](./gone.md)\n",
+  },
+];

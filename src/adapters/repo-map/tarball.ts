@@ -7,7 +7,8 @@
 // backslash or a control character is refused, so a crafted archive cannot name a file outside the
 // checkout. `.git` and `node_modules` are skipped as in `readCheckout`. The archive, its unpacked
 // size and its number of files are bounded, and the text of a file is kept only when the map
-// parses it (a code file up to 1 MB, and the root `package.json`).
+// parses it (a code file up to 1 MB, and the root `package.json`) or, for the Scanner's stage 1
+// (O-92), when its checks read it (`alsoKeep`: Markdown and contract files, up to 1 MB each).
 import { gunzipSync } from "node:zlib";
 
 import { isPlainRelativePath } from "../github/archive-path.ts";
@@ -78,10 +79,13 @@ function checkoutPath(raw: string): string | null {
 }
 
 /**
- * The checkout's regular files from a gzip'd tar, each with its text when the map parses it and
- * an empty text otherwise (the shape `buildRepoMap` takes).
+ * The checkout's regular files from a gzip'd tar, each with its text when the map parses it (or
+ * `alsoKeep` asks for it) and an empty text otherwise (the shape `buildRepoMap` takes).
  */
-export function readTarball(gzipped: Uint8Array): Map<string, string> {
+export function readTarball(
+  gzipped: Uint8Array,
+  alsoKeep: (path: string) => boolean = () => false,
+): Map<string, string> {
   let tar: Buffer;
   try {
     tar = gunzipSync(gzipped, { maxOutputLength: TARBALL_LIMITS.unpackedBytes });
@@ -119,7 +123,8 @@ export function readTarball(gzipped: Uint8Array): Map<string, string> {
       throw new TarballError(`the archive has more than ${TARBALL_LIMITS.files} files`);
     }
     const wanted =
-      (CODE.test(path) && size <= TARBALL_LIMITS.textBytes) || path === "package.json";
+      ((CODE.test(path) || alsoKeep(path)) && size <= TARBALL_LIMITS.textBytes) ||
+      path === "package.json";
     files.set(path, wanted ? Buffer.from(data).toString("utf8") : "");
   }
   return files;

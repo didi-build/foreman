@@ -14,6 +14,9 @@
 // a repeated or concurrent run end finds them and writes nothing. The new ideas are inserted,
 // never locked. Under the kill switch or in dry run it writes nothing. Plain logic over an
 // injected store, clock and id source (D-162).
+//
+// The Scanner's stage 1 files its findings through the same two steps (./scan-ideas.ts, D-300,
+// O-92): `switchesHolding` and `insertIdea`.
 import type { Clock, IdSource } from "./library.ts";
 import { IDEA_ENTRY } from "./ideas.ts";
 import {
@@ -59,13 +62,47 @@ const fromRun = (node: Node, runId: string): boolean =>
   field(node.body, "source") === FINDING_SOURCE &&
   field(field(node.body, "foundBy"), "runId") === runId;
 
-export function createFindingIdeas({ store, clock, ids }: FindingIdeasOptions) {
-  async function held(tx: StoreOps): Promise<"kill_switch" | "dry_run" | null> {
-    if ((await tx.getSetting("kill_switch"))?.value === true) return "kill_switch";
-    if ((await tx.getSetting("dry_run"))?.value !== false) return "dry_run";
-    return null;
-  }
+/** Which switch holds the runner from creating ideas now, read in the writing transaction. */
+export async function switchesHolding(
+  tx: Pick<StoreOps, "getSetting">,
+): Promise<"kill_switch" | "dry_run" | null> {
+  if ((await tx.getSetting("kill_switch"))?.value === true) return "kill_switch";
+  if ((await tx.getSetting("dry_run"))?.value !== false) return "dry_run";
+  return null;
+}
 
+/**
+ * Inserts one idea in Machine 1's entry state (Submitted, owned by the runner, ./ideas.ts), as
+ * the runner creates it from a finding. Inserted, never locked; no transition is written.
+ */
+export async function insertIdea(
+  tx: Pick<StoreOps, "insertNode">,
+  idea: { id: string; projectId: string; title: string; body: Json; at: Date },
+): Promise<void> {
+  await tx.insertNode({
+    id: idea.id,
+    projectId: idea.projectId,
+    type: "idea",
+    track: null,
+    state: IDEA_ENTRY.state,
+    substate: null,
+    ownerRole: IDEA_ENTRY.ownerRole,
+    title: idea.title,
+    body: idea.body,
+    hold: false,
+    agentReady: false,
+    stale: false,
+    blockedReason: null,
+    stateSince: idea.at,
+    linearIssueId: null,
+    linearStatusSynced: null,
+    version: 0,
+    createdAt: idea.at,
+    updatedAt: idea.at,
+  });
+}
+
+export function createFindingIdeas({ store, clock, ids }: FindingIdeasOptions) {
   return {
     /**
      * Creates one idea per finding in the run's result `structured`, once per run. Call it only
@@ -85,7 +122,7 @@ export function createFindingIdeas({ store, clock, ids }: FindingIdeasOptions) {
       const nodeId = run.nodeId;
       if (!nodeId) return { step: "refused", reason: "no_node" };
       return store.transaction(async (tx): Promise<FindingIdeas> => {
-        const switches = await held(tx);
+        const switches = await switchesHolding(tx);
         if (switches) return { step: "refused", reason: switches };
         // The only node locked: the ideas are inserted, never locked.
         const item = await tx.getNodeForUpdate(nodeId);
@@ -97,30 +134,16 @@ export function createFindingIdeas({ store, clock, ids }: FindingIdeasOptions) {
           return { step: "already_created", ideas: earlier.length };
         const at = clock.now();
         for (const finding of read.findings) {
-          await tx.insertNode({
+          await insertIdea(tx, {
             id: ids.next(),
             projectId: item.projectId,
-            type: "idea",
-            track: null,
-            state: IDEA_ENTRY.state,
-            substate: null,
-            ownerRole: IDEA_ENTRY.ownerRole,
             title: finding.title,
             body: {
               source: FINDING_SOURCE,
               description: finding.detail,
               foundBy: { role: run.bot, nodeId: item.id, runId: run.id },
             },
-            hold: false,
-            agentReady: false,
-            stale: false,
-            blockedReason: null,
-            stateSince: at,
-            linearIssueId: null,
-            linearStatusSynced: null,
-            version: 0,
-            createdAt: at,
-            updatedAt: at,
+            at,
           });
         }
         return { step: "created", ideas: read.findings.length };
