@@ -22,6 +22,7 @@ import {
   toProject,
   toRun,
   toRunToken,
+  toScanRecord,
   toSetting,
   toSpecVersion,
   toTransition,
@@ -99,6 +100,18 @@ function ops(db: Queryable): StoreOps {
     async getProjectBySlug(slug) {
       const r = await one("select * from factory.projects where slug = $1", [slug]);
       return r && toProject(r);
+    },
+    async listProjects() {
+      return (await rows("select * from factory.projects order by slug")).map(
+        toProject,
+      );
+    },
+    async lockProject(id) {
+      return (
+        (await one("select id from factory.projects where id = $1 for update", [
+          id,
+        ])) !== null
+      );
     },
 
     async insertNode(n) {
@@ -632,6 +645,30 @@ function ops(db: Queryable): StoreOps {
          values ($1, $2, $3, $4, $5)`,
         [o.id, o.recordId, json(o.outcome), o.recordedBy, o.recordedAt],
       );
+    },
+
+    async insertScan(scan) {
+      await exec(
+        `insert into factory.scans (id, project_id, commit_sha, outcome, summary, recorded_by, recorded_at)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          scan.id,
+          scan.projectId,
+          scan.commitSha,
+          scan.outcome,
+          json(scan.summary),
+          scan.recordedBy,
+          scan.recordedAt,
+        ],
+      );
+    },
+    async getLatestScan(projectId) {
+      const r = await one(
+        `select * from factory.scans where project_id = $1
+         order by recorded_at desc, id desc limit 1`,
+        [projectId],
+      );
+      return r && toScanRecord(r);
     },
   };
 }

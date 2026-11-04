@@ -36,6 +36,23 @@ flows:
       cron: "0 0 */2 * * *"
       timezone: UTC
 
+  - name: scan
+    path: f/foreman/scan
+    entry: flows/scan.ts
+    trigger: schedule
+    # The Scanner's stage 1 (D-299, D-300, O-92): once a day at 05:00 Toronto time, an hour
+    # before the daily check, which shows what it found (D-297). About 30 runs a month (D-164).
+    # It scans every project's repository at its default branch's head with fixed checks and no
+    # model, in the repo map Job's scan mode (same isolation, the same one contents read token),
+    # and files each new finding as an idea in that project, at most 5 per scan, duplicates of an
+    # open idea or item merged. It never changes code, opens a PR or opens a gate request. Under
+    # the kill switch or in dry run, and until the runner App exists (D-178), it scans nothing,
+    # records nothing and says so in its result. It can also be started by hand from its page.
+    schedule:
+      every_minutes: 1440
+      cron: "0 0 5 * * *"
+      timezone: America/Toronto
+
   - name: daily_check
     path: f/foreman/daily_check
     entry: flows/daily-check.ts

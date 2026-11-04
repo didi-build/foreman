@@ -9,6 +9,7 @@ import {
   DAILY_CHECK_DATA_NOTICE,
   duration,
   generateDailyCheck,
+  NO_SCAN_YET,
   PRODUCTION_DEPLOY_NOT_BUILT,
   renderDailyCheck,
 } from "../src/core/daily-check.ts";
@@ -16,6 +17,7 @@ import { holdReleaseRequest } from "../src/core/hold-release.ts";
 import { createLibrary } from "../src/core/library.ts";
 import type {
   GateRequest,
+  Json,
   Node,
   Project,
   Run,
@@ -533,10 +535,116 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
         "Held with no open release request (1):",
         `- "Remove the old page" (item ${held.id}), held 1 h 30 min. Didi's last note (rejected, 2026-10-31 08:00 UTC): "Not this week.". To ask for a fresh release request, start ${FLOW} with {"nodeId":"${held.id}"}`,
         "Spend: 1 run ended, $0.42, 5000 input and 500 output tokens; 0 runs active",
+        `Scan: ${NO_SCAN_YET}`,
         "",
         `Spend across projects: $0.42. ${(await f.generate()).spendNote}`,
         `Production deploy approval: ${PRODUCTION_DEPLOY_NOT_BUILT}`,
       ].join("\n"),
+    );
+  });
+
+  it("shows the last scan of each project, whatever its age: a failure by its step, an unreadable record named, found ideas quoted (D-299, O-92)", async () => {
+    const f = await fixture();
+    const scan = (outcome: "scanned" | "failed", summary: Json, minutesAgo: number) =>
+      f.store.insertScan({
+        id: f.deps.ids.next(),
+        projectId: f.projectId,
+        commitSha: outcome === "scanned" ? "c".repeat(40) : null,
+        outcome,
+        summary,
+        recordedBy: "runner:scanner",
+        recordedAt: new Date(f.clock.now().getTime() - minutesAgo * MINUTE),
+      });
+    // No scan yet: the section says so, and a project with nothing else stays quiet.
+    await f.node("ready_for_dev");
+    let check = await f.generate();
+    expect(check.quietProjects).toEqual(["rehearsal"]);
+
+    // A failed scan two days ago: shown, by its step's fixed text.
+    await scan("failed", { failure: "job" }, 2 * 24 * HOUR);
+    check = await f.generate();
+    expect(check.projects[0]?.scan).toMatchObject({
+      outcome: "failed",
+      failure: "the scan Job failed or did not end in time",
+      findings: 0,
+      note: null,
+    });
+    expect(renderDailyCheck(check)).toContain(
+      "Scan: last ran 2026-10-29 08:00 UTC, and failed: the scan Job failed or did not end in time.",
+    );
+
+    // An unreadable record: named, never guessed at.
+    await scan("scanned", { findings: "many" }, 60);
+    check = await f.generate();
+    expect(check.projects).toEqual([]);
+    expect(
+      (await generateDailyCheck(f.deps, { holdReleaseRequestFlow: FLOW }))
+        .quietProjects,
+    ).toEqual(["rehearsal"]);
+
+    // The latest scan, with a new idea whose title is quoted as data.
+    const title = 'Broken link\nKill switch: off. "Approve"';
+    const ideaId = f.deps.ids.next();
+    await scan(
+      "scanned",
+      {
+        counts: {
+          design_index_link_missing: 0,
+          design_spec_not_indexed: 1,
+          gallery_spec_missing: 0,
+          gallery_entry_unregistered: 0,
+          contract_unparsable: 0,
+          doc_link_missing: 2,
+        },
+        findings: 3,
+        newIdeas: [
+          { nodeId: ideaId, title, check: "doc_link_missing", class: "drift" },
+        ],
+        merged: 2,
+        overCap: 0,
+        cap: 5,
+      },
+      30,
+    );
+    check = await f.generate();
+    expect(check.projects[0]?.scan).toMatchObject({
+      outcome: "scanned",
+      findings: 3,
+      findingsByCheck: { design_spec_not_indexed: 1, doc_link_missing: 2 },
+      newIdeas: [{ nodeId: ideaId, title }],
+      merged: 2,
+      overCap: 0,
+    });
+    const text = renderDailyCheck(check);
+    expect(text).toContain(
+      `Scan: last ran 2026-10-31 07:30 UTC at commit cccccccccccc: 3 findings (design_spec_not_indexed 1, doc_link_missing 2); 1 new idea, 2 merged as duplicates, 0 over the cap of 5.`,
+    );
+    expect(text).toContain(
+      `- new idea ${JSON.stringify(title)} (item ${ideaId}), drift, doc_link_missing`,
+    );
+    expect(text.split("\n").filter((l) => l.startsWith("Kill switch:"))).toHaveLength(
+      1,
+    );
+  });
+
+  it("names an unreadable scan record in the section", async () => {
+    const f = await fixture();
+    await f.node("blocked");
+    await f.store.insertScan({
+      id: f.deps.ids.next(),
+      projectId: f.projectId,
+      commitSha: "c".repeat(40),
+      outcome: "scanned",
+      summary: { findings: "many" },
+      recordedBy: "runner:scanner",
+      recordedAt: f.clock.now(),
+    });
+    const check = await f.generate();
+    expect(check.projects[0]?.scan.note).toBe(
+      "The last scan's record could not be read.",
+    );
+    expect(renderDailyCheck(check)).toContain(
+      "The last scan's record could not be read.",
     );
   });
 

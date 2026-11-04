@@ -6,6 +6,7 @@ import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { RepoMapError } from "../../../core/repo-map.ts";
+import { ScanResultError } from "../../../core/scan.ts";
 import { runRepoMapImage } from "../../../agent-images/repo-map/image.ts";
 import type {
   GitHubHttp,
@@ -16,6 +17,7 @@ import {
   FIXTURE_ENTRIES,
   FIXTURE_REPO as REPO,
   FIXTURE_SHA as SHA,
+  SCAN_FIXTURE_ENTRIES,
   tarball,
 } from "../../repo-map/fixtures.ts";
 import { MAX_ENCODED_MAP_CHARS } from "../../repo-map/result.ts";
@@ -26,7 +28,9 @@ import { repoMapNames } from "./names.ts";
 import type { Job, Secret } from "./objects.ts";
 import {
   createKubernetesRepoMaps,
+  createKubernetesRepoScans,
   REPO_MAP_POLL_MS,
+  type KubernetesRepoMapsOptions,
   RepoMapJobError,
 } from "./repo-maps.ts";
 
@@ -62,19 +66,25 @@ const github: GitHubHttp = {
 };
 
 /** The Job's log as the image prints it, over the synthetic archive at `commit`. */
-async function imageLog(commit: string): Promise<string> {
+async function imageLog(commit: string, mode: "map" | "scan" = "map"): Promise<string> {
   const lines: string[] = [];
   await runRepoMapImage(
     {
       FOREMAN_RUN_ID: MAP_ID,
       FOREMAN_REPOSITORY: REPO,
       FOREMAN_COMMIT_SHA: commit,
+      FOREMAN_JOB_MODE: mode,
       GITHUB_TOKEN: "token-inside-the-job",
       HTTPS_PROXY: "http://10.245.0.10:8080",
       NODE_USE_ENV_PROXY: "1",
     },
     {
-      http: { get: async () => ({ status: 200, body: tarball(FIXTURE_ENTRIES) }) },
+      http: {
+        get: async () => ({
+          status: 200,
+          body: tarball(mode === "scan" ? SCAN_FIXTURE_ENTRIES : FIXTURE_ENTRIES),
+        }),
+      },
       write: (line) => lines.push(line),
     },
   );
@@ -84,8 +94,8 @@ async function imageLog(commit: string): Promise<string> {
 const resultLine = (fields: Record<string, unknown>) =>
   `${JSON.stringify({ foremanResult: 1, ...fields })}\n`;
 
-function maps() {
-  return createKubernetesRepoMaps({
+function options(): KubernetesRepoMapsOptions {
+  return {
     tokens,
     http: github,
     cluster: async () => {
@@ -102,8 +112,11 @@ function maps() {
         fake.finishJob(NS, n.job, end);
       }
     },
-  });
+  };
 }
+
+const maps = () => createKubernetesRepoMaps(options());
+const scans = () => createKubernetesRepoScans(options());
 
 beforeEach(() => {
   fake = createFakeKubernetes();
@@ -312,5 +325,85 @@ describe("refusing a bad or unusable map (adapter contract, D-275 (2))", () => {
     fake.failNextCreate("Service", 403, "Forbidden");
     await expect(maps().read(PROJECT, SHA)).rejects.toThrow(/Forbidden/);
     expect(fake.objects.size).toBe(0);
+  });
+});
+
+describe("a scan on Kubernetes: the repo map Job in scan mode (adapter contract, D-300, O-92)", () => {
+  const modeOf = (job: Job | undefined) => {
+    const env = job?.spec.template.spec.containers[0]?.env ?? [];
+    const mode = env.find((e) => e.name === "FOREMAN_JOB_MODE");
+    return mode && "value" in mode ? mode.value : null;
+  };
+
+  it("makes the same objects as a map read, in scan mode at the default branch's head, and returns the checked findings", async () => {
+    let mode: string | null = null;
+    jobEnd = async () => {
+      mode = modeOf(fake.get<Job>("Job", NS, n.job));
+      return { condition: "Complete", log: await imageLog(HEAD, "scan") };
+    };
+    const scan = await scans().scan(PROJECT);
+    expect(mode).toBe("scan");
+    expect(created()).toEqual([
+      `create Secret/${n.githubTokenSecret}`,
+      `create NetworkPolicy/${n.policy}`,
+      `create NetworkPolicy/${n.proxyPolicy}`,
+      `create Job/${n.proxyJob}`,
+      `create Service/${n.proxyService}`,
+      `create Job/${n.job}`,
+    ]);
+    expect(minted).toEqual([{ repository: REPO, permission: "contents" }]);
+    expect(scan.commitSha).toBe(HEAD);
+    expect(scan.findings).toHaveLength(6);
+    // The token's Secret went first, before the log; everything is gone after.
+    expect(fake.calls.indexOf(`delete Secret/${n.githubTokenSecret}`)).toBeLessThan(
+      fake.calls.findIndex((c) => c.startsWith("log Pod/")),
+    );
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it("refuses a malformed scan result as untrusted data and removes everything", async () => {
+    jobEnd = async () => ({
+      condition: "Complete",
+      log: resultLine({
+        status: "success",
+        structured: {
+          scan: 1,
+          commitSha: HEAD,
+          counts: {},
+          findings: [
+            { check: "doc_link_missing", path: "/etc/passwd", line: 1, target: "x" },
+          ],
+        },
+      }),
+    });
+    await expect(scans().scan(PROJECT)).rejects.toThrow(ScanResultError);
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it("refuses a map where a scan was asked for", async () => {
+    jobEnd = async () => ({ condition: "Complete", log: await imageLog(HEAD, "map") });
+    await expect(scans().scan(PROJECT)).rejects.toThrow(ScanResultError);
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it("names the scan Job in its errors", async () => {
+    jobEnd = async () => ({ condition: "Failed", reason: "DeadlineExceeded" });
+    await expect(scans().scan(PROJECT)).rejects.toThrow(
+      "the scan Job passed its deadline",
+    );
+  });
+
+  it("refuses on the token before the cluster is read or anything is created", async () => {
+    const refusing = createKubernetesRepoScans({
+      ...options(),
+      tokens: {
+        mint: async () => {
+          throw new Error("the runner App is not registered");
+        },
+      },
+    });
+    await expect(refusing.scan(PROJECT)).rejects.toThrow(/runner App/);
+    expect(clusterReads).toBe(0);
+    expect(fake.calls).toEqual([]);
   });
 });

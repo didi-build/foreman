@@ -274,6 +274,7 @@ Goal: Didi can act from his phone and nothing waits invisibly.
 - What: a generator and delivery of the daily check, including the production deploy approval link.
 - Built ahead of it: the held-items list (D-272, O-90). The reconcile flow's result carries it as `heldItems`, and each entry names the called flow `f/foreman/hold_release_request` that opens a fresh release request for that item. The generator reads the same list.
 - Built: the generator (D-296, O-91). `src/core/daily-check.ts` reads the store over the 24 hours before the clock and writes nothing. Per project, ordered by how many items cannot move (blocked, escalated, held or behind an open blocking gate request), it shows what moved (and what a dry run planned), what is blocked and why, the staging address and the items on staging, Didi's open questions, the held items with their fresh-request flow, and raw spend from the runs table. The called flow `f/foreman/daily_check` returns it as JSON and short plain text in the job's result in Windmill, once a day at 06:00 Toronto time (D-297), whatever the switches say, noting them. Tests: `test/daily-check.test.ts`, `test/flows/daily-check-flow.test.ts`.
+- Built with the Scanner's stage 1 (D-299, O-92): a per-project Scan section from the last scan's record (`scans`, migration 0017): when it ran and at which commit, its findings by check, the new ideas it filed with their ids and titles, how many were merged as duplicates and how many were over the cap, or the step a failed scan stopped at. Read only, as before.
 - Waits for M4.3: delivery (push, email or a page) and its provider and credential gate. Waits for M4.5: spend thresholds. The production deploy approval is an empty, named section until the store, or a GitHub read, has the data (O-91 open question 4).
 - Success: a sample shows, per project and ordered by what blocks the most work: what moved, what is blocked, staging links, questions waiting, and spend.
 
@@ -356,6 +357,7 @@ Self-improvement stage A (D-151). A scheduled, read-only scan whose findings bec
 
 - Sources, idea fields, safeguards and intake by class: `docs/architecture/technical-architecture.md` section 2.12 (P-13 to P-15).
 - Before it starts, Didi reviews the schedule and scope per project, the idea cap, the confidence threshold, the scan budget and the model (O-12).
+- Brought forward in two stages (D-299). Stage 1 is built (D-300, O-92): fixed checks with no model, once a day at 05:00 Toronto time before the daily check (`f/foreman/scan`, `flows/scan.ts`), over each project's repository in the repo map Job's scan mode, filing at most 5 new ideas per scan per project, duplicates of an open idea or item merged. The six checks compare the design index, the specs, the gallery entries and registry, the contract files and the docs' links (`src/core/scan.ts`). Stage 2, the model-based scan, waits for the model-key gate and O-12.
 
 ## Milestone 11: recursive self-improvement (release 4 or later, not scheduled, not detailed)
 

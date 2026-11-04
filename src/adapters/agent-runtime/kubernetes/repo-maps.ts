@@ -15,7 +15,12 @@
 // Until the runner App is registered (D-178) the token port refuses with `NotBuiltError` before
 // anything else (flows/lib/compose.ts), so no cluster object is made and no cluster token is
 // read. Nothing here logs, and errors name a step, never a token or a value from the Job.
+//
+// The Scanner's stage 1 (D-300, O-92) uses the same read with the Job in scan mode
+// (`createKubernetesRepoScans`): the same steps, objects, token and bounds, and the result is
+// checked as the scan's findings (src/core/scan.ts `checkScanResult`) instead of a map.
 import type { RepoMap, RepoMapProject, RepoMaps } from "../../../core/repo-map.ts";
+import { checkScanResult, type RepoScan, type RepoScans } from "../../../core/scan.ts";
 import {
   GitHubReadError,
   REPOSITORY,
@@ -31,6 +36,7 @@ import {
   repoMapStage,
   type KubernetesRunSettings,
   type RepoMapJobSpec,
+  type RepoReadMode,
 } from "./manifests.ts";
 import {
   LABEL_COMPONENT,
@@ -86,8 +92,23 @@ const plainError = (text: string): string =>
     .trim()
     .slice(0, ERROR_TEXT_CHARS);
 
-export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): RepoMaps {
+/** What the Job is called in errors, by mode. */
+const JOB_LABEL: Record<RepoReadMode, string> = {
+  map: "the repo map Job",
+  scan: "the scan Job",
+};
+
+/** The Job's checked `structured` result, decoded for its mode. */
+type Decode<T> = (structured: unknown, commitSha: string) => T;
+
+/** One read of a repository in the repo map Job, in one mode, decoded by `decode`. */
+function createRepoReadJobs<T>(
+  options: KubernetesRepoMapsOptions,
+  mode: RepoReadMode,
+  decode: Decode<T>,
+) {
   const { tokens, http, ids } = options;
+  const label = JOB_LABEL[mode];
   const wait =
     options.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const now = options.now ?? (() => Date.now());
@@ -112,7 +133,7 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
     { client, settings }: RepoMapCluster,
     spec: RepoMapJobSpec,
     token: string,
-  ): Promise<RepoMap> {
+  ): Promise<T> {
     const namespace = agentNamespace(spec.projectSlug);
     const n = repoMapNames(spec.mapId);
     // Checked and built before anything is created, so a bad input creates nothing.
@@ -127,7 +148,7 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
       ["NetworkPolicy", n.proxyPolicy],
       ["Secret", n.githubTokenSecret],
     ];
-    let map: RepoMap;
+    let read: T;
     try {
       await client.create(secret);
       for (const policy of stage.policies) await client.create(policy);
@@ -152,16 +173,16 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
       let state = jobState(await client.getJob(namespace, n.job));
       while (state === "running" || state === "stopping") {
         if (now() - startedAt >= boundMs) {
-          throw new RepoMapJobError("the repo map Job did not end in time");
+          throw new RepoMapJobError(`${label} did not end in time`);
         }
         await wait(REPO_MAP_POLL_MS);
         state = jobState(await client.getJob(namespace, n.job));
       }
       // The Job has ended: its token goes now, before its result is read.
       await remove(client, namespace, [["Secret", n.githubTokenSecret]]);
-      if (state === "gone") throw new RepoMapJobError("the repo map Job was deleted");
+      if (state === "gone") throw new RepoMapJobError(`${label} was deleted`);
       if (state === "deadline") {
-        throw new RepoMapJobError("the repo map Job passed its deadline");
+        throw new RepoMapJobError(`${label} passed its deadline`);
       }
 
       const pods = await client.listPods(namespace, {
@@ -180,11 +201,9 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
       const result = parseAgentResult(log);
       if (result === null || result.status !== "success" || state !== "complete") {
         const said = plainError(result?.errorText ?? "");
-        throw new RepoMapJobError(
-          `the repo map Job failed${said === "" ? "" : `: ${said}`}`,
-        );
+        throw new RepoMapJobError(`${label} failed${said === "" ? "" : `: ${said}`}`);
       }
-      map = decodeRepoMapResult(result.structured, spec.commitSha);
+      read = decode(result.structured, spec.commitSha);
     } catch (error) {
       // Every object goes, Jobs first; the first error is the one reported.
       await remove(client, namespace, everything).catch(() => undefined);
@@ -192,11 +211,11 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
     }
     // Every object goes, Jobs first. A failed delete fails the read: an object may be left.
     await remove(client, namespace, everything);
-    return map;
+    return read;
   }
 
   return {
-    async read(project: RepoMapProject, commitSha?: string): Promise<RepoMap> {
+    async read(project: RepoMapProject, commitSha?: string): Promise<T> {
       if (!REPOSITORY.test(project.repo)) {
         throw new GitHubReadError("not a repository name");
       }
@@ -213,6 +232,7 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
       const cluster = await options.cluster();
       const spec: RepoMapJobSpec = {
         mapId: checkRunId(ids.next()),
+        mode,
         projectSlug: project.slug,
         repository: project.repo,
         commitSha: sha,
@@ -220,4 +240,17 @@ export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): Re
       return runJob(cluster, spec, token);
     },
   };
+}
+
+export function createKubernetesRepoMaps(options: KubernetesRepoMapsOptions): RepoMaps {
+  const jobs = createRepoReadJobs<RepoMap>(options, "map", decodeRepoMapResult);
+  return { read: (project, commitSha) => jobs.read(project, commitSha) };
+}
+
+/** The Scanner's stage 1 on Kubernetes (D-300, O-92): the repo map Job in scan mode, at the head. */
+export function createKubernetesRepoScans(
+  options: KubernetesRepoMapsOptions,
+): RepoScans {
+  const jobs = createRepoReadJobs<RepoScan>(options, "scan", checkScanResult);
+  return { scan: (project) => jobs.read(project) };
 }

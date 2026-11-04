@@ -34,6 +34,10 @@
 // - heldItems: the held-items list (D-272, O-90) with each item's fresh-request flow (D-295).
 // - spend: the runs that ended in the window, their recorded cost (`runs.cost_usd`) and tokens,
 //   and the runs still active. Raw totals only: the spend roll-up and its thresholds are M4.5.
+// - scan: the project's last Scanner stage 1 scan (D-299, O-92), whatever its age: when it ran and
+//   at which commit, its findings by check, the new ideas it filed (ids and titles), how many it
+//   merged as duplicates and how many were over the cap; for a failed scan, the step it stopped at.
+//   Read from the scan's record (migration 0017, ./scan-ideas.ts), which the scan flow writes.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
@@ -48,6 +52,13 @@ import {
   type HeldItemWithRequest,
 } from "./held-items.ts";
 import type { Clock } from "./library.ts";
+import { SCAN_CHECKS, type ScanCheckId } from "./scan.ts";
+import {
+  readScanFailure,
+  readScanSummary,
+  SCAN_FAILURE_TEXT,
+  type ScanNewIdea,
+} from "./scan-ideas.ts";
 import { STAGING_PASS_GUARD } from "./staging.ts";
 import type {
   Edge,
@@ -86,6 +97,7 @@ export type DailyCheckStore = Pick<
   | "getDecision"
   | "listRuns"
   | "getSetting"
+  | "getLatestScan"
 >;
 
 export interface DailyCheckDeps {
@@ -167,6 +179,31 @@ export interface SpendSection {
   runsActive: number;
 }
 
+/** The project's last scan (D-299), or a note that none is recorded. */
+export interface ScanSection {
+  /** When the last scan was recorded; null when there is none. */
+  lastScanAt: Date | null;
+  outcome: "scanned" | "failed" | null;
+  commitSha: string | null;
+  /** For a failed scan, the fixed text of the step it stopped at. */
+  failure: string | null;
+  /** Every finding of the last scan, by check. */
+  findingsByCheck: Record<ScanCheckId, number>;
+  findings: number;
+  /** The ideas it filed, by item id and recorded title (data). */
+  newIdeas: ScanNewIdea[];
+  /** Findings already on an open idea or item. */
+  merged: number;
+  /** Findings past the cap of new ideas per scan, not filed this time. */
+  overCap: number;
+  cap: number | null;
+  /** Said when there is no scan, or its record cannot be read. */
+  note: string | null;
+}
+
+export const NO_SCAN_YET =
+  "No scan is recorded yet. The Scanner's stage 1 runs once a day before this check, once the runner App is registered and dry run is off.";
+
 export interface ProjectCheck {
   projectId: string;
   slug: string;
@@ -180,6 +217,7 @@ export interface ProjectCheck {
   questions: QuestionItem[];
   heldItems: HeldItemWithRequest[];
   spend: SpendSection;
+  scan: ScanSection;
 }
 
 export interface DailyCheck {
@@ -213,6 +251,63 @@ function runTokens(run: Run): { input: number; output: number } {
       count(fieldOf(run.tokens, "cachedInput")) +
       count(fieldOf(run.tokens, "cacheWriteInput")),
     output: count(fieldOf(run.tokens, "output")),
+  };
+}
+
+const noFindings = (): Record<ScanCheckId, number> =>
+  Object.fromEntries(SCAN_CHECKS.map((c) => [c, 0])) as Record<ScanCheckId, number>;
+
+/** The project's last scan as the check shows it. Reads only. */
+async function scanSection(
+  store: DailyCheckStore,
+  projectId: string,
+): Promise<ScanSection> {
+  const empty: ScanSection = {
+    lastScanAt: null,
+    outcome: null,
+    commitSha: null,
+    failure: null,
+    findingsByCheck: noFindings(),
+    findings: 0,
+    newIdeas: [],
+    merged: 0,
+    overCap: 0,
+    cap: null,
+    note: NO_SCAN_YET,
+  };
+  const last = await store.getLatestScan(projectId);
+  if (!last) return empty;
+  const known = {
+    ...empty,
+    lastScanAt: last.recordedAt,
+    commitSha: last.commitSha,
+    note: null,
+  };
+  if (last.outcome === "failed") {
+    const failure = readScanFailure(last.summary);
+    return {
+      ...known,
+      outcome: "failed",
+      failure: failure === null ? "the scan failed" : SCAN_FAILURE_TEXT[failure],
+    };
+  }
+  const summary = readScanSummary(last.summary);
+  if (summary === null) {
+    return {
+      ...known,
+      outcome: "scanned",
+      note: "The last scan's record could not be read.",
+    };
+  }
+  return {
+    ...known,
+    outcome: "scanned",
+    findingsByCheck: summary.counts,
+    findings: summary.findings,
+    newIdeas: summary.newIdeas,
+    merged: summary.merged,
+    overCap: summary.overCap,
+    cap: summary.cap,
   };
 }
 
@@ -414,6 +509,7 @@ export async function generateDailyCheck(
       questions,
       heldItems: held.filter((h) => h.projectId === projectId),
       spend,
+      scan: await scanSection(store, projectId),
     };
     const quiet =
       waitingItems === 0 &&
@@ -425,7 +521,9 @@ export async function generateDailyCheck(
       questions.length === 0 &&
       check.heldItems.length === 0 &&
       spend.runsEnded === 0 &&
-      spend.runsActive === 0;
+      spend.runsActive === 0 &&
+      check.scan.findings === 0 &&
+      check.scan.outcome !== "failed";
     if (quiet) quietProjects.push(project.slug);
     else projects.push(check);
   }
@@ -540,7 +638,28 @@ function renderProject(p: ProjectCheck, to: Date): string[] {
         : "") +
       `, ${s.tokens.input} input and ${s.tokens.output} output tokens; ${plural(s.runsActive, "run")} active`,
   );
+  lines.push(...renderScan(p.scan));
   return lines;
+}
+
+function renderScan(scan: ScanSection): string[] {
+  if (scan.lastScanAt === null) return [`Scan: ${scan.note ?? NO_SCAN_YET}`];
+  const ran = `Scan: last ran ${when(scan.lastScanAt)}${scan.commitSha ? ` at commit ${scan.commitSha.slice(0, 12)}` : ""}`;
+  if (scan.outcome === "failed")
+    return [`${ran}, and failed: ${scan.failure ?? "the scan failed"}.`];
+  if (scan.note !== null) return [`${ran}. ${scan.note}`];
+  const byCheck = SCAN_CHECKS.filter((c) => scan.findingsByCheck[c] > 0)
+    .map((c) => `${c} ${scan.findingsByCheck[c]}`)
+    .join(", ");
+  return [
+    `${ran}: ${plural(scan.findings, "finding")}${byCheck === "" ? "" : ` (${byCheck})`}; ` +
+      `${plural(scan.newIdeas.length, "new idea")}, ${scan.merged} merged as duplicates, ` +
+      `${scan.overCap} over the cap of ${scan.cap ?? 0}.`,
+    ...scan.newIdeas.map(
+      (idea) =>
+        `- new idea ${quote(idea.title)} (item ${idea.nodeId}), ${idea.class}, ${idea.check}`,
+    ),
+  ];
 }
 
 /** The check as short plain text, for the flow's result. */

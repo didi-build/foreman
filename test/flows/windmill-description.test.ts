@@ -12,6 +12,7 @@ import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
+import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
 import {
   PLAN_APPROVAL_FLOW_PATH,
@@ -27,7 +28,7 @@ interface Description {
     path: string;
     entry: string;
     trigger: string;
-    schedule?: { every_minutes: number; cron: string };
+    schedule?: { every_minutes: number; cron: string; timezone: string };
     suspend?: {
       hide_cancel?: boolean;
       resume_form: Record<
@@ -69,9 +70,9 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     }
   });
 
-  it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes, and the daily check", () => {
+  it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes, the scan and the daily check", () => {
     const scheduled = description.flows.filter((f) => f.trigger === "schedule");
-    expect(scheduled.map((f) => f.name)).toEqual(["reconcile", "daily_check"]);
+    expect(scheduled.map((f) => f.name)).toEqual(["reconcile", "scan", "daily_check"]);
     const seed = /\('reconcile_interval_minutes', '(\d+)'/.exec(
       readFileSync("db/migrations/0001_factory_schema.sql", "utf8"),
     );
@@ -159,12 +160,31 @@ describe("the daily check flow (unit: repo guard, M4.4, O-91)", () => {
       // Didi's own morning, daylight saving included (D-297).
       timezone: "America/Toronto",
     });
-    // Reconcile every 2 hours (about 360 runs in a 30-day month) plus one daily check (30)
-    // leaves most of the 1,000 for event-triggered runs and the nightly backup (D-164).
+    // Reconcile every 2 hours (about 360 runs in a 30-day month) plus one daily check (30) and
+    // one daily scan (30, O-92) leaves most of the 1,000 for event-triggered runs and the
+    // nightly backup (D-164).
     const monthly = description.flows
       .filter((f) => f.schedule)
       .reduce((sum, f) => sum + (30 * 24 * 60) / (f.schedule?.every_minutes ?? 1), 0);
-    expect(monthly).toBe(360 + 30);
+    expect(monthly).toBe(360 + 30 + 30);
+  });
+});
+
+describe("the scan flow (unit: repo guard, D-299, D-300, O-92)", () => {
+  it("runs once a day in Didi's time zone, an hour before the daily check", () => {
+    const flow = description.flows.find((f) => f.name === "scan");
+    expect(flow?.path).toBe(SCAN_FLOW_PATH);
+    expect(flow?.entry).toBe("flows/scan.ts");
+    expect(flow?.trigger).toBe("schedule");
+    expect(flow?.schedule).toEqual({
+      every_minutes: 24 * 60,
+      cron: "0 0 5 * * *",
+      timezone: "America/Toronto",
+    });
+    const check = description.flows.find((f) => f.name === "daily_check");
+    const hour = (cron: string | undefined) => Number(cron?.split(" ")[2]);
+    expect(check?.schedule).toMatchObject({ timezone: "America/Toronto" });
+    expect(hour(flow?.schedule?.cron)).toBeLessThan(hour(check?.schedule?.cron));
   });
 });
 

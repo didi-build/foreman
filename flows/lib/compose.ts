@@ -1,7 +1,7 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
-// the GitHub reader, the agent runtime, the repo map's Job, each run's task and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
+// the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
 // 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
@@ -10,6 +10,7 @@ import { createKubernetesClient } from "../../src/adapters/agent-runtime/kuberne
 import type { KubernetesRunSettings } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import {
   createKubernetesRepoMaps,
+  createKubernetesRepoScans,
   type RepoMapCluster,
 } from "../../src/adapters/agent-runtime/kubernetes/repo-maps.ts";
 import { createKubernetesRuntime } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
@@ -40,6 +41,7 @@ import type { RepoVisibility } from "../../src/core/option-capture.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
+import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
@@ -121,6 +123,12 @@ export interface FlowDeps extends ReconcileDeps {
    * `contents: read` token (D-267, D-275 (2)). Refuses until the runner App exists (D-178).
    */
   repoMaps: RepoMaps;
+  /**
+   * The Scanner's stage 1 scan of a project's repository (D-300, O-92): the repo map Job in its
+   * scan mode, with the same isolation and the same one `contents: read` token. Refuses until the
+   * runner App exists (D-178).
+   */
+  repoScans: RepoScans;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
   executionsThisMonth(): Promise<number>;
@@ -218,6 +226,22 @@ export function runnerRepoMaps(
   tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
 ): RepoMaps {
   return createKubernetesRepoMaps({
+    tokens,
+    http: createGitHubHttp(),
+    cluster,
+    ids: { next: () => randomUUID() },
+  });
+}
+
+/**
+ * The Scanner's stage 1 scan at the default branch's head, in the repo map Job's scan mode (D-300,
+ * O-92); refuses on the token today, before the cluster is read.
+ */
+export function runnerRepoScans(
+  cluster: () => Promise<RepoMapCluster>,
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): RepoScans {
+  return createKubernetesRepoScans({
     tokens,
     http: createGitHubHttp(),
     cluster,
@@ -340,6 +364,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     repoFolders: runnerRepoFolders(),
     repoVisibility: runnerRepoVisibility(),
     repoMaps: runnerRepoMaps(clusterParts),
+    repoScans: runnerRepoScans(clusterParts),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

@@ -52,6 +52,7 @@ const ID = {
   event: "00000000-0000-4000-8000-000000000009",
   record: "00000000-0000-4000-8000-00000000000a",
   outcome: "00000000-0000-4000-8000-00000000000b",
+  scan: "00000000-0000-4000-8000-00000000000c",
 };
 const SHA = "a".repeat(40);
 const AT = "'2026-10-29T00:00:00Z'";
@@ -87,6 +88,8 @@ insert into factory.decision_point_outcomes (id, record_id, outcome, recorded_by
   values ('${ID.outcome}', '${ID.record}', '{"correct": true}', 'runner', ${AT});
 insert into factory.github_deliveries (delivery_id, event_type, repository, received_at, outcome, reason)
   values ('delivery-1', 'pull_request', 'didi-build/rehearsal', ${AT}, 'ignored', 'fixture');
+insert into factory.scans (id, project_id, commit_sha, outcome, summary, recorded_by, recorded_at)
+  values ('${ID.scan}', '${ID.project}', '${SHA}', 'scanned', '{}', 'runner:scanner', ${AT});
 `;
 
 const APPEND_ONLY = [
@@ -99,6 +102,7 @@ const APPEND_ONLY = [
   "decision_point_outcomes",
   "settings_log",
   "github_deliveries",
+  "scans",
 ];
 
 describe("database integration (test environment guard)", () => {
@@ -132,7 +136,8 @@ describe.skipIf(!adminUrl)(
       expect(tables.ok, tables.err).toBe(true);
       expect(tables.out).toBe("");
       const count = sql("select count(*) from pg_tables where schemaname = 'factory';");
-      expect(Number(count.out)).toBe(18);
+      // 0017 adds factory.scans (O-92).
+      expect(Number(count.out)).toBe(19);
     });
 
     /** A time column each append-only table has, for an UPDATE that touches every row. */

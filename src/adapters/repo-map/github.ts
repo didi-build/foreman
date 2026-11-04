@@ -5,7 +5,8 @@
 //   asked for with no commit. It reads two small JSON or sha answers and no code.
 // - `readRepoMapAt`, inside the repo map Job only (src/agent-images/repo-map/): the archive at one
 //   commit, unpacked in memory (./tarball.ts) and parsed with the TypeScript compiler
-//   (./typescript.ts), which never runs the code. The runner process never downloads or parses
+//   (./typescript.ts), which never runs the code. The Job's scan mode reads the same archive with
+//   `readArchiveAt` (./scan.ts, O-92). The runner process never downloads or parses
 //   project code; it reads back only the map (./result.ts).
 //
 // Until the runner App is registered (D-178) the runner's token port refuses with `NotBuiltError`
@@ -69,13 +70,17 @@ export async function readHeadCommit(
   return sha;
 }
 
-/** The map of the code at `commitSha`: the archive downloaded, unpacked in memory and parsed. */
-export async function readRepoMapAt(
+/**
+ * The archive at `commitSha`, downloaded and unpacked in memory (./tarball.ts). `alsoKeep` names
+ * files whose text is kept besides the code the map parses (the Scanner's, O-92).
+ */
+export async function readArchiveAt(
   http: GitHubHttp,
   repo: string,
   commitSha: string,
   token: string,
-): Promise<RepoMap> {
+  alsoKeep?: (path: string) => boolean,
+): Promise<Map<string, string>> {
   if (!REPOSITORY.test(repo)) throw new GitHubReadError("not a repository name");
   if (!FULL_SHA.test(commitSha)) {
     throw new GitHubReadError("a commit must be a full 40-character sha");
@@ -89,5 +94,15 @@ export async function readRepoMapAt(
   if (archive.status !== 200) {
     throw new GitHubReadError(`downloading the code failed with ${archive.status}`);
   }
-  return buildRepoMap(commitSha, readTarball(archive.body));
+  return readTarball(archive.body, alsoKeep);
+}
+
+/** The map of the code at `commitSha`: the archive downloaded, unpacked in memory and parsed. */
+export async function readRepoMapAt(
+  http: GitHubHttp,
+  repo: string,
+  commitSha: string,
+  token: string,
+): Promise<RepoMap> {
+  return buildRepoMap(commitSha, await readArchiveAt(http, repo, commitSha, token));
 }
