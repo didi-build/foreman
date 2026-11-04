@@ -233,7 +233,12 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
       await f.store.findOpenGateRequest(f.projectId, `scanner-gone:${c?.id}`),
     ).toMatchObject({ owner: "council", kind: "council_question" });
     f.advanceMinutes(60);
-    const { check, text } = await dailyCheck(f.deps);
+    const [
+      ,
+      {
+        json: { check, text },
+      },
+    ] = (await dailyCheck(f.deps)).render_all;
     expect(check.projects[0]?.scan).toMatchObject({
       foldedInto: [{ nodeId: a?.id, title: a?.title, findings: 1 }],
       withdrawn: [{ nodeId: b?.id, title: b?.title }],
@@ -271,7 +276,12 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
     );
     await scanFlow(f.deps);
     f.advanceMinutes(60);
-    const { check, text } = await dailyCheck(f.deps);
+    const [
+      ,
+      {
+        json: { check, text },
+      },
+    ] = (await dailyCheck(f.deps)).render_all;
     const [project] = check.projects;
     const ideas = await ideasIn(f, f.projectId);
     expect(project?.scan).toMatchObject({

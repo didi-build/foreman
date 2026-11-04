@@ -177,6 +177,20 @@ Then check the approval form on Didi's phone with a throwaway request, as the M0
 
 If Windmill cannot fill the choices per request, stop and record what it does instead: the form's shape is Didi's decision (D-254), so a different form goes back to Didi.
 
+### Reading the daily check
+
+The daily check is a page Didi opens, with no alert (D-319, D-320, O-100). It is the result of the `f/foreman/daily_check` flow's own run, behind Windmill's sign-in. On the phone, signed in to Windmill, open the flow's run list (its runs in the workspace's runs page, filtered to `f/foreman/daily_check`), bookmark it, and tap the latest run each morning after 06:00 Toronto time. The run's result shows the check as a page, then the check as JSON and as plain text.
+
+To verify at rehearsal, with a check built from synthetic data only, and record each result with the date in O-100:
+
+- The address of the flow's run list to bookmark (Windmill's runs page filtered to `f/foreman/daily_check`), and that the latest run comes first.
+- That Windmill renders the result as the page and then the JSON: a result whose only key is `render_all` holding an `html` view and a `json` view. If it shows only JSON, record what it does instead.
+- Whether Windmill sanitizes the page's HTML, and what it strips. The page needs only `div`, `section`, `h2` to `h4`, `p`, `ul`, `li`, `a` and inline `style`.
+- Whether the links can be tapped and where they open: the staging address (`https:` only), and each held item's link to the fresh release request page.
+- Whether that relative link, `/scripts/get/f/foreman/hold_release_request`, resolves to the Windmill origin and opens the right page signed in, and whether it needs the workspace (`?workspace=<id>`). If the entry is deployed as a flow rather than a script, the page may be `/flows/get/...` instead: fix `HOLD_RELEASE_REQUEST_PAGE` in `flows/lib/held-items.ts`.
+- Whether the page fills in the item's id. It is not relied on: the page shows the flow's path and the input (`{"nodeId": "..."}`) beside each link, so Didi can type or paste it.
+- That the page reads well on Didi's phone, in light and dark mode, with no sideways scrolling.
+
 ## Verification
 
 Run the remaining checks in ADR 0106 "How success is judged" on the real cluster, and record their output and date in the M3.2 PR. Never paste a secret value, `plan.json` or `state.json`.

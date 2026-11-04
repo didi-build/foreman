@@ -1,9 +1,10 @@
 // The daily check's generator (build plan M4.4, spec section 6, FR-12, O-91). Plain logic over the
 // store, the contracts and a passed-in clock (D-162). It reads only: it writes nothing, opens,
 // re-asks or answers no request (D-272), and runs whatever the kill switch and dry run say,
-// since reading is not acting; the check says when either is on. Delivery (push, email, a page)
-// waits for the notifications milestone (M4.3): the called flow f/foreman/daily_check returns the
-// check as its result in Windmill.
+// since reading is not acting; the check says when either is on. It is delivered as a page Didi
+// opens, with no alert (D-319, D-320, O-100): the flow f/foreman/daily_check returns the check as
+// its Windmill run's result, rendered for reading by ./daily-check-render.ts. A push alert waits
+// for the proper frontend.
 //
 // The window: the 24 hours before the clock. Nothing records when the previous check ran (a
 // record would be a write), so "since the previous check" is the same 24 hours on the once-a-day
@@ -68,9 +69,10 @@
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
 // Text recorded by agents (titles, reasons, questions) and Didi's own words are returned
-// verbatim as data; `renderDailyCheck` quotes each one, so nothing in them reads as part of the
-// check. No approval link, topic key, decision, run or evidence id is shown: only item ids and
-// gate request ids, which the attention list already shows.
+// verbatim as data; the renderings (./daily-check-render.ts) quote each one, and the page also
+// escapes it as HTML text, so nothing in them reads as part of the check. No approval link,
+// topic key, decision, run or evidence id is shown: only item ids and gate request ids, which the
+// attention list already shows.
 import { isTerminalState, type Contracts } from "./contracts.ts";
 import {
   CANCEL_TRIGGER_PREFIX,
@@ -102,7 +104,6 @@ import {
 } from "./scan-ideas.ts";
 import { STAGING_PASS_GUARD } from "./staging.ts";
 import {
-  STALL_WAIT_TEXT,
   stalledItems,
   stalledRuns,
   type StalledItem,
@@ -856,273 +857,4 @@ export async function generateDailyCheck(
     stalledAfterMinutes: stalled.cycleMinutes,
     stalledNote: stalled.problem,
   };
-}
-
-// The plain-text rendering, for reading the check in the flow's result in Windmill.
-
-/** Recorded text, quoted: one line, escaped, so it cannot read as part of the check. */
-const quote = (text: string): string => JSON.stringify(text);
-
-const when = (at: Date): string =>
-  `${at.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-
-/** Whole minutes as "3 d 4 h", "2 h 5 min" or "40 min". */
-export function duration(minutes: number): string {
-  const days = Math.floor(minutes / 1440);
-  const hours = Math.floor((minutes % 1440) / 60);
-  const mins = minutes % 60;
-  if (days > 0) return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
-  if (hours > 0) return mins > 0 ? `${hours} h ${mins} min` : `${hours} h`;
-  return `${mins} min`;
-}
-
-const item = (i: CheckItem): string => `${quote(i.title)} (item ${i.nodeId})`;
-const plural = (n: number, one: string, many = `${one}s`): string =>
-  `${n} ${n === 1 ? one : many}`;
-const usd = (value: number): string => `$${value.toFixed(2)}`;
-
-function renderProject(p: ProjectCheck, to: Date): string[] {
-  const lines = [
-    "",
-    `== ${p.slug} (${quote(p.name)}): ${plural(p.waitingItems, "item")} waiting ==`,
-  ];
-  const minutesSince = (at: Date) =>
-    Math.max(0, Math.floor((to.getTime() - at.getTime()) / MINUTE_MS));
-  const moveLine = (m: MovedItem) =>
-    `- ${item(m)}: ${m.fromLabel} to ${m.toLabel}, ${when(m.at)}, by ${m.actorKind}` +
-    (m.reason ? `. Reason: ${quote(m.reason)}` : "");
-
-  lines.push(`Moved (${p.moved.length}):`, ...p.moved.map(moveLine));
-  if (p.plannedInDryRun.length > 0) {
-    lines.push(
-      `Planned in dry run, nothing moved (${p.plannedInDryRun.length}):`,
-      ...p.plannedInDryRun.map(moveLine),
-    );
-  }
-  lines.push(
-    `Blocked (${p.blocked.length}):`,
-    ...p.blocked.map(
-      (b) =>
-        `- ${item(b)} in ${b.stateLabel} for ${duration(minutesSince(b.blockedSince))}, holds up ${plural(b.holdsUp, "item")}. Why: ${quote(b.reason)}` +
-        (b.waitingOn.length > 0
-          ? `. Waits on: ${b.waitingOn.map(item).join(", ")}`
-          : ""),
-    ),
-  );
-  lines.push(
-    `Staging: ${p.staging.url ?? "no staging address recorded"}`,
-    ...p.staging.onStaging.map(
-      (s) => `- on staging, waiting on its check: ${item(s)} since ${when(s.since)}`,
-    ),
-    ...p.staging.passedInWindow.map(
-      (s) => `- passed its staging check: ${item(s)} at ${when(s.since)}`,
-    ),
-  );
-  lines.push(
-    `Questions waiting for Didi (${p.questions.length}):`,
-    ...p.questions.map(
-      (q) =>
-        `- ${q.blocking ? "[blocking] " : ""}${q.kind}` +
-        (q.nodeId
-          ? ` on ${q.title !== null ? quote(q.title) : "an item"} (item ${q.nodeId})`
-          : "") +
-        `, waiting ${duration(q.waitingForMinutes)} (request ${q.gateRequestId})` +
-        (q.question !== null ? `: ${quote(q.question)}` : ""),
-    ),
-  );
-  lines.push(
-    `Accepted by the Council (${p.councilAccepted.length}):`,
-    ...p.councilAccepted.map(
-      (a) =>
-        `- ${quote(a.title)} (item ${a.nodeId}), ${when(a.acceptedAt)}. Plan: ${quote(a.planFirstLine)}. Why Didi was not needed: ${quote(a.reason)}`,
-    ),
-  );
-  lines.push(
-    `Held with no open release request (${p.heldItems.length}):`,
-    ...p.heldItems.map(
-      (h) =>
-        `- ${quote(h.title)} (item ${h.nodeId}), held ${duration(h.heldForMinutes)}` +
-        (h.reworkOf ? `, rework of item ${h.reworkOf}` : "") +
-        (h.lastNote
-          ? `. Didi's last note (${h.lastNote.outcome}, ${when(h.lastNote.answeredAt)}): ${quote(h.lastNote.text)}`
-          : ". No note from Didi") +
-        `. To ask for a fresh release request, start ${h.freshRequest.flow} with ${JSON.stringify(h.freshRequest.input)}`,
-    ),
-  );
-  const s = p.spend;
-  lines.push(
-    `Spend: ${plural(s.runsEnded, "run")} ended, ${usd(s.costUsd)}` +
-      (s.unpricedRuns > 0
-        ? ` (${plural(s.unpricedRuns, "run")} with no recorded cost)`
-        : "") +
-      `, ${s.tokens.input} input and ${s.tokens.output} output tokens; ${plural(s.runsActive, "run")} active`,
-  );
-  lines.push(...renderStalled(p.stalled, to));
-  lines.push(...renderScan(p.scan));
-  if (p.cancels.length > 0) {
-    lines.push(`Stopped (${p.cancels.length}):`, ...p.cancels.map(renderCancel));
-  }
-  return lines;
-}
-
-/** What a stalled item waits on, as one phrase per wait. */
-function waitText(wait: StallWait): string {
-  const text = STALL_WAIT_TEXT[wait.code];
-  if (wait.code === "usage_exhausted_wait") {
-    return (
-      `${text} (${wait.detail ?? "cause not recorded"})` +
-      (wait.until ? `, until ${when(wait.until)}` : ", with no wait setting to end it")
-    );
-  }
-  const guard = wait.guard !== undefined ? `: ${wait.guard}` : "";
-  return `${text}${guard}${wait.detail !== null ? ` (${quote(wait.detail)})` : ""}`;
-}
-
-/** Both kinds in one list, longest stalled first (D-302). */
-function renderStalled(stalled: StalledSection, to: Date): string[] {
-  const entries: { since: Date; line: string }[] = [
-    ...stalled.items.map((i) => ({
-      since: i.readySince,
-      line:
-        `- ready, no run started: ${quote(i.title)} (item ${i.nodeId}) in ${i.stateLabel}` +
-        ` for ${duration(i.stalledForMinutes)}. Waits on: ${i.waits.map(waitText).join("; ")}`,
-    })),
-    ...stalled.runs.map((r) => ({
-      since: r.lastActivityAt,
-      line:
-        `- run quiet: the ${r.bot} run on ` +
-        (r.nodeId
-          ? `${r.title !== null ? quote(r.title) : "an item"} (item ${r.nodeId})`
-          : "no item") +
-        `, no activity for ${duration(Math.max(0, Math.floor((to.getTime() - r.lastActivityAt.getTime()) / MINUTE_MS)))}` +
-        (r.budgetMinutes !== null
-          ? `, past its budget of ${duration(Math.round(r.budgetMinutes))}`
-          : ", its time budget cannot be read"),
-    })),
-  ].sort((a, b) => a.since.getTime() - b.since.getTime());
-  return [`Stalled (${entries.length}):`, ...entries.map((e) => e.line)];
-}
-
-const CANCEL_WHO: Record<CancelHow, string> = {
-  council: "the Council cancelled it, on a plan the Council accepted",
-  didi_confirmed:
-    "Didi approved the Council's recommendation to cancel it, on a plan Didi approved",
-  didi: "Didi cancelled it",
-};
-
-/** What the check says of a close run's outcome (D-318). */
-const CLOSE_TEXT: Record<Extract<CloseStatus, { status: "ended" }>["outcome"], string> =
-  {
-    closed: "closed by its bot's close run",
-    already_closed: "was already closed when its bot's close run read it",
-    already_merged: "was already merged when its bot's close run read it",
-    not_found: "was not found on GitHub by its bot's close run",
-    refused:
-      "left open: its head is not the item's branch, so its bot's close run refused it; close it by hand if it should be closed",
-    failed:
-      "left open: its bot's close run failed, and none is started again; close it by hand",
-  };
-
-/** An item's pull request and its close, for the Stopped list. Merged items have none to close. */
-function pullRequestLine(i: CancelEntry["items"][number]): string {
-  if (i.pullRequest === null || i.state === "verifying_on_staging") return "";
-  const pr = `, its pull request #${i.pullRequest}`;
-  if (i.close === null) return `${pr} is closed by its bot once the item is cancelled`;
-  if (i.close.status === "none")
-    return `${pr} waits for its bot's close run, which starts once admitted`;
-  if (i.close.status === "running")
-    return `${pr} is being closed by its bot's close run`;
-  return `${pr} ${CLOSE_TEXT[i.close.outcome]}`;
-}
-
-function renderCancel(c: CancelEntry): string {
-  const items =
-    c.items.length === 0
-      ? "no work items"
-      : c.items
-          .map(
-            (i) =>
-              `${item(i)} ${i.stateLabel}` +
-              (i.state === "verifying_on_staging"
-                ? " (merged: it finishes normally)"
-                : "") +
-              pullRequestLine(i),
-          )
-          .join("; ");
-  const words = c.how === "didi" ? "Didi's reason" : "The Council's note";
-  const state = c.ideaRejected
-    ? `Its idea ${quote(c.ideaRejected.title)} (item ${c.ideaRejected.nodeId}) moved to Rejected ${when(c.ideaRejected.at)}.`
-    : c.finished
-      ? "Every item is finished."
-      : "Still being cancelled: an item waits for its run to end or finishes normally.";
-  return (
-    `- ${quote(c.title)} (item ${c.nodeId}): ${CANCEL_WHO[c.how]}. ` +
-    `${words}: ${quote(c.note)}. Work items: ${items}. ${state} ${REOPEN_LATER}`
-  );
-}
-
-function renderScan(scan: ScanSection): string[] {
-  if (scan.lastScanAt === null) return [`Scan: ${scan.note ?? NO_SCAN_YET}`];
-  const ran = `Scan: last ran ${when(scan.lastScanAt)}${scan.commitSha ? ` at commit ${scan.commitSha.slice(0, 12)}` : ""}`;
-  if (scan.outcome === "failed")
-    return [`${ran}, and failed: ${scan.failure ?? "the scan failed"}.`];
-  if (scan.note !== null) return [`${ran}. ${scan.note}`];
-  const byCheck = SCAN_CHECKS.filter((c) => scan.findingsByCheck[c] > 0)
-    .map((c) => `${c} ${scan.findingsByCheck[c]}`)
-    .join(", ");
-  const folded = scan.foldedInto.reduce((n, f) => n + f.findings, 0);
-  return [
-    `${ran}: ${plural(scan.findings, "finding")}${byCheck === "" ? "" : ` (${byCheck})`}; ` +
-      `${plural(scan.newIdeas.length, "new idea")}, ${scan.merged} merged as duplicates, ` +
-      `${folded} folded into open ideas, ${scan.overCap} over the cap of ${scan.cap ?? 0}.`,
-    ...scan.newIdeas.map(
-      (idea) =>
-        `- new idea ${quote(idea.title)} (item ${idea.nodeId}), ${idea.class}, ${idea.check}`,
-    ),
-    ...scan.foldedInto.map(
-      (f) =>
-        `- folded into ${quote(f.title)} (item ${f.nodeId}): ${plural(f.findings, "new finding")}`,
-    ),
-    ...scan.withdrawn.map(
-      (w) =>
-        `- withdrawn ${quote(w.title)} (item ${w.nodeId}): no longer found, moved from Submitted to Rejected. ${REOPEN_LATER}`,
-    ),
-    ...scan.notWithdrawn.map(
-      (w) =>
-        `- no longer found, not withdrawn yet: ${quote(w.title)} (item ${w.nodeId}), still in Submitted`,
-    ),
-    ...scan.askedCouncil.map(
-      (a) =>
-        `- no longer found, asked the Council: ${quote(a.title)} (item ${a.nodeId}), in ${a.state}`,
-    ),
-  ];
-}
-
-/** The check as short plain text, for the flow's result. */
-export function renderDailyCheck(check: DailyCheck): string {
-  const { killSwitch, dryRun } = check.switches;
-  const lines = [
-    `Daily check, ${when(check.generatedAt)}, covering the ${check.window.hours} hours from ${when(check.window.from)}.`,
-    `Kill switch: ${killSwitch ? "on (the runner acts on nothing)" : "off"}. Dry run: ${dryRun ? "on (the runner plans moves and makes none)" : "off"}.`,
-    check.dataNotice,
-  ];
-  if (check.projects.length === 0) {
-    lines.push("", "Nothing moved and nothing is waiting.");
-  }
-  for (const project of check.projects) {
-    lines.push(...renderProject(project, check.generatedAt));
-  }
-  const totalCost = check.projects.reduce((sum, p) => sum + p.spend.costUsd, 0);
-  lines.push(
-    "",
-    `Spend across projects: ${usd(totalCost)}. ${check.spendNote}`,
-    `Production deploy approval: ${check.productionDeployApproval.note}`,
-  );
-  if (check.stalledNote !== null) {
-    lines.push(`Stalled items: not listed. ${check.stalledNote}.`);
-  }
-  if (check.quietProjects.length > 0) {
-    lines.push(`Nothing to show for: ${check.quietProjects.join(", ")}.`);
-  }
-  return lines.join("\n");
 }

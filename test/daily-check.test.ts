@@ -7,12 +7,11 @@ import { describe, expect, it } from "vitest";
 import { approvalDecision, type ApprovalChoice } from "../src/core/approvals.ts";
 import {
   DAILY_CHECK_DATA_NOTICE,
-  duration,
   generateDailyCheck,
   NO_SCAN_YET,
   PRODUCTION_DEPLOY_NOT_BUILT,
-  renderDailyCheck,
 } from "../src/core/daily-check.ts";
+import { duration, renderDailyCheck } from "../src/core/daily-check-render.ts";
 import { createCancels } from "../src/core/cancel.ts";
 import { createPullRequestCloses } from "../src/core/pr-close.ts";
 import { holdReleaseRequest } from "../src/core/hold-release.ts";

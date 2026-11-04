@@ -20,11 +20,8 @@ import {
   createCouncil,
   readCouncilPlanAnswer,
 } from "../src/core/council.ts";
-import {
-  generateDailyCheck,
-  planFirstLine,
-  renderDailyCheck,
-} from "../src/core/daily-check.ts";
+import { generateDailyCheck, planFirstLine } from "../src/core/daily-check.ts";
+import { renderDailyCheck } from "../src/core/daily-check-render.ts";
 import { GUARDS, GUARD_NAMES } from "../src/core/guards/index.ts";
 import { councilPlanAccepted } from "../src/core/guards/plan.ts";
 import { createLibrary } from "../src/core/library.ts";
