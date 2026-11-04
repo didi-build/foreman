@@ -2,9 +2,10 @@
 // schemas. The Council question on a scanner idea the Scanner no longer finds (D-301, O-93,
 // src/core/council.ts): opened by the scan once per commit, due one run and one re-run, its input
 // showing the idea with its scope updates quoted as data, its answer recorded on the idea with the
-// question answered, and a `stop`, a `cannot_decide` or no usable answer going to Didi, with nothing
-// moving the idea or its work items. And an escalated scanner idea's input carrying its scope
-// updates. Synthetic data only.
+// question answered, and a `cannot_decide` or no usable answer going to Didi, with nothing moving
+// the idea or its work items. A `stop` opens nothing here (D-308): the cancel step acts on it
+// under the approver rule (test/cancel.test.ts). And an escalated scanner idea's input carrying
+// its scope updates. Synthetic data only.
 import { describe, expect, it } from "vitest";
 
 import { createCouncil, readScannerGoneAnswer } from "../src/core/council.ts";
@@ -154,7 +155,7 @@ describe("the Council question on a scanner idea no longer found (unit: D-301, O
     expect(await t.store.listTransitions(t.item.id)).toEqual([]);
   });
 
-  it.each(["stop", "cannot_decide"] as const)(
+  it.each(["cannot_decide"] as const)(
     "sends `%s` to Didi as one escalation request on the same topic",
     async (verdict) => {
       const t = await setup();
@@ -182,6 +183,25 @@ describe("the Council question on a scanner idea no longer found (unit: D-301, O
       expect((await t.store.getNode(t.idea.id))?.state).toBe("handed_off");
     },
   );
+
+  it("opens nothing for a `stop`, and marks the cancel step as due (D-308)", async () => {
+    const t = await setup();
+    const run = await t.councilRun();
+    const recorded = await t.council.recordAnswer(run.id, {
+      verdict: "stop",
+      note: "The link was fixed by another change.",
+    });
+    expect(recorded).toMatchObject({
+      recorded: true,
+      kind: "scanner_gone",
+      didiGateRequestId: null,
+      cancelDue: true,
+    });
+    expect(await t.store.findOpenGateRequest(t.projectId, t.topic)).toBeNull();
+    // Recording moves nothing: the cancel step does, after the run's end.
+    expect((await t.store.getNode(t.idea.id))?.state).toBe("handed_off");
+    expect((await t.store.getNode(t.item.id))?.state).toBe("in_development");
+  });
 
   it("refuses an answer of the wrong shape, naming the field", async () => {
     expect(readScannerGoneAnswer({ verdict: "park", note: "x" })).toEqual({

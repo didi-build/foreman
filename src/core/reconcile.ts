@@ -15,6 +15,8 @@
 //   changes a counter or a setting, or sends anything. Dispatch admission is evaluated with
 //   `runs.planDispatch`, which reads only.
 // Live mode is not built: with `dry_run` set to false the pass stops before doing anything.
+// Cancels and the Council's stops (D-308, ./cancel.ts) are reported as what the step would do;
+// nothing is cancelled or asked in dry run.
 //
 // Which contract moves each step uses comes from the contracts, never from a list here: release
 // takes the moves out of a non-escalated state that requires a blocked reason (Blocked);
@@ -37,6 +39,7 @@ import {
   type TransitionContract,
 } from "./contracts.ts";
 import { createBuilderRuns } from "./builder-runs.ts";
+import { CANCEL_GUARD, createCancels, type CancelStep } from "./cancel.ts";
 import type { GitHub } from "./github.ts";
 import { pollRepository, type PollResult } from "./github-ingest.ts";
 import {
@@ -245,6 +248,11 @@ export interface ReconcileReport {
   staging: StagingResult[];
   stalls: Stall[];
   gateCleanup: GateCleanupCandidate[];
+  /**
+   * The cancels and Council stops still to act on (D-308, ./cancel.ts): in dry run,
+   * what the step would cancel. Nothing is written for them.
+   */
+  cancels: CancelStep[];
   executions: ExecutionAlert | null;
   /** Settings the pass needed and could not read, with what it did instead. */
   problems: string[];
@@ -337,6 +345,7 @@ export async function reconcile(
     staging: [],
     stalls: [],
     gateCleanup: [],
+    cancels: [],
     executions: null,
     problems,
   };
@@ -469,7 +478,8 @@ export async function reconcile(
   for (const node of nodes) {
     const state = stateOf(node.state);
     if (!state?.requiresBlockedReason || state.escalated) continue;
-    for (const move of movesFrom(node))
+    // The cancel's move into Cancelled is its own step's (D-308), never a release.
+    for (const move of movesFrom(node).filter((m) => !m.guards.includes(CANCEL_GUARD)))
       report.releases.push(await requestMove(node, move.to));
   }
 
@@ -674,6 +684,13 @@ export async function reconcile(
         report.gateCleanup.push({ ...base, reason: "expired", closeAs: "expired" });
       }
     }
+  }
+
+  // Cancels and the Council's stops (D-308): in dry run the step only reports what it would
+  // cancel. The reconcile flow's live passes take the step for real.
+  const stops = createCancels(deps);
+  for (const ideaId of await stops.pending()) {
+    report.cancels.push(await stops.step(ideaId));
   }
 
   // Step 7, the Linear mirror, is dropped (D-192). Step 8, the spend roll-up, is M4.5.

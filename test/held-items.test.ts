@@ -73,6 +73,19 @@ function readOnly(store: Store): Store {
 }
 
 describe("the held-items list (unit: memory store, D-272)", () => {
+  it("leaves out a held item that is finished, such as a cancelled one (D-308)", async () => {
+    const f = await fixture();
+    const node = await f.node("cancelled", {
+      title: "Cancelled while held",
+      hold: true,
+    });
+    expect((await listHeldItems(f.deps)).map((i) => i.nodeId)).toEqual([]);
+    // Without the contracts, the list cannot tell an end state and keeps it.
+    expect(
+      (await listHeldItems({ store: f.store, clock: f.clock })).map((i) => i.nodeId),
+    ).toEqual([node.id]);
+  });
+
   it("leaves out a held item whose release request is still open", async () => {
     const f = await fixture();
     await f.heldItem();

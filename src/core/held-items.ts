@@ -9,13 +9,15 @@
 // again once the runner clears it (./hold-release.ts), so the item's `createdAt` is when its hold
 // started. The duration is counted from the clock passed in (D-162), in whole minutes.
 //
-// Left out: an item with an open release request (that request is on the attention list
+// Left out: a finished item (Done, or Cancelled, D-308), when the contracts are
+// given; an item with an open release request (that request is on the attention list
 // already), and an item whose latest request Didi approved (its release is due, and the hold
 // release pass clears the flag once the switches allow it).
 //
 // Read-only: it writes nothing and opens nothing. A fresh request opens only when Didi asks for
 // one (`createHoldReleaseRequests` in ./hold-release.ts); nothing here or in any pass asks Didi
 // again on a timer.
+import { isTerminalState, type Contracts } from "./contracts.ts";
 import type { Clock } from "./library.ts";
 import {
   answeredWithApproval,
@@ -82,16 +84,22 @@ export interface HeldItemsOptions {
     "listNodes" | "findOpenGateRequest" | "listGateRequests" | "getDecision"
   >;
   clock: Clock;
+  /** With the contracts, a finished item (an end state, such as Cancelled) is left out (D-308). */
+  contracts?: Contracts;
 }
 
 /** Every held work item with no open release request, the longest held first. Reads only. */
 export async function listHeldItems({
   store,
   clock,
+  contracts,
 }: HeldItemsOptions): Promise<HeldItem[]> {
   const now = clock.now().getTime();
   const held = (await store.listNodes({})).filter(
-    (n) => n.type === "work_item" && n.hold,
+    (n) =>
+      n.type === "work_item" &&
+      n.hold &&
+      !(contracts && isTerminalState(contracts, n.state)),
   );
   const items: HeldItem[] = [];
   for (const node of held) {

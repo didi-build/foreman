@@ -35,6 +35,7 @@
 import { createHash } from "node:crypto";
 
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
+import { CANCEL_GUARD } from "./cancel.ts";
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import { escalationTopic } from "./guards/escalation.ts";
 import { holdReleaseRequest } from "./hold-release.ts";
@@ -561,7 +562,11 @@ export function createTriage(options: TriageOptions) {
 
   /** The runner-only move out of Triage: the handoff (contracts/machine-1/idea.yaml). */
   const handoffMove: TransitionContract | undefined = contracts.transitions.find(
-    (m) => m.from === TRIAGE_STATE && m.runnerOnly === true && !m.escalation,
+    (m) =>
+      m.from === TRIAGE_STATE &&
+      m.runnerOnly === true &&
+      !m.escalation &&
+      !m.guards.includes(CANCEL_GUARD),
   );
 
   /** The start state of a work item on `track`: a blocked start when it waits on others. */

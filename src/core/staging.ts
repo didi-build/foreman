@@ -34,6 +34,7 @@
 // per trigger, and the live pass (`verifyReady`) asks again for an escalation or a release that a
 // failure left behind.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
+import { CANCEL_GUARD } from "./cancel.ts";
 import type {
   CommitRelation,
   Deployment,
@@ -395,6 +396,7 @@ export function createStaging(deps: StagingDeps) {
         (m) =>
           !m.escalation &&
           !m.fallbackMove &&
+          !m.guards.includes(CANCEL_GUARD) &&
           m.from === dependent.state &&
           trackMatches(m, dependent),
       )) {

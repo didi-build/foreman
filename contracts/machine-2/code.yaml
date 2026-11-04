@@ -10,6 +10,13 @@
 # step applies it, with the cancel, the flag and the counter reset (O-54). There is none out of Verifying on staging
 # or Done: every item there is merged, and a merged item gets a linked rework item instead (D-233).
 #
+# A move into Cancelled (D-308) ends a work item that is no longer needed, whatever its source.
+# There is one out of each state an item can be in before it is merged, for its track, and it is
+# runner_only: only the cancel step applies it (src/core/cancel.ts), guarded by cancel_recorded,
+# which also refuses while the item has an active run. Verifying on staging has none: a merged
+# item finishes normally (D-308 (6)). Cancelled has no way out, so it is an end state like Done.
+# This file owns Cancelled as it owns Done; design.yaml and escalation.yaml reference it by id.
+#
 # A transition marked fallback_move implements a fallback the spec describes in prose (the
 # "Timeout and fallback" column). The consistency test pins each one to that row's words, and
 # expects no table row for it.
@@ -91,6 +98,18 @@ states:
     tools: None.
     budget: not set
     side_effects: Counters reset. Dependents are released.
+    failure: Not applicable.
+
+  cancelled:
+    label: Cancelled
+    owner: Runner
+    purpose: End a work item that is no longer needed (D-308), cancelled by the Council on a plan it accepted or by Didi.
+    input: The item's cancel, and no active run on the item.
+    output: Nothing. The item's branch and any open pull request are left as they are. Reopening comes with the attention list (D-314).
+    evidence_to_exit: None. Cancelled is terminal.
+    tools: None.
+    budget: not set
+    side_effects: Open gate requests on the item are cancelled. Dependents are not released.
     failure: Not applicable.
 
 transitions:
@@ -191,3 +210,44 @@ transitions:
     evidence: []
     timeout: None.
     fallback: The item stays here, stale and paused. A merged item gets no move; the runner opens a linked rework item for it instead (D-233).
+
+  # Into Cancelled when the item's cancel stands (D-308).
+  - from: blocked
+    to: cancelled
+    tracks: [code, infra, docs]
+    trigger: The item's cancel stands (D-308), because the Council cancels it on a plan the Council accepted, Didi confirms the Council's recommendation on a plan Didi approved, or Didi cancels it.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. A run in progress ends first; the run-end flow or the next reconcile pass tries again.
+    fallback: The item stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: ready_for_dev
+    to: cancelled
+    tracks: [code, infra, docs]
+    trigger: The item's cancel stands (D-308), because the Council cancels it on a plan the Council accepted, Didi confirms the Council's recommendation on a plan Didi approved, or Didi cancels it.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. A run in progress ends first; the run-end flow or the next reconcile pass tries again.
+    fallback: The item stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: in_development
+    to: cancelled
+    tracks: [code, infra, docs]
+    trigger: The item's cancel stands (D-308), because the Council cancels it on a plan the Council accepted, Didi confirms the Council's recommendation on a plan Didi approved, or Didi cancels it.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. A run in progress ends first; the run-end flow or the next reconcile pass tries again.
+    fallback: The item stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: in_qa_review
+    to: cancelled
+    tracks: [code, infra, docs]
+    trigger: The item's cancel stands (D-308), because the Council cancels it on a plan the Council accepted, Didi confirms the Council's recommendation on a plan Didi approved, or Didi cancels it.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. A run in progress ends first; the run-end flow or the next reconcile pass tries again.
+    fallback: The item stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.

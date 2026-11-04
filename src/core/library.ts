@@ -174,6 +174,7 @@ export function createLibrary({
       store.findOpenGateRequest(projectId, topicKey),
     listGateRequests: (projectId, topicKey) =>
       store.listGateRequests(projectId, topicKey),
+    listGateRequestsForNode: (nodeId) => store.listGateRequestsForNode(nodeId),
     getLatestScan: (projectId, outcome) => store.getLatestScan(projectId, outcome),
   };
 

@@ -44,7 +44,11 @@ export interface AgentRunResult {
    * or a new feature (D-237). The reason is the agent's own words, checked for shape and length
    * only; the runner records it as the bot's request to escalate (O-63).
    */
-  needsDecision?: { reason: string };
+  needsDecision?: {
+    reason: string;
+    /** The builder reported the item's work already done (`already_done`, D-308, O-97). */
+    alreadyDone?: true;
+  };
   /** Only with `usage_exhausted`. */
   usageExhaustedCause?: UsageExhaustedCause;
   /** Only with `usage_exhausted`, when the provider gave one. */

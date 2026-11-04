@@ -362,6 +362,41 @@ describe.skipIf(!adminUrl)(
       expect(await store.findOpenGateRequest(projectId, "spend:windmill")).toBeNull();
     });
 
+    it("lists a node's gate requests of every topic and status, oldest first, and no other node's (D-305)", async () => {
+      const a = node();
+      const b = node();
+      await store.insertNode(a);
+      await store.insertNode(b);
+      const request = (nodeId: string, topicKey: string, createdAt: Date) => ({
+        id: id(),
+        projectId,
+        nodeId,
+        topicKey,
+        kind: "escalation" as const,
+        owner: "didi" as const,
+        blocking: false,
+        payload: {},
+        approvalUrl: null,
+        status: "open" as const,
+        decisionId: null,
+        supersededBy: null,
+        createdAt,
+        answeredAt: null,
+        lastNotifiedAt: null,
+      });
+      const later = request(a.id, `scanner-gone:${a.id}`, T1);
+      const earlier = request(a.id, `escalation:${a.id}`, T0);
+      const other = request(b.id, `escalation:${b.id}`, T0);
+      for (const r of [later, earlier, other]) await store.insertGateRequest(r);
+      await store.closeGateRequest(earlier.id, { status: "cancelled", at: T1 });
+      const listed = await store.listGateRequestsForNode(a.id);
+      expect(listed.map((r) => [r.id, r.status])).toEqual([
+        [earlier.id, "cancelled"],
+        [later.id, "open"],
+      ]);
+      expect(await store.listGateRequestsForNode(id())).toEqual([]);
+    });
+
     it("records a run and ends it once, with numbers as numbers", async () => {
       const run = {
         id: id(),

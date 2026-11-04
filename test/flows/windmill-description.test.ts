@@ -198,12 +198,26 @@ describe("the fresh release request flow (unit: repo guard, D-272)", () => {
   });
 });
 
+describe("Didi's cancel flow (unit: repo guard, D-308, O-97)", () => {
+  it("is a called flow, never on a schedule", () => {
+    const flow = description.flows.find((f) => f.name === "cancel_item");
+    expect(flow?.path).toBe("f/foreman/cancel_item");
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/cancel-item.ts");
+    expect(flow?.schedule).toBeUndefined();
+  });
+});
+
 describe("a flow entry holds no rule (unit: repo guard, build plan M3.1)", () => {
   const contracts = machine2();
   const names = new Set([...Object.keys(contracts.states), ...GUARD_NAMES]);
-  /** Every state or guard a source names in a string literal. */
+  /**
+   * Every state or guard a source names in a string literal. A flow result's `outcome` is not a
+   * state: the cancel-runs flow's `outcome: "cancelled"` shares its word with the Cancelled state
+   * (D-305).
+   */
   const namedRules = (source: string): string[] =>
-    [...source.matchAll(/["'`]([^"'`\n]*)["'`]/g)]
+    [...source.matchAll(/(?<!outcome: )["'`]([^"'`\n]*)["'`]/g)]
       .map((m) => m[1] ?? "")
       .filter((text) => names.has(text));
 

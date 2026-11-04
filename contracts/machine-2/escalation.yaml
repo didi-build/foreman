@@ -9,6 +9,9 @@
 # declared twice. This file owns the two escalated states.
 # The two `to: return` moves are runner_only: only the escalation pass applies them, with both
 # counters reset (O-46, D-227, O-54).
+# Escalated to Council to Cancelled and Escalated to Didi to Cancelled (D-308) are runner_only
+# too: only the cancel step takes them, for a work item, guarded by cancel_recorded. An item in
+# Escalated to Didi is cancelled only on Didi's word: the Council's stop of it asks Didi first.
 # Rules live here and in guard functions, never in the library (essential 3).
 
 part: escalation
@@ -76,3 +79,23 @@ transitions:
     evidence: []
     timeout: None.
     fallback: Not applicable.
+
+  - from: escalated_to_council
+    to: cancelled
+    tracks: [design, code, infra, docs]
+    trigger: The item's cancel stands (D-308), because the Council cancels it on a plan the Council accepted, Didi confirms the Council's recommendation on a plan Didi approved, or Didi cancels it.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. A run in progress ends first; the run-end flow or the next reconcile pass tries again.
+    fallback: The item stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: escalated_to_didi
+    to: cancelled
+    tracks: [design, code, infra, docs]
+    trigger: The item's cancel stands (D-308), because the Council cancels it on a plan the Council accepted, Didi confirms the Council's recommendation on a plan Didi approved, or Didi cancels it.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. A run in progress ends first; the run-end flow or the next reconcile pass tries again.
+    fallback: The item stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.

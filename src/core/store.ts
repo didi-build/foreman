@@ -467,6 +467,11 @@ export interface StoreOps {
   listOpenGateRequests(projectId: string): Promise<GateRequest[]>;
   /** Every request on the topic, open or closed, oldest first. */
   listGateRequests(projectId: string, topicKey: string): Promise<GateRequest[]>;
+  /**
+   * Every request on the node, open or closed, of any topic, oldest first (D-305, D-308: the
+   * cancel's move closes the item's open requests).
+   */
+  listGateRequestsForNode(nodeId: string): Promise<GateRequest[]>;
   /** Moves an open request to a closed status. Returns false if it was no longer open. */
   closeGateRequest(id: string, close: GateClose): Promise<boolean>;
 

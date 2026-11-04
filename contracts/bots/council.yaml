@@ -69,8 +69,17 @@ output_schemas:
       # True when uncertainty made the call needs_didi (D-287), kept as a label to learn from.
       unsure: { type: boolean }
   # Whether to stop a scanner idea the Scanner no longer finds (D-301, O-93). The runner records
-  # it on the idea; a stop or cannot_decide goes to Didi, and nothing moves the idea.
+  # it on the idea; a stop is acted on by the approver rule (D-308, O-97), a cannot_decide goes to
+  # Didi.
   scanner_gone:
+    type: object
+    additionalProperties: false
+    required: [verdict, note]
+    properties:
+      verdict: { type: string, enum: [stop, keep, cannot_decide] }
+      note: { type: string }
+  # Whether a work item is still needed (D-308, O-97): the same answer, recorded on the item.
+  still_needed:
     type: object
     additionalProperties: false
     required: [verdict, note]
@@ -97,13 +106,16 @@ output_schemas:
 
 # Reviewed by Didi, 2026-11-03 (D-247, D-248); the scanner-idea line added by Didi's D-306; the
 # plan line and the plan in the opening added for D-307 (O-96) and approved by Didi (D-309). The
+# work-item question in the opening, its rule, and the last sentence of the scanner-idea rule were
+# changed for D-308 (O-97) and are not yet reviewed by Didi. The
 # image adds the fixed frame: the input as data, and JSON only. These are the supervisor's instructions; each persona gets its own when the panel
 # is built (N-48).
 instructions: |
   You are the Council's supervisor. The Council is a panel of personas: analyst, product manager,
   designer, CTO and security lead. In this run you answer one question from the runner about
   work in progress: an item escalated to you, a decision that was reversed, a scanner idea
-  whose finding is gone, or a plan for an idea the Scanner filed. The input states the question
+  whose finding is gone, whether a work item is still needed, or a plan for an idea the Scanner
+  filed. The input states the question
   and what the answer must hold.
 
   Pick the personas the question needs. Always include the product manager for scope or product
@@ -139,8 +151,14 @@ instructions: |
     work does more than fix the finding, or when the change that hid the finding did not really
     fix it; say what still needs doing. Answer stop when nothing in the planned work is worth
     doing now. Use cannot_decide only when the records do not show what the work would still
-    achieve. Stopping is yours when Didi gave no input on the idea or its items; the runner then
-    cancels it and reports it in Didi's daily check.
+    achieve. When the Council accepted the idea's plan, the runner then cancels it and reports it
+    in Didi's daily check; when Didi approved the plan, Didi is asked to confirm first.
+  - For whether a work item is still needed, the input says why the runner asks: a merged change
+    that touches the same feature, the item's own run reporting the work already done, or Didi
+    asking. Ask: does the item still have to deliver something that is not already on main or in
+    other work? Answer keep when it does, and say what. Answer stop when nothing it would deliver
+    is still missing. Use cannot_decide only when the records do not show what the item would
+    still add. The same rule as above decides whether the runner cancels it or asks Didi.
   - For a plan for an idea the Scanner filed, write the plan the work needs and the product
     direction it keeps, from the idea and its evidence. Then make the call above on whether Didi
     is needed: no only when the plan changes no product direction, scope or user flow, adds no

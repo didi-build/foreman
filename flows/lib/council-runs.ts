@@ -14,6 +14,8 @@
 // is recorded, `afterCouncilRun` takes the idea's plan approval step at once (src/core/plans.ts):
 // the Council's own acceptance and the Triage pass when Didi is not needed, else Didi's
 // plan-approval request.
+// `council`; its answer is recorded, and a `stop` is taken on by the cancel pass below (D-308). So
+// is a work item's "is this still needed?" question (D-308, src/core/still-needed.ts).
 //
 // The reconcile flow's live passes run the Council pass for every open question; the run-end
 // flow runs it for an item whose report has just escalated it, so its Council run starts at once.
@@ -50,6 +52,20 @@
 // the head; after the first, `visualRerun` starts the one more run on the same head, at the end
 // of that run or of the review run still active on the head, whichever ends last.
 //
+// The cancel pass (`cancelPass`, D-308, src/core/cancel.ts) acts on every cancel that stands and
+// every Council stop: it opens Didi's request to confirm a stop on a plan Didi approved, cancels
+// each work item a cancel stands on once no run is active on it, and then moves the idea to
+// Rejected. A run in progress is never stopped: the item waits. So the pass runs right after the
+// Council run's end, after the end of any run on the idea or one of its work items (the run-end
+// flow), after Didi's answer on the request (./approval.ts), and in the reconcile flow's live
+// passes. It closes no pull request (O-97).
+//
+// The questions on a work item (D-308 (3), src/core/still-needed.ts): after a QA run whose report
+// merged its item, each open item touching the same design feature folder is asked about, and
+// after a builder run that stopped reporting the work already done, its own item is; the Council
+// pass then starts each question's run. The reconcile flow's live passes ask about merges again
+// as a safety net (`mergedChangePass`).
+//
 // The follow-up pass (`followUpPass`, D-234) opens the follow-up Council question on a reversal
 // whose gate request Didi has answered, and the Council pass then starts its run. The approval
 // resume step runs it right after Didi's answer (./approval.ts), and the reconcile flow's live
@@ -60,6 +76,8 @@ import {
   createCouncil,
   ESCALATION_PREFIX,
   REVERSAL_PREFIX,
+  SCANNER_GONE_PREFIX,
+  STILL_NEEDED_PREFIX,
   type CouncilAnswer,
   type CouncilNext,
   type CouncilQuestion,
@@ -67,7 +85,12 @@ import {
   type FollowUpStep,
   type RedoStep,
 } from "../../src/core/council.ts";
+import { createCancels, type CancelStep } from "../../src/core/cancel.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
+import {
+  createStillNeeded,
+  type StillNeededOpen,
+} from "../../src/core/still-needed.ts";
 import { createFindingIdeas, type FindingIdeas } from "../../src/core/finding-ideas.ts";
 import {
   createVisualComparisons,
@@ -182,6 +205,33 @@ export async function followUpPass(
   return steps;
 }
 
+/**
+ * Takes each cancel one step (D-308): on the given ideas (or work items with no idea), or on every
+ * one a cancel or a Council stop is still to act on. Those with nothing due are left out.
+ */
+export async function cancelPass(
+  deps: FlowDeps,
+  ideaIds?: readonly string[],
+): Promise<CancelStep[]> {
+  const cancels = createCancels(deps);
+  const steps: CancelStep[] = [];
+  for (const ideaId of ideaIds ?? (await cancels.pending())) {
+    const step = await cancels.step(ideaId);
+    if (step.step !== "not_due") steps.push(step);
+  }
+  return steps;
+}
+
+/** The cancel pass for the idea of a node whose run just ended, when a cancel is pending. */
+async function cancelAfterRun(
+  deps: FlowDeps,
+  nodeId: string | null,
+): Promise<CancelStep[] | undefined> {
+  if (!nodeId) return undefined;
+  const ideaId = await createCancels(deps).pendingRootOf(nodeId);
+  return ideaId ? cancelPass(deps, [ideaId]) : undefined;
+}
+
 /** What the redo pass did for one item: the runs it cancelled first, and the redo step. */
 export interface RedoPassStep {
   nodeId: string;
@@ -241,6 +291,8 @@ export interface AfterCouncilRun {
   triage?: TriagePassStep[];
   /** For the Council's plan on a scanner idea: its plan approval step (D-307). */
   plan?: PlanApprovalStep;
+  /** After a `stop`: the cancel step, or Didi's request to confirm it (D-308). */
+  cancels?: CancelStep[];
 }
 
 /**
@@ -291,6 +343,10 @@ export async function afterCouncilRun(
     }
   }
   after.council = await councilPass(deps, [topic]);
+  if (topic.startsWith(SCANNER_GONE_PREFIX) || topic.startsWith(STILL_NEEDED_PREFIX)) {
+    const cancels = await cancelAfterRun(deps, run.nodeId);
+    if (cancels) after.cancels = cancels;
+  }
   return after;
 }
 
@@ -316,6 +372,14 @@ export type AfterRunEnd = AfterReport &
     triageAnswer?: TriageRecord;
     /** After a Triage run: the idea's re-run, or its escalation to the Council (D-262). */
     triage?: TriagePassStep[];
+    /** After a run on an item a cancel waits on: the cancel's next step (D-308). */
+    cancels?: CancelStep[];
+    /**
+     * The "is this still needed?" questions the run's end opened (D-308 (3)): after a merge, on
+     * each item touching the same feature; after a builder's already-done stop, on its item. With
+     * the Council pass on them.
+     */
+    stillNeeded?: { opened: StillNeededOpen[]; council: CouncilPassStep[] };
   };
 
 /** The one more visual run after a `cannot_tell`, when it was due (D-252). */
@@ -387,7 +451,11 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       const recorded =
         reason === undefined
           ? null
-          : await createRunReports(deps).recordNeedsDecision(run.id, reason);
+          : await createRunReports(deps).recordNeedsDecision(
+              run.id,
+              reason,
+              result.needsDecision?.alreadyDone === true,
+            );
       return recorded?.recorded ? report : { ...report, outcome: "fail" };
     }
     if (isVisual && report.outcome === "success") {
@@ -427,6 +495,10 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       return recorded;
     },
     async after(): Promise<AfterRunEnd> {
+      // A run on an idea or a work item a cancel waits on: the cancel takes its next step first,
+      // so the item it waited on is cancelled before any next run of it could start (D-308). A
+      // Council run's own stop is taken after its answer, below.
+      const cancels = isCouncil ? undefined : await cancelAfterRun(deps, run.nodeId);
       // A Designer run in exploration: its options are captured first when CI has already
       // rendered them, so the report's move finds them (O-88).
       const optionCapture =
@@ -455,10 +527,12 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       }
       if (isTriage) {
         // The idea's next step: its re-run after a rejected answer, or the Council after two.
+        const triage = run.nodeId ? await triagePass(deps, [run.nodeId]) : undefined;
         return {
           ...reported,
           ...(triageAnswer ? { triageAnswer } : {}),
-          ...(run.nodeId ? { triage: await triagePass(deps, [run.nodeId]) } : {}),
+          ...(triage ? { triage } : {}),
+          ...(cancels ? { cancels } : {}),
         };
       }
       // The report escalated the item (or an earlier call did): its Council run starts now
@@ -472,12 +546,35 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
         run.bot === "qa" && node !== null && !escalated
           ? await visualRerun(deps, node.id)
           : null;
+      // The questions on work items this end raises (D-308 (3)): a QA run whose report merged
+      // its item, and a builder run that stopped reporting the work already done.
+      const stillNeeded = createStillNeeded(deps);
+      const opened: StillNeededOpen[] = [];
+      if (run.bot === "qa" && run.nodeId)
+        opened.push(...(await stillNeeded.afterMerge(run.nodeId)));
+      if (escalated) {
+        const done = await stillNeeded.afterAlreadyDone(run.id);
+        if (done) opened.push(done);
+      }
+      const asked = opened.filter((o) => o.opened);
+      const stillNeededSteps =
+        asked.length > 0
+          ? {
+              opened,
+              council: await councilPass(
+                deps,
+                asked.map((o) => `${STILL_NEEDED_PREFIX}${o.nodeId}`),
+              ),
+            }
+          : null;
       return {
         ...reported,
         ...(escalated
           ? { councilRuns: await councilPass(deps, [escalationTopic(node.id)]) }
           : {}),
+        ...(stillNeededSteps ? { stillNeeded: stillNeededSteps } : {}),
         ...(rerun ? { visualRerun: rerun } : {}),
+        ...(cancels ? { cancels } : {}),
       };
     },
   };

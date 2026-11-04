@@ -41,7 +41,8 @@
 //   Since D-301 (O-93) it also shows the open ideas new findings were folded into, with how many
 //   each, and the ideas the scan no longer found: each one in Submitted as withdrawn (its move to
 //   Rejected applied with the scan's trigger), or as not withdrawn when the move did not apply,
-//   so Didi can reopen it; each one further along as no longer found with the Council asked.
+//   each one further along as no longer found with the Council asked. Didi's controls to reopen
+//   come with the attention list (D-314), so the check says so rather than offer a reopen.
 // - stalled: both kinds of stalled work (D-302, D-112, O-94), from the one read-only stall check
 //   the reconcile pass also reads (./stalls.ts): items ready to start for at least one reconcile
 //   cycle with no run, with how long and what each waits on as the runner would say it now, and
@@ -54,6 +55,14 @@
 //   `plan_accepted` recorded on one of the project's ideas with `acceptedBy` `council`, with the
 //   idea, the plan's first line and the Council's reason why Didi was not needed, both quoted as
 //   data. Didi-approved plans are not listed here: Didi saw each one on a request.
+// - cancels: every cancel (D-308, O-97, ./cancel.ts), one line per cancel that stands on an idea
+//   or a work item and is still being acted on, whatever its age, or that finished in the window:
+//   who decided (the Council on a plan it accepted, Didi confirming the Council's recommendation,
+//   or Didi), the Council's note or Didi's reason quoted as data, each work item it covers with
+//   its state (a merged one finishes normally), the pull request the store records for each item
+//   (left open: the close run is not built, O-97), the idea's move to Rejected, and that reopening
+//   comes with the attention list (D-314). A Council stop waiting for Didi's confirmation shows
+//   under questions, as Didi's open request.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
@@ -62,6 +71,16 @@
 // check. No approval link, topic key, decision, run or evidence id is shown: only item ids and
 // gate request ids, which the attention list already shows.
 import { isTerminalState, type Contracts } from "./contracts.ts";
+import {
+  CANCEL_TRIGGER_PREFIX,
+  CANCELLED_IDEA_STATE,
+  ideaOf,
+  ITEM_END_STATES,
+  readCancelOn,
+  recordedPullRequest,
+  workItemsOf,
+  type CancelHow,
+} from "./cancel.ts";
 import {
   listHeldItems,
   withFreshRequest,
@@ -129,6 +148,8 @@ export type DailyCheckStore = Pick<
   | "getSetting"
   | "getLatestScan"
   | "listDecisionsForNode"
+  | "listGateRequestsForNode"
+  | "listEvidence"
 >;
 
 /**
@@ -287,6 +308,29 @@ export function planFirstLine(plan: string): string {
     : `${line.slice(0, PLAN_FIRST_LINE_CHARS)} [cut at ${PLAN_FIRST_LINE_CHARS} characters]`;
 }
 
+/** The check's words on reopening, until the attention list brings Didi's controls (D-314). */
+export const REOPEN_LATER = "Reopening comes with the attention list (D-314).";
+
+/** One cancel (D-308), as the check shows it. */
+export interface CancelEntry {
+  /** The node the cancel was decided on: an idea (the scanner question) or a work item. */
+  nodeId: string;
+  title: string;
+  stateLabel: string;
+  /** Who let it stand: the Council, Didi confirming the Council, or Didi. */
+  how: CancelHow;
+  /** The Council's note, or Didi's reason, verbatim (data). */
+  note: string;
+  /** True once every item it covers is finished. */
+  finished: boolean;
+  /** The idea, when the cancel moved it to Rejected, and when. */
+  ideaRejected: { nodeId: string; title: string; at: Date } | null;
+  items: (CheckItem & {
+    /** The pull request number the store records for the item, left open (O-97). */
+    pullRequest: number | null;
+  })[];
+}
+
 export const NO_SCAN_YET =
   "No scan is recorded yet. The Scanner's stage 1 runs once a day before this check, once the runner App is registered and dry run is off.";
 
@@ -307,6 +351,7 @@ export interface ProjectCheck {
   stalled: StalledSection;
   /** Plans the Council accepted itself in the window, oldest first (D-307). */
   councilAccepted: CouncilAcceptedPlan[];
+  cancels: CancelEntry[];
 }
 
 export interface DailyCheck {
@@ -449,6 +494,66 @@ const shownWait = (wait: StallWait): StallWait =>
 const inWindow = (at: Date, from: Date, to: Date): boolean =>
   at.getTime() >= from.getTime() && at.getTime() < to.getTime();
 
+/** Every cancel on the project's ideas and work items still acted on or finished in the window. */
+async function cancelSection(
+  store: DailyCheckStore,
+  projectNodes: readonly Node[],
+  labelOf: (state: string) => string,
+  from: Date,
+  to: Date,
+): Promise<CancelEntry[]> {
+  const entries: CancelEntry[] = [];
+  for (const node of projectNodes) {
+    const idea = await ideaOf(store, node);
+    const on = await readCancelOn(store, node, idea);
+    if (on?.status !== "cancel") continue;
+    const { cancel } = on;
+    const ref = `${CANCEL_TRIGGER_PREFIX}${cancel.decisionId}`;
+    const covered = node.type === "idea" ? await workItemsOf(store, node.id) : [node];
+    const finished = covered.every((i) => ITEM_END_STATES.includes(i.state));
+    const moves: Transition[] = [];
+    for (const n of [...covered, ...(idea ? [idea] : [])]) {
+      moves.push(
+        ...(await store.listTransitions(n.id)).filter(
+          (t) => t.mode === "applied" && t.triggerRef === ref,
+        ),
+      );
+    }
+    const rejected = idea
+      ? moves.find((t) => t.nodeId === idea.id && t.toState === CANCELLED_IDEA_STATE)
+      : undefined;
+    const lastAt = moves
+      .map((t) => t.at)
+      .sort((a, b) => a.getTime() - b.getTime())
+      .at(-1);
+    if (finished && (!lastAt || !inWindow(lastAt, from, to))) continue;
+    const items: CancelEntry["items"] = [];
+    for (const item of covered) {
+      items.push({
+        nodeId: item.id,
+        title: item.title,
+        state: item.state,
+        stateLabel: labelOf(item.state),
+        pullRequest: (await recordedPullRequest(store, item.id))?.number ?? null,
+      });
+    }
+    entries.push({
+      nodeId: node.id,
+      title: node.title,
+      stateLabel: labelOf(node.state),
+      how: cancel.how,
+      note: cancel.note,
+      finished,
+      ideaRejected:
+        rejected && idea
+          ? { nodeId: idea.id, title: idea.title, at: rejected.at }
+          : null,
+      items,
+    });
+  }
+  return entries;
+}
+
 /** Generates the daily check. Reads only. */
 export async function generateDailyCheck(
   deps: DailyCheckDeps,
@@ -484,7 +589,7 @@ export async function generateDailyCheck(
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const projectIds = [...new Set(nodes.map((n) => n.projectId))];
   const held = withFreshRequest(
-    await listHeldItems({ store, clock }),
+    await listHeldItems({ store, clock, contracts }),
     holdReleaseRequestFlow,
   );
   const stalled = await stalledItems(deps);
@@ -697,6 +802,7 @@ export async function generateDailyCheck(
           })),
       },
       councilAccepted,
+      cancels: await cancelSection(store, projectNodes, labelOf, from, to),
     };
     const quiet =
       waitingItems === 0 &&
@@ -716,7 +822,8 @@ export async function generateDailyCheck(
       check.scan.outcome !== "failed" &&
       check.stalled.items.length === 0 &&
       check.stalled.runs.length === 0 &&
-      councilAccepted.length === 0;
+      councilAccepted.length === 0 &&
+      check.cancels.length === 0;
     if (quiet) quietProjects.push(project.slug);
     else projects.push(check);
   }
@@ -842,6 +949,9 @@ function renderProject(p: ProjectCheck, to: Date): string[] {
   );
   lines.push(...renderStalled(p.stalled, to));
   lines.push(...renderScan(p.scan));
+  if (p.cancels.length > 0) {
+    lines.push(`Stopped (${p.cancels.length}):`, ...p.cancels.map(renderCancel));
+  }
   return lines;
 }
 
@@ -883,6 +993,41 @@ function renderStalled(stalled: StalledSection, to: Date): string[] {
   return [`Stalled (${entries.length}):`, ...entries.map((e) => e.line)];
 }
 
+const CANCEL_WHO: Record<CancelHow, string> = {
+  council: "the Council cancelled it, on a plan the Council accepted",
+  didi_confirmed:
+    "Didi approved the Council's recommendation to cancel it, on a plan Didi approved",
+  didi: "Didi cancelled it",
+};
+
+function renderCancel(c: CancelEntry): string {
+  const items =
+    c.items.length === 0
+      ? "no work items"
+      : c.items
+          .map(
+            (i) =>
+              `${item(i)} ${i.stateLabel}` +
+              (i.state === "verifying_on_staging"
+                ? " (merged: it finishes normally)"
+                : "") +
+              (i.pullRequest !== null
+                ? `, its pull request #${i.pullRequest} left open (no close run: the bot's close run is not built, O-97)`
+                : ""),
+          )
+          .join("; ");
+  const words = c.how === "didi" ? "Didi's reason" : "The Council's note";
+  const state = c.ideaRejected
+    ? `Its idea ${quote(c.ideaRejected.title)} (item ${c.ideaRejected.nodeId}) moved to Rejected ${when(c.ideaRejected.at)}.`
+    : c.finished
+      ? "Every item is finished."
+      : "Still being cancelled: an item waits for its run to end or finishes normally.";
+  return (
+    `- ${quote(c.title)} (item ${c.nodeId}): ${CANCEL_WHO[c.how]}. ` +
+    `${words}: ${quote(c.note)}. Work items: ${items}. ${state} ${REOPEN_LATER}`
+  );
+}
+
 function renderScan(scan: ScanSection): string[] {
   if (scan.lastScanAt === null) return [`Scan: ${scan.note ?? NO_SCAN_YET}`];
   const ran = `Scan: last ran ${when(scan.lastScanAt)}${scan.commitSha ? ` at commit ${scan.commitSha.slice(0, 12)}` : ""}`;
@@ -907,7 +1052,7 @@ function renderScan(scan: ScanSection): string[] {
     ),
     ...scan.withdrawn.map(
       (w) =>
-        `- withdrawn ${quote(w.title)} (item ${w.nodeId}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+        `- withdrawn ${quote(w.title)} (item ${w.nodeId}): no longer found, moved from Submitted to Rejected. ${REOPEN_LATER}`,
     ),
     ...scan.notWithdrawn.map(
       (w) =>

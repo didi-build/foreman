@@ -99,6 +99,7 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
       "reversal",
       "visual_call",
       "scanner_gone",
+      "still_needed",
       "plan",
     ]);
     expect(Object.keys(bots.triage.outputSchemas ?? {})).toEqual(["answer"]);
@@ -321,6 +322,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
             escalation: (d.output_schemas as Record<string, unknown>).escalation,
             visual_call: (d.output_schemas as Record<string, unknown>).visual_call,
             scanner_gone: (d.output_schemas as Record<string, unknown>).scanner_gone,
+            still_needed: (d.output_schemas as Record<string, unknown>).still_needed,
             plan: (d.output_schemas as Record<string, unknown>).plan,
             reversal: {
               type: "object",

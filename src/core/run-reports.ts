@@ -54,6 +54,9 @@
 // ("a bot asked"). The report then asks for the escalation to the Council (D-177) with the run's
 // trigger instead of the done move, so nothing is counted toward `failure` and no fix round
 // starts. The Council decides; when it decides Didi is needed, the item goes on to Didi (M3.5).
+// A builder that stopped reporting the work already done (`already_done`, D-308, O-97) goes the
+// same way, with `alreadyDone: true` on its report; the run-end flow then opens the item's "is
+// this still needed?" question (./still-needed.ts), which the escalation question waits for.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import type { GitHub } from "./github.ts";
 import {
@@ -64,6 +67,7 @@ import {
   type Trigger,
   type TransitionOutcome,
 } from "./library.ts";
+import { CANCEL_GUARD } from "./cancel.ts";
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import { createFailures, type FailureCount } from "./failures.ts";
 import { REDO_GUARD } from "./guards/council.ts";
@@ -248,6 +252,7 @@ export function createRunReports(options: RunReportsOptions) {
         move.from === node.state &&
         !move.guards.includes(DISPATCH_GUARD) &&
         !move.guards.includes(REDO_GUARD) &&
+        !move.guards.includes(CANCEL_GUARD) &&
         (!move.tracks || (node.track !== null && move.tracks.includes(node.track))),
     );
   }
@@ -281,6 +286,8 @@ export function createRunReports(options: RunReportsOptions) {
     async recordNeedsDecision(
       runId: string,
       reason: string,
+      /** The builder reported the work already done (D-308): the report says so. */
+      alreadyDone = false,
     ): Promise<NeedsDecisionRecord> {
       const run = await store.getRun(runId);
       if (!run) return { recorded: false, reason: "no_run" };
@@ -309,7 +316,11 @@ export function createRunReports(options: RunReportsOptions) {
           kind: "agent_report",
           ref,
           commitSha: null,
-          payload: { escalate: true, reason: text },
+          payload: {
+            escalate: true,
+            reason: text,
+            ...(alreadyDone ? { alreadyDone: true } : {}),
+          },
           recordedBy: "runner",
           recordedAt: clock.now(),
           supersedesId: null,

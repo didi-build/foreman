@@ -98,7 +98,7 @@ const tableCells = (heading: string): string[] =>
 
 /** "Blocked to Ready for dev" into from and to ids. Labels may themselves contain " to ". */
 function parseCell(cell: string, labels: Map<string, string>): string {
-  const plain = cell.replace(/\s*\((pass|fail|redo)\)\s*$/, "");
+  const plain = cell.replace(/\s*\((pass|fail|redo|cancel)\)\s*$/, "");
   const known = [...labels.keys()].sort((a, b) => b.length - a.length);
   for (const from of known) {
     if (!plain.startsWith(`${from} to `)) continue;
@@ -252,11 +252,13 @@ describe("every track's dispatch out of its start state waits for blockers (cont
 
 describe("runner-only moves are the ones a runner step owns (contract consistency, O-54)", () => {
   // The guards of the moves whose writes only their runner step makes: the Council's redo
-  // (cancel, flag, counters, D-231) and the escalation's way back (counters, O-46, D-227).
+  // (cancel, flag, counters, D-231), the escalation's way back (counters, O-46, D-227) and the
+  // cancel (its open requests cancelled, D-308).
   const RUNNER_GUARDS = [
     "council_redo_recorded",
     "council_decision_recorded",
     "didi_answer_recorded",
+    "cancel_recorded",
   ];
 
   it("marks a move runner_only exactly when one of those guards guards it", () => {
@@ -331,6 +333,10 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       "submitted->rejected",
       "plan_accepted->triage",
       "triage->handed_off",
+      "council_planning->rejected",
+      "plan_accepted->rejected",
+      "triage->rejected",
+      "handed_off->rejected",
     ]);
   });
 
@@ -362,12 +368,54 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
     expect(rows.get("Council planning")).toMatch(/the Council accepts it itself/);
   });
 
-  it("only the runner rejects an idea, and only a scanner idea in Submitted that is no longer found (D-301)", () => {
+  it("only the runner rejects an idea: a scanner idea in Submitted no longer found (D-301), or one further along after a cancel (D-308)", () => {
     const intoRejected = parsed.transitions.filter((t) => t.to === "rejected");
     expect(
       intoRejected.map((t) => [`${t.from}->${t.to}`, t.guards, t.runner_only]),
-    ).toEqual([["submitted->rejected", ["scanner_finding_gone"], true]]);
+    ).toEqual([
+      ["submitted->rejected", ["scanner_finding_gone"], true],
+      ["council_planning->rejected", ["cancel_recorded"], true],
+      ["plan_accepted->rejected", ["cancel_recorded"], true],
+      ["triage->rejected", ["cancel_recorded"], true],
+      ["handed_off->rejected", ["cancel_recorded"], true],
+    ]);
     expect(intoRejected[0]?.trigger).toContain("scan:<scan id>");
     expect(parsed.transitions.filter((t) => t.to === "parked")).toEqual([]);
+    // No cancel leaves Interview or Needs Didi: an idea there has no work items yet.
+    expect(
+      parsed.transitions.filter((t) => ["interview", "needs_didi"].includes(t.from)),
+    ).toEqual([]);
+  });
+});
+
+describe("every work item state before its merge has one cancel move into Cancelled (contract consistency, D-308)", () => {
+  const loaded = loadContractFiles("0".repeat(40));
+  const { contracts } = validateContracts(loaded.raw, GUARD_NAMES);
+  const TRACKS = ["design", "code", "infra", "docs"] as const;
+
+  it.each(TRACKS)("the %s track", (track) => {
+    const moves = contracts?.transitions ?? [];
+    const onTrack = (m: { tracks?: readonly string[] }) =>
+      !m.tracks || m.tracks.includes(track);
+    // The states an item of the track can be in: those its moves leave or enter, but Done,
+    // Cancelled and Verifying on staging (a merged item finishes normally, D-308 (6)).
+    const states = new Set(
+      moves
+        .filter(onTrack)
+        .flatMap((m) => [m.from, m.to])
+        .filter(
+          (s) =>
+            !["any", "return", "done", "cancelled", "verifying_on_staging"].includes(s),
+        ),
+    );
+    const cancels = moves.filter((m) => onTrack(m) && m.to === "cancelled");
+    expect(cancels.map((m) => m.from).sort()).toEqual([...states].sort());
+    for (const m of cancels) {
+      expect(m.guards, `${m.from}`).toEqual(["cancel_recorded"]);
+      expect(m.runnerOnly, `${m.from}`).toBe(true);
+    }
+    expect(moves.filter((m) => m.from === "cancelled")).toEqual([]);
+    expect(cancels.some((m) => m.from === "verifying_on_staging")).toBe(false);
+    expect(cancels.some((m) => m.from === "escalated_to_didi")).toBe(true);
   });
 });

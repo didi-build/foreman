@@ -247,7 +247,7 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
       `- folded into "Broken link in docs/a.md to docs/x.md" (item ${a?.id}): 1 new finding`,
     );
     expect(text).toContain(
-      `- withdrawn "Broken link in docs/b.md to docs/y.md" (item ${b?.id}): no longer found, moved from Submitted to Rejected; Didi can reopen it`,
+      `- withdrawn "Broken link in docs/b.md to docs/y.md" (item ${b?.id}): no longer found, moved from Submitted to Rejected. Reopening comes with the attention list (D-314).`,
     );
     expect(text).toContain(
       `- no longer found, asked the Council: "Broken link in docs/c.md to docs/z.md" (item ${c?.id}), in council_planning`,

@@ -37,7 +37,7 @@ These three are proposals that need Didi's confirmation with the rest of the sch
 | project_id             | uuid fk     | Required on every node                                                                                                                                   |
 | type                   | text        | `idea` or `work_item`                                                                                                                                    |
 | track                  | text null   | `design`, `code`, `infra`, `docs`. Null for ideas                                                                                                        |
-| state                  | text        | Current state name from the contracts                                                                                                                    |
+| state                  | text        | Current state name from the contracts. No constraint lists the states, so Cancelled (D-305, D-308) needed no migration                                   |
 | substate               | text null   | For example `writing_spec`, `building_components`, `verifying_on_staging`. Needed because Linear shares statuses across substates                        |
 | owner_role             | text        | One owner role per state                                                                                                                                 |
 | title                  | text        |                                                                                                                                                          |
@@ -184,6 +184,10 @@ When a decision is reversed, every node in this table for that decision is marke
 | created_at, answered_at, last_notified_at | timestamptz |                                                                                                                                                                                                     |
 
 Constraint: a unique partial index on (topic_key) where status = `open`. The reference `superseded_by` is checked when the transaction commits (migration 0016, O-88), so a newer request can supersede the open one in one transaction: the open one is closed naming the newer, then the newer is inserted.
+
+A node's requests of every topic and status are read by `node_id`, oldest first (`listGateRequestsForNode`, D-305): a cancel's move closes the item's open requests in its transaction. No index was added; the table is small and read by node only there.
+
+The cancel (D-308, O-97) uses existing kinds only: a work item's "is this still needed?" question is a `council_question` owned by the Council on `still-needed:<item id>`, not blocking, payload `{reason, ...}`; the request for Didi to confirm a Council stop is a `scope` request owned by `didi` on `cancel-request:<node id>`, not blocking, payload `{question, title, councilDecisionId, councilNote, itemIds}`. Didi's own cancel is a `decisions` row of kind `answer` by `didi` with `scope {kind: "cancel", via: "cancel_item"}` and Didi's reason as its text.
 
 The `scope` kind is also used for a held work item's release request (D-269, O-77): not blocking, on `hold-release:<node id>`, payload `{question, title, description, ideaId?, note?}` (a rework item has no idea of its own) and no options, opened by the Triage handoff and again only when Didi asks from the daily check's held-items list (D-272, O-90); and for the planning chat's plan-approval request (D-266, O-78): blocking, on `plan-approval:<idea id>`, payload `{question, title, plan, productDirection, answers, ideaId, submissionId, source, needsDidi}` and no options (`source` and `needsDidi` since D-307; the plan may be the Council's for a scanner idea). A Council planning question with no usable answer opens one non-blocking `escalation` request for Didi on `council-plan:<idea id>` (D-307).
 

@@ -24,6 +24,12 @@
 # council_plan_accepted, and records plan_accepted with acceptedBy council in its transaction.
 # These two moves share their states with Didi's approval moves; the contracts allow that only
 # for runner-only moves with different guards, and the step names the guard of the way it takes.
+# A second exception (D-308): when an idea's work items are all Done or Cancelled after a cancel,
+# at least one of them Cancelled, or when the Council's stop of a scanner idea with no work items
+# yet stands, the runner moves the idea to Rejected from Council planning, Plan accepted, Triage
+# or Handed off. These moves are runner_only: only the cancel step takes them
+# (src/core/cancel.ts), last, guarded by cancel_recorded, with the trigger naming the cancel's
+# decision. Handed off stays an end state: its only way out leads to another end state.
 #
 # Triage to Handed off is runner_only: only the Triage handoff step applies it, in the one
 # transaction that creates the work items from Triage's checked answer (src/core/triage.ts).
@@ -133,8 +139,8 @@ states:
   rejected:
     label: Rejected
     owner: Operator
-    purpose: Didi drops the idea.
-    input: Didi's word.
+    purpose: Didi drops the idea. The runner also withdraws a scanner idea no longer found (D-301), or an idea whose work was cancelled (D-308), with the reason recorded on the move.
+    input: Didi's word, or the scan's record or the cancel's.
     output: Nothing.
     evidence_to_exit: Not applicable.
     tools: None.
@@ -213,3 +219,39 @@ transitions:
     evidence: []
     timeout: Triage's budget.
     fallback: A bad answer is rejected and Triage runs once more; a second bad answer goes to the Council.
+
+  - from: council_planning
+    to: rejected
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for every work item to finish and for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: plan_accepted
+    to: rejected
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for every work item to finish and for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: triage
+    to: rejected
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for every work item to finish and for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: handed_off
+    to: rejected
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for every work item to finish and for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
