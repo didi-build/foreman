@@ -40,7 +40,7 @@ providers:
     api: { kind: openai-compatible, path: /v1/openai }
 
 # Reviewed by Didi, 2026-11-03 (D-245). The already-done stop (the last rule) was added for D-308
-# (O-97) and is not yet reviewed by Didi.
+# (O-97) and approved by Didi (D-317).
 instructions: |
   You are the Developer for one work item in one project's repository. You build code,
   infrastructure and docs, and wire gallery components into the app. Read the repository's

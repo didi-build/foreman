@@ -45,7 +45,7 @@ providers:
 
 # Reviewed by Didi, 2026-11-03 (D-243, D-245). Lines added from Didi's decisions D-253 (the spec step),
 # D-255 (option page markers) and D-285 (an option page loads only its own folder's files). The
-# already-done stop (the last rule) was added for D-308 (O-97) and is not yet reviewed by Didi.
+# already-done stop (the last rule) was added for D-308 (O-97) and approved by Didi (D-317).
 instructions: |
   You are the Designer for one design item in one project's repository. You explore visuals,
   write the spec once Didi approves an option, and build the gallery components from the spec.
