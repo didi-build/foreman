@@ -272,6 +272,7 @@ Goal: Didi can act from his phone and nothing waits invisibly.
 ### M4.4 Daily check
 
 - What: a generator and delivery of the daily check, including the production deploy approval link.
+- Built ahead of it: the held-items list (D-272, O-90). The reconcile flow's result carries it as `heldItems`, and each entry names the called flow `f/foreman/hold_release_request` that opens a fresh release request for that item. The generator reads the same list.
 - Success: a sample shows, per project and ordered by what blocks the most work: what moved, what is blocked, staging links, questions waiting, and spend.
 
 ### M4.5 Spend roll-up

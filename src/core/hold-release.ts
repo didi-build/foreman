@@ -14,7 +14,20 @@
 // One transaction locks only the item, up front, and reads the latest request on the topic and its
 // answer: a request still open, or answered by anything but Didi's active approval, keeps the item
 // held, and an item no longer held writes nothing, so a repeated or concurrent call releases once.
-import type { Clock } from "./library.ts";
+//
+// A fresh release request (D-272, O-90): after a Reject nothing asks Didi again, and a rework item
+// that inherits a hold (D-233) never had a request. Didi's daily check lists those items
+// (./held-items.ts), and each entry names the called flow that opens a fresh request for one item
+// (`requestAgain` below). It opens the same request the handoff opens (`holdReleaseRequest`), only
+// when Didi starts that flow: no pass and no timer calls it. It refuses an item that is not held,
+// one that already has an open request, and one whose latest request Didi approved (the release
+// is due, and a fresh request would hold it back); the kill switch and dry run write nothing.
+import {
+  createLibrary,
+  type Clock,
+  type LibraryOptions,
+  type NewGateRequest,
+} from "./library.ts";
 import type { GateKind, GateRequest, Json, Node, Store, StoreOps } from "./store.ts";
 import { cut } from "./task-input.ts";
 
@@ -40,17 +53,37 @@ export const HOLD_RELEASE_LIMITS = {
 export function holdReleasePayload(input: {
   title: string;
   description: string;
-  ideaId: string;
+  /** The idea the item came from; a rework item (D-233) has none of its own. */
+  ideaId?: string;
   note?: string;
 }): { [key: string]: Json } {
   return {
     question: HOLD_RELEASE_QUESTION,
     title: input.title,
     description: cut(input.description, HOLD_RELEASE_LIMITS.descriptionChars),
-    ideaId: input.ideaId,
+    ...(input.ideaId === undefined ? {} : { ideaId: input.ideaId }),
     ...(input.note && input.note.trim() !== ""
       ? { note: cut(input.note, HOLD_RELEASE_LIMITS.noteChars) }
       : {}),
+  };
+}
+
+/**
+ * The release request for a held item, as the Triage handoff opens it and as a fresh request
+ * opens it again (D-269, D-272): Didi's, not blocking, of kind `scope`, on the item's topic.
+ */
+export function holdReleaseRequest(
+  node: Pick<Node, "id" | "projectId">,
+  payload: Parameters<typeof holdReleasePayload>[0],
+): NewGateRequest {
+  return {
+    projectId: node.projectId,
+    nodeId: node.id,
+    topicKey: holdReleaseTopic(node.id),
+    kind: HOLD_RELEASE_KIND,
+    owner: "didi",
+    blocking: false,
+    payload: holdReleasePayload(payload),
   };
 }
 
@@ -74,13 +107,33 @@ export interface HoldReleaseOptions {
   clock: Clock;
 }
 
+/** Every request on the item's release topic, whatever its status, newest first. */
+export async function releaseRequestsNewestFirst(
+  tx: Pick<StoreOps, "listGateRequests">,
+  node: Pick<Node, "id" | "projectId">,
+): Promise<GateRequest[]> {
+  const requests = await tx.listGateRequests(node.projectId, holdReleaseTopic(node.id));
+  return [...requests].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
 /** The newest request on the item's release topic, whatever its status. */
 async function latestRequest(
   tx: StoreOps,
   node: Node,
 ): Promise<GateRequest | undefined> {
-  const requests = await tx.listGateRequests(node.projectId, holdReleaseTopic(node.id));
-  return [...requests].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  return (await releaseRequestsNewestFirst(tx, node))[0];
+}
+
+/**
+ * Whether the request was answered with an approval: the hold release pass's test (`pending`). A
+ * held item whose latest request passes it is waiting for its release, not for Didi.
+ */
+export async function answeredWithApproval(
+  ops: Pick<StoreOps, "getDecision">,
+  request: GateRequest | undefined,
+): Promise<boolean> {
+  if (request?.status !== "answered" || !request.decisionId) return false;
+  return (await ops.getDecision(request.decisionId))?.kind === "approval";
 }
 
 export function createHoldReleases({ store, clock }: HoldReleaseOptions) {
@@ -95,10 +148,9 @@ export function createHoldReleases({ store, clock }: HoldReleaseOptions) {
       );
       const due: string[] = [];
       for (const node of held) {
-        const latest = await latestRequest(store, node);
-        if (latest?.status !== "answered" || !latest.decisionId) continue;
-        const decision = await store.getDecision(latest.decisionId);
-        if (decision?.kind === "approval") due.push(node.id);
+        if (await answeredWithApproval(store, await latestRequest(store, node))) {
+          due.push(node.id);
+        }
       }
       return due;
     },
@@ -138,3 +190,72 @@ export function createHoldReleases({ store, clock }: HoldReleaseOptions) {
 }
 
 export type HoldReleases = ReturnType<typeof createHoldReleases>;
+
+/** What a fresh release request did for one item (D-272). */
+export type HoldReleaseRequestStep =
+  | { nodeId: string; step: "opened"; gateRequestId: string }
+  | { nodeId: string; step: "already_open"; gateRequestId: string }
+  | {
+      nodeId: string;
+      step: "no_node" | "not_held" | "release_due" | "kill_switch" | "dry_run";
+    };
+
+const textField = (value: Json | undefined): string | undefined =>
+  typeof value === "string" ? value : undefined;
+
+const fieldOf = (value: Json | undefined, key: string): Json | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value[key]
+    : undefined;
+
+/**
+ * Opens a fresh release request for one held item, only when Didi asks for it from the daily
+ * check (D-272). One transaction: the switches first (either writes nothing), then the item's
+ * lock, then the checks, so two calls at once open one request. The request is the handoff's
+ * (`holdReleaseRequest`): the item's title and description, its idea, and Triage's note from the
+ * first request on the topic, which the handoff opened; a rework item has no earlier request and
+ * so no note.
+ */
+export function createHoldReleaseRequests(options: LibraryOptions) {
+  const { store } = options;
+  const library = createLibrary(options);
+  return {
+    requestAgain(nodeId: string): Promise<HoldReleaseRequestStep> {
+      return store.transaction(async (tx): Promise<HoldReleaseRequestStep> => {
+        if ((await tx.getSetting("kill_switch"))?.value === true) {
+          return { nodeId, step: "kill_switch" };
+        }
+        if ((await tx.getSetting("dry_run"))?.value !== false) {
+          return { nodeId, step: "dry_run" };
+        }
+        const node = await tx.getNodeForUpdate(nodeId);
+        if (!node) return { nodeId, step: "no_node" };
+        if (node.type !== "work_item" || !node.hold)
+          return { nodeId, step: "not_held" };
+        const open = await tx.findOpenGateRequest(
+          node.projectId,
+          holdReleaseTopic(node.id),
+        );
+        if (open) return { nodeId, step: "already_open", gateRequestId: open.id };
+        const requests = await releaseRequestsNewestFirst(tx, node);
+        if (await answeredWithApproval(tx, requests[0])) {
+          return { nodeId, step: "release_due" };
+        }
+        const note = textField(fieldOf(requests.at(-1)?.payload, "note"));
+        const ideaId = textField(fieldOf(node.body, "ideaId"));
+        const request = await library.openGateRequestWith(
+          tx,
+          holdReleaseRequest(node, {
+            title: node.title,
+            description: textField(fieldOf(node.body, "description")) ?? "",
+            ...(ideaId === undefined ? {} : { ideaId }),
+            ...(note === undefined ? {} : { note }),
+          }),
+        );
+        return { nodeId, step: "opened", gateRequestId: request.id };
+      });
+    },
+  };
+}
+
+export type HoldReleaseRequests = ReturnType<typeof createHoldReleaseRequests>;

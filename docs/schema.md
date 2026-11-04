@@ -183,7 +183,7 @@ When a decision is reversed, every node in this table for that decision is marke
 
 Constraint: a unique partial index on (topic_key) where status = `open`. The reference `superseded_by` is checked when the transaction commits (migration 0016, O-88), so a newer request can supersede the open one in one transaction: the open one is closed naming the newer, then the newer is inserted.
 
-The `scope` kind is also used for a held work item's release request (D-269, O-77): not blocking, on `hold-release:<node id>`, payload `{question, title, description, ideaId, note?}` and no options; and for the planning chat's plan-approval request (D-266, O-78): blocking, on `plan-approval:<idea id>`, payload `{question, title, plan, productDirection, answers, ideaId, submissionId}` and no options.
+The `scope` kind is also used for a held work item's release request (D-269, O-77): not blocking, on `hold-release:<node id>`, payload `{question, title, description, ideaId?, note?}` (a rework item has no idea of its own) and no options, opened by the Triage handoff and again only when Didi asks from the daily check's held-items list (D-272, O-90); and for the planning chat's plan-approval request (D-266, O-78): blocking, on `plan-approval:<idea id>`, payload `{question, title, plan, productDirection, answers, ideaId, submissionId}` and no options.
 
 ## runs
 

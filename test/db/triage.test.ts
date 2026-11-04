@@ -3,7 +3,8 @@
 // the work items, their edges, the decision links, the needsDidi gate request and the track
 // decision records; two run ends for the same run at once hand off once; a write that fails part
 // way leaves nothing behind; a held item's release after Didi's Approve is taken once when two
-// calls race (D-269); and a rejected answer is recorded once.
+// calls race (D-269); a rejected held item is listed for the daily check and two asks for a
+// fresh release request at once open one (D-272); and a rejected answer is recorded once.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -13,7 +14,12 @@ import {
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { approvalDecision } from "../../src/core/approvals.ts";
-import { createHoldReleases, holdReleaseTopic } from "../../src/core/hold-release.ts";
+import { listHeldItems } from "../../src/core/held-items.ts";
+import {
+  createHoldReleaseRequests,
+  createHoldReleases,
+  holdReleaseTopic,
+} from "../../src/core/hold-release.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import {
   createPlanApprovals,
@@ -252,6 +258,45 @@ describe.skipIf(!adminUrl)(
       expect(steps.map((s) => s.step).sort()).toEqual(["not_held", "released"]);
       expect((await store.getNode(held.id))?.hold).toBe(false);
       expect(await releases.pending()).toEqual([]);
+    });
+
+    it("lists a rejected held item as factory_runner, and opens one fresh request when two asks race (D-272)", async () => {
+      const { t, run, triage } = await ideaWithRun("9d100000-0000-4000-8000", "tr4b");
+      expect(await triage.recordAnswer(run.id, goodAnswer(), REPO_MAP)).toMatchObject({
+        recorded: true,
+      });
+      const held = (await store.listNodes({ projectId: t.projectId })).find(
+        (n) => n.hold,
+      );
+      if (!held) throw new Error("no held item");
+      const topic = holdReleaseTopic(held.id);
+      const request = await store.findOpenGateRequest(t.projectId, topic);
+      if (!request) throw new Error("no release request");
+      const mine = async () =>
+        (await listHeldItems(t.deps)).filter((i) => i.projectId === t.projectId);
+      expect(await mine()).toEqual([]);
+      const words = "Not yet.\nAfter the migration.";
+      await createLibrary(t.deps).answerGateRequest(
+        request.id,
+        approvalDecision(request, {
+          choice: "reject",
+          words,
+          approvers: ["anonymous"],
+        }),
+      );
+      expect(await mine()).toMatchObject([
+        { nodeId: held.id, lastNote: { text: words, outcome: "rejected" } },
+      ]);
+      const requests = createHoldReleaseRequests(t.deps);
+      const steps = await Promise.all([
+        requests.requestAgain(held.id),
+        requests.requestAgain(held.id),
+      ]);
+      expect(steps.map((s) => s.step).sort()).toEqual(["already_open", "opened"]);
+      const all = await store.listGateRequests(t.projectId, topic);
+      expect(all.filter((g) => g.status === "open")).toHaveLength(1);
+      expect(all).toHaveLength(2);
+      expect(await mine()).toEqual([]);
     });
 
     it("accepts the planning chat's plan once when two steps race after Didi's Approve (D-266)", async () => {

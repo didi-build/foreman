@@ -37,11 +37,7 @@ import { createHash } from "node:crypto";
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import { escalationTopic } from "./guards/escalation.ts";
-import {
-  HOLD_RELEASE_KIND,
-  holdReleasePayload,
-  holdReleaseTopic,
-} from "./hold-release.ts";
+import { holdReleaseRequest } from "./hold-release.ts";
 import { latest } from "./guards/evidence.ts";
 import {
   createLibrary,
@@ -763,20 +759,15 @@ export function createTriage(options: TriageOptions) {
         }
         if (item.hold) {
           // The plan holds this item back: Didi's release request (D-269, src/core/hold-release.ts).
-          const request = await library.openGateRequestWith(tx, {
-            projectId: idea.projectId,
-            nodeId: node.id,
-            topicKey: holdReleaseTopic(node.id),
-            kind: HOLD_RELEASE_KIND,
-            owner: "didi",
-            blocking: false,
-            payload: holdReleasePayload({
+          const request = await library.openGateRequestWith(
+            tx,
+            holdReleaseRequest(node, {
               title: item.title,
               description: item.description,
               ideaId: idea.id,
               note: answer.note,
             }),
-          });
+          );
           created.gateRequestIds.push(request.id);
         }
       }
