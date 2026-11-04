@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
+import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
 import {
   PLAN_APPROVAL_FLOW_PATH,
@@ -143,6 +144,16 @@ describe("the plan-approval flow (unit: repo guard, D-273)", () => {
     expect(flow?.path).toBe(PLAN_APPROVAL_FLOW_PATH);
     expect(flow?.trigger).toBe("called");
     expect(flow?.entry).toBe("flows/plan-approval.ts");
+  });
+});
+
+describe("the fresh release request flow (unit: repo guard, D-272)", () => {
+  it("is a called flow at the path each held-items entry names, never on a schedule", () => {
+    const flow = description.flows.find((f) => f.name === "hold_release_request");
+    expect(flow?.path).toBe(HOLD_RELEASE_REQUEST_FLOW_PATH);
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/hold-release-request.ts");
+    expect(flow?.schedule).toBeUndefined();
   });
 });
 

@@ -28,7 +28,9 @@ flows:
     # Its plan approval pass opens Didi's request for each plan the planning chat submitted and
     # takes the idea's move on Didi's answer (D-266); its hold release pass releases a held item
     # Didi approved (D-269); its option capture pass captures each design item's exploration
-    # options once CI has rendered them and opens Didi's visual-approval request (O-88).
+    # options once CI has rendered them and opens Didi's visual-approval request (O-88). Every
+    # pass, whatever the switches, its result lists the held items with no open release request
+    # for Didi's daily check (`heldItems`, D-272, O-90); listing writes nothing and asks nothing.
     schedule:
       every_minutes: 120
       cron: "0 0 */2 * * *"
@@ -89,6 +91,18 @@ flows:
     # request links CI's run only on a private repository (O-89). Who calls it on CI's end is open, as for verify_staging: the receiver records the
     # delivery and holds no Windmill credential. The run-end flow tries the same capture at a
     # Designer run's end, and the reconcile flow's capture pass is the backstop.
+    trigger: called
+
+  - name: hold_release_request
+    path: f/foreman/hold_release_request
+    entry: flows/hold-release-request.ts
+    # Called with a held item's id only when Didi asks for a fresh release request for it from
+    # the held-items list in the daily check (D-272, O-90): each entry names this path and the
+    # input. No schedule, pass or other flow starts it, so nothing re-asks Didi on a timer. It
+    # opens the same request the Triage handoff opens, and refuses an item that is not held, one
+    # with an open request and one whose release is due; the kill switch and dry run write
+    # nothing. How Didi reaches it from the daily check is open (O-90): until that is settled,
+    # Didi starts it from its page in the Windmill workspace, signed in. No new credential.
     trigger: called
 
   - name: request_transition

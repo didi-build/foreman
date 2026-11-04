@@ -4,12 +4,15 @@
 // a synthetic accepted plan run through Triage gives the expected items, links and tracks; the bad
 // answers are rejected; the re-run gets the reason; a second bad answer goes to the Council, whose
 // decision returns the idea to Triage. The answer rules themselves are in test/triage.test.ts.
+import { readdirSync, readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
 import { run as dispatch } from "../../flows/dispatch.ts";
+import { run as requestRelease } from "../../flows/hold-release-request.ts";
+import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
@@ -478,6 +481,140 @@ describe("a held item's release request (flow: fake model, D-269)", () => {
     ]);
     expect((await f.store.getNode(held.id))?.hold).toBe(false);
     expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
+  });
+});
+
+describe("held items in Didi's daily check (flow: fake model, D-272)", () => {
+  it("lists a rejected item on every pass with Didi's words and the flow that asks again, and never asks on its own", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    // While the release request is open, the item is on the attention list, not this list.
+    expect((await reconcileFlow(f.deps)).heldItems).toEqual([]);
+    f.advanceMinutes(60);
+    const words = "Not yet.\nWait until the new page has run for a week.";
+    await answerPage(f, request.id, "Reject", words);
+    const topic = holdReleaseTopic(held.id);
+    const requests = async () => f.store.listGateRequests(f.projectId, topic);
+    expect(await requests()).toHaveLength(1);
+
+    // Pass after pass over two weeks: listed each time, and no request opens.
+    let last;
+    for (let pass = 0; pass < 14 * 12; pass++) {
+      f.advanceMinutes(120);
+      last = await reconcileFlow(f.deps);
+    }
+    expect(last?.heldItems).toEqual([
+      {
+        nodeId: held.id,
+        projectId: f.projectId,
+        title: held.title,
+        state: "ready_for_dev",
+        heldSince: held.createdAt,
+        // Two weeks and an hour, plus the minutes the handoff's own steps took.
+        heldForMinutes: expect.toSatisfy(
+          (m: number) => m >= 60 + 14 * 12 * 120 && m < 60 + 14 * 12 * 120 + 15,
+        ),
+        reworkOf: null,
+        lastNote: { text: words, outcome: "rejected", answeredAt: expect.any(Date) },
+        freshRequest: {
+          flow: HOLD_RELEASE_REQUEST_FLOW_PATH,
+          input: { nodeId: held.id },
+        },
+      },
+    ]);
+    expect(await requests()).toHaveLength(1);
+    expect(await f.store.findOpenGateRequest(f.projectId, topic)).toBeNull();
+    expect((await f.store.getNode(held.id))?.hold).toBe(true);
+
+    // Under the kill switch the list still shows, and still asks nothing.
+    await f.killed();
+    expect((await reconcileFlow(f.deps)).heldItems).toMatchObject([
+      { nodeId: held.id },
+    ]);
+    expect(await requests()).toHaveLength(1);
+  });
+
+  it("opens a fresh request only when Didi starts the flow, and Didi's Approve then releases the item", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    await answerPage(f, request.id, "Reject", "Not this week.");
+    const [entry] = (await reconcileFlow(f.deps)).heldItems;
+    if (!entry) throw new Error("not listed");
+    const opened = await requestRelease(f.deps, entry.freshRequest.input);
+    expect(opened).toMatchObject({ nodeId: held.id, step: "opened" });
+    const fresh = await f.store.findOpenGateRequest(
+      f.projectId,
+      holdReleaseTopic(held.id),
+    );
+    expect(fresh?.id).toBe((opened as { gateRequestId: string }).gateRequestId);
+    // The same request the handoff opened: the fixed question, the item and Triage's note.
+    expect(fresh?.payload).toEqual(request.payload);
+    expect((await reconcileFlow(f.deps)).heldItems).toEqual([]);
+
+    // Asked again while it is open: refused, nothing new.
+    const before = await f.footprint(held.id);
+    expect(await requestRelease(f.deps, { nodeId: held.id })).toEqual({
+      nodeId: held.id,
+      step: "already_open",
+      gateRequestId: fresh?.id,
+    });
+    expect(await f.footprint(held.id)).toBe(before);
+
+    expect(await answerPage(f, fresh?.id ?? "", "Approve")).toMatchObject({
+      holdRelease: { nodeId: held.id, step: "released" },
+    });
+    expect(await requestRelease(f.deps, { nodeId: held.id })).toEqual({
+      nodeId: held.id,
+      step: "not_held",
+    });
+    expect((await reconcileFlow(f.deps)).heldItems).toEqual([]);
+    const started = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
+    expect(started).toMatchObject({ outcome: "started" });
+  });
+
+  it("refuses under the kill switch and dry run, writing nothing", async () => {
+    const f = await createFlowFixture();
+    const { held, request } = await heldItem(f);
+    await answerPage(f, request.id, "Reject", "Not yet.");
+    const before = await f.footprint(held.id);
+    await f.setting("dry_run", true);
+    expect(await requestRelease(f.deps, { nodeId: held.id })).toEqual({
+      nodeId: held.id,
+      step: "dry_run",
+    });
+    await f.live();
+    await f.killed();
+    expect(await requestRelease(f.deps, { nodeId: held.id })).toEqual({
+      nodeId: held.id,
+      step: "kill_switch",
+    });
+    expect(await f.footprint(held.id)).toBe(before);
+    expect(
+      await f.store.listGateRequests(f.projectId, holdReleaseTopic(held.id)),
+    ).toHaveLength(1);
+  });
+
+  it("is opened by nothing but the fresh release request flow", () => {
+    // No pass, schedule or other flow opens a fresh request, so nothing re-asks Didi on a timer.
+    const callers = [
+      ...readdirSync("flows"),
+      ...readdirSync("flows/lib").map((n) => `lib/${n}`),
+    ]
+      .filter((name) => name.endsWith(".ts"))
+      .filter((name) =>
+        /createHoldReleaseRequests\(|\.requestAgain\(/.test(
+          readFileSync(`flows/${name}`, "utf8"),
+        ),
+      );
+    expect(callers).toEqual(["hold-release-request.ts"]);
+    const core = readdirSync("src/core")
+      .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+      .filter((name) =>
+        /createHoldReleaseRequests\(|\.requestAgain\(/.test(
+          readFileSync(`src/core/${name}`, "utf8"),
+        ),
+      );
+    expect(core).toEqual(["hold-release.ts"]);
   });
 });
 

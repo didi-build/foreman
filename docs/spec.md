@@ -153,6 +153,7 @@ The summary is grouped by project and ordered by what is blocking the most work.
 - What moved and what is blocked
 - Staging links to try
 - Questions waiting for Didi's answer, including proposed playbook rules
+- Held items with no open release request: the item, how long it has been held and Didi's last note, with a way to ask for a fresh release request. Rework items that inherit a hold are in the same list. Nothing asks Didi again on a timer (D-272)
 - Token and money spend
 
 **v1 attention list.** Until the frontend exists, the attention list is one table in the state store, and each channel only renders it. Windmill's approval pages are the primary channel for gate approvals in v1 (decided Oct 28, 2026, to verify on mobile). A saved Linear view or label, a chat channel and an email digest are secondary views, and we keep what works best for Didi. No channel may block progress.
