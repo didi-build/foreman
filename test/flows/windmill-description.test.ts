@@ -156,7 +156,8 @@ describe("the daily check flow (unit: repo guard, M4.4, O-91)", () => {
     expect(flow?.schedule).toEqual({
       every_minutes: 24 * 60,
       cron: "0 0 6 * * *",
-      timezone: "UTC",
+      // Didi's own morning, daylight saving included (D-297).
+      timezone: "America/Toronto",
     });
     // Reconcile every 2 hours (about 360 runs in a 30-day month) plus one daily check (30)
     // leaves most of the 1,000 for event-triggered runs and the nightly backup (D-164).
