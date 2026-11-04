@@ -317,10 +317,13 @@ describe.skipIf(!adminUrl)(
           stale: false,
         });
         // The other call waited on the original's lock, then found the item already opened or
-        // the flag already cleared; either way it wrote nothing.
+        // the flag already cleared; or its unlocked check read the flag before the first call
+        // committed and the opened rework after, so the episode read as settled. Either way it
+        // wrote nothing.
         const other = results.find((r) => r !== created[0]);
         expect(
           other?.step === "not_stale" ||
+            (other?.step === "not_due" && other.why === "settled") ||
             (other?.step === "reworked" && other.outcome === "already_created"),
           `round ${round}`,
         ).toBe(true);
