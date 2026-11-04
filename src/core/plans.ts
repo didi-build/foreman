@@ -24,7 +24,8 @@
 // exactly as the request showed it. Triage then starts as M3.6 built. On Reject or Request
 // changes (feedback required, D-254) Didi's words are recorded, and an idea in Submitted takes the
 // runner-only move back to Council planning (`plan_return_recorded`), where the planning chat can
-// resubmit; an idea already in Council planning stays there. Each step reads the kill switch and
+// resubmit, or, for a Council plan, a Council run replans it (D-316 (3)); an idea already in
+// Council planning stays there. Each step reads the kill switch and
 // dry run as every runner step does, and is taken once per submission and answer.
 //
 // The Council accepts a non-product plan itself (D-307, O-96). Every plan now carries the
@@ -43,6 +44,10 @@
 // `unsure`, or a submission recorded before D-307 with no call) goes to Didi as above, and
 // Didi's Approve records `plan_accepted` with `acceptedBy` `didi`. A `plan_accepted` with no
 // `acceptedBy` was recorded before D-307 and reads as Didi's (`planAcceptedBy`).
+//
+// The Council also plans ideas filed from a bot's out-of-scope findings (D-316 (1)), and when Didi
+// sends a Council plan back, a new Council run replans it with Didi's words (D-316 (3),
+// src/core/council.ts); the step here then treats the new plan like any other (D-315).
 import type { Contracts, GuardRegistry } from "./contracts.ts";
 import { latest } from "./guards/evidence.ts";
 import {
@@ -51,7 +56,9 @@ import {
   type IdSource,
   type TransitionOutcome,
 } from "./library.ts";
+import { FINDING_SOURCE } from "./finding-ideas.ts";
 import type {
+  CurrentDecision,
   Decision,
   Evidence,
   GateKind,
@@ -69,7 +76,10 @@ export const PLANNING_ACTOR = "planning";
 export const SUBMITTED_STATE = "submitted";
 export const COUNCIL_PLANNING_STATE = "council_planning";
 export const PLAN_ACCEPTED_STATE = "plan_accepted";
-const SUBMITTABLE_STATES: readonly string[] = [SUBMITTED_STATE, COUNCIL_PLANNING_STATE];
+export const SUBMITTABLE_STATES: readonly string[] = [
+  SUBMITTED_STATE,
+  COUNCIL_PLANNING_STATE,
+];
 
 /** The topic of an idea's plan-approval request. */
 export const PLAN_APPROVAL_PREFIX = "plan-approval:";
@@ -86,6 +96,10 @@ export const PLAN_APPROVAL_QUESTION =
 /** The fixed question on a plan-approval request for a plan a Council run wrote (D-307). */
 export const COUNCIL_PLAN_APPROVAL_QUESTION =
   "The Council wrote this plan for an idea the Scanner filed and says Didi is needed. Approve to accept it and start Triage; Request changes or Reject, with feedback, to send it back to planning.";
+
+/** The same question for an idea filed from a bot's out-of-scope finding (D-244, D-316 (1)). */
+export const COUNCIL_FINDING_PLAN_APPROVAL_QUESTION =
+  "The Council wrote this plan for an idea a bot found outside its own item and says Didi is needed. Approve to accept it and start Triage; Request changes or Reject, with feedback, to send it back to planning.";
 
 /** The topic of the Council's planning question on a scanner idea, and its answer (D-307). */
 export const COUNCIL_PLAN_PREFIX = "council-plan:";
@@ -382,6 +396,29 @@ export async function latestPlan(
     : fromSubmission(submission);
 }
 
+/**
+ * Didi's answer that sends a plan back (D-254, D-266): an active `answer` by Didi with the
+ * outcome `rejected` or `changes_requested` and non-blank feedback. Returns the outcome, or null
+ * for any other decision. `plan_return_recorded` and the Council's replan (D-316 (3)) read it.
+ */
+export function planReturnOutcome(
+  decision: Pick<
+    CurrentDecision,
+    "kind" | "scope" | "textVerbatim" | "byActor" | "status"
+  >,
+): "rejected" | "changes_requested" | null {
+  if (
+    decision.kind !== "answer" ||
+    decision.byActor !== "didi" ||
+    decision.status !== "active" ||
+    decision.textVerbatim.trim() === ""
+  ) {
+    return null;
+  }
+  const outcome = isObject(decision.scope) ? decision.scope.outcome : undefined;
+  return outcome === "rejected" || outcome === "changes_requested" ? outcome : null;
+}
+
 /** Who accepted a `plan_accepted` decision: the Council only when it says so (D-307). */
 export function planAcceptedBy(decision: Pick<Decision, "scope">): PlanAcceptedBy {
   return isObject(decision.scope) && decision.scope.acceptedBy === "council"
@@ -589,9 +626,11 @@ export function createPlanApprovals(options: PlanApprovalOptions) {
         blocking: true,
         payload: {
           question:
-            plan.source === "council_run"
-              ? COUNCIL_PLAN_APPROVAL_QUESTION
-              : PLAN_APPROVAL_QUESTION,
+            plan.source !== "council_run"
+              ? PLAN_APPROVAL_QUESTION
+              : isObject(idea.body) && idea.body.source === FINDING_SOURCE
+                ? COUNCIL_FINDING_PLAN_APPROVAL_QUESTION
+                : COUNCIL_PLAN_APPROVAL_QUESTION,
           title: plan.title ?? idea.title,
           plan: plan.plan,
           productDirection: plan.productDirection,

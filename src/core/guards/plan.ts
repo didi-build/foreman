@@ -1,6 +1,6 @@
 // Guards on the ways into Plan accepted (D-266, D-307, src/core/plans.ts). Didi's two read the
 // idea's latest plan (the planning chat's latest submission, or the Council's latest planning
-// answer on a scanner idea) and the newest request on its plan-approval topic, and pass only when
+// answer on an idea the Scanner or a bot's finding filed) and the newest request on its plan-approval topic, and pass only when
 // that request shows the latest plan and Didi answered it, so an answer to an older plan never
 // moves the idea. The Council's (`council_plan_accepted`) passes only when the latest plan
 // carries the Council's call that Didi is not needed, and no request to Didi blocks it (D-315):
@@ -12,6 +12,7 @@ import {
   COUNCIL_ACCEPT_GUARD,
   latestPlan,
   newestPlanRequest,
+  planReturnOutcome,
   requestSubmissionId,
 } from "../plans.ts";
 import { result } from "./evidence.ts";
@@ -59,27 +60,17 @@ export async function planApprovalRecorded(ctx: GuardContext): Promise<GuardChec
   return result("plan_approval_recorded", true, [], "Didi approved the latest plan");
 }
 
-const scopeOutcome = (decision: CurrentDecision): unknown =>
-  typeof decision.scope === "object" &&
-  decision.scope !== null &&
-  !Array.isArray(decision.scope)
-    ? decision.scope.outcome
-    : undefined;
-
 /**
  * Didi rejected the latest plan or asked for changes, with feedback (D-254), so the idea goes back
- * to Council planning for the planning chat to resubmit (D-266).
+ * to Council planning for the planning chat to resubmit (D-266), or for a Council run to replan a
+ * Council plan (D-316 (3)).
  */
 export async function planReturnRecorded(ctx: GuardContext): Promise<GuardCheck> {
   const found = await didiAnswer(ctx);
   if ("missing" in found)
     return result("plan_return_recorded", false, [], found.missing);
-  const outcome = scopeOutcome(found.answer);
-  if (
-    found.answer.kind !== "answer" ||
-    (outcome !== "rejected" && outcome !== "changes_requested") ||
-    found.answer.textVerbatim.trim() === ""
-  ) {
+  const outcome = planReturnOutcome(found.answer);
+  if (outcome === null) {
     return result(
       "plan_return_recorded",
       false,

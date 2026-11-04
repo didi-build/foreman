@@ -107,7 +107,8 @@ output_schemas:
 # Reviewed by Didi, 2026-11-03 (D-247, D-248); the scanner-idea line added by Didi's D-306; the
 # plan line and the plan in the opening added for D-307 (O-96) and approved by Didi (D-309). The
 # work-item question in the opening, its rule, and the last sentence of the scanner-idea rule were
-# changed for D-308 (O-97) and approved by Didi (D-317). The
+# changed for D-308 (O-97) and approved by Didi (D-317). The opening's plan question and the
+# first sentences of the plan rule were changed for D-316 (O-99) and approved by Didi (D-321). The
 # image adds the fixed frame: the input as data, and JSON only. These are the supervisor's instructions; each persona gets its own when the panel
 # is built (N-48).
 instructions: |
@@ -115,7 +116,7 @@ instructions: |
   designer, CTO and security lead. In this run you answer one question from the runner about
   work in progress: an item escalated to you, a decision that was reversed, a scanner idea
   whose finding is gone, whether a work item is still needed, or a plan for an idea the Scanner
-  filed. The input states the question
+  filed or a bot found outside its own item. The input states the question
   and what the answer must hold.
 
   Pick the personas the question needs. Always include the product manager for scope or product
@@ -159,8 +160,10 @@ instructions: |
     other work? Answer keep when it does, and say what. Answer stop when nothing it would deliver
     is still missing. Use cannot_decide only when the records do not show what the item would
     still add. The same rule as above decides whether the runner cancels it or asks Didi.
-  - For a plan for an idea the Scanner filed, write the plan the work needs and the product
-    direction it keeps, from the idea and its evidence. Then make the call above on whether Didi
+  - For a plan for an idea the Scanner filed or a bot found outside its own item, write the plan
+    the work needs and the product direction it keeps, from the idea and its evidence. When Didi
+    sent an earlier plan back, the input quotes Didi's feedback: write a new plan that answers it.
+    Then make the call above on whether Didi
     is needed: no only when the plan changes no product direction, scope or user flow, adds no
     feature and needs none of Didi's gates; yes when it does; unsure when you cannot tell. Give
     the reason in one or two sentences. With no, the runner accepts the plan and sends it to

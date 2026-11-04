@@ -29,7 +29,9 @@
 //   (`scanFoundNone`, ./scan.ts), gets `scan_not_found` evidence on the scan's commit, once per
 //   commit. One still in Submitted is then withdrawn: after the transaction the runner asks for
 //   the runner-only move Submitted to Rejected, guarded by `scanner_finding_gone`
-//   (./guards/scanner.ts), with the trigger `scan:<scan id>`. One further along is never moved
+//   (./guards/scanner.ts), with the trigger `scan:<scan id>`; the move's transaction closes the
+//   idea's open plan-approval request (D-316 (4)) and its open no-plan request to Didi (D-322) as
+//   cancelled, so Didi is not left answering about a withdrawn idea. One further along is never moved
 //   and none of its work items is touched: when its `scan_not_found` is new and no question is
 //   open on `scanner-gone:<idea id>`, a Council question opens there (./council.ts), so at most
 //   one is open per idea and it is asked once per commit.
@@ -58,6 +60,7 @@ import {
   type ScanKey,
   type ScanNotRun,
 } from "./scan.ts";
+import { councilPlanTopic, planApprovalTopic } from "./plans.ts";
 import type { Evidence, GateRequest, Json, Node, Store, StoreOps } from "./store.ts";
 
 /** The mark on an idea the Scanner created (P-14). */
@@ -190,6 +193,30 @@ export function readScopeUpdate(evidence: Pick<Evidence, "payload">): ScanKey | 
     return null;
   }
   return { check: check as ScanCheckId, path, dedupeKey };
+}
+
+/**
+ * Closes a withdrawn idea's open requests to Didi about its plan as cancelled, in the
+ * withdrawal's own transaction: the plan-approval request (D-316 (4)) and the request sent when
+ * the Council gave no usable plan (D-322). Answered and closed requests, and the Council's own
+ * question on its planning topic, are left as they are.
+ */
+async function cancelPlanRequests(
+  tx: Pick<StoreOps, "listGateRequests" | "closeGateRequest">,
+  projectId: string,
+  ideaId: string,
+  at: Date,
+): Promise<null> {
+  const open = [
+    ...(await tx.listGateRequests(projectId, planApprovalTopic(ideaId))),
+    // On the planning topic only Didi's request is cancelled, never the Council's question.
+    ...(await tx.listGateRequests(projectId, councilPlanTopic(ideaId))).filter(
+      (g) => g.owner === "didi",
+    ),
+  ].filter((g) => g.status === "open");
+  for (const gate of open)
+    await tx.closeGateRequest(gate.id, { status: "cancelled", at });
+  return null;
 }
 
 /** Whether a node is an idea the Scanner filed. */
@@ -472,14 +499,18 @@ export function createScanIdeas({
       if (filed.step === "refused") return filed;
       const withdrawals: ScanWithdrawal[] = [];
       for (const nodeId of filed.toWithdraw) {
-        const move = await library.requestTransitionOnce({
-          nodeId,
-          toState: WITHDRAWN_STATE,
-          trigger: { kind: "event", ref: filed.ref },
-          actor: { kind: "runner", id: SCANNER_ACTOR },
-          runnerOnly: true,
-          reason: notFoundText(scan.commitSha),
-        });
+        const move = await library.requestTransitionOnce(
+          {
+            nodeId,
+            toState: WITHDRAWN_STATE,
+            trigger: { kind: "event", ref: filed.ref },
+            actor: { kind: "runner", id: SCANNER_ACTOR },
+            runnerOnly: true,
+            reason: notFoundText(scan.commitSha),
+          },
+          // Didi is not left answering about a withdrawn idea (D-316 (4)).
+          (tx) => cancelPlanRequests(tx, projectId, nodeId, clock.now()),
+        );
         withdrawals.push({
           nodeId,
           outcome: move.outcome,

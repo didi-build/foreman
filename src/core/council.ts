@@ -99,6 +99,15 @@
 // by `council`. The plan approval step then takes it (./plans.ts): `no` is the Council's own
 // acceptance, `yes` or `unsure` opens Didi's plan-approval request. No usable answer after the
 // re-run opens one `escalation` request for Didi on the topic, not blocking; nothing acts on it.
+// Ideas filed from a bot's out-of-scope findings (D-244, ./finding-ideas.ts, `body.source`
+// `run_finding`) are planned the same way (D-316 (1)); their input quotes the finding and who
+// found it instead of the Scanner's evidence. When Didi sends a Council plan back (Reject or
+// Request changes, with feedback, on its plan-approval request), the question reopens on the same
+// topic as a replan (D-316 (3)), in Submitted or Council planning: it opens at Didi's answer, so
+// only runs since then count toward its run and re-run, its input quotes Didi's feedback verbatim
+// and the earlier plan, and its recorded plan names the answer (`scope.replanOf`). The new plan is
+// then the idea's latest, which closes the question, so each answer gets one replan; the plan
+// approval step takes it under D-315. No usable replan opens Didi's request as above (D-316 (2)).
 //
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
@@ -133,14 +142,19 @@ import { readQaVerdict } from "./guards/evidence.ts";
 import { outputProblem, type OutputSchema } from "./output-schema.ts";
 import type { BotProfile } from "./reconcile.ts";
 import { quoted } from "./task-input.ts";
+import { FINDING_SOURCE } from "./finding-ideas.ts";
 import { isScannerIdea, SCANNER_GONE_PREFIX } from "./scan-ideas.ts";
 import {
   COUNCIL_PLAN_PREFIX,
   councilPlanTopic,
   latestPlan,
+  newestPlanRequest,
   PLAN_LIMITS,
   PLAN_PROPOSAL_KIND,
+  planReturnOutcome,
   readNeedsDidi,
+  requestSubmissionId,
+  SUBMITTABLE_STATES,
   SUBMITTED_STATE,
   type NeedsDidi,
 } from "./plans.ts";
@@ -266,10 +280,30 @@ export interface CouncilPlanQuestion {
   kind: "plan";
   topicKey: string;
   projectId: string;
-  /** The scanner idea; the Council's run is on it. */
+  /** The idea; the Council's run is on it. */
   nodeId: string;
-  /** When the idea entered Submitted. */
+  /** Who filed the idea: the Scanner, or the runner from a bot's finding (D-316 (1)). */
+  source: CouncilPlanSource;
+  /**
+   * When the question opened: when the idea entered Submitted, or for a replan, when Didi's
+   * answer that sent the Council's plan back was recorded (D-316 (3)).
+   */
   openedAt: Date;
+  /** A replan: Didi's answer that sent the Council's plan back, and that plan. Else null. */
+  replan: { answerId: string; planId: string } | null;
+}
+
+/** The ideas the Council plans (D-307, D-316 (1)), by their recorded `body.source`. */
+export type CouncilPlanSource = "scanner" | "run_finding";
+
+/** Who filed the idea, when the Council plans ideas from that source; else null. */
+export function councilPlanSource(
+  node: Pick<Node, "type" | "body">,
+): CouncilPlanSource | null {
+  if (isScannerIdea(node)) return "scanner";
+  return node.type === "idea" && field(node.body, "source") === FINDING_SOURCE
+    ? "run_finding"
+    : null;
 }
 
 export interface EscalationQuestion {
@@ -639,6 +673,14 @@ export function readCouncilPlanAnswer(
 export const COUNCIL_PLAN_NO_ANSWER =
   "The Council gave no usable plan for this idea the Scanner filed. You can plan it in the planning chat.";
 
+/** The same for an idea filed from a bot's out-of-scope finding (D-316 (1), (2)). */
+export const COUNCIL_FINDING_PLAN_NO_ANSWER =
+  "The Council gave no usable plan for this idea a bot found outside its own item. You can plan it in the planning chat.";
+
+/** The same for a replan after Didi sent the Council's plan back (D-316 (2), (3)). */
+export const COUNCIL_REPLAN_NO_ANSWER =
+  "The Council gave no usable new plan for this idea after you sent its plan back. You can plan it in the planning chat.";
+
 /** What Didi is asked when the Council's answer on a scanner idea needs Didi (D-301). */
 const SCANNER_GONE_DIDI = {
   cannot_decide:
@@ -779,28 +821,57 @@ export function createCouncil(options: CouncilOptions) {
   }
 
   /**
-   * The Council's planning question on a scanner idea (D-307): open while the idea is in
-   * Submitted with no plan and no request on its topic. Reads through `ops`, so the answer's
-   * transaction checks it again.
+   * The Council's planning question on an idea the Scanner filed (D-307) or one filed from a
+   * bot's out-of-scope finding (D-316 (1)): open while the idea is in Submitted with no plan and
+   * no request on its topic. It reopens as a replan (D-316 (3)) while the idea is in Submitted or
+   * Council planning, its latest plan is the Council's, and Didi's answer on the request for that
+   * plan sent it back (Reject or Request changes, with feedback), with no request on the topic
+   * since that answer. Once a new plan is recorded it is the latest, so each answer gets one
+   * replan. Reads through `ops`, so the answer's transaction checks it again.
    */
   async function councilPlanQuestion(
     ops: Pick<
       StoreOps,
-      "getNode" | "listEvidence" | "listDecisionsForNode" | "listGateRequests"
+      | "getNode"
+      | "getDecision"
+      | "listEvidence"
+      | "listDecisionsForNode"
+      | "listGateRequests"
     >,
     nodeId: string,
   ): Promise<CouncilPlanQuestion | null> {
     const node = await ops.getNode(nodeId);
-    if (!node || !isScannerIdea(node) || node.state !== SUBMITTED_STATE) return null;
-    if (await latestPlan(ops, node.id)) return null;
+    const source = node ? councilPlanSource(node) : null;
+    if (!node || !source || !SUBMITTABLE_STATES.includes(node.state)) return null;
     const topicKey = councilPlanTopic(node.id);
-    if ((await ops.listGateRequests(node.projectId, topicKey)).length > 0) return null;
+    const asked = await ops.listGateRequests(node.projectId, topicKey);
+    const base = { kind: "plan" as const, topicKey, projectId: node.projectId, nodeId };
+    const plan = await latestPlan(ops, node.id);
+    if (!plan) {
+      if (node.state !== SUBMITTED_STATE || asked.length > 0) return null;
+      return { ...base, source, openedAt: node.stateSince, replan: null };
+    }
+    if (plan.source !== "council_run") return null;
+    const request = await newestPlanRequest(ops, node);
+    if (
+      !request ||
+      request.status !== "answered" ||
+      !request.decisionId ||
+      requestSubmissionId(request) !== plan.id
+    ) {
+      return null;
+    }
+    const answer = await ops.getDecision(request.decisionId);
+    if (!answer || answer.nodeId !== node.id || planReturnOutcome(answer) === null) {
+      return null;
+    }
+    const since = answer.recordedAt.getTime();
+    if (asked.some((g) => g.createdAt.getTime() >= since)) return null;
     return {
-      kind: "plan",
-      topicKey,
-      projectId: node.projectId,
-      nodeId: node.id,
-      openedAt: node.stateSince,
+      ...base,
+      source,
+      openedAt: answer.recordedAt,
+      replan: { answerId: answer.id, planId: plan.id },
     };
   }
 
@@ -1041,7 +1112,19 @@ export function createCouncil(options: CouncilOptions) {
 
   async function councilPlanTaskInput(q: CouncilPlanQuestion): Promise<string> {
     const node = (await store.getNode(q.nodeId)) as Node;
-    return councilPlanInput({ node, scopeUpdates: await scopeUpdatesOf(node.id) });
+    const scopeUpdates = q.source === "scanner" ? await scopeUpdatesOf(node.id) : [];
+    if (!q.replan) return councilPlanInput({ node, source: q.source, scopeUpdates });
+    const answer = await store.getDecision(q.replan.answerId);
+    const plan = await store.getDecision(q.replan.planId);
+    const outcome = answer ? planReturnOutcome(answer) : null;
+    return councilPlanInput({
+      node,
+      source: q.source,
+      scopeUpdates,
+      ...(answer && plan && outcome
+        ? { sentBack: { plan: plan.textVerbatim, outcome, words: answer.textVerbatim } }
+        : {}),
+    });
   }
 
   async function reversalTaskInput(q: ReversalQuestion): Promise<string> {
@@ -1360,6 +1443,8 @@ export function createCouncil(options: CouncilOptions) {
         needsDidi: answer.needsDidi as unknown as Json,
         productDirection: answer.productDirection,
         directionDecisionId: direction.id,
+        // A replan names Didi's answer it follows (D-316 (3)).
+        ...(q.replan ? { replanOf: q.replan.answerId } : {}),
       },
       textVerbatim: answer.plan,
       byActor: "council",
@@ -1375,7 +1460,9 @@ export function createCouncil(options: CouncilOptions) {
       if (earlier) {
         return { recorded: "already_recorded", kind: "plan", decisionId: earlier.id };
       }
-      if (!(await councilPlanQuestion(tx, q.nodeId))) {
+      // Still open, and still the same question: a replan for a later answer is not this one.
+      const open = await councilPlanQuestion(tx, q.nodeId);
+      if (!open || open.replan?.answerId !== q.replan?.answerId) {
         return { recorded: false, reason: "question_closed" };
       }
       await tx.insertDecision(direction);
@@ -1969,9 +2056,11 @@ export function createCouncil(options: CouncilOptions) {
           if (q) found.push(q);
         }
       }
-      for (const node of await store.listNodes({ state: SUBMITTED_STATE })) {
-        const q = await councilPlanQuestion(store, node.id);
-        if (q) found.push(q);
+      for (const state of SUBMITTABLE_STATES) {
+        for (const node of await store.listNodes({ state })) {
+          const q = await councilPlanQuestion(store, node.id);
+          if (q) found.push(q);
+        }
       }
       const projectIds = [
         ...new Set((await store.listNodes({})).map((n) => n.projectId)),
@@ -2087,7 +2176,8 @@ export function createCouncil(options: CouncilOptions) {
         (q.kind === "reversal" ||
           q.kind === "visual_call" ||
           q.kind === "scanner_gone" ||
-          q.kind === "still_needed") &&
+          q.kind === "still_needed" ||
+          (q.kind === "plan" && q.replan !== null)) &&
         run.startedAt.getTime() < q.openedAt.getTime()
       ) {
         return { recorded: false, reason: "question_closed" };
@@ -2155,7 +2245,10 @@ export function createCouncil(options: CouncilOptions) {
         return store.transaction(async (tx) => {
           if (await held(tx)) return { kind: "plan", gateRequestId: null };
           await tx.getNodeForUpdate(q.nodeId);
-          const earlier = await tx.listGateRequests(q.projectId, q.topicKey);
+          // A replan's question counts only requests since Didi's answer (D-316 (2)).
+          const earlier = (await tx.listGateRequests(q.projectId, q.topicKey)).filter(
+            (g) => !q.replan || g.createdAt.getTime() >= q.openedAt.getTime(),
+          );
           if (earlier.length > 0) {
             return { kind: "plan", gateRequestId: earlier[0]?.id ?? null };
           }
@@ -2169,9 +2262,14 @@ export function createCouncil(options: CouncilOptions) {
             owner: "didi",
             blocking: false,
             payload: {
-              question: COUNCIL_PLAN_NO_ANSWER,
+              question: q.replan
+                ? COUNCIL_REPLAN_NO_ANSWER
+                : q.source === "run_finding"
+                  ? COUNCIL_FINDING_PLAN_NO_ANSWER
+                  : COUNCIL_PLAN_NO_ANSWER,
               reason,
               lastCouncilRunId: lastRunId,
+              ...(q.replan ? { replanOf: q.replan.answerId } : {}),
             },
             approvalUrl: null,
             status: "open",
