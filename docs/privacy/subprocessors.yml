@@ -5,4 +5,9 @@ subprocessors:
     data: Project Factory state, including the operator's decisions word for word (docs/privacy/data-map.yml)
     location: Canada (ca-central-1)
     verified: false
+  - name: Windmill
+    purpose: Runs the factory's flows (Windmill Cloud)
+    data: Flow inputs and results, including the operator's own words where a result quotes them (docs/privacy/data-map.yml)
+    location: To confirm at first hosting
+    verified: false
 # This file is a starting skeleton, not legal advice. Review it with qualified counsel before relying on it.

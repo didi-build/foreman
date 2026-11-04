@@ -17,3 +17,18 @@ other_items:
     who_can_see: operator, the runner, the state API
     source: db/migrations/0001_factory_schema.sql
     verified: false
+  # Windmill's job history (D-294). Flow inputs and results stay in Windmill after each run.
+  - id: windmill.job_history
+    whose: operator
+    data: >-
+      The inputs and results of the runner's Windmill flows: item ids, states and step outcomes, and
+      the operator's own words where a result quotes them (approval answers, Didi's notes in the
+      held-items list). No end-user personal data: agents work from synthetic data (D-154).
+    purpose: Running the factory's flows, and the operator reading what each run did.
+    storage: Windmill Cloud (region to confirm at first hosting)
+    processors: [Windmill]
+    retention: >-
+      Windmill's job retention for the workspace's plan; to confirm at first hosting.
+    who_can_see: operator, members of the Windmill workspace
+    source: flows/windmill.yaml
+    verified: false
