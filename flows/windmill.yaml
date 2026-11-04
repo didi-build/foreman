@@ -139,6 +139,16 @@ flows:
     # Didi starts it from its page in the Windmill workspace, signed in. No new credential.
     trigger: called
 
+  - name: cancel_item
+    path: f/foreman/cancel_item
+    entry: flows/cancel-item.ts
+    # Didi's own cancel of a work item (D-308, O-97), with the item's id and Didi's reason; with
+    # askCouncil, the Council is asked whether the item is still needed instead. Didi starts it
+    # from its page in the Windmill workspace, signed in, as hold_release_request (O-90, D-295).
+    # Never a public or signed-token link. No schedule, pass or other flow starts it; the kill
+    # switch and dry run write nothing. No new credential.
+    trigger: called
+
   - name: request_transition
     path: f/foreman/request_transition
     entry: flows/request-transition.ts

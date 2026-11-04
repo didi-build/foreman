@@ -19,6 +19,9 @@
 // noticed outside its item, each `{"title": "<one line>", "detail": "<what was seen>"}`, checked
 // by ../../core/out-of-scope-findings.ts. The runner submits each as a new idea for the Council;
 // they change nothing about the item. The stopped form has no findings: it is exactly two fields.
+// Its `stopped` is `needs_decision`, or `already_done` when the item's work is already done on
+// the default branch (D-308 (3), O-97): the runner then asks the Council whether the item is
+// still needed.
 //
 // The check is strict: no block, two blocks, text that is not one of those objects, a mix of the
 // two forms, an unknown field, or a field of the wrong shape is a problem the run fails on.
@@ -44,9 +47,13 @@ export interface RunReport {
   summary: string;
 }
 
+/** Why a run stopped: the item needs a decision (D-237), or its work is already done (D-308). */
+export type StopKind = "needs_decision" | "already_done";
+const STOP_KINDS: readonly string[] = ["needs_decision", "already_done"];
+
 /** The second form: the run stopped because the item needs a decision (D-237). */
 export interface StoppedReport {
-  stopped: "needs_decision";
+  stopped: StopKind;
   /** Why, in the model's words, trimmed. */
   reason: string;
 }
@@ -153,8 +160,8 @@ function readStopped(
         "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
     };
   }
-  if (value.stopped !== "needs_decision") {
-    return { problem: "stopped must be needs_decision" };
+  if (typeof value.stopped !== "string" || !STOP_KINDS.includes(value.stopped)) {
+    return { problem: "stopped must be needs_decision or already_done" };
   }
   const reason = value.reason;
   if (
@@ -164,7 +171,7 @@ function readStopped(
   ) {
     return { problem: `reason must be text of 1 to ${MAX_STOP_REASON} characters` };
   }
-  return { stopped: { stopped: "needs_decision", reason: reason.trim() } };
+  return { stopped: { stopped: value.stopped as StopKind, reason: reason.trim() } };
 }
 
 /**

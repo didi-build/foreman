@@ -39,7 +39,8 @@ providers:
     secret_path: projects/{project}/models/deepinfra
     api: { kind: openai-compatible, path: /v1/openai }
 
-# Reviewed by Didi, 2026-11-03 (D-245).
+# Reviewed by Didi, 2026-11-03 (D-245). The already-done stop (the last rule) was added for D-308
+# (O-97) and approved by Didi (D-317).
 instructions: |
   You are the Developer for one work item in one project's repository. You build code,
   infrastructure and docs, and wire gallery components into the app. Read the repository's
@@ -96,3 +97,8 @@ instructions: |
     1000 characters with no secrets or personal data. No pull request is opened and no docs
     note is recorded. Commits you pushed stay on the branch. The runner asks the Council, which
     brings in Didi when Didi is needed.
+  - If the item's work is already done on the default branch, so nothing is left to build,
+    change nothing and end the same way, with this object in the block instead:
+    {"stopped": "already_done", "reason": "<where the work is already done, and how you checked>"}
+    The same limits apply to `reason`. The runner then asks the Council whether the item is
+    still needed.

@@ -74,9 +74,19 @@
 // while no other request is open there. Its run has task type `council` and its input shows the
 // idea with its scope updates (./council-input.ts). The answer (`stop`, `keep` or
 // `cannot_decide`) is recorded as a `council_decision` on the idea with the request answered, in
-// one transaction; a `stop` or `cannot_decide`, or no usable answer after the re-run, opens one
-// `escalation` request for Didi on the same topic, since parking or rejecting the idea is Didi's.
-// Nothing moves the idea or touches its work items.
+// one transaction. A `stop` opens nothing here: the cancel step then acts on it under the approver
+// rule (D-308, ./cancel.ts `cancelAuthority`): it cancels the work items and moves the idea to
+// Rejected when the Council accepted the idea's plan, and otherwise opens Didi's request to
+// confirm. A `cannot_decide`, or no usable answer after the re-run, opens one `escalation` request
+// for Didi on the same topic, as O-93 built it. Recording the answer moves nothing.
+//
+// A sixth question kind is its sibling on a work item (`still_needed`, D-308 (3), O-97,
+// ./still-needed.ts): open while a `council_question` request owned by the Council is open on
+// `still-needed:<item id>`, which the runner opens when a merged change touches the same design
+// feature folder, when the item's own run reports the work already done, or when Didi asks. Its
+// answer has the scanner question's schema and is recorded and acted on the same way, on the
+// item. While it is open, or while Didi's request to confirm a cancel is open on the item, the
+// item's escalation question waits, so one question at a time is asked about it.
 //
 // A fifth question kind plans an idea the Scanner filed (`plan`, D-307, O-96): open while a
 // scanner idea is in Submitted with no plan yet (no planning-chat submission and no Council
@@ -97,9 +107,12 @@ import {
   escalationInput,
   reversalInput,
   scannerGoneInput,
+  stillNeededInput,
+  type StillNeededReason,
   visualCallInput,
   type ScopeUpdateView,
 } from "./council-input.ts";
+import { CANCEL_REQUEST_PREFIX, STILL_NEEDED_PREFIX } from "./cancel.ts";
 import { createEscalations, type EscalationStep } from "./escalations.ts";
 import {
   COUNCIL_CANNOT_RESOLVE,
@@ -169,7 +182,12 @@ import type { ScreenshotBundles, VisualImage } from "./visual-comparison.ts";
 /** The topic key prefixes of the Council questions. */
 export const ESCALATION_PREFIX = "escalation:";
 export const REVERSAL_PREFIX = "decision-reversed:";
-export { COUNCIL_PLAN_PREFIX, SCANNER_GONE_PREFIX, VISUAL_CALL_PREFIX };
+export {
+  COUNCIL_PLAN_PREFIX,
+  SCANNER_GONE_PREFIX,
+  STILL_NEEDED_PREFIX,
+  VISUAL_CALL_PREFIX,
+};
 
 /**
  * One run and one re-run per question; after that the question goes to Didi (D-228), or for a
@@ -222,6 +240,21 @@ export interface ScannerGoneQuestion {
   commitSha: string | null;
 }
 
+/** A work item's "is this still needed?" question (D-308 (3)): the same answer as above. */
+export interface StillNeededQuestion {
+  kind: "still_needed";
+  topicKey: string;
+  projectId: string;
+  /** The work item; the Council's run is on it. */
+  nodeId: string;
+  openedAt: Date;
+  gateRequestId: string;
+  /** Why the runner asks, from the request's payload. */
+  reason: StillNeededReason;
+  /** No commit: kept so the shared recording reads the same fields as the scanner question. */
+  commitSha: string | null;
+}
+
 /** The Council's plan for an idea the Scanner filed (D-307). */
 export interface CouncilPlanAnswer {
   plan: string;
@@ -271,11 +304,16 @@ export type CouncilQuestion =
   | ReversalQuestion
   | VisualCallQuestion
   | ScannerGoneQuestion
+  | StillNeededQuestion
   | CouncilPlanQuestion;
 
 /** A question that goes to Didi when it has no usable answer: every kind but the visual call. */
 export type DidiBoundQuestion =
-  EscalationQuestion | ReversalQuestion | ScannerGoneQuestion | CouncilPlanQuestion;
+  | EscalationQuestion
+  | ReversalQuestion
+  | ScannerGoneQuestion
+  | StillNeededQuestion
+  | CouncilPlanQuestion;
 
 /** What the runner does next for one open question. */
 export type CouncilNext =
@@ -362,6 +400,8 @@ export type CouncilAnswer =
       /** A reversal answer, recorded now: each verdict and the gate request for Didi, if any. */
       verdicts?: AppliedVerdict[];
       didiGateRequestId?: string | null;
+      /** A `stop` on a scanner idea or a work item: the cancel step is due (D-308). */
+      cancelDue?: true;
     }
   | {
       recorded: false;
@@ -601,12 +641,25 @@ export const COUNCIL_PLAN_NO_ANSWER =
 
 /** What Didi is asked when the Council's answer on a scanner idea needs Didi (D-301). */
 const SCANNER_GONE_DIDI = {
-  stop: "The Scanner no longer finds any of this idea's findings, and the Council recommends stopping it. Parking or rejecting it is yours.",
   cannot_decide:
     "The Scanner no longer finds any of this idea's findings, and the Council could not decide whether to stop it.",
   no_answer:
     "The Scanner no longer finds any of this idea's findings, and the Council gave no usable answer on whether to stop it.",
 } as const;
+
+/** What Didi is told when the Council's answer on a work item needs Didi (D-308). */
+const STILL_NEEDED_DIDI = {
+  cannot_decide:
+    "The Council was asked whether this work item is still needed and could not decide. Keeping or cancelling it is yours.",
+  no_answer:
+    "The Council was asked whether this work item is still needed and gave no usable answer. Keeping or cancelling it is yours.",
+} as const;
+
+const STILL_NEEDED_REASONS: readonly string[] = [
+  "merged_change",
+  "already_done",
+  "didi_asked",
+];
 
 /** Rolls back the answer's transaction with the reason it was not recorded. */
 class NotRecorded extends Error {
@@ -636,6 +689,15 @@ export function createCouncil(options: CouncilOptions) {
   ): Promise<EscalationQuestion | null> {
     const node = await store.getNode(nodeId);
     if (!node || !councilState || node.state !== councilState) return null;
+    // The item's "is this still needed?" question, or Didi's request to confirm its cancel, comes
+    // first: one question at a time (D-308).
+    const waits = (await store.listOpenGateRequests(node.projectId)).some(
+      (g) =>
+        g.nodeId === node.id &&
+        (g.topicKey === `${STILL_NEEDED_PREFIX}${node.id}` ||
+          g.topicKey.startsWith(CANCEL_REQUEST_PREFIX)),
+    );
+    if (waits) return null;
     return {
       kind: "escalation",
       topicKey: escalationTopic(node.id),
@@ -691,6 +753,31 @@ export function createCouncil(options: CouncilOptions) {
     };
   }
 
+  function stillNeededQuestion(gate: GateRequest): StillNeededQuestion | null {
+    const reason = field(gate.payload, "reason");
+    if (
+      gate.status !== "open" ||
+      gate.owner !== "council" ||
+      gate.kind !== "council_question" ||
+      gate.nodeId === null ||
+      gate.topicKey !== `${STILL_NEEDED_PREFIX}${gate.nodeId}` ||
+      typeof reason !== "string" ||
+      !STILL_NEEDED_REASONS.includes(reason)
+    ) {
+      return null;
+    }
+    return {
+      kind: "still_needed",
+      topicKey: gate.topicKey,
+      projectId: gate.projectId,
+      nodeId: gate.nodeId,
+      openedAt: gate.createdAt,
+      gateRequestId: gate.id,
+      reason: reason as StillNeededReason,
+      commitSha: null,
+    };
+  }
+
   /**
    * The Council's planning question on a scanner idea (D-307): open while the idea is in
    * Submitted with no plan and no request on its topic. Reads through `ops`, so the answer's
@@ -727,6 +814,12 @@ export function createCouncil(options: CouncilOptions) {
       if (!node) return null;
       const gate = await store.findOpenGateRequest(node.projectId, topicKey);
       return gate ? scannerGoneQuestion(gate) : null;
+    }
+    if (topicKey.startsWith(STILL_NEEDED_PREFIX)) {
+      const node = await store.getNode(topicKey.slice(STILL_NEEDED_PREFIX.length));
+      if (!node) return null;
+      const gate = await store.findOpenGateRequest(node.projectId, topicKey);
+      return gate ? stillNeededQuestion(gate) : null;
     }
     if (topicKey.startsWith(ESCALATION_PREFIX)) {
       return escalationQuestion(topicKey.slice(ESCALATION_PREFIX.length));
@@ -922,6 +1015,30 @@ export function createCouncil(options: CouncilOptions) {
     });
   }
 
+  async function stillNeededTaskInput(q: StillNeededQuestion): Promise<string> {
+    const node = (await store.getNode(q.nodeId)) as Node;
+    const gate = await store.getGateRequest(q.gateRequestId);
+    const payload = gate?.payload;
+    const mergedId = textOf(field(payload, "mergedNodeId"));
+    const merged = mergedId ? await store.getNode(mergedId) : null;
+    return stillNeededInput({
+      node,
+      reason: q.reason,
+      ...(merged
+        ? {
+            merged: {
+              node: merged,
+              commitSha: textOf(field(payload, "mergeCommitSha")),
+              folders: textList(field(payload, "folders")),
+            },
+          }
+        : {}),
+      ...(q.reason === "merged_change"
+        ? {}
+        : { words: textOf(field(payload, "words")) }),
+    });
+  }
+
   async function councilPlanTaskInput(q: CouncilPlanQuestion): Promise<string> {
     const node = (await store.getNode(q.nodeId)) as Node;
     return councilPlanInput({ node, scopeUpdates: await scopeUpdatesOf(node.id) });
@@ -1101,9 +1218,9 @@ export function createCouncil(options: CouncilOptions) {
         };
   }
 
-  /** The `escalation` request for Didi on a scanner idea's question topic (D-301). */
+  /** The `escalation` request for Didi on a scanner idea's or an item's question topic (D-301). */
   function scannerGoneDidiGate(
-    q: ScannerGoneQuestion,
+    q: ScannerGoneQuestion | StillNeededQuestion,
     question: string,
     extra: { [key: string]: Json },
     at: Date,
@@ -1128,14 +1245,16 @@ export function createCouncil(options: CouncilOptions) {
   }
 
   /**
-   * Records the Council's answer on a scanner idea that is no longer found (D-301): the decision
-   * on the idea and its request answered, once per run and while the request is open, and for a
-   * `stop` or `cannot_decide` one `escalation` request for Didi on the same topic. The idea's row
-   * is the lock. Nothing moves the idea or touches its work items.
+   * Records the Council's answer on a scanner idea that is no longer found (D-301), or on whether
+   * a work item is still needed (D-308): the decision on the node and its request answered, once
+   * per run and while the request is open, and for a `cannot_decide` one `escalation` request for
+   * Didi on the same topic. A `stop` opens nothing here: the cancel step acts on it after the
+   * run's end, under the approver rule (./cancel.ts). The node's row is the lock. Nothing here
+   * moves a node.
    */
   async function recordScannerGone(
     run: Run & { nodeId: string },
-    q: ScannerGoneQuestion,
+    q: ScannerGoneQuestion | StillNeededQuestion,
     answer: ScannerGoneAnswer,
   ): Promise<CouncilAnswer> {
     const at = clock.now();
@@ -1149,7 +1268,9 @@ export function createCouncil(options: CouncilOptions) {
         gateRequestId: q.gateRequestId,
         runId: run.id,
         verdict: answer.verdict,
-        commitSha: q.commitSha,
+        ...(q.kind === "still_needed"
+          ? { reason: q.reason }
+          : { commitSha: q.commitSha }),
       },
       textVerbatim: answer.note,
       byActor: "council",
@@ -1166,7 +1287,7 @@ export function createCouncil(options: CouncilOptions) {
         if (earlier) {
           return {
             recorded: "already_recorded",
-            kind: "scanner_gone",
+            kind: q.kind,
             decisionId: earlier.id,
           };
         }
@@ -1178,10 +1299,12 @@ export function createCouncil(options: CouncilOptions) {
         });
         if (!closed) throw new NotRecorded();
         let didiGateRequestId: string | null = null;
-        if (answer.verdict !== "keep") {
+        if (answer.verdict === "cannot_decide") {
           const gate = scannerGoneDidiGate(
             q,
-            SCANNER_GONE_DIDI[answer.verdict],
+            q.kind === "still_needed"
+              ? STILL_NEEDED_DIDI.cannot_decide
+              : SCANNER_GONE_DIDI.cannot_decide,
             { councilDecisionId: decision.id, councilNote: answer.note },
             at,
           );
@@ -1190,9 +1313,10 @@ export function createCouncil(options: CouncilOptions) {
         }
         return {
           recorded: true,
-          kind: "scanner_gone",
+          kind: q.kind,
           decisionId: decision.id,
           didiGateRequestId,
+          ...(answer.verdict === "stop" ? { cancelDue: true as const } : {}),
         };
       })
       .catch((error: unknown) => {
@@ -1857,6 +1981,7 @@ export function createCouncil(options: CouncilOptions) {
           const q =
             reversalQuestion(gate) ??
             scannerGoneQuestion(gate) ??
+            stillNeededQuestion(gate) ??
             (await visualCallQuestion(gate));
           if (q) found.push(q);
         }
@@ -1912,9 +2037,11 @@ export function createCouncil(options: CouncilOptions) {
           ? await escalationTaskInput(q)
           : q.kind === "scanner_gone"
             ? await scannerGoneTaskInput(q)
-            : q.kind === "plan"
-              ? await councilPlanTaskInput(q)
-              : await reversalTaskInput(q);
+            : q.kind === "still_needed"
+              ? await stillNeededTaskInput(q)
+              : q.kind === "plan"
+                ? await councilPlanTaskInput(q)
+                : await reversalTaskInput(q);
       return { question: q, input, outputSchema, taskType: "council" };
     },
 
@@ -1944,9 +2071,11 @@ export function createCouncil(options: CouncilOptions) {
               ? "visual_call"
               : found.questionTopic.startsWith(SCANNER_GONE_PREFIX)
                 ? "scanner_gone"
-                : found.questionTopic.startsWith(COUNCIL_PLAN_PREFIX)
-                  ? "plan"
-                  : "escalation",
+                : found.questionTopic.startsWith(STILL_NEEDED_PREFIX)
+                  ? "still_needed"
+                  : found.questionTopic.startsWith(COUNCIL_PLAN_PREFIX)
+                    ? "plan"
+                    : "escalation",
           decisionId: earlier.id,
         };
       }
@@ -1957,7 +2086,8 @@ export function createCouncil(options: CouncilOptions) {
       if (
         (q.kind === "reversal" ||
           q.kind === "visual_call" ||
-          q.kind === "scanner_gone") &&
+          q.kind === "scanner_gone" ||
+          q.kind === "still_needed") &&
         run.startedAt.getTime() < q.openedAt.getTime()
       ) {
         return { recorded: false, reason: "question_closed" };
@@ -1977,7 +2107,7 @@ export function createCouncil(options: CouncilOptions) {
           return { recorded: false, reason: "invalid", problem: read.problem };
         return recordCouncilPlan(run, q, read.answer);
       }
-      if (q.kind === "scanner_gone") {
+      if (q.kind === "scanner_gone" || q.kind === "still_needed") {
         const read = readScannerGoneAnswer(structured);
         if ("problem" in read)
           return { recorded: false, reason: "invalid", problem: read.problem };
@@ -2007,7 +2137,10 @@ export function createCouncil(options: CouncilOptions) {
       reason: string,
     ): Promise<
       | { kind: "escalation"; step: EscalationStep }
-      | { kind: "reversal" | "scanner_gone" | "plan"; gateRequestId: string | null }
+      | {
+          kind: "reversal" | "scanner_gone" | "still_needed" | "plan";
+          gateRequestId: string | null;
+        }
     > {
       if (q.kind === "escalation") {
         return {
@@ -2052,18 +2185,21 @@ export function createCouncil(options: CouncilOptions) {
           return { kind: "plan", gateRequestId: gate.id };
         });
       }
-      if (q.kind === "scanner_gone") {
+      if (q.kind === "scanner_gone" || q.kind === "still_needed") {
         // One request for Didi on the topic, which replaces the Council's question.
+        const kind = q.kind;
         return store.transaction(async (tx) => {
-          if (await held(tx)) return { kind: "scanner_gone", gateRequestId: null };
+          if (await held(tx)) return { kind, gateRequestId: null };
           const open = await tx.findOpenGateRequest(q.projectId, q.topicKey);
           if (open?.owner === "didi") {
-            return { kind: "scanner_gone", gateRequestId: open.id };
+            return { kind, gateRequestId: open.id };
           }
           const at = clock.now();
           const gate = scannerGoneDidiGate(
             q,
-            SCANNER_GONE_DIDI.no_answer,
+            kind === "still_needed"
+              ? STILL_NEEDED_DIDI.no_answer
+              : SCANNER_GONE_DIDI.no_answer,
             { reason, lastCouncilRunId: lastRunId },
             at,
           );
@@ -2075,7 +2211,7 @@ export function createCouncil(options: CouncilOptions) {
             });
           }
           await tx.insertGateRequest(gate);
-          return { kind: "scanner_gone", gateRequestId: gate.id };
+          return { kind, gateRequestId: gate.id };
         });
       }
       if ((await store.getSetting("kill_switch"))?.value === true)

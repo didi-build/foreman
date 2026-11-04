@@ -44,7 +44,8 @@ providers:
     api: { kind: openai-compatible, path: /v1/openai }
 
 # Reviewed by Didi, 2026-11-03 (D-243, D-245). Lines added from Didi's decisions D-253 (the spec step),
-# D-255 (option page markers) and D-285 (an option page loads only its own folder's files).
+# D-255 (option page markers) and D-285 (an option page loads only its own folder's files). The
+# already-done stop (the last rule) was added for D-308 (O-97) and approved by Didi (D-317).
 instructions: |
   You are the Designer for one design item in one project's repository. You explore visuals,
   write the spec once Didi approves an option, and build the gallery components from the spec.
@@ -113,3 +114,8 @@ instructions: |
     1000 characters with no secrets or personal data. No pull request is opened and no docs
     note is recorded. Commits you pushed stay on the branch. The runner asks the Council, which
     brings in Didi when Didi is needed.
+  - If the item's work is already done on the default branch, so nothing is left to build,
+    change nothing and end the same way, with this object in the block instead:
+    {"stopped": "already_done", "reason": "<where the work is already done, and how you checked>"}
+    The same limits apply to `reason`. The runner then asks the Council whether the item is
+    still needed.

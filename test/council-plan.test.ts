@@ -518,7 +518,8 @@ describe("the guard council_plan_accepted refuses everything but the Council's a
     });
     expect((await old.plans.step(old.idea.id)).step).toBe("opened");
 
-    // Didi was asked about an earlier plan: a later "no" still goes to Didi.
+    // Didi's request on an earlier plan is still open: Didi's answer comes first, so a later "no"
+    // goes to Didi too (D-315).
     const asked = await setup();
     await asked.answered({ needed: "yes", reason: "r" });
     await asked.plans.step(asked.idea.id);
@@ -541,10 +542,53 @@ describe("the guard council_plan_accepted refuses everything but the Council's a
     });
     expect(await check(asked)).toMatchObject({
       pass: false,
-      detail: "Didi was already asked about a plan for this idea",
+      detail: "a plan-approval request is open: Didi's answer comes first",
     });
     expect((await asked.plans.step(asked.idea.id)).step).toBe("opened");
     expect((await asked.store.getNode(asked.idea.id))?.state).toBe("submitted");
+  });
+
+  it("accepts a later plan that needs no Didi once Didi's earlier request is closed (D-315)", async () => {
+    const t = await setup();
+    await t.answered({ needed: "yes", reason: "r" });
+    await t.plans.step(t.idea.id);
+    const [request] = await t.store.listGateRequests(
+      t.projectId,
+      `plan-approval:${t.idea.id}`,
+    );
+    // Didi sends the earlier plan back with changes.
+    await createLibrary(t.deps).answerGateRequest(request!.id, {
+      nodeId: t.idea.id,
+      kind: "answer",
+      scope: { topicKey: request!.topicKey, outcome: "changes_requested" },
+      textVerbatim: "Smaller, please.",
+      byActor: "didi",
+    });
+    await t.plans.step(t.idea.id);
+    t.advanceMinutes(1);
+    await t.store.insertDecision({
+      id: t.deps.ids.next(),
+      projectId: t.projectId,
+      nodeId: t.idea.id,
+      kind: "council_decision",
+      scope: {
+        kind: "plan_proposal",
+        topicKey: t.topic,
+        runId: "later",
+        needsDidi: NOT_NEEDED as unknown as Decision["scope"],
+        productDirection: DIRECTION,
+      },
+      textVerbatim: "A smaller plan.",
+      byActor: "council",
+      recordedAt: t.clock.now(),
+    });
+    expect(await check(t)).toMatchObject({ pass: true });
+    expect(await t.plans.step(t.idea.id)).toMatchObject({
+      step: "council_accepted",
+      move: { outcome: "applied" },
+    });
+    const [accepted] = await t.planAccepted();
+    expect(accepted?.scope).toMatchObject({ acceptedBy: "council" });
   });
 
   it("is a runner-only way in: any other request is refused, and each way's guard stays its own", async () => {

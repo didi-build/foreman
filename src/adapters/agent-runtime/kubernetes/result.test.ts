@@ -329,6 +329,21 @@ describe("mapRunEnd (unit: outcome mapping, ADR 0106 section 6)", () => {
     });
   });
 
+  it("maps an already_done stop to the same success, marked as already done (D-308, O-97)", () => {
+    const stopped = { stopped: "already_done", reason: " On main in src/a.ts. " };
+    const result = mapRunEnd(
+      "complete",
+      JOB,
+      parse({ status: "needs_decision", structured: stopped, finalText: "Stopped." }),
+      "m",
+    );
+    expect(result).toMatchObject({
+      outcome: "success",
+      detail: "needs_decision",
+      needsDecision: { reason: "On main in src/a.ts.", alreadyDone: true },
+    });
+  });
+
   it.each([
     ["no structured answer", undefined],
     ["another stop word", { stopped: "blocked", reason: "r" }],

@@ -26,13 +26,22 @@
 // QA round, a staging check, a refused done report or an answered escalation sent back, and
 // resumes a builder run queued after `usage_exhausted` (O-41, O-43). It runs after the staging and
 // escalation passes, so an escalation that pass recovers is taken first. Under any other stop,
-// none runs.
+// none runs. The merged-change pass runs right after the merge pass: it asks the Council whether
+// each open item that touches the same design feature folder as a merged item is still needed
+// (D-308 (3), src/core/still-needed.ts), once per pair, before the Council pass starts the runs.
+// The cancel pass runs right after the redo pass: it opens Didi's request to confirm each
+// Council stop on a plan Didi approved, cancels each work item a cancel stands on once no run is
+// active on it, and then moves the idea to Rejected (D-308, ./council-runs.ts).
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import {
   createHoldReleases,
   type HoldReleaseStep,
 } from "../../src/core/hold-release.ts";
 import { createMerges, type MergeResult } from "../../src/core/merge.ts";
+import {
+  createStillNeeded,
+  type StillNeededOpen,
+} from "../../src/core/still-needed.ts";
 import type { ReconcileReport } from "../../src/core/reconcile.ts";
 import {
   createStaging,
@@ -45,8 +54,10 @@ import { triagePass, type TriagePassStep } from "./triage-runs.ts";
 import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans.ts";
 import type { FlowDeps } from "./compose.ts";
 import type { FollowUpStep } from "../../src/core/council.ts";
+import type { CancelStep } from "../../src/core/cancel.ts";
 import {
   councilPass,
+  cancelPass,
   followUpPass,
   redoPass,
   type CouncilPassStep,
@@ -66,6 +77,13 @@ export interface LivePasses {
   councilRuns: CouncilPassStep[] | null;
   /** What the redo pass did for each stale item with a Council redo standing (D-231). */
   redos: RedoPassStep[] | null;
+  /** The "is this still needed?" questions the merged-change pass opened (D-308 (3)). */
+  stillNeeded: StillNeededOpen[] | null;
+  /**
+   * What the cancel pass did for each cancel and Council stop (D-308); in dry run, what it would
+   * do, from the dry-run pass.
+   */
+  cancels: CancelStep[] | null;
   /** What the plan approval pass did for each idea with a plan from the planning chat (D-266). */
   plans: PlanApprovalStep[] | null;
   /** What the Triage pass did for each idea in Plan accepted or Triage (M3.6). */
@@ -82,7 +100,7 @@ export interface LivePasses {
 
 export async function runLivePasses(
   deps: FlowDeps,
-  stopped: ReconcileReport["stopped"],
+  { stopped, cancels: wouldStop }: Pick<ReconcileReport, "stopped" | "cancels">,
 ): Promise<LivePasses> {
   if (stopped !== "live_mode_not_built") {
     return {
@@ -93,6 +111,9 @@ export async function runLivePasses(
       followUps: null,
       councilRuns: null,
       redos: null,
+      stillNeeded: null,
+      // In dry run, what the cancel step would do (D-308); nothing under the kill switch.
+      cancels: stopped === null ? wouldStop : null,
       plans: null,
       triage: null,
       holdReleases: null,
@@ -102,6 +123,7 @@ export async function runLivePasses(
     };
   }
   const merged = await createMerges(deps).mergeReady();
+  const stillNeeded = await createStillNeeded(deps).mergedChangePass();
   const staging = createStaging({ ...deps, checker: deps.stagingChecker });
   const verified = await staging.verifyReady();
   const { waits, problem } = await staging.deployWaits(verified);
@@ -109,6 +131,7 @@ export async function runLivePasses(
   const followUps = await followUpPass(deps);
   const councilRuns = await councilPass(deps);
   const redos = await redoPass(deps);
+  const cancels = await cancelPass(deps);
   const planApprovals = createPlanApprovals(deps);
   const plans: PlanApprovalStep[] = [];
   for (const ideaId of await planApprovals.pending()) {
@@ -130,6 +153,8 @@ export async function runLivePasses(
     followUps,
     councilRuns,
     redos,
+    stillNeeded,
+    cancels,
     plans,
     triage,
     holdReleases,

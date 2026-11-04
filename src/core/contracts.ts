@@ -61,16 +61,23 @@ export interface Contracts {
 }
 
 /**
- * A state with no way out except escalation: Done, or an idea's end. Read from the contracts, so
- * no caller names the state (essential 7). The reconcile pass and the daily check use it.
+ * An end state: one whose every way out, except escalation, leads to a state with no way out at
+ * all. Done, Cancelled and an idea's end states (Rejected, Parked) have no way out; Handed off's
+ * only way out is the cancel's move to Rejected (D-308), from one end to another, so it is
+ * still the end of Machine 1. Read from the contracts, so no caller names the state (essential 7).
+ * The reconcile pass, the daily check, the held-items list, the Scanner's open rule and the
+ * cancel step use it.
  */
 export function isTerminalState(contracts: Contracts, state: string): boolean {
-  const escalated = Object.hasOwn(contracts.states, state)
-    ? contracts.states[state]?.escalated === true
-    : false;
+  const escalated = (id: string): boolean =>
+    Object.hasOwn(contracts.states, id)
+      ? contracts.states[id]?.escalated === true
+      : false;
+  const out = (id: string): TransitionContract[] =>
+    contracts.transitions.filter((move) => !move.escalation && move.from === id);
   return (
-    !escalated &&
-    !contracts.transitions.some((move) => !move.escalation && move.from === state)
+    !escalated(state) &&
+    out(state).every((move) => !escalated(move.to) && out(move.to).length === 0)
   );
 }
 
@@ -99,6 +106,7 @@ export interface GuardContext {
     | "listOpenGateRequests"
     | "listDecisionsForNode"
     | "listGateRequests"
+    | "listGateRequestsForNode"
     | "getProject"
     | "getLatestScan"
   >;

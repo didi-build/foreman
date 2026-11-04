@@ -18,6 +18,11 @@
 //   folded into it, the commits at which it was no longer found and its work items, asking
 //   whether to stop it.
 //
+// - Whether a work item is still needed (D-308, O-97): the item, its state and body, and why the
+//   runner asks: a merged change touched the same design feature folder (with the merged item and
+//   the folders), the item's own Developer or Designer run reported the work already done (with
+//   the run's reason quoted), or Didi asked (with Didi's words quoted).
+//
 // - A plan for an idea the Scanner filed (D-307, O-96): the idea, its class, check, evidence (file
 //   and line) and the commit it was found at, its description and its scope updates, asking for
 //   the plan, the product direction it keeps and the call on whether Didi is needed.
@@ -98,6 +103,22 @@ export interface ScannerGoneInput {
   notFoundAt: (string | null)[];
   /** The work items the idea was split into, if any. */
   workItems: Pick<Node, "id" | "title" | "state" | "track">[];
+}
+
+/** Why the runner asks whether a work item is still needed (D-308 (3)). */
+export type StillNeededReason = "merged_change" | "already_done" | "didi_asked";
+
+export interface StillNeededInput {
+  node: Pick<Node, "id" | "title" | "body" | "state" | "track">;
+  reason: StillNeededReason;
+  /** A merged change: the merged item and the feature folders both items touch. */
+  merged?: {
+    node: Pick<Node, "id" | "title">;
+    commitSha: string | null;
+    folders: string[];
+  };
+  /** The builder's or Didi's words, verbatim: the run's stop reason, or Didi's reason. */
+  words?: string | null;
 }
 
 export interface CouncilPlanInput {
@@ -387,14 +408,62 @@ export function visualCallInput(input: VisualCallInput): string {
   return `${parts.join("\n\n")}\n`;
 }
 
+/** What a `stop`, `keep` or `cannot_decide` does (D-308 (2)), the runner's own words. */
+const STOP_ANSWER =
+  "Answer `verdict` with `stop` (the work is no longer needed), `keep` (its work goes on) or `cannot_decide`, and say why in `note`. On a `stop` the runner cancels the work that has not been merged, when the Council accepted the plan it comes from; when Didi approved that plan, Didi is asked to confirm first. Merged work finishes normally. A `cannot_decide` goes to Didi.";
+
+const STILL_NEEDED_WHY: Record<StillNeededReason, string> = {
+  merged_change:
+    "A change that touches the same design feature folder as this item was just merged. It may already do what this item was meant to do. Is this item still needed?",
+  already_done:
+    "This item's own run stopped and reported that the work is already done. Is this item still needed?",
+  didi_asked: "Didi asks whether this item is still needed.",
+};
+
+/** The input of the Council's question on whether a work item is still needed (D-308 (3)). */
+export function stillNeededInput(input: StillNeededInput): string {
+  const { node } = input;
+  const parts = header([STILL_NEEDED_WHY[input.reason], STOP_ANSWER].join("\n\n"));
+  parts.push(
+    section("Item id", node.id),
+    section("Title", quoted(cut(oneLine(node.title), L.titleChars))),
+    section("State", state(node.state)),
+    section("Track", node.track ?? "(none)"),
+    ...itemSections(node),
+  );
+  if (input.merged) {
+    parts.push(
+      section(
+        "The merged change",
+        [
+          `Item ${input.merged.node.id}, merged at ${commit(input.merged.commitSha)}:`,
+          quoted(cut(oneLine(input.merged.node.title), L.titleChars)),
+          "Feature folders both items touch, as the repository names them (data):",
+          list(input.merged.folders, "None recorded."),
+        ].join("\n"),
+      ),
+    );
+  }
+  if (input.words !== undefined) {
+    parts.push(
+      section(
+        input.reason === "didi_asked" ? "Didi's words" : "The run's reason",
+        input.words === null || input.words.trim() === ""
+          ? "None recorded."
+          : quoted(cut(input.words, L.noteChars)),
+      ),
+    );
+  }
+  return `${parts.join("\n\n")}\n`;
+}
+
 /** The input of the Council's question on a scanner idea that is no longer found (D-301 (3)). */
 export function scannerGoneInput(input: ScannerGoneInput): string {
   const { node } = input;
   const parts = header(
     [
       "The Scanner filed the idea below from its fixed checks. Its latest scan no longer finds any of the idea's findings, so the problem may have been fixed or changed by other work. Should the idea be stopped?",
-      "Answer `verdict` with `stop` (the idea is no longer needed), `keep` (its work goes on) or `cannot_decide`, and say why in `note`. A `stop` or a `cannot_decide` goes to Didi, since parking or rejecting an idea is Didi's.",
-      "Your answer moves nothing and cancels nothing: the idea stays where it is, and started work items are never cancelled automatically.",
+      STOP_ANSWER,
     ].join("\n\n"),
   );
   parts.push(

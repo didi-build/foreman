@@ -82,15 +82,32 @@ const text = (value: unknown, max: number): string =>
 /** The longest reason a `needs_decision` result may give; the OpenCode image checks the same. */
 export const NEEDS_DECISION_MAX_REASON = 1000;
 
-/** The reason of a `needs_decision` result's `structured`, or null when it is not that shape. */
-export function needsDecisionReason(structured: unknown): string | null {
+/**
+ * The stop of a `needs_decision` result's `structured`: its reason, and whether the builder
+ * reported the work already done (`stopped` `already_done`, D-308, O-97). Null when it is not
+ * that shape.
+ */
+export function readStop(
+  structured: unknown,
+): { reason: string; alreadyDone: boolean } | null {
   if (!isObject(structured)) return null;
   const keys = Object.keys(structured);
-  if (keys.length !== 2 || structured.stopped !== "needs_decision") return null;
+  if (
+    keys.length !== 2 ||
+    (structured.stopped !== "needs_decision" && structured.stopped !== "already_done")
+  )
+    return null;
   const reason = structured.reason;
   if (typeof reason !== "string") return null;
   const trimmed = reason.trim();
-  return trimmed !== "" && trimmed.length <= NEEDS_DECISION_MAX_REASON ? trimmed : null;
+  return trimmed !== "" && trimmed.length <= NEEDS_DECISION_MAX_REASON
+    ? { reason: trimmed, alreadyDone: structured.stopped === "already_done" }
+    : null;
+}
+
+/** The reason of a `needs_decision` result's `structured`, or null when it is not that shape. */
+export function needsDecisionReason(structured: unknown): string | null {
+  return readStop(structured)?.reason ?? null;
 }
 function tokens(value: unknown): RunTokens | null {
   if (!isObject(value)) return null;
@@ -241,14 +258,17 @@ export function mapRunEnd(
   if (state === "complete" && result.status === "needs_decision") {
     // The run ended as its instructions say; the runner asks for the escalation (O-63). A
     // reason of the wrong shape is bad output.
-    const reason = needsDecisionReason(result.structured);
-    return reason === null
+    const stop = readStop(result.structured);
+    return stop === null
       ? { ...base, outcome: "fail", detail: "bad_output" }
       : {
           ...base,
           outcome: "success",
           detail: "needs_decision",
-          needsDecision: { reason },
+          needsDecision: {
+            reason: stop.reason,
+            ...(stop.alreadyDone ? { alreadyDone: true as const } : {}),
+          },
         };
   }
   if (result.status === "max_turns" || result.status === "max_budget") {

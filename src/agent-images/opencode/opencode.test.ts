@@ -1057,7 +1057,7 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       [
         "a stop with another word",
         '```foreman-report\n{"stopped": "blocked", "reason": "r"}\n```',
-        "stopped must be needs_decision",
+        "stopped must be needs_decision or already_done",
       ],
       [
         "a stop with an empty reason",
@@ -1313,6 +1313,14 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
 });
 
 describe("the run's report (unit: the final message's foreman-report block, N-44)", () => {
+  it("reads the already-done stop (D-308, O-97)", () => {
+    expect(
+      parseRunReport(
+        '```foreman-report\n{"stopped": "already_done", "reason": " On main in src/a.ts. "}\n```',
+      ),
+    ).toEqual({ stopped: { stopped: "already_done", reason: "On main in src/a.ts." } });
+  });
+
   it("reads the title, the docs note and the summary around the block", () => {
     expect(
       parseRunReport(

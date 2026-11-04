@@ -22,6 +22,11 @@ import {
   HOLD_RELEASE_PREFIX,
   type HoldReleaseStep,
 } from "../../src/core/hold-release.ts";
+import {
+  CANCEL_REQUEST_PREFIX,
+  createCancels,
+  type CancelStep,
+} from "../../src/core/cancel.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import {
   createPlanApprovals,
@@ -180,6 +185,12 @@ export interface AfterAnswer {
    * approval pass asks again if this step is held by a switch or cut short.
    */
   plan?: { step: PlanApprovalStep; triage: TriagePassStep[] };
+  /**
+   * For a request to confirm a Council stop (D-308): the cancel step, which cancels on Didi's
+   * Approve and does nothing on Reject. The reconcile flow's cancel pass asks again if this step
+   * is held by a switch or cut short.
+   */
+  cancel?: CancelStep;
 }
 
 /**
@@ -222,6 +233,10 @@ export async function afterAnswer(
     gate.nodeId && gate.topicKey === `${HOLD_RELEASE_PREFIX}${gate.nodeId}`
       ? await createHoldReleases(deps).release(gate.nodeId)
       : undefined;
+  const cancel =
+    gate.nodeId && gate.topicKey === `${CANCEL_REQUEST_PREFIX}${gate.nodeId}`
+      ? await createCancels(deps).step(gate.nodeId)
+      : undefined;
   let plan: AfterAnswer["plan"];
   if (gate.nodeId && gate.topicKey === `${PLAN_APPROVAL_PREFIX}${gate.nodeId}`) {
     const step = await createPlanApprovals(deps).step(gate.nodeId);
@@ -234,5 +249,6 @@ export async function afterAnswer(
     ...(reversal ? { reversal } : {}),
     ...(holdRelease ? { holdRelease } : {}),
     ...(plan ? { plan } : {}),
+    ...(cancel ? { cancel } : {}),
   };
 }

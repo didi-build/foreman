@@ -33,7 +33,7 @@ export async function run(deps: FlowDeps): Promise<ReconcileFlowResult> {
   const report = await reconcile(deps, { windmillExecutionsThisMonth: count });
   const cancelled =
     report.stopped === "kill_switch" ? await cancelActiveRuns(deps) : null;
-  const live = await runLivePasses(deps, report.stopped);
+  const live = await runLivePasses(deps, report);
   return {
     ...live,
     stopped: report.stopped,
