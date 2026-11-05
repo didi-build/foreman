@@ -12,10 +12,10 @@
 
 Settle these before the apply in step 5.
 
-Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Question 1 is decided (D-331); question 2 is still open, needing Didi:
+Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Both questions are decided (D-331, D-332):
 
 1. **Whether the cloud firewall limits outbound at all.** Decided by D-331 (Didi, 2026-11-05). DOKS manages its own firewall for the worker nodes, and DigitalOcean combines the allow rules of every firewall on a droplet, so if the managed one allows all outbound traffic, the outbound rules here change nothing. Inside the cluster, network policies and the egress proxies are the real outbound control. At step 5, check what the managed worker firewall allows outbound, keep our cloud firewall as a second layer if its outbound rules take effect, and record the result there. No deny rules are added, and DigitalOcean's managed firewalls are never edited: its reconciler owns them by name.
-2. **The admin credential in state.** The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted and the credential is set to expire after 1 hour, but it is still an admin key outside the password manager (D-188). Recommended: accept it under ADR 0110 secrets rule 3, as listed in `infra/README.md`.
+2. **The admin credential in state.** Decided by D-332 (Didi, 2026-11-05): accepted under ADR 0110 secrets rule 3, as listed in `infra/README.md`. The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted, the credential expires after 1 hour (`kubeconfig_expire_seconds`) and it is never an output, but it is still an admin key outside the password manager (D-188).
 
 ## 1. Read the real prices
 
