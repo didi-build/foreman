@@ -202,7 +202,7 @@ The first release already records what RSI needs: transitions, evidence, runs wi
 2. The agent works on a branch and opens a PR. It reports done with the PR link.
 3. The runner reads CI for the head commit and checks docs. If the guard passes, the item moves to In QA review and QA is dispatched. If not, it stays In development and `failure` increases by one.
 4. QA checks the preview branch (a different model family; waived while QA runs on Claude, D-158) and reports a verdict through the state API, which binds it to the head commit. The runner posts it on the PR (ADR 0112). Evidence is recorded.
-5. On pass, the runner checks the merge guard (CI on head, no conflicts, privileged paths approved, production environment protected where relevant) and merges. The substate becomes `verifying_on_staging`.
+5. On pass, the runner checks the merge guard (CI on head, no conflicts, privileged paths approved, production environment protected where relevant) and merges. The substate becomes `verifying_on_staging`. When the merge waits on Didi's privileged-path request, Didi's Approve merges it at once in the approval step, through the same merge path and guards (D-334); the reconcile flow's merge pass is the backstop.
 6. Main deploys to staging. A bot checks staging. On pass the item is Done and dependents are released. On fail the item returns to In development and `failure` increases by one.
 7. Three failures, or three failed QA rounds, send the item to Escalated to Council.
 
