@@ -10,7 +10,10 @@ import {
   NON_PUBLIC_IPV4,
   agentStage,
 } from "../src/adapters/agent-runtime/kubernetes/manifests.ts";
-import { agentNamespaceObjects } from "../src/adapters/agent-runtime/kubernetes/namespace.ts";
+import {
+  RUN_WATCHER_SERVICE_ACCOUNT,
+  agentNamespaceObjects,
+} from "../src/adapters/agent-runtime/kubernetes/namespace.ts";
 import type {
   Labels,
   LabelSelector,
@@ -27,6 +30,7 @@ import {
   PLATFORM_SECRETS,
   DEFAULT_DATABASE_PORT,
   RECEIVER,
+  RUN_WATCHER,
   STATE_API,
   STATE_API_PUBLIC,
   TUNNEL_EDGE_PORT,
@@ -43,6 +47,8 @@ import { PLANNING_TOKEN_SHA256_PATH } from "../src/api/auth.ts";
 import { windmillSettings, windmillTargetOf } from "../src/adapters/windmill/client.ts";
 import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../src/adapters/windmill/plan-approval-flow.ts";
 import { RECEIVER_WINDMILL_TOKEN_PATH } from "../src/adapters/windmill/receiver-flows.ts";
+import { RUN_WATCHER_WINDMILL_TOKEN_PATH } from "../src/adapters/windmill/run-watcher-flows.ts";
+import { runWatcherSettings } from "../src/run-watcher/settings.ts";
 import { readConfig, secretEnvName } from "../src/service-kit/config.ts";
 
 // Unit: the platform namespace's objects as data (ADR 0106 sections 1 and 4, D-193, D-195).
@@ -59,6 +65,7 @@ const PLATFORM: PlatformSettings = {
     stateApi: `registry.example.com/foreman/state-api${digest("d")}`,
     receiver: `registry.example.com/foreman/github-receiver${digest("e")}`,
     egressProxy: `registry.example.com/foreman/egress-proxy${digest("a")}`,
+    runWatcher: `registry.example.com/foreman/run-watcher${digest("b")}`,
   },
   serviceUser: 1000,
   resources: {
@@ -66,6 +73,7 @@ const PLATFORM: PlatformSettings = {
     receiver: resources,
     cloudflared: resources,
     windmillProxy: resources,
+    runWatcher: resources,
   },
   windmill: { host: "windmill.example.com", workspace: "rehearsal" },
   receiver: {
@@ -74,9 +82,12 @@ const PLATFORM: PlatformSettings = {
     runnerAppSlug: "example-runner",
   },
   clusterDns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
+  // A documentation address (RFC 5737), standing in for the `kubernetes` Service's endpoint.
+  kubernetesApi: { addresses: ["192.0.2.10"], port: 443 },
 };
+const PROJECTS = ["rehearsal", "second"];
 
-const objects = platformObjects(PLATFORM);
+const objects = platformObjects(PLATFORM, PROJECTS);
 const ofKind = <K extends PlatformObject["kind"]>(kind: K) =>
   objects.filter((o) => o.kind === kind) as Extract<PlatformObject, { kind: K }>[];
 const deployments = ofKind("Deployment");
@@ -207,12 +218,13 @@ describe("platform namespace (unit: ADR 0106 section 1)", () => {
     }
   });
 
-  it("runs the state API, the receiver, the tunnel connector and the Windmill proxy, each with a ClusterIP Service where called", () => {
+  it("runs the state API, the receiver, the tunnel connector, the Windmill proxy and the run watcher, each with a ClusterIP Service where called", () => {
     expect(deployments.map((d) => d.metadata.name)).toEqual([
       STATE_API.name,
       RECEIVER.name,
       CLOUDFLARED.name,
       WINDMILL_PROXY.name,
+      RUN_WATCHER.name,
     ]);
     const services = ofKind("Service");
     expect(
@@ -255,7 +267,14 @@ describe("platform pods (unit: ADR 0106 section 4, D-193)", () => {
       expect(pod.nodeSelector).toEqual({ [PLATFORM_POOL.key]: PLATFORM_POOL.value });
       expect(pod.nodeSelector[AGENTS_POOL.key]).not.toBe(AGENTS_POOL.value);
       expect("tolerations" in pod).toBe(false);
-      expect(pod.automountServiceAccountToken).toBe(false);
+      // Only the run watcher mounts a token, and only its own ServiceAccount's (D-330).
+      if (d.metadata.name === RUN_WATCHER.name) {
+        expect(pod.automountServiceAccountToken).toBe(true);
+        expect(pod.serviceAccountName).toBe(RUN_WATCHER_SERVICE_ACCOUNT);
+      } else {
+        expect(pod.automountServiceAccountToken).toBe(false);
+        expect("serviceAccountName" in pod).toBe(false);
+      }
       expect([pod.hostNetwork, pod.hostPID, pod.hostIPC]).toEqual([
         false,
         false,
@@ -288,10 +307,13 @@ describe("platform pods (unit: ADR 0106 section 4, D-193)", () => {
 
   it("refuses an image that is not pinned by digest", () => {
     expect(() =>
-      platformObjects({
-        ...PLATFORM,
-        images: { ...PLATFORM.images, stateApi: "state-api:latest" },
-      }),
+      platformObjects(
+        {
+          ...PLATFORM,
+          images: { ...PLATFORM.images, stateApi: "state-api:latest" },
+        },
+        PROJECTS,
+      ),
     ).toThrow(/pinned by digest/);
   });
 
@@ -374,6 +396,10 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
     );
     // The Windmill proxy holds no credential at all (D-328).
     expect(used(WINDMILL_PROXY.name)).toEqual([]);
+    // The run watcher holds its Windmill token only: no database URL (D-330).
+    expect(used(RUN_WATCHER.name)).toEqual([
+      PLATFORM_SECRETS.runWatcherWindmillToken.name,
+    ]);
   });
 
   it("gives the receiver its Windmill token at its secret path, optional until first hosting (D-291)", () => {
@@ -518,6 +544,213 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
   });
 });
 
+describe("the run watcher (unit: D-330, O-102)", () => {
+  const policyOf = (name: string): NetworkPolicy => {
+    const found = policies.find((p) => p.metadata.name === name);
+    if (!found) throw new Error(`no policy ${name}`);
+    return found;
+  };
+  const watcherEnv = () =>
+    deploymentOf(RUN_WATCHER.name).spec.template.spec.containers.flatMap((c) => c.env);
+  const plainWatcherEnv = (): Record<string, string> =>
+    Object.fromEntries(
+      watcherEnv().flatMap((e) => ("value" in e ? [[e.name, e.value]] : [])),
+    );
+
+  it("has its own ServiceAccount in the platform namespace, which mounts no token by itself", () => {
+    const accounts = ofKind("ServiceAccount");
+    expect(accounts).toEqual([
+      {
+        apiVersion: "v1",
+        kind: "ServiceAccount",
+        metadata: {
+          name: RUN_WATCHER_SERVICE_ACCOUNT,
+          namespace: PLATFORM_NAMESPACE,
+          labels: { "app.kubernetes.io/managed-by": "foreman-infra" },
+        },
+        automountServiceAccountToken: false,
+      },
+    ]);
+  });
+
+  it("has no Service and takes no traffic in: the kubelet's probe comes from the node, as for the connector", () => {
+    expect(ofKind("Service").map((s) => s.metadata.name)).not.toContain(
+      RUN_WATCHER.name,
+    );
+    expect(policyOf(RUN_WATCHER.name).spec.ingress).toEqual([]);
+    for (const from of [
+      platformPod(STATE_API.name),
+      platformPod(RECEIVER.name),
+      platformPod(CLOUDFLARED.name),
+      agentProxyPod,
+      agentPod,
+    ]) {
+      expect(ingressPorts(RUN_WATCHER.name, from)).toEqual([]);
+    }
+  });
+
+  it("reaches only DNS, the API server's own address and port, and the Windmill proxy's pods", () => {
+    const policy = policyOf(RUN_WATCHER.name);
+    expect(policy.spec.egress).toEqual([
+      {
+        to: [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": "kube-system" },
+            },
+            podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
+          },
+        ],
+        ports: [
+          { protocol: "UDP", port: 53 },
+          { protocol: "TCP", port: 53 },
+        ],
+      },
+      {
+        to: [{ ipBlock: { cidr: "192.0.2.10/32", except: [] } }],
+        ports: [{ protocol: "TCP", port: 443 }],
+      },
+      {
+        to: [{ podSelector: { matchLabels: WINDMILL_PROXY.podLabels } }],
+        ports: [{ protocol: "TCP", port: WINDMILL_PROXY.port }],
+      },
+    ]);
+    // Never public addresses on 443, so it cannot reach Windmill, or anything else, past the proxy.
+    for (const rule of policy.spec.egress) {
+      for (const peer of rule.to) expect(peer.ipBlock?.cidr).not.toBe("0.0.0.0/0");
+    }
+  });
+
+  it("gives every API server address its own /32 on the API server's port, and refuses anything else", () => {
+    const two = platformObjects(
+      {
+        ...PLATFORM,
+        kubernetesApi: { addresses: ["192.0.2.10", "192.0.2.11"], port: 6443 },
+      },
+      PROJECTS,
+    ).find(
+      (o): o is NetworkPolicy =>
+        o.kind === "NetworkPolicy" && o.metadata.name === RUN_WATCHER.name,
+    );
+    expect(two?.spec.egress[1]).toEqual({
+      to: [
+        { ipBlock: { cidr: "192.0.2.10/32", except: [] } },
+        { ipBlock: { cidr: "192.0.2.11/32", except: [] } },
+      ],
+      ports: [{ protocol: "TCP", port: 6443 }],
+    });
+    for (const addresses of [
+      [],
+      ["0.0.0.0"],
+      ["10.0.0.0/8"],
+      ["kubernetes.default.svc"],
+      ["192.0.2.1", "192.0.2.1"],
+    ]) {
+      expect(() =>
+        platformObjects(
+          { ...PLATFORM, kubernetesApi: { addresses, port: 443 } },
+          PROJECTS,
+        ),
+      ).toThrow(/kubernetesApi addresses/);
+    }
+    // A settings file written before the watcher existed is refused by name.
+    const older: Partial<PlatformSettings> = { ...PLATFORM };
+    delete older.kubernetesApi;
+    expect(() => platformObjects(older as PlatformSettings, PROJECTS)).toThrow(
+      /kubernetesApi addresses/,
+    );
+    for (const port of [0, 53, 70000]) {
+      expect(() =>
+        platformObjects(
+          { ...PLATFORM, kubernetesApi: { addresses: ["192.0.2.10"], port } },
+          PROJECTS,
+        ),
+      ).toThrow(/kubernetesApi port/);
+    }
+  });
+
+  it("is the Windmill proxy's third caller, and no other pod is (D-328)", () => {
+    expect(ingressPorts(WINDMILL_PROXY.name, platformPod(RUN_WATCHER.name))).toEqual([
+      WINDMILL_PROXY.port,
+    ]);
+    const callers = deployments
+      .map((d) => d.metadata.name)
+      .filter(
+        (name) => ingressPorts(WINDMILL_PROXY.name, platformPod(name)).length > 0,
+      );
+    expect(callers).toEqual([STATE_API.name, RECEIVER.name, RUN_WATCHER.name]);
+  });
+
+  it("watches exactly the rendered projects' agent namespaces, read by its own settings reader", () => {
+    const config = readConfig(runWatcherSettings(), plainWatcherEnv());
+    expect(config.agentNamespaces).toEqual(["agents-rehearsal", "agents-second"]);
+    expect(config.kubernetesApi.href).toBe("https://kubernetes.default.svc/");
+    expect(config.port).toBe(RUN_WATCHER.port);
+    expect(windmillTargetOf(config)).toEqual({
+      host: PLATFORM.windmill.host,
+      workspace: PLATFORM.windmill.workspace,
+      proxy: new URL(serviceUrl(WINDMILL_PROXY)),
+    });
+    expect(config.windmillToken).toBeNull();
+    expect(
+      readConfig(
+        runWatcherSettings(),
+        Object.fromEntries(
+          platformObjects(PLATFORM, [])
+            .filter((o): o is Deployment => o.kind === "Deployment")
+            .find((d) => d.metadata.name === RUN_WATCHER.name)
+            ?.spec.template.spec.containers.flatMap((c) => c.env)
+            .flatMap((e) => ("value" in e ? [[e.name, e.value]] : [])) ?? [],
+        ),
+      ).agentNamespaces,
+    ).toEqual([]);
+  });
+
+  it("gets its Windmill token at its own secret path, optional until first hosting, and no database URL", () => {
+    expect(
+      watcherEnv().find(
+        (e) => e.name === secretEnvName(RUN_WATCHER_WINDMILL_TOKEN_PATH),
+      ),
+    ).toEqual({
+      name: "SECRET_PLATFORM_RUN_WATCHER_WINDMILL_TOKEN",
+      valueFrom: {
+        secretKeyRef: { ...PLATFORM_SECRETS.runWatcherWindmillToken, optional: true },
+      },
+    });
+    expect(watcherEnv().map((e) => e.name)).not.toContain("DATABASE_URL");
+  });
+
+  it("is bound only in agent namespaces, by a Role there: nothing cluster-wide and nothing in the platform or runner namespace", () => {
+    const quota = {
+      pods: 4,
+      cpu: "2",
+      memory: "4Gi",
+      ephemeralStorage: "8Gi",
+      storage: "4Gi",
+      persistentVolumeClaims: 2,
+    };
+    const items = clusterObjects({
+      platform: PLATFORM,
+      projects: PROJECTS.map((slug) => ({ slug, quota })),
+    }).items;
+    const kinds = items.map((o) => o.kind as string);
+    expect(kinds).not.toContain("ClusterRole");
+    expect(kinds).not.toContain("ClusterRoleBinding");
+    const watcherBindings = items.filter(
+      (o) =>
+        o.kind === "RoleBinding" &&
+        o.subjects.some((s) => s.name === RUN_WATCHER_SERVICE_ACCOUNT),
+    );
+    expect(watcherBindings.map((o) => o.metadata.namespace)).toEqual([
+      "agents-rehearsal",
+      "agents-second",
+    ]);
+    // The namespaces it watches are exactly the ones its Role is in.
+    const watched = readConfig(runWatcherSettings(), plainWatcherEnv()).agentNamespaces;
+    expect(watched).toEqual(watcherBindings.map((o) => o.metadata.namespace));
+  });
+});
+
 describe("cluster objects (unit: render)", () => {
   it("lists the platform, the runner's namespace and each project's agent namespace", () => {
     const list = clusterObjects({
@@ -572,8 +805,21 @@ describe("special egress ports belong to one kind of pod each (unit: D-195)", ()
     for (const p of runPolicies) expect(egressPorts(p)).not.toContain("TCP/5432");
   });
 
-  it("only the tunnel connector and the Windmill proxy may reach 443 (D-284)", () => {
-    expect(allows("TCP/443").sort()).toEqual([CLOUDFLARED.name, WINDMILL_PROXY.name]);
+  it("only the tunnel connector and the Windmill proxy may reach 443 on public addresses (D-284); the run watcher only the API server's address", () => {
+    const toPublic443 = policies
+      .filter((p) =>
+        p.spec.egress.some(
+          (r) =>
+            r.ports.some((port) => port.protocol === "TCP" && port.port === 443) &&
+            r.to.some((peer) => peer.ipBlock?.cidr === "0.0.0.0/0"),
+        ),
+      )
+      .map((p) => p.metadata.name);
+    expect(toPublic443.sort()).toEqual([CLOUDFLARED.name, WINDMILL_PROXY.name]);
+    // Here the API server's port is 443 too, but the watcher's rule names one address only.
+    expect(allows("TCP/443").sort()).toEqual(
+      [CLOUDFLARED.name, RUN_WATCHER.name, WINDMILL_PROXY.name].sort(),
+    );
     expect(allows("UDP/443")).toEqual([]);
   });
 });
@@ -651,14 +897,17 @@ describe("the shared Windmill proxy (unit: D-284, D-328, O-101)", () => {
   it("refuses a Windmill host that is not a plain name, and a bad workspace id", () => {
     for (const host of ["https://windmill.example.com", "10.0.0.1", "windmill"]) {
       expect(() =>
-        platformObjects({ ...PLATFORM, windmill: { ...PLATFORM.windmill, host } }),
+        platformObjects(
+          { ...PLATFORM, windmill: { ...PLATFORM.windmill, host } },
+          PROJECTS,
+        ),
       ).toThrow(/windmill host/);
     }
     expect(() =>
-      platformObjects({
-        ...PLATFORM,
-        windmill: { ...PLATFORM.windmill, workspace: "a/b" },
-      }),
+      platformObjects(
+        { ...PLATFORM, windmill: { ...PLATFORM.windmill, workspace: "a/b" } },
+        PROJECTS,
+      ),
     ).toThrow(/windmill workspace/);
   });
 });

@@ -1,4 +1,4 @@
-// Print the cluster's standing objects as one Kubernetes List, for Didi to apply with his admin
+// Print the cluster's standing objects as one Kubernetes List, for Didi to apply with their admin
 // kubeconfig (D-188). Nothing here talks to a cluster.
 //
 //   node infra/kubernetes/render.ts <settings.json> | kubectl apply -f -
@@ -24,7 +24,10 @@ export interface ClusterSettings {
   projects: { slug: string; quota: AgentQuota }[];
 }
 
-/** The platform namespace, the runner's namespace, then one agent namespace per project. */
+/**
+ * The platform namespace, the runner's namespace, then one agent namespace per project. The run
+ * watcher watches exactly those agent namespaces, and each one binds its Role (D-330).
+ */
 export function clusterObjects(settings: ClusterSettings): {
   apiVersion: "v1";
   kind: "List";
@@ -34,7 +37,10 @@ export function clusterObjects(settings: ClusterSettings): {
     apiVersion: "v1",
     kind: "List",
     items: [
-      ...platformObjects(settings.platform),
+      ...platformObjects(
+        settings.platform,
+        settings.projects.map((p) => p.slug),
+      ),
       ...runnerNamespaceObjects(),
       ...settings.projects.flatMap((p) => agentNamespaceObjects(p.slug, p.quota)),
     ],

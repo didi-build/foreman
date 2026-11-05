@@ -140,86 +140,142 @@ export interface KubernetesClientOptions {
   maxResponseBytes?: number;
 }
 
-interface Response {
+/** An API server's answer, read whole. */
+export interface ApiResponse {
   status: number;
   body: Buffer;
+}
+
+/** Where one call goes and with what: the API server, a bearer token and the only CA trusted. */
+export interface ApiTarget {
+  server: URL;
+  token: string;
+  ca: string;
+  timeoutMs: number;
+  /** Responses larger than this are refused. */
+  maxResponseBytes: number;
+}
+
+/** The API server's address: `https://host[:port]` and nothing else. */
+export function checkApiServer(raw: string): URL {
+  let server: URL;
+  try {
+    server = new URL(raw);
+  } catch {
+    throw new Error("the API server address must be https://host[:port]");
+  }
+  if (
+    server.protocol !== "https:" ||
+    server.username !== "" ||
+    server.password !== "" ||
+    server.pathname !== "/" ||
+    server.search !== "" ||
+    server.hash !== ""
+  ) {
+    throw new Error("the API server address must be https://host[:port]");
+  }
+  return server;
+}
+
+/**
+ * One HTTPS call to the API server, its answer read whole. Shared by the runner's client and the
+ * run watcher's list (./job-watch.ts), which passes `signal` so a shutdown does not wait for it.
+ * A failure names the method and the error's code only.
+ */
+export function apiRequest(
+  target: ApiTarget,
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<ApiResponse> {
+  const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest({
+      hostname: target.server.hostname.replace(/^\[|\]$/g, ""),
+      port: target.server.port || 443,
+      method,
+      path,
+      ca: target.ca,
+      rejectUnauthorized: true,
+      timeout: target.timeoutMs,
+      ...(signal ? { signal } : {}),
+      headers: {
+        authorization: `Bearer ${target.token}`,
+        accept: "application/json",
+        ...(payload
+          ? { "content-type": "application/json", "content-length": payload.length }
+          : {}),
+      },
+    });
+    request.on("response", (response) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > target.maxResponseBytes) {
+          request.destroy(new Error("response too large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () =>
+        resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks) }),
+      );
+      response.on("error", reject);
+    });
+    request.on("timeout", () => request.destroy(new Error("request timed out")));
+    // Only the error's name or code: a message can name the host but never the token.
+    request.on("error", (error: NodeJS.ErrnoException) =>
+      reject(new KubernetesApiError(`${method} request`, 0, error.code ?? error.name)),
+    );
+    request.end(payload);
+  });
+}
+
+/** The Status object's reason, such as `Forbidden`, or `Unknown`. The body itself is never kept. */
+export function statusReason(body: Buffer): string {
+  try {
+    const status = JSON.parse(body.toString("utf8")) as { reason?: unknown };
+    if (typeof status.reason === "string" && /^[A-Za-z]{1,64}$/.test(status.reason)) {
+      return status.reason;
+    }
+  } catch {
+    // Not a Status object. The body is never put in the error.
+  }
+  return "Unknown";
+}
+
+export function apiFailure(
+  operation: string,
+  response: ApiResponse,
+): KubernetesApiError {
+  return new KubernetesApiError(
+    operation,
+    response.status,
+    statusReason(response.body),
+  );
 }
 
 export function createKubernetesClient(
   options: KubernetesClientOptions,
 ): KubernetesClient {
-  const server = new URL(options.server);
-  if (server.protocol !== "https:" || server.pathname !== "/" || server.search !== "") {
-    throw new Error("the API server address must be https://host[:port]");
-  }
-  const timeoutMs = options.timeoutMs ?? 30_000;
-  const maxBytes = options.maxResponseBytes ?? 4 * 1024 * 1024;
-
-  function call(method: string, path: string, body?: unknown): Promise<Response> {
-    const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    return new Promise((resolve, reject) => {
-      const request = httpsRequest({
-        hostname: server.hostname.replace(/^\[|\]$/g, ""),
-        port: server.port || 443,
-        method,
-        path,
-        ca: options.ca,
-        rejectUnauthorized: true,
-        timeout: timeoutMs,
-        headers: {
-          authorization: `Bearer ${options.token}`,
-          accept: "application/json",
-          ...(payload
-            ? { "content-type": "application/json", "content-length": payload.length }
-            : {}),
-        },
-      });
-      request.on("response", (response) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > maxBytes) {
-            request.destroy(new Error("response too large"));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on("end", () =>
-          resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks) }),
-        );
-        response.on("error", reject);
-      });
-      request.on("timeout", () => request.destroy(new Error("request timed out")));
-      // Only the error's name or code: a message can name the host but never the token.
-      request.on("error", (error: NodeJS.ErrnoException) =>
-        reject(
-          new KubernetesApiError(`${method} request`, 0, error.code ?? error.name),
-        ),
-      );
-      request.end(payload);
-    });
-  }
-
-  function failure(operation: string, response: Response): KubernetesApiError {
-    let reason = "Unknown";
-    try {
-      const status = JSON.parse(response.body.toString("utf8")) as { reason?: unknown };
-      if (typeof status.reason === "string" && /^[A-Za-z]{1,64}$/.test(status.reason)) {
-        reason = status.reason;
-      }
-    } catch {
-      // Not a Status object. The body is never put in the error.
-    }
-    return new KubernetesApiError(operation, response.status, reason);
-  }
+  const target: ApiTarget = {
+    server: checkApiServer(options.server),
+    token: options.token,
+    ca: options.ca,
+    timeoutMs: options.timeoutMs ?? 30_000,
+    maxResponseBytes: options.maxResponseBytes ?? 4 * 1024 * 1024,
+  };
+  const call = (method: string, path: string, body?: unknown) =>
+    apiRequest(target, method, path, body);
 
   const collection = (kind: RunObjectKind, namespace: string): string => {
     const { group, resource } = PATHS[kind];
     return `${group}/namespaces/${checkNamespace(namespace)}/${resource}`;
   };
 
-  function json<T>(response: Response): T {
+  function json<T>(response: ApiResponse): T {
     return JSON.parse(response.body.toString("utf8")) as T;
   }
 
@@ -230,7 +286,7 @@ export function createKubernetesClient(
       checkName(object.metadata.name);
       const response = await call("POST", path, object);
       if (response.status !== 201 && response.status !== 200) {
-        throw failure(operation, response);
+        throw apiFailure(operation, response);
       }
       // A created Secret comes back with its data. Read nothing from it but its name.
       if (object.kind !== "Service") return { name: object.metadata.name };
@@ -254,7 +310,7 @@ export function createKubernetesClient(
       });
       if (response.status === 404) return false;
       if (response.status !== 200 && response.status !== 202) {
-        throw failure(`delete ${kind}`, response);
+        throw apiFailure(`delete ${kind}`, response);
       }
       return true;
     },
@@ -265,7 +321,7 @@ export function createKubernetesClient(
         `${collection("Job", namespace)}/${checkName(name)}`,
       );
       if (response.status === 404) return null;
-      if (response.status !== 200) throw failure("get Job", response);
+      if (response.status !== 200) throw apiFailure("get Job", response);
       return json<JobStatus>(response);
     },
 
@@ -275,7 +331,7 @@ export function createKubernetesClient(
         "GET",
         `${collection("Job", namespace)}?labelSelector=${query}`,
       );
-      if (response.status !== 200) throw failure("list Job", response);
+      if (response.status !== 200) throw apiFailure("list Job", response);
       return json<{ items?: JobStatus[] }>(response).items ?? [];
     },
 
@@ -283,7 +339,7 @@ export function createKubernetesClient(
       const query = encodeURIComponent(labelSelector(selector));
       const path = `/api/v1/namespaces/${checkNamespace(namespace)}/pods?labelSelector=${query}`;
       const response = await call("GET", path);
-      if (response.status !== 200) throw failure("list Pod", response);
+      if (response.status !== 200) throw apiFailure("list Pod", response);
       return json<{ items?: PodStatus[] }>(response).items ?? [];
     },
 
@@ -296,7 +352,7 @@ export function createKubernetesClient(
       const path = `/api/v1/namespaces/${checkNamespace(namespace)}/pods/${checkName(pod)}/log?${query}`;
       const response = await call("GET", path);
       if (response.status === 404) return null;
-      if (response.status !== 200) throw failure("read Pod log", response);
+      if (response.status !== 200) throw apiFailure("read Pod log", response);
       return response.body.toString("utf8");
     },
   };

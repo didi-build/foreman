@@ -41,6 +41,11 @@ import {
   RECEIVER_FLOW_PATHS,
   windmillOptionCaptureFlow,
 } from "./receiver-flows.ts";
+import {
+  RECORD_RUN_END_FLOW_PATH,
+  RUN_WATCHER_FLOW_PATHS,
+  windmillRunEndFlow,
+} from "./run-watcher-flows.ts";
 
 const WINDMILL_HOST = "windmill.example.com";
 /** The public address the proxy's fake resolver gives Windmill's host. */
@@ -248,6 +253,19 @@ describe("the Windmill start client through the shared proxy (integration: local
     ]);
   });
 
+  it("the run watcher's port starts only the run-end flow, with the run's id (D-330)", async () => {
+    await windmillRunEndFlow(TOKEN, target(), { ca: cert }).start("run-1");
+    expect(seen.map((s) => [s.path, s.authorization, s.body])).toEqual([
+      [
+        `/api/w/${WORKSPACE}/jobs/run/p/${RECORD_RUN_END_FLOW_PATH}`,
+        `Bearer ${TOKEN}`,
+        // flows/record-run-end.ts reads `{ runId }` as its input.
+        { input: { runId: "run-1" } },
+      ],
+    ]);
+    expect(connected).toEqual([`${WINDMILL_ADDRESS}:443`]);
+  });
+
   it("a refused start names the start step and Windmill's status, never the token or the answer", async () => {
     const error = await failure(
       windmillScripts({
@@ -323,6 +341,7 @@ describe("the Windmill start client through the shared proxy (integration: local
     for (const flow of [
       windmillPlanApprovalFlow(null, target(), { ca: cert }),
       windmillOptionCaptureFlow(null, target(), { ca: cert }),
+      windmillRunEndFlow(null, target(), { ca: cert }),
     ]) {
       await expect(flow.start("id-1")).rejects.toBeInstanceOf(NotBuiltError);
     }
@@ -419,6 +438,10 @@ describe("the Windmill start's settings and endpoint (unit, O-101)", () => {
     );
     expect(RECEIVER_FLOW_PATHS.map(runScope)).toEqual([
       "jobs:run:scripts:f/foreman/option_capture",
+    ]);
+    // The run watcher's token starts the run-end flow and nothing else (D-330).
+    expect(RUN_WATCHER_FLOW_PATHS.map(runScope)).toEqual([
+      "jobs:run:scripts:f/foreman/record_run_end",
     ]);
   });
 });

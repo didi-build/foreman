@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import { CLIENT_OPERATIONS } from "./client.ts";
+import { WATCHER_OPERATIONS } from "./job-watch.ts";
 import {
+  PLATFORM_NAMESPACE,
   RUNNER_NAMESPACE,
   RUNNER_ROLE_RULES,
+  RUN_WATCHER_ROLE_RULES,
+  RUN_WATCHER_SERVICE_ACCOUNT,
   agentNamespaceObjects,
   runnerNamespaceObjects,
   type AgentQuota,
 } from "./namespace.ts";
 import type { NamespaceObject, Role, RoleBinding } from "./objects.ts";
 
-// Unit: the agent namespace, its default policies and the runner's RBAC as data (ADR 0106
-// sections 1, 2 and 4). Infrastructure code applies them; nothing here talks to a cluster.
+// Unit: the agent namespace, its default policies, the runner's RBAC and the run watcher's RBAC
+// (D-330) as data (ADR 0106 sections 1, 2 and 4). Infrastructure code applies them; nothing here
+// talks to a cluster.
 
 const QUOTA: AgentQuota = {
   pods: 12,
@@ -25,6 +30,19 @@ const QUOTA: AgentQuota = {
 const objects = agentNamespaceObjects("rehearsal", QUOTA);
 const find = <K extends NamespaceObject["kind"]>(kind: K) =>
   objects.find((o) => o.kind === kind) as Extract<NamespaceObject, { kind: K }>;
+const named = <K extends "Role" | "RoleBinding">(kind: K, name: string) =>
+  objects.find((o) => o.kind === kind && o.metadata.name === name) as Extract<
+    NamespaceObject,
+    { kind: K }
+  >;
+
+/** Every right a Role grants, as `group/resource:verb`. */
+const rights = (role: Role): string[] =>
+  role.rules.flatMap((rule) =>
+    rule.resources.flatMap((resource) =>
+      rule.verbs.map((verb) => `${rule.apiGroups.join("|")}/${resource}:${verb}`),
+    ),
+  );
 
 /** Does the Role grant this verb on this resource? Wildcards count as a grant. */
 function grants(role: Role, apiGroup: string, resource: string, verb: string): boolean {
@@ -78,14 +96,14 @@ describe("agent namespace (unit: ADR 0106 sections 1, 2 and 4)", () => {
 });
 
 describe("runner RBAC (unit: ADR 0106 section 1)", () => {
-  const role = find("Role");
+  const role = named("Role", "foreman-runner");
 
   it("is a namespaced Role and RoleBinding, never a cluster-wide one", () => {
     const kinds = [...objects, ...runnerNamespaceObjects()].map((o) => o.kind);
     expect(kinds).not.toContain("ClusterRole");
     expect(kinds).not.toContain("ClusterRoleBinding");
     expect(role.metadata.namespace).toBe("agents-rehearsal");
-    const binding = find("RoleBinding") as RoleBinding;
+    const binding = named("RoleBinding", "foreman-runner");
     expect(binding.roleRef).toEqual({
       apiGroup: "rbac.authorization.k8s.io",
       kind: "Role",
@@ -98,12 +116,7 @@ describe("runner RBAC (unit: ADR 0106 section 1)", () => {
 
   it("has exactly the rights in ADR 0106 and no wildcard", () => {
     expect(role.rules).toEqual(RUNNER_ROLE_RULES);
-    const flat = role.rules.flatMap((rule) =>
-      rule.resources.flatMap((resource) =>
-        rule.verbs.map((verb) => `${rule.apiGroups.join("|")}/${resource}:${verb}`),
-      ),
-    );
-    expect(flat.sort()).toEqual(
+    expect(rights(role).sort()).toEqual(
       [
         "batch/jobs:create",
         "batch/jobs:get",
@@ -154,5 +167,75 @@ describe("runner RBAC (unit: ADR 0106 section 1)", () => {
   it("gives the runner's ServiceAccount no mounted token", () => {
     const account = runnerNamespaceObjects().find((o) => o.kind === "ServiceAccount");
     expect(account).toMatchObject({ automountServiceAccountToken: false });
+  });
+});
+
+describe("run watcher RBAC (unit: D-330)", () => {
+  const role = named("Role", RUN_WATCHER_SERVICE_ACCOUNT);
+  const binding = named("RoleBinding", RUN_WATCHER_SERVICE_ACCOUNT);
+
+  it("is exactly get, list and watch on Jobs, and nothing else", () => {
+    expect(role.rules).toEqual(RUN_WATCHER_ROLE_RULES);
+    expect(rights(role).sort()).toEqual(
+      ["batch/jobs:get", "batch/jobs:list", "batch/jobs:watch"].sort(),
+    );
+  });
+
+  it.each([
+    ["batch", "jobs", "create"],
+    ["batch", "jobs", "update"],
+    ["batch", "jobs", "patch"],
+    ["batch", "jobs", "delete"],
+    ["batch", "jobs/status", "get"],
+    ["", "pods", "get"],
+    ["", "pods", "list"],
+    ["", "pods/log", "get"],
+    ["", "secrets", "get"],
+    ["", "secrets", "list"],
+    ["", "configmaps", "get"],
+    ["", "namespaces", "list"],
+    ["", "events", "list"],
+  ])("cannot touch %s/%s with %s", (group, resource, verb) => {
+    expect(grants(role, group, resource, verb)).toBe(false);
+  });
+
+  it("grants every call the watcher makes", () => {
+    for (const op of WATCHER_OPERATIONS) {
+      expect(grants(role, op.apiGroup, op.resource, op.verb), op.operation).toBe(true);
+    }
+  });
+
+  it("is a Role and RoleBinding in the agent namespace itself, bound to the watcher's ServiceAccount in the platform namespace", () => {
+    expect(role.metadata.namespace).toBe("agents-rehearsal");
+    expect(binding.metadata.namespace).toBe("agents-rehearsal");
+    expect(binding.roleRef).toEqual({
+      apiGroup: "rbac.authorization.k8s.io",
+      kind: "Role",
+      name: RUN_WATCHER_SERVICE_ACCOUNT,
+    });
+    expect(binding.subjects).toEqual([
+      {
+        kind: "ServiceAccount",
+        name: RUN_WATCHER_SERVICE_ACCOUNT,
+        namespace: PLATFORM_NAMESPACE,
+      },
+    ]);
+  });
+
+  it("gives the runner's Role nothing of the watcher's, and the watcher nothing of the runner's beyond reading Jobs", () => {
+    const runner = named("Role", "foreman-runner");
+    const runnerBinding = named("RoleBinding", "foreman-runner") as RoleBinding;
+    expect(runnerBinding.subjects.map((s) => s.name)).toEqual(["foreman-runner"]);
+    for (const right of rights(role)) expect(rights(runner)).toContain(right);
+    expect(
+      objects
+        .filter((o) => o.kind === "Role" || o.kind === "RoleBinding")
+        .map((o) => [o.kind, o.metadata.name]),
+    ).toEqual([
+      ["Role", "foreman-runner"],
+      ["RoleBinding", "foreman-runner"],
+      ["Role", RUN_WATCHER_SERVICE_ACCOUNT],
+      ["RoleBinding", RUN_WATCHER_SERVICE_ACCOUNT],
+    ]);
   });
 });

@@ -1,17 +1,23 @@
 // The platform namespace on the cluster's platform pool (ADR 0106 section 1, D-193, D-195), as
-// data: the state API, the GitHub receiver, the Cloudflare Tunnel connector and the shared
-// Windmill egress proxy (D-284, D-328), their Services, and default-deny network policies with
-// four narrow openings:
+// data: the state API, the GitHub receiver, the Cloudflare Tunnel connector, the shared Windmill
+// egress proxy (D-284, D-328) and the run watcher (D-330), their Services, and default-deny
+// network policies with five narrow openings:
 //
 // - the agents' egress proxy pods (and nothing else in agent namespaces) reach the state API port;
 // - the tunnel connector reaches the receiver port and the state API's public port (which serves
 //   only the planning chat's `POST /plans`, D-271, src/api/public.ts), and Cloudflare on 443;
 // - the state API and the receiver reach cluster DNS, the database port on public addresses and
 //   the Windmill proxy's port, and nothing on 443;
-// - the Windmill proxy accepts only those two pods, and reaches DNS and 443 on public addresses.
+// - the run watcher reaches cluster DNS, the Kubernetes API server's own address and port, and the
+//   Windmill proxy's port, and takes no traffic in;
+// - the Windmill proxy accepts only those three pods, and reaches DNS and 443 on public addresses.
 //   Network policies match addresses, not names, so the proxy is what holds the calls to
 //   Windmill's host name: it is the agents' egress proxy image with that one host allowed, no
 //   model provider, no state API route and no credential, and it never decrypts the tunnel.
+//
+// The run watcher is the only pod here with a ServiceAccount token: its own, which RBAC lets get,
+// list and watch Jobs in agent namespaces and nothing else (src/adapters/agent-runtime/kubernetes/
+// namespace.ts). It has no database access.
 //
 // Written as typed objects like the agent namespace objects of slice 3, so the same constants
 // (pool labels, Service names, ports) are shared and tested together. `render.ts` prints them for
@@ -23,9 +29,14 @@ import {
   type KubernetesRunSettings,
 } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import {
+  PLATFORM_NAMESPACE,
+  RUN_WATCHER_SERVICE_ACCOUNT,
+} from "../../src/adapters/agent-runtime/kubernetes/namespace.ts";
+import {
   LABEL_COMPONENT,
   LABEL_MANAGED_BY,
   LABEL_PROJECT,
+  agentNamespace,
 } from "../../src/adapters/agent-runtime/kubernetes/names.ts";
 import type {
   EnvVar,
@@ -38,6 +49,7 @@ import type {
   Resources,
   SecurityContext,
   Service,
+  ServiceAccount,
   Volume,
   VolumeMount,
 } from "../../src/adapters/agent-runtime/kubernetes/objects.ts";
@@ -50,9 +62,11 @@ import {
 } from "../../src/adapters/windmill/client.ts";
 import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../../src/adapters/windmill/plan-approval-flow.ts";
 import { RECEIVER_WINDMILL_TOKEN_PATH } from "../../src/adapters/windmill/receiver-flows.ts";
+import { RUN_WATCHER_WINDMILL_TOKEN_PATH } from "../../src/adapters/windmill/run-watcher-flows.ts";
+import { RUN_WATCHER_ENV } from "../../src/run-watcher/settings.ts";
 import { secretEnvName } from "../../src/service-kit/config.ts";
 
-export const PLATFORM_NAMESPACE = "foreman-platform";
+export { PLATFORM_NAMESPACE };
 const MANAGED_BY_INFRA = "foreman-infra";
 
 /** The platform pool's node label (D-193). The DigitalOcean module sets the same pair. */
@@ -111,6 +125,19 @@ export const WINDMILL_PROXY = {
   runId: "windmill-proxy",
 } as const;
 
+/**
+ * The run watcher (D-330): it watches the agent namespaces' run Jobs and starts the run-end flow
+ * when one stops. No Service: nothing calls it. Its port serves /health for the kubelet only.
+ */
+export const RUN_WATCHER = {
+  name: "run-watcher",
+  port: SERVICE_PORT,
+  podLabels: { app: "run-watcher" },
+  serviceAccount: RUN_WATCHER_SERVICE_ACCOUNT,
+  /** The API server's in-cluster name, which its certificate carries. */
+  apiServer: "https://kubernetes.default.svc",
+} as const;
+
 /** The tunnel connector (D-195). Its metrics port serves /ready for the kubelet only. */
 export const CLOUDFLARED = {
   name: "cloudflared",
@@ -150,6 +177,12 @@ export const PLATFORM_SECRETS = {
    * Optional: without it the start is refused and the reconcile pass captures.
    */
   receiverWindmillToken: { name: "github-receiver-windmill-token", key: "token" },
+  /**
+   * The run watcher's Windmill token that can start only `f/foreman/record_run_end` (D-330,
+   * RUN_WATCHER_FLOW_PATHS). Optional: without it the watcher starts nothing and the reconcile
+   * pass records the ends.
+   */
+  runWatcherWindmillToken: { name: "run-watcher-windmill-token", key: "token" },
 } as const;
 
 /** The receiver's webhook secret path (src/github-receiver/main.ts). */
@@ -176,10 +209,15 @@ export function stateApiRunSettings(): KubernetesRunSettings["stateApi"] {
 /** Settings for the platform objects. Not secret; Didi keeps them outside the repo. */
 export interface PlatformSettings {
   /**
-   * The state API and receiver images, and the egress proxy image the agent runs use (the
-   * runner's `proxyImage`), each pinned by digest (ADR 0111).
+   * The state API, receiver and run watcher images, and the egress proxy image the agent runs use
+   * (the runner's `proxyImage`), each pinned by digest (ADR 0111).
    */
-  images: { stateApi: string; receiver: string; egressProxy: string };
+  images: {
+    stateApi: string;
+    receiver: string;
+    egressProxy: string;
+    runWatcher: string;
+  };
   /** The numeric user of the Node service images (`node` is 1000). Never 0. */
   serviceUser: number;
   resources: {
@@ -187,10 +225,12 @@ export interface PlatformSettings {
     receiver: Resources;
     cloudflared: Resources;
     windmillProxy: Resources;
+    runWatcher: Resources;
   };
   /**
-   * Where the state API and the receiver start their flows (D-283, D-291): the Windmill host,
-   * the one host the Windmill proxy allows, and the workspace id. Plain settings, not secrets.
+   * Where the state API, the receiver and the run watcher start their flows (D-283, D-291,
+   * D-330): the Windmill host, the one host the Windmill proxy allows, and the workspace id. Plain
+   * settings, not secrets.
    */
   windmill: { host: string; workspace: string };
   receiver: {
@@ -206,6 +246,13 @@ export interface PlatformSettings {
   databasePort?: number;
   /** Cluster DNS, as for the agents' proxies. */
   clusterDns: { namespace: string; podLabels: Labels };
+  /**
+   * Where the run watcher reaches the Kubernetes API server (D-330): the address or addresses and
+   * the port the `kubernetes` Service in `default` sends to, as its EndpointSlice lists them.
+   * Network policies see that address, not the Service's, so the watcher's policy allows exactly
+   * these and nothing else. Read at first hosting, step 7. Plain settings, not secrets.
+   */
+  kubernetesApi: { addresses: string[]; port: number };
 }
 
 export interface ContainerProbe {
@@ -228,7 +275,9 @@ export interface PlatformContainer {
 }
 
 export interface PlatformPodSpec {
-  automountServiceAccountToken: false;
+  /** True only for the run watcher's pod, with its own ServiceAccount (D-330). */
+  automountServiceAccountToken: boolean;
+  serviceAccountName?: string;
   enableServiceLinks: false;
   hostNetwork: false;
   hostPID: false;
@@ -251,7 +300,8 @@ export interface Deployment {
   };
 }
 
-export type PlatformObject = Namespace | NetworkPolicy | Service | Deployment;
+export type PlatformObject =
+  Namespace | ServiceAccount | NetworkPolicy | Service | Deployment;
 
 /** Supabase's session pooler (see PlatformSettings.databasePort). */
 export const DEFAULT_DATABASE_PORT = 5432;
@@ -264,6 +314,8 @@ export function databasePortOf(settings: PlatformSettings): number {
 }
 
 const DIGEST_PINNED = /@sha256:[0-9a-f]{64}$/;
+const IPV4 =
+  /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$/;
 
 export function checkPlatformSettings(settings: PlatformSettings): void {
   for (const [name, image] of Object.entries(settings.images)) {
@@ -296,6 +348,27 @@ export function checkPlatformSettings(settings: PlatformSettings): void {
   } catch (error) {
     throw new Error(`windmill workspace ${(error as Error).message}`);
   }
+  // Read from a JSON file at render time, so a missing entry is named here, not met as a crash.
+  const api = settings.kubernetesApi as
+    Partial<PlatformSettings["kubernetesApi"]> | undefined;
+  if (
+    !Array.isArray(api?.addresses) ||
+    api.addresses.length === 0 ||
+    api.addresses.some((address) => !IPV4.test(address) || address === "0.0.0.0") ||
+    new Set(api.addresses).size !== api.addresses.length
+  ) {
+    throw new Error("kubernetesApi addresses must be one or more plain IPv4 addresses");
+  }
+  const apiPort = api.port;
+  if (
+    apiPort === undefined ||
+    !Number.isInteger(apiPort) ||
+    apiPort < 1 ||
+    apiPort > 65535 ||
+    apiPort === 53
+  ) {
+    throw new Error("kubernetesApi port must be the API server's own port");
+  }
 }
 
 const labels = (): Labels => ({ [LABEL_MANAGED_BY]: MANAGED_BY_INFRA });
@@ -317,9 +390,16 @@ const samePods = (podLabels: Labels): NetworkPolicyPeer => ({
   podSelector: { matchLabels: { ...podLabels } },
 });
 
-/** Everything in the platform namespace, in apply order. */
-export function platformObjects(settings: PlatformSettings): PlatformObject[] {
+/**
+ * Everything in the platform namespace, in apply order. `projects` are the slugs whose agent
+ * namespaces the run watcher watches: the same list `render.ts` makes those namespaces from.
+ */
+export function platformObjects(
+  settings: PlatformSettings,
+  projects: readonly string[],
+): PlatformObject[] {
   checkPlatformSettings(settings);
+  const agentNamespaces = projects.map((slug) => agentNamespace(slug));
   const dns: NetworkPolicy["spec"]["egress"][number] = {
     to: [
       {
@@ -342,6 +422,13 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
   const windmillProxy: NetworkPolicy["spec"]["egress"][number] = {
     to: [samePods(WINDMILL_PROXY.podLabels)],
     ports: [{ protocol: "TCP", port: WINDMILL_PROXY.port }],
+  };
+  // The run watcher reaches the API server at its own address and port only (D-330).
+  const kubernetesApi: NetworkPolicy["spec"]["egress"][number] = {
+    to: settings.kubernetesApi.addresses.map((address) => ({
+      ipBlock: { cidr: `${address}/32`, except: [] },
+    })),
+    ports: [{ protocol: "TCP", port: settings.kubernetesApi.port }],
   };
 
   const namespace: Namespace = {
@@ -406,18 +493,31 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
       ],
       [dns, database, windmillProxy],
     ),
-    // The Windmill proxy: only the state API and the receiver call it; it reaches DNS and 443 on
-    // public addresses, and its allow-list holds the calls to Windmill's host (D-284, D-328).
+    // The Windmill proxy: only the state API, the receiver and the run watcher call it; it
+    // reaches DNS and 443 on public addresses, and its allow-list holds the calls to Windmill's
+    // host (D-284, D-328, D-330).
     policy(
       WINDMILL_PROXY.name,
       WINDMILL_PROXY.podLabels,
       [
         {
-          from: [samePods(STATE_API.podLabels), samePods(RECEIVER.podLabels)],
+          from: [
+            samePods(STATE_API.podLabels),
+            samePods(RECEIVER.podLabels),
+            samePods(RUN_WATCHER.podLabels),
+          ],
           ports: [{ protocol: "TCP", port: WINDMILL_PROXY.port }],
         },
       ],
       [dns, { to: [PUBLIC_IPV4], ports: [{ protocol: "TCP", port: 443 }] }],
+    ),
+    // The run watcher: nothing calls it (the kubelet's probes come from the node, as for the
+    // connector); it reaches DNS, the API server and the Windmill proxy, and nothing else (D-330).
+    policy(
+      RUN_WATCHER.name,
+      RUN_WATCHER.podLabels,
+      [],
+      [dns, kubernetesApi, windmillProxy],
     ),
     // The connector: no ingress; egress to DNS, the receiver, the state API's public port,
     // Cloudflare's API on 443 and Cloudflare's tunnel edge on 7844 (TCP and UDP). Only this pod
@@ -578,7 +678,58 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
     },
   );
 
-  return [namespace, ...policies, ...services, stateApi, receiver, connector, proxy];
+  // The run watcher's own identity (D-330). The account mounts no token by itself: only the
+  // watcher's pod asks for one, so no other pod that names it by mistake gets a token.
+  const watcherAccount: ServiceAccount = {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: {
+      name: RUN_WATCHER.serviceAccount,
+      namespace: PLATFORM_NAMESPACE,
+      labels: labels(),
+    },
+    automountServiceAccountToken: false,
+  };
+  const watcher = deployment(
+    RUN_WATCHER.name,
+    RUN_WATCHER.podLabels,
+    settings.serviceUser,
+    {
+      name: RUN_WATCHER.name,
+      image: settings.images.runWatcher,
+      env: [
+        { name: "PORT", value: String(RUN_WATCHER.port) },
+        { name: RUN_WATCHER_ENV.kubernetesApi, value: RUN_WATCHER.apiServer },
+        { name: RUN_WATCHER_ENV.agentNamespaces, value: agentNamespaces.join(",") },
+        {
+          name: secretEnvName(RUN_WATCHER_WINDMILL_TOKEN_PATH),
+          valueFrom: {
+            secretKeyRef: {
+              ...PLATFORM_SECRETS.runWatcherWindmillToken,
+              optional: true,
+            },
+          },
+        },
+        ...windmillEnv,
+      ],
+      port: RUN_WATCHER.port,
+      probe: health(RUN_WATCHER.port, "/health"),
+      resources: settings.resources.runWatcher,
+      serviceAccount: RUN_WATCHER.serviceAccount,
+    },
+  );
+
+  return [
+    namespace,
+    watcherAccount,
+    ...policies,
+    ...services,
+    stateApi,
+    receiver,
+    connector,
+    proxy,
+    watcher,
+  ];
 }
 
 interface DeploymentParts {
@@ -591,6 +742,11 @@ interface DeploymentParts {
   publicPort?: number;
   probe: ContainerProbe;
   resources: Resources;
+  /**
+   * The ServiceAccount whose token the pod mounts. Only the run watcher has one (D-330); every
+   * other pod mounts no token.
+   */
+  serviceAccount?: string;
 }
 
 /** One replica on the platform pool, hardened as ADR 0106 section 4 asks of every pod. */
@@ -611,7 +767,12 @@ function deployment(
       template: {
         metadata: { labels: template },
         spec: {
-          automountServiceAccountToken: false,
+          ...(parts.serviceAccount === undefined
+            ? { automountServiceAccountToken: false }
+            : {
+                serviceAccountName: parts.serviceAccount,
+                automountServiceAccountToken: true,
+              }),
           enableServiceLinks: false,
           hostNetwork: false,
           hostPID: false,

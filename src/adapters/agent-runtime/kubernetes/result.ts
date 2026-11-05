@@ -15,6 +15,9 @@ import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-e
 import type { AgentRunResult } from "../runtime.ts";
 import type { JobStatus } from "./objects.ts";
 
+// Where a Job is lives in its own small file, which the run watcher's image copies (D-330).
+export { jobState, type JobState } from "./job-state.ts";
+
 /**
  * What an agent image prints as its last line (version 1). The image's wrapper maps its
  * runtime's own output (for Claude Code, `--output-format json`) into it.
@@ -174,22 +177,6 @@ export function parseAgentResult(log: string | null): AgentResult | null {
     };
   }
   return null;
-}
-
-export type JobState =
-  "running" | "stopping" | "complete" | "deadline" | "failed" | "gone";
-
-/** Where a Job is. Only Complete and Failed are ends: FailureTarget means pods still stop. */
-export function jobState(job: JobStatus | null): JobState {
-  if (job === null) return "gone";
-  if (job.metadata.deletionTimestamp) return "stopping";
-  const conditions = job.status?.conditions ?? [];
-  const holds = (type: string) =>
-    conditions.find((c) => c.type === type && c.status === "True");
-  if (holds("Complete")) return "complete";
-  const failed = holds("Failed");
-  if (failed) return failed.reason === "DeadlineExceeded" ? "deadline" : "failed";
-  return "running";
 }
 
 /** The run's minutes from the Job's own times, or null. */
