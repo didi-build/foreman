@@ -17,7 +17,8 @@ COPY src/adapters/store-postgres ./src/adapters/store-postgres
 COPY src/adapters/github ./src/adapters/github
 COPY src/adapters/windmill/client.ts ./src/adapters/windmill/client.ts
 COPY src/adapters/windmill/receiver-flows.ts ./src/adapters/windmill/receiver-flows.ts
-# The contracts, read only for the states option capture works in (O-101).
+# The contracts, read only for the states and moves the receiver's due checks look at: option
+# capture's states (O-101), the advance moves and the staging moves (O-104). No move is recorded.
 COPY src/adapters/contracts-file/load.ts ./src/adapters/contracts-file/load.ts
 COPY contracts/machine-1 ./contracts/machine-1
 COPY contracts/machine-2 ./contracts/machine-2

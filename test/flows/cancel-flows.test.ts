@@ -198,7 +198,7 @@ describe("a merged change through the run-end flow (flow: fake adapters, D-308 (
       title: "Build the login form",
       body: { pathsInScope: ["design/account/login/"] },
     });
-    await t.addNode("ready_for_dev", {
+    const unrelated = await t.addNode("ready_for_dev", {
       title: "Unrelated",
       body: { pathsInScope: ["src/a.ts"] },
     });
@@ -220,10 +220,14 @@ describe("a merged change through the run-end flow (flow: fake adapters, D-308 (
         ],
       },
     });
-    expect(tasksFor.at(-1)?.run).toMatchObject({
-      bot: "council",
-      nodeId: open.id,
-      questionTopic: stillNeededTopic(open.id),
+    expect(tasksFor.map((t) => t.run)).toMatchObject([
+      { bot: "council", nodeId: open.id, questionTopic: stillNeededTopic(open.id) },
+      // Last, QA's freed slot starts the project's ready item nothing holds (N-81); the asked
+      // item's Council run is active, so it waits.
+      { bot: "developer", nodeId: unrelated.id },
+    ]);
+    expect(after).toMatchObject({
+      freedSlots: [{ nodeId: unrelated.id, result: { outcome: "started" } }],
     });
   });
 });

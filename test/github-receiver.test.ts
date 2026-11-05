@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { checkCompletedEvent, pullRequestEvent } from "../src/adapters/github/fake.ts";
 import { createFakeFlowStart } from "../src/adapters/windmill/fake-flow-start.ts";
+import { GUARDS } from "../src/core/guards/index.ts";
 import { createFlowStarts } from "../src/github-receiver/flow-starts.ts";
 import {
   MAX_BODY_BYTES,
@@ -35,6 +36,7 @@ beforeAll(async () => {
   f = await createIngestFixture();
   const logger = createLogger("github-receiver", (line) => logs.push(JSON.parse(line)));
   const { store, clock, ids, appLogins, runnerAppSlug } = f.deps;
+  const flows = createFakeFlowStart();
   service = await startService({
     name: "github-receiver",
     port: 0,
@@ -42,12 +44,17 @@ beforeAll(async () => {
     handle: createReceiverHandler({
       github: f.github,
       ingest: { store, clock, ids, appLogins, runnerAppSlug },
-      // A code item is never due a capture, so nothing is started here
+      // No `dry_run` setting is stored here, which reads as dry run, so nothing is started
       // (test/github-receiver-starts.test.ts covers the starts).
       flowStarts: createFlowStarts({
         store,
         contracts: machines(),
-        optionCapture: createFakeFlowStart(),
+        guards: GUARDS,
+        clock,
+        ids,
+        optionCapture: flows,
+        advanceItem: flows,
+        verifyStaging: flows,
         logger,
       }),
       logger,

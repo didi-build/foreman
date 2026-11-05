@@ -20,9 +20,11 @@ import {
   WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
 } from "../../src/adapters/windmill/plan-approval-flow.ts";
 import {
+  ADVANCE_ITEM_FLOW_PATH,
   OPTION_CAPTURE_FLOW_PATH,
   RECEIVER_FLOW_PATHS,
   RECEIVER_WINDMILL_TOKEN_PATH,
+  VERIFY_STAGING_FLOW_PATH,
 } from "../../src/adapters/windmill/receiver-flows.ts";
 import {
   RECORD_RUN_END_FLOW_PATH,
@@ -177,16 +179,26 @@ describe("the flow the run watcher starts (unit: repo guard, D-330, O-102)", () 
   });
 });
 
-describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101)", () => {
-  it("are called flows, option capture among them, at the paths the receiver's port starts", () => {
-    expect(RECEIVER_FLOW_PATHS).toContain(OPTION_CAPTURE_FLOW_PATH);
+describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, O-104)", () => {
+  it("are the called option capture, advance and staging flows, at the paths the receiver's ports start, and nothing else", () => {
+    expect(RECEIVER_FLOW_PATHS).toEqual([
+      OPTION_CAPTURE_FLOW_PATH,
+      ADVANCE_ITEM_FLOW_PATH,
+      VERIFY_STAGING_FLOW_PATH,
+    ]);
     for (const path of RECEIVER_FLOW_PATHS) {
       const flow = description.flows.find((f) => f.path === path);
       expect(flow?.trigger, path).toBe("called");
     }
-    expect(description.flows.find((f) => f.name === "option_capture")?.entry).toBe(
+    expect(
+      RECEIVER_FLOW_PATHS.map(
+        (path) => description.flows.find((f) => f.path === path)?.entry,
+      ),
+    ).toEqual([
       "flows/option-capture.ts",
-    );
+      "flows/advance-item.ts",
+      "flows/verify-staging.ts",
+    ]);
   });
 
   it("the first-hosting runbook creates each token with exactly its flows' run scopes", () => {

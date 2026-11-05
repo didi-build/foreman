@@ -23,10 +23,13 @@ flows:
     # the schedule from here, not from the setting; changing one means changing both. It is the
     # safety net for missed events (D-274): its pass plans release, dispatch and advance from
     # evidence the same way in dry run and live mode. With `dry_run` off it acts on that plan
-    # first (D-329 slice 3, O-103): each release, the first run of each ready item, and each move
-    # into QA review with QA's run on the head, all started inside this one run, so a pass adds no
-    # Windmill run per item. Then it runs the merge pass (M3.3, O-31), which merges through the
-    # runner App's GitHub credential (D-127) once that App exists (D-178), then the staging pass
+    # first (D-329 slice 3, O-103): each release, the first run of each ready item, QA's run on
+    # each item in review that has none on its head (the review, then on a design item the visual
+    # comparison; N-80, O-104), and each move into QA review with QA's run on the head, all started
+    # inside this one run, so a pass adds no Windmill run per item. Each of these is the safety
+    # net for an event start (D-329 slice 4, O-104). Then it runs the merge pass (M3.3, O-31),
+    # which merges through the runner App's GitHub credential (D-127) once that App exists
+    # (D-178), and the merged-change pass after it (D-308 (3)), then the staging pass
     # (M3.4, O-37), whose check needs the deploy adapter's staging target (M3.7), and last the
     # builder runs pass, which starts the fix round of an item a failed QA round or staging check
     # sent back (O-41). The full order is in flows/lib/live-passes.ts.
@@ -101,7 +104,12 @@ flows:
     # (D-328). On a restart it sends each stopped Job still present, since the end's cleanup
     # deletes the Job. A QA fetch Job's success moves the run to its review here. The cancel-runs
     # flow records the ends it causes itself, and the live reconcile pass (D-329 slice 3) is the
-    # backstop.
+    # backstop. Inside the same run (D-329 slice 4, O-104), with no Windmill run added: once a
+    # builder's report moves the item into In QA review, QA's review starts on the head the
+    # runner's `ci_run` names (N-80), and once QA's review passed on a design item, its visual
+    # comparison; QA's merge is followed by the merged-change check (D-308 (3)); and last, the
+    # run's freed slot starts the first runs of the project's ready items, in the pass's order,
+    # as many as admission lets (N-81).
     trigger: called
 
   - name: verify_staging
@@ -111,9 +119,31 @@ flows:
     # `deployment_status` event, O-34). It verifies each item of the repository in Verifying on
     # staging, since a later commit's deploy may cover its merge commit (D-225), reading the deploy
     # from GitHub itself. A fail move starts the builder's fix round (O-41), and a move to Done
-    # starts the first run of each item that Done frees (D-329, O-103). Who calls it on the
-    # event is open, as for dispatch: the receiver records the delivery and holds no Windmill
-    # credential. The reconcile flow's staging pass is the backstop.
+    # starts the first run of each item that Done frees (D-329, O-103). The GitHub receiver calls
+    # it (D-329 slice 4, O-104): after it records a `deployment_status` delivery for a finished
+    # deploy (success, failure or error) to the `staging` environment, and only when an item of
+    # that repository is in Verifying on staging and neither switch holds the runner, so a
+    # replay, another environment and an unfinished status start nothing. It uses the receiver's
+    # Windmill token (platform/github-receiver/windmill-token, below) through the shared Windmill
+    # egress proxy (D-328), with `{"input": {"repo": ..., "sha": ...}}`. About one run per staging
+    # deploy (D-164). The reconcile flow's staging pass is the backstop.
+    trigger: called
+
+  - name: advance_item
+    path: f/foreman/advance_item
+    entry: flows/advance-item.ts
+    # Called with an item's id once CI has finished on its PR head and an advance from evidence
+    # is due (architecture section 2.5 step 4, D-329 slice 4, O-104). It takes the reconcile
+    # pass's own step 4 for that one item: the move into In QA review through the library with the
+    # pass's trigger and guards, then QA's run on the head through the dispatch's start path. It
+    # reads everything again and never trusts the event; under either switch it does nothing. The
+    # GitHub receiver calls it: after it records CI's end on a PR head (a new final `ci_run`), and
+    # only when the shared advance check (src/core/advances.ts) says the move's guards pass now, so
+    # a replay, a pending result, an item not due and the switches start nothing. It uses the
+    # receiver's Windmill token (platform/github-receiver/windmill-token, below) through the
+    # shared Windmill egress proxy (D-328), with `{"input": {"nodeId": ...}}`. About one run per
+    # head whose CI ends green with the item's move due (D-164). The reconcile flow's advance step
+    # is the backstop.
     trigger: called
 
   - name: cancel_runs
@@ -188,7 +218,9 @@ flows:
     # answers the planning chat's plan-approval request (D-266) and a held item's release request
     # (D-269): neither lists options, so the Options field shows none. A visual approval's
     # question ends with the link to the CI run holding the screenshots (O-89), which `ask`
-    # shows as the request's question text.
+    # shows as the request's question text. Once an answer is recorded, an escalation Didi's
+    # answer returned to its building state starts the item's fix round in the same run, as the
+    # Council's answer does at its run's end (O-104), unless a switch holds the runner.
     entry: flows/approval-resume.ts
     trigger: approval_resume
     suspend:
@@ -252,11 +284,11 @@ resources:
       holds: A Windmill token that can start only f/foreman/plan_approval (D-273). New credential at first hosting
       read_by: state API
     # Read by the GitHub receiver, not by a flow (D-291): a Windmill token that can start only the
-    # flows in RECEIVER_FLOW_PATHS (src/adapters/windmill/receiver-flows.ts), today
-    # option_capture above, copied into the receiver's Secret `github-receiver-windmill-token`
-    # (key `token`) at first hosting.
+    # flows in RECEIVER_FLOW_PATHS (src/adapters/windmill/receiver-flows.ts), option_capture,
+    # advance_item and verify_staging above (O-101, O-104), copied into the receiver's Secret
+    # `github-receiver-windmill-token` (key `token`) at first hosting.
     - path: platform/github-receiver/windmill-token
-      holds: A Windmill token that can start only the GitHub receiver's flows, today f/foreman/option_capture (D-291). New credential at first hosting
+      holds: A Windmill token that can start only the GitHub receiver's flows, f/foreman/option_capture, f/foreman/advance_item and f/foreman/verify_staging (D-291, O-104). New credential at first hosting
       read_by: GitHub receiver
     # Read by the run watcher, not by a flow (D-330): a Windmill token that can start only the
     # flows in RUN_WATCHER_FLOW_PATHS (src/adapters/windmill/run-watcher-flows.ts), the

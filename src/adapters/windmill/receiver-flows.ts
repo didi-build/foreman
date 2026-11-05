@@ -1,13 +1,21 @@
-// The GitHub receiver's flow starts (D-291, D-327, D-329, O-101). After the receiver records CI's
-// end on a design item's PR head, it starts `f/foreman/option_capture` for the item when a capture
-// is due (src/github-receiver/flow-starts.ts), so Didi's visual-approval request opens without
-// waiting for the reconcile pass, which stays as the safety net with the run-end flow's capture.
+// The GitHub receiver's flow starts (D-291, D-327, D-329, O-101, O-104). Each one follows an event
+// the receiver has just recorded, and only when the flow's own due check says it is due
+// (src/github-receiver/flow-starts.ts), so the work starts on the event while the reconcile pass
+// stays as the safety net:
+// - after it records CI's end on a design item's PR head, `f/foreman/option_capture` for the item
+//   when a capture is due, so Didi's visual-approval request opens at once (O-101);
+// - after it records CI's end on an item's PR head, `f/foreman/advance_item` for the item when an
+//   advance from evidence is due, so the item moves into In QA review and QA's run starts (O-104);
+// - after it records a finished `deployment_status` to `staging`, `f/foreman/verify_staging` with
+//   the repository and the commit, when an item of that repository is in Verifying on staging
+//   (O-104).
 //
 // The receiver has one Windmill token, read from the secret path below, that can start only the
-// flows in `RECEIVER_FLOW_PATHS`. Each later slice adds to that list only the flows its events need
+// flows in `RECEIVER_FLOW_PATHS`. Each slice added to that list only the flows its events need
 // (D-329), and the token is created again with the new list. The call goes through the shared
 // Windmill egress proxy (D-328, ./client.ts). Until the token exists every start is refused with
 // `NotBuiltError`. Tests use ./fake-flow-start.ts.
+import type { Json } from "../../core/store.ts";
 import {
   entryArgs,
   NotBuiltError,
@@ -22,34 +30,75 @@ export const RECEIVER_WINDMILL_TOKEN_PATH = "platform/github-receiver/windmill-t
 /** The option capture flow (flows/windmill.yaml, O-88). */
 export const OPTION_CAPTURE_FLOW_PATH = "f/foreman/option_capture";
 
+/** The advance flow (flows/windmill.yaml, flows/advance-item.ts, O-104). */
+export const ADVANCE_ITEM_FLOW_PATH = "f/foreman/advance_item";
+
+/** The staging flow (flows/windmill.yaml, flows/verify-staging.ts, O-34). */
+export const VERIFY_STAGING_FLOW_PATH = "f/foreman/verify_staging";
+
 /** Every flow the receiver's token may start, and nothing else: one scope per path (D-291). */
-export const RECEIVER_FLOW_PATHS: readonly string[] = [OPTION_CAPTURE_FLOW_PATH];
+export const RECEIVER_FLOW_PATHS: readonly string[] = [
+  OPTION_CAPTURE_FLOW_PATH,
+  ADVANCE_ITEM_FLOW_PATH,
+  VERIFY_STAGING_FLOW_PATH,
+];
 
 /** Starts the option capture flow for one design item. Resolves once Windmill accepts. */
 export interface OptionCaptureFlow {
   start(nodeId: string): Promise<void>;
 }
 
-/**
- * The Windmill binding. `token` is the receiver's token read from its secret path, or null while
- * it does not exist; then every start is refused. `seams` is for tests only.
- */
-export function windmillOptionCaptureFlow(
+/** Starts the advance flow for one item. Resolves once Windmill accepts. */
+export interface AdvanceItemFlow {
+  start(nodeId: string): Promise<void>;
+}
+
+/** Starts the staging flow for one repository and commit. Resolves once Windmill accepts. */
+export interface VerifyStagingFlow {
+  start(repo: string, sha: string): Promise<void>;
+}
+
+/** The receiver's three starts. */
+export interface ReceiverFlows {
+  optionCapture: OptionCaptureFlow;
+  advanceItem: AdvanceItemFlow;
+  verifyStaging: VerifyStagingFlow;
+}
+
+/** One start at `path`, refused with `NotBuiltError` while the token does not exist. */
+function starter(
+  path: string,
   token: string | null,
   target: WindmillTarget,
-  seams: Pick<WindmillClientOptions, "ca" | "timeoutMs"> = {},
-): OptionCaptureFlow {
+  seams: Pick<WindmillClientOptions, "ca" | "timeoutMs">,
+): (input: Record<string, Json>) => Promise<void> {
   if (token === null) {
-    return {
-      start: async () => {
-        throw new NotBuiltError(
-          "Starting the option capture flow needs the GitHub receiver's Windmill token, created at first hosting (D-291)",
-        );
-      },
+    return async () => {
+      throw new NotBuiltError(
+        `Starting ${path} needs the GitHub receiver's Windmill token, created at first hosting (D-291)`,
+      );
     };
   }
   const scripts = windmillScripts({ target, token, ...seams });
+  return (input) => scripts.start(path, entryArgs(input));
+}
+
+/**
+ * The Windmill bindings. `token` is the receiver's token read from its secret path, or null while
+ * it does not exist; then every start is refused. `seams` is for tests only.
+ */
+export function windmillReceiverFlows(
+  token: string | null,
+  target: WindmillTarget,
+  seams: Pick<WindmillClientOptions, "ca" | "timeoutMs"> = {},
+): ReceiverFlows {
+  const capture = starter(OPTION_CAPTURE_FLOW_PATH, token, target, seams);
+  const advance = starter(ADVANCE_ITEM_FLOW_PATH, token, target, seams);
+  const staging = starter(VERIFY_STAGING_FLOW_PATH, token, target, seams);
   return {
-    start: (nodeId) => scripts.start(OPTION_CAPTURE_FLOW_PATH, entryArgs({ nodeId })),
+    optionCapture: { start: (nodeId) => capture({ nodeId }) },
+    advanceItem: { start: (nodeId) => advance({ nodeId }) },
+    // flows/verify-staging.ts reads `{ repo, sha }` as its input.
+    verifyStaging: { start: (repo, sha) => staging({ repo, sha }) },
   };
 }

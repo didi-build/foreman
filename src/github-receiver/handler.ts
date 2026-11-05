@@ -1,8 +1,8 @@
 // The webhook endpoint (ADR 0113 sections 2 and 8). Order matters: cap the raw body, check the
 // signature over those exact bytes, and only then parse. A request that fails the signature is
 // answered 401 with nothing parsed or stored. Once a delivery is recorded, the flows its new
-// evidence makes due are started (./flow-starts.ts, O-101), before the answer, which a failed
-// start never changes.
+// evidence or its staging deploy makes due are started (./flow-starts.ts, O-101, O-104), before
+// the answer, which a failed start never changes.
 import type { IncomingMessage } from "node:http";
 
 import type { GitHubAdapter } from "../adapters/github/adapter.ts";

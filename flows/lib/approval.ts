@@ -36,7 +36,13 @@ import {
 } from "../../src/core/plans.ts";
 import type { GateRequest, Json } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
-import { councilPass, followUpPass, type CouncilPassStep } from "./council-runs.ts";
+import type { BuilderRunStart } from "./builder-runs.ts";
+import {
+  afterEscalationReturned,
+  councilPass,
+  followUpPass,
+  type CouncilPassStep,
+} from "./council-runs.ts";
 import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
 import { heldBy } from "./switches.ts";
 import { triagePass, type TriagePassStep } from "./triage-runs.ts";
@@ -171,6 +177,13 @@ export interface AfterAnswer {
   /** For an escalation question: what the move out of Escalated to Didi did. */
   escalation?: EscalationStep;
   /**
+   * After that move took a work item back to its building state: its fix round (O-41, O-104), as
+   * the Council's answer starts it at its run's end. Only when no switch holds the runner.
+   */
+  builderRuns?: BuilderRunStart[];
+  /** After that move took an idea back to Triage: its next Triage run (M3.6). */
+  triage?: TriagePassStep[];
+  /**
    * For a reversal's question to Didi (D-234): the follow-up Council question it opened, if any,
    * and the Council pass on the topic, which starts the follow-up run.
    */
@@ -223,7 +236,10 @@ export interface AfterAnswer {
  * on a Council plan the Council pass starts its replan with Didi's words (D-316 (3)). Any other
  * gate kind asks for nothing of its own. Last, when no switch holds the runner, the request's item
  * gets its first run if the answer left it ready (D-329, ./ready-runs.ts): the check decides, so
- * an item still held, blocked, gated or running gets nothing.
+ * an item still held, blocked, gated or running gets nothing. An escalation Didi's answer returned
+ * to a building state starts the item's fix round instead, and an idea returned to Triage its
+ * Triage run, as the Council's answer does at its run's end (`afterEscalationReturned`, O-104);
+ * also only when no switch holds the runner, so the builder runs pass takes it on later.
  */
 export async function afterAnswer(
   deps: FlowDeps,
@@ -267,11 +283,19 @@ export async function afterAnswer(
     };
   }
   const held = await heldBy(deps.store);
+  const returned =
+    escalation?.step === "returned" && held === null
+      ? await afterEscalationReturned(deps, escalation.nodeId)
+      : undefined;
   const firstRuns =
     gate.nodeId && held === null ? await startReadyRuns(deps, [gate.nodeId]) : [];
   return {
     heldBy: held,
     ...(escalation ? { escalation } : {}),
+    ...(returned && returned.builderRuns.length > 0
+      ? { builderRuns: returned.builderRuns }
+      : {}),
+    ...(returned?.triage ? { triage: returned.triage } : {}),
     ...(reversal ? { reversal } : {}),
     ...(holdRelease ? { holdRelease } : {}),
     ...(plan ? { plan } : {}),

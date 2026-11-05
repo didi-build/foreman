@@ -14,6 +14,16 @@
 // started finds the item moved on and starts nothing. A refusal is reported in the result, never
 // thrown, and the next trigger or pass tries again. No Windmill run is added: the start runs
 // inside the flow that took the move.
+//
+// Two more starts follow the same rules (D-329 slice 4, O-104). QA's run on an item in review
+// (`startQaRuns`, settles N-80): the run-end flow asks QA's check (src/core/ready-runs.ts) once a
+// builder's run ends and its report moved the item into In QA review, or a QA run ends with the
+// item still there, and starts the run it names on the pull request and head commit the newest
+// `ci_run` gives (the evidence the move's `ci_green_on_head` guard read), never what the agent
+// reported: QA's review, then on the design track the visual comparison once the review passed.
+// The freed slot (`startFreedSlots`, settles N-81): once a run's end is recorded, the slot it held
+// is free, so the run-end flow starts the first runs of the run's project's ready items, in the
+// pass's order (the store's node order), each through admission, so as many start as now fit.
 import { createReadyRuns } from "../../src/core/ready-runs.ts";
 import type { StagingResult } from "../../src/core/staging.ts";
 import type { AgentRole } from "../../src/core/store.ts";
@@ -76,4 +86,65 @@ export async function firstRunsAfterStaging(
       freed.push(edge.toNode);
   }
   return freed.length > 0 ? startReadyRuns(deps, freed) : [];
+}
+
+/** QA's run on an item in review, started once its check said it is due (N-80, O-104). */
+export interface QaRunStart {
+  nodeId: string;
+  /** Null for the review, `qa:visual` for the visual comparison. */
+  taskType: string | null;
+  prNumber: number;
+  headSha: string;
+  /** The dispatch's result, or `start_failed` when it threw (the error is not kept). */
+  result: StartRunResult | { outcome: "start_failed" };
+}
+
+/**
+ * Starts QA's next run on each given node in review whose run is due now (once per node, in the
+ * given order). Nodes with nothing due are left out, and so is everything while a switch holds the
+ * runner.
+ */
+export async function startQaRuns(
+  deps: FlowDeps,
+  nodeIds: readonly string[],
+): Promise<QaRunStart[]> {
+  if (nodeIds.length === 0 || (await heldBy(deps.store)) !== null) return [];
+  const ready = createReadyRuns(deps);
+  const started: QaRunStart[] = [];
+  for (const nodeId of new Set(nodeIds)) {
+    const check = await ready.qaCheck(nodeId);
+    if (!check.due) continue;
+    const { prNumber, headSha, taskType } = check;
+    let result: QaRunStart["result"];
+    try {
+      result = await startRun(deps, {
+        nodeId,
+        role: "qa",
+        prNumber,
+        headSha,
+        ...(taskType ? { taskType } : {}),
+      });
+    } catch {
+      // The run ended `fail` before it started (./start-run.ts), which QA's check does not count
+      // as QA having run, so the next trigger or pass tries again.
+      result = { outcome: "start_failed" };
+    }
+    started.push({ nodeId, taskType, prNumber, headSha, result });
+  }
+  return started;
+}
+
+/**
+ * After a run's end is recorded (N-81): the first runs of the project's ready items, in the pass's
+ * order, as many as admission now lets start. Items with nothing due are left out.
+ */
+export async function startFreedSlots(
+  deps: FlowDeps,
+  projectId: string,
+): Promise<ReadyRunStart[]> {
+  const nodes = await deps.store.listNodes({ projectId });
+  return startReadyRuns(
+    deps,
+    nodes.map((n) => n.id),
+  );
 }

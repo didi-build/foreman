@@ -1,5 +1,6 @@
 // The staging flow (build plan M3.4, O-34). A `deployment_status` event says main may have deployed
-// a commit to staging. This flow verifies each item of the repository in Verifying on staging, since
+// a commit to staging; the GitHub receiver starts this flow on a finished deploy to `staging` while
+// an item of the repository is in Verifying on staging (D-329 slice 4, O-104). This flow verifies each item of the repository in Verifying on staging, since
 // a deploy of a later commit may cover its merge commit (D-225): it reads the deploys from GitHub
 // itself (never from the event), runs the runner's staging check, records the result and asks for
 // the move it calls for, which the guards decide (src/core/staging.ts). The reconcile flow's staging

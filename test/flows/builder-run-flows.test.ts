@@ -65,7 +65,10 @@ async function finish(f: FlowFixture, runId: string, result = RESULT) {
   return recordRunEnd(f.deps, { runId });
 }
 
-/** A ready item dispatched, built, reported done and dispatched to QA, live. */
+/**
+ * A ready item dispatched, built and reported done, live: the run-end flow moves it into QA review
+ * and starts QA's run on the head (N-80, O-104).
+ */
 async function inReview(f: FlowFixture) {
   const node = await f.node("ready_for_dev", {
     body: {
@@ -82,16 +85,13 @@ async function inReview(f: FlowFixture) {
     { commitSha: HEAD },
   );
   await f.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: HEAD });
-  expect(await finish(f, dev.runId)).toMatchObject({
+  const ended = await finish(f, dev.runId);
+  expect(ended).toMatchObject({
     move: { outcome: "applied", toState: "in_qa_review" },
+    qaRuns: [{ nodeId: node.id, prNumber: 7, headSha: HEAD, taskType: null }],
   });
-  const qa = await dispatch(f.deps, {
-    nodeId: node.id,
-    role: "qa",
-    prNumber: 7,
-    headSha: HEAD,
-  });
-  if (qa.outcome !== "started") throw new Error("QA was not started");
+  const qa = "qaRuns" in ended ? ended.qaRuns?.[0]?.result : undefined;
+  if (qa?.outcome !== "started") throw new Error("QA was not started");
   return { node, devRunId: dev.runId, qaRunId: qa.runId, ciId };
 }
 

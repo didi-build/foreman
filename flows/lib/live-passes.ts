@@ -5,7 +5,8 @@
 //
 // 1. Release, dispatch and advance from evidence, the steps 2 to 4 of architecture section 2.5:
 //    the moves and runs the plan found due (./reconcile-steps.ts). A released item's first run
-//    starts at once, and QA's run starts once an item advances into review.
+//    starts at once, QA's run starts on an item in review that has none on its head (N-80,
+//    O-104), and QA's run starts once an item advances into review.
 // 2. The merge pass merges what QA passed and recovers a merge whose move was not written (M3.3,
 //    O-31): the rest of step 4.
 // 3. The merged-change pass asks the Council whether each open item that touches the same design

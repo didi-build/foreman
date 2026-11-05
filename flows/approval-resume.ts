@@ -2,9 +2,9 @@
 // `suspend` on a gate request's approval page. It records the page's answer (Approve, Request
 // changes or Reject, with its options and Didi's words verbatim: `approvalDecision`) through the
 // library, once. An answer that breaks the form's rules records nothing and opens a fresh request
-// with a note saying why. Answers are recorded even under the kill switch or in dry run (D-201):
-// the link closes after one answer, and nothing acts on it until both are off. A timeout records
-// nothing (M4.1). Then the escalation and reversal steps follow (./lib/approval.ts, D-234).
+// with a note saying why. Answers are recorded even under a switch, as the link closes after one
+// answer (D-201); nothing acts on one until both are off. A timeout records nothing (M4.1). Then
+// the escalation and reversal steps follow (./lib/approval.ts, D-234), with a fix round (O-104).
 import { approvalDecision } from "../src/core/approvals.ts";
 import { createLibrary, LibraryError } from "../src/core/library.ts";
 import {

@@ -122,14 +122,10 @@ describe("run-end flow with bugs found outside the item (flow: fake adapters, D-
     await f.live();
     const { node, runId: devRun, ciId } = await developerDone(f);
     f.runtime.status.set(devRun, { state: "finished", result: RESULT });
-    await recordRunEnd(f.deps, { runId: devRun });
-    const qa = await dispatch(f.deps, {
-      nodeId: node.id,
-      role: "qa",
-      prNumber: 7,
-      headSha: HEAD,
-    });
-    if (qa.outcome !== "started") throw new Error("QA was not started");
+    // The report's move into review starts QA's run on the head (N-80, O-104).
+    const reported = await recordRunEnd(f.deps, { runId: devRun });
+    const qa = "qaRuns" in reported ? reported.qaRuns?.[0]?.result : undefined;
+    if (qa?.outcome !== "started") throw new Error("QA was not started");
     const verdict = {
       verdict: "fail",
       findings: [{ path: "src/a.ts", startLine: 1, endLine: 1, note: "wrong" }],

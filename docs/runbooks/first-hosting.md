@@ -191,7 +191,7 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
 - The three Windmill tokens that start flows (D-283, D-291, D-327, D-330, O-101, O-102), each its own approval. Before creating any of them, check on Windmill's token page ("Limit token permissions" and "Restrict paths") that a token can be limited to running exactly the scripts named below and nothing else: no other script, no reading or changing scripts, jobs, resources or variables. **If Windmill cannot narrow a token that far, stop and ask Didi before creating any credential** (D-283, D-291, D-330). Do not create a wider token, and do not use another kind of token (such as a webhook's own token) instead, without asking.
   - The state API's token: exactly the scope `jobs:run:scripts:f/foreman/plan_approval`, stored at `platform/state-api/windmill-plan-approval-token` in Windmill resources and in the Secret `state-api-windmill-plan-approval-token` (key `token`).
-  - The GitHub receiver's token: exactly the scopes of its flow list (`RECEIVER_FLOW_PATHS` in `src/adapters/windmill/receiver-flows.ts`), today only `jobs:run:scripts:f/foreman/option_capture`, stored at `platform/github-receiver/windmill-token` in Windmill resources and in the Secret `github-receiver-windmill-token` (key `token`). A later slice that adds a flow to the list creates this token again with the new list (D-329).
+  - The GitHub receiver's token: exactly the scopes of its flow list (`RECEIVER_FLOW_PATHS` in `src/adapters/windmill/receiver-flows.ts`), the three scopes `jobs:run:scripts:f/foreman/option_capture`, `jobs:run:scripts:f/foreman/advance_item` and `jobs:run:scripts:f/foreman/verify_staging` (D-329, O-101, O-104), stored at `platform/github-receiver/windmill-token` in Windmill resources and in the Secret `github-receiver-windmill-token` (key `token`). A token made earlier with only the first scope is made again with all three, and the old one revoked.
   - The run watcher's token: exactly the scope of its flow list (`RUN_WATCHER_FLOW_PATHS` in `src/adapters/windmill/run-watcher-flows.ts`), only `jobs:run:scripts:f/foreman/record_run_end`, stored at `platform/run-watcher/windmill-token` in Windmill resources and in the Secret `run-watcher-windmill-token` (key `token`).
 
   Generate each token in Windmill, copy it into the password manager, and never paste its value anywhere else: not in a file, the shell history, chat, Linear or a log. Pipe it from the password manager's command line straight into its Secret:
@@ -203,7 +203,7 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
   kubectl -n foreman-platform rollout restart deployment/state-api deployment/github-receiver deployment/run-watcher
   ```
 
-  None of the three services reaches Windmill directly: all go through the Windmill proxy of step 7, which allows only `windmill.host`, and no pod's network policy allows them public 443 (D-284, D-328, D-330). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started`, `option capture flow not started` or `run end flow not started` with the error's type, and the reconcile pass opens the request, captures the options or records the end. The run watcher's restart above then sends the run-end flow for every stopped run Job still present, once each. If the proxy is down, the services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
+  None of the three services reaches Windmill directly: all go through the Windmill proxy of step 7, which allows only `windmill.host`, and no pod's network policy allows them public 443 (D-284, D-328, D-330). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started`, `option capture flow not started`, `advance flow not started`, `staging flow not started` or `run end flow not started` with the error's type, and the reconcile pass opens the request, captures the options, advances the item, verifies staging or records the end. The run watcher's restart above then sends the run-end flow for every stopped run Job still present, once each. If the proxy is down, the services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 
@@ -233,6 +233,29 @@ The state API starts `f/foreman/plan_approval` after each recorded plan submissi
 - The timing: a start is accepted well inside the client's 5 seconds, so a webhook is still answered within GitHub's 10.
 - The runs: each recorded submission and each due capture adds one run to the month's count (D-164); a replayed webhook, a pending CI result and a capture not due add none.
 - The workspace id passes the manifest check (letters, digits, `-` and `_`, at most 50).
+
+### The receiver's starts on green CI and staging deploys
+
+After it records CI's end on a PR head, the receiver starts `f/foreman/advance_item` for the item when the advance check says its move into In QA review is due, and after it records a finished `deployment_status` to `staging` it starts `f/foreman/verify_staging` with the repository and the commit when an item of that repository is in Verifying on staging (D-329 slice 4, O-104). Both use the receiver's token of step 15 through the Windmill proxy. Built and tested with fakes, without a real Windmill or GitHub. To verify at rehearsal, in the rehearsal project with synthetic data only, and record each result with the date in O-104:
+
+- Green CI: an item In development whose Developer reported done while CI was still pending moves to In QA review within seconds of CI ending green on its head, with no reconcile pass in between, and QA's review run starts for that pull request and head commit. The receiver logs `advance flow started` once, with the delivery id only.
+- Not due: a red CI result, a head with no docs note, a pending result (checks starting on a new head), a redelivered webhook and the same CI end from a second event start nothing, and the month's run count does not move.
+- The staging deploy: after the runner merges an item, the project's deploy to `staging` on push to main sends a `deployment_status`; the receiver logs `staging flow started` once for its final status, the item is verified in that run, and its dependents' first runs start. The `pending`, `queued` and `in_progress` statuses, a deploy to another environment, and a deploy while no item of the repository is in Verifying on staging start nothing.
+- The input: Windmill's run of `f/foreman/verify_staging` shows `{"repo": "<owner/name>", "sha": "<commit>"}` and the run of `f/foreman/advance_item` shows `{"nodeId": "..."}`.
+- The token: with its three scopes, a start of each of the three flows is accepted, and a start of any other script, and any other call, are refused.
+- The switches: with `dry_run` true, or `kill_switch` true, neither event starts a flow; the evidence and the delivery are still recorded.
+- The run budget (D-164): about one run per item whose head's CI ends green with its move due (usually once per item, and once more per fix round), and one per finished staging deploy while an item verifies. The receiver's three starts together stay well inside the about 600 runs a month left beside the schedules.
+
+### Starts inside the flows that took the move
+
+These add no Windmill run: each runs inside the flow run that took the move (D-329 slice 4, O-104). To verify at rehearsal, with synthetic data only, and record each result with the date in O-104:
+
+- QA on the done report: when a Developer's or Designer's report moves the item into In QA review, QA's review run starts in that same run-end flow run, for the pull request and head commit the runner's `ci_run` names. The run-end flow's result lists it under `qaRuns`.
+- The visual comparison: on a design item, once QA's review run ends with a pass on the head, the visual comparison run (`qa:visual`) starts in that run's run-end flow run, on the same head.
+- The safety net: an item left In QA review with no QA run on its head (for example after a start refused for `cluster_full`) gets QA's run from the next reconcile pass's dispatch step.
+- A freed slot: with `agent_cluster_max_active_runs` set to the number of runs active and one item ready, the item starts in the run-end flow run of the next run to end, listed under `freedSlots`, with no reconcile pass in between. With two ready items and one slot freed, the older one starts and the newer one waits.
+- Didi's answer: when Didi answers an escalation that returns the item to In development or Building components, the item's fix round starts in the same approval run, listed under `builderRuns`. With `dry_run` or `kill_switch` on, nothing starts.
+- The merged-change check: after QA's pass report merges an item, the Council is asked about each open item touching the same design feature folder in that same run-end flow run. A pull request merged by hand on GitHub is taken on by the next reconcile pass, whose merge pass completes its move and whose merged-change pass asks the same question.
 
 ### Recording run ends with the run watcher
 

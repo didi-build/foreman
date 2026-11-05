@@ -3,6 +3,8 @@
 // GitHub. The live plan is checked against the dry-run plan of the same store: the same releases,
 // dispatches, advances, attention list, stalls and clean-up candidates, so the two modes cannot
 // drift. What the reconcile flow does with the plan is in test/flows/reconcile-live-flow.test.ts.
+// QA's check on an item in review and the pass's QA backstop in both modes (N-80, O-104) are here
+// too; the flows that start QA's run are in test/flows/event-starts-flows.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { createReadyRuns } from "../src/core/ready-runs.ts";
@@ -80,7 +82,15 @@ async function seed(f: ReconcileFixture) {
   await f.evidence(built.id, "docs_note", { impact: "none" });
   // Step 6: a request on a Done node.
   await f.openGate(blocker.id, `escalation:${blocker.id}`);
-  return { released, waits, ready, gated, queued, built };
+  // Step 3's safety net for QA (N-80, O-104): an item in review with no QA run on its head.
+  const reviewed = await f.node("in_qa_review", { ownerRole: "qa" });
+  await f.evidence(
+    reviewed.id,
+    "ci_run",
+    { conclusion: "success", pr: 8, changedPaths: [] },
+    { commitSha: HEAD },
+  );
+  return { released, waits, ready, gated, queued, built, reviewed };
 }
 
 /**
@@ -140,7 +150,13 @@ describe("reconcile pass in live mode (unit: D-329 slice 3, O-103)", () => {
       "not_dispatchable",
       "guard_failed",
       "waiting",
+      "planned",
     ]);
+    expect(liveReport.dispatches.at(-1)).toMatchObject({
+      nodeId: nodes.reviewed.id,
+      role: "qa",
+      run: { headSha: HEAD, prNumber: 8 },
+    });
     expect(liveReport.dispatches[2]?.reason).toBe("developer_limit");
     expect(liveReport.dispatches[0]?.transition?.outcome).toBe("due");
     expect(liveReport.advances.map((a) => a.outcome)).toEqual([
@@ -270,6 +286,161 @@ describe("the first-run check (unit: src/core/ready-runs.ts, D-329)", () => {
       expect((await ready.check(due.id)).due).toBe(true);
       expect((await ready.check(held.id)).due).toBe(false);
       expect((await ready.check(gated.id)).due).toBe(false);
+    }
+  });
+});
+
+const REVIEW_PR = 7;
+
+/** An item In QA review with CI green on its head: the evidence the move into review carried. */
+async function inReview(
+  f: ReconcileFixture,
+  extra: Parameters<ReconcileFixture["node"]>[1] = {},
+) {
+  const node = await f.node("in_qa_review", { ownerRole: "qa", ...extra });
+  await f.evidence(
+    node.id,
+    "ci_run",
+    { conclusion: "success", pr: REVIEW_PR, changedPaths: [] },
+    { commitSha: HEAD },
+  );
+  return node;
+}
+
+/** A QA run on the head that started (it has a handle) and ended with `outcome`. */
+async function qaRan(
+  f: ReconcileFixture,
+  nodeId: string,
+  outcome: "success" | "fail" | "cancelled" = "success",
+  taskType = "qa:review",
+) {
+  const run = await f.run(nodeId, "qa", 30, {
+    headSha: HEAD,
+    prNumber: REVIEW_PR,
+    taskType,
+    endedAt: f.clock.now(),
+    outcome,
+  });
+  await f.store.setRunHandle(run.id, { runtime: "fake", runId: run.id });
+  return run;
+}
+
+describe("QA's check on an item in review (unit: src/core/ready-runs.ts, N-80, O-104)", () => {
+  it("is due for QA's review on the newest ci_run's pull request and head while QA has not run there", async () => {
+    const f = await createReconcileFixture();
+    const node = await inReview(f);
+    const ready = createReadyRuns(f.deps);
+    expect(await ready.qaCheck(node.id)).toEqual({
+      due: true,
+      nodeId: node.id,
+      role: "qa",
+      prNumber: REVIEW_PR,
+      headSha: HEAD,
+      taskType: null,
+    });
+    // A start that failed before it began does not count; a run that reached QA does, whatever
+    // its end, a run the kill switch cancelled included.
+    await f.run(node.id, "qa", 20, {
+      headSha: HEAD,
+      prNumber: REVIEW_PR,
+      endedAt: f.clock.now(),
+      outcome: "fail",
+    });
+    expect((await ready.qaCheck(node.id)).due).toBe(true);
+    await qaRan(f, node.id, "cancelled");
+    expect(await ready.qaCheck(node.id)).toMatchObject({ due: false, reason: "ran" });
+  });
+
+  it("on the design track, names the visual comparison once the review passed on the head, and then nothing", async () => {
+    const f = await createReconcileFixture();
+    const node = await inReview(f, { track: "design" });
+    const ready = createReadyRuns(f.deps);
+    const review = await qaRan(f, node.id);
+    // The review ran and its verdict is not a pass yet: nothing more.
+    expect(await ready.qaCheck(node.id)).toMatchObject({ due: false, reason: "ran" });
+    await f.evidence(
+      node.id,
+      "qa_verdict",
+      { verdict: "pass", findings: [], evidenceIds: [] },
+      { commitSha: HEAD, runId: review.id },
+    );
+    expect(await ready.qaCheck(node.id)).toMatchObject({
+      due: true,
+      headSha: HEAD,
+      prNumber: REVIEW_PR,
+      taskType: "qa:visual",
+    });
+    await qaRan(f, node.id, "success", "qa:visual");
+    // The one more visual run after a `cannot_tell` is visualRerunCheck's, not this check's.
+    expect(await ready.qaCheck(node.id)).toMatchObject({ due: false, reason: "ran" });
+  });
+
+  it("says why it is not due: not in review, running, no head, CI not green, held, or waiting", async () => {
+    const f = await createReconcileFixture();
+    const ready = createReadyRuns(f.deps);
+    const reason = async (id: string) => {
+      const check = await ready.qaCheck(id);
+      return check.due ? "due" : check.reason;
+    };
+    expect(await reason((await f.node("in_development")).id)).toBe("not_review");
+    const running = await inReview(f);
+    await f.run(running.id, "qa", 1, { headSha: HEAD, prNumber: REVIEW_PR });
+    expect(await reason(running.id)).toBe("active_run");
+    expect(await reason((await f.node("in_qa_review", { ownerRole: "qa" })).id)).toBe(
+      "no_head",
+    );
+    const red = await inReview(f);
+    await f.evidence(
+      red.id,
+      "ci_run",
+      { conclusion: "pending", pr: REVIEW_PR, changedPaths: [] },
+      { commitSha: "e".repeat(40) },
+    );
+    expect(await reason(red.id)).toBe("ci_not_green");
+    expect(await reason((await inReview(f, { hold: true })).id)).toBe(
+      "not_dispatchable",
+    );
+    // QA's run ended `usage_exhausted`: it goes on, on the same head, once the wait has passed.
+    const queued = await inReview(f);
+    const exhaustedRun = await f.run(queued.id, "qa", 10, {
+      headSha: HEAD,
+      prNumber: REVIEW_PR,
+      taskType: "qa:review",
+    });
+    await f.store.setRunHandle(exhaustedRun.id, { runtime: "fake" });
+    await exhausted(f, exhaustedRun.id);
+    expect(await ready.qaCheck(queued.id)).toMatchObject({
+      reason: "waiting",
+      cause: "rate_limit",
+    });
+    f.advanceMinutes(31);
+    expect(await ready.qaCheck(queued.id)).toMatchObject({ due: true, taskType: null });
+  });
+
+  it("the pass plans QA's run on an item in review as the safety net, the same in dry run and live mode, with no move", async () => {
+    for (const dryRun of [true, false]) {
+      const f = await createReconcileFixture();
+      await f.setting("dry_run", dryRun);
+      const due = await inReview(f);
+      const ran = await inReview(f);
+      await qaRan(f, ran.id);
+      const held = await inReview(f, { hold: true });
+      const report = await f.pass();
+      expect(
+        report.dispatches.map((d) => [d.nodeId, d.role, d.outcome]),
+        String(dryRun),
+      ).toEqual([
+        [due.id, "qa", "planned"],
+        [held.id, "qa", "not_dispatchable"],
+      ]);
+      expect(report.dispatches[0]).toMatchObject({
+        state: "in_qa_review",
+        run: { bot: "qa", headSha: HEAD, prNumber: REVIEW_PR, taskType: "qa:review" },
+      });
+      // QA's run has no move: nothing is written, in either mode.
+      expect(report.dispatches[0]?.transition).toBeUndefined();
+      expect(await f.transitions(due.id, ran.id, held.id)).toEqual([]);
+      expect(await f.store.listActiveRuns()).toEqual([]);
     }
   });
 });
