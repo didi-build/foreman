@@ -37,6 +37,7 @@ import {
 import type { GateRequest, Json } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
 import { councilPass, followUpPass, type CouncilPassStep } from "./council-runs.ts";
+import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
 import { heldBy } from "./switches.ts";
 import { triagePass, type TriagePassStep } from "./triage-runs.ts";
 
@@ -200,6 +201,12 @@ export interface AfterAnswer {
    * is held by a switch or cut short.
    */
   cancel?: CancelStep;
+  /**
+   * The first run of the request's item when the answer left it ready (D-329): its hold
+   * released, its escalation returned it to a ready state, or the closed request was all that
+   * held it (a needsDidi request from the Triage handoff). Only when no switch holds the runner.
+   */
+  firstRuns?: ReadyRunStart[];
 }
 
 /**
@@ -214,7 +221,9 @@ export interface AfterAnswer {
  * accepted on Approve, with `plan_accepted` recorded by the runner, and Triage starts; Reject or
  * Request changes sends an idea in Submitted back to Council planning (src/core/plans.ts), and
  * on a Council plan the Council pass starts its replan with Didi's words (D-316 (3)). Any other
- * gate kind asks for nothing.
+ * gate kind asks for nothing of its own. Last, when no switch holds the runner, the request's item
+ * gets its first run if the answer left it ready (D-329, ./ready-runs.ts): the check decides, so
+ * an item still held, blocked, gated or running gets nothing.
  */
 export async function afterAnswer(
   deps: FlowDeps,
@@ -257,12 +266,16 @@ export async function afterAnswer(
       council: accepted ? [] : await councilPass(deps, [councilPlanTopic(gate.nodeId)]),
     };
   }
+  const held = await heldBy(deps.store);
+  const firstRuns =
+    gate.nodeId && held === null ? await startReadyRuns(deps, [gate.nodeId]) : [];
   return {
-    heldBy: await heldBy(deps.store),
+    heldBy: held,
     ...(escalation ? { escalation } : {}),
     ...(reversal ? { reversal } : {}),
     ...(holdRelease ? { holdRelease } : {}),
     ...(plan ? { plan } : {}),
     ...(cancel ? { cancel } : {}),
+    ...(firstRuns.length > 0 ? { firstRuns } : {}),
   };
 }

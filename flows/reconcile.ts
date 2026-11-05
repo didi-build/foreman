@@ -1,17 +1,16 @@
-// The reconcile flow (build plan M3.1, architecture section 2.5), on the schedule in
-// flows/windmill.yaml (D-164). It reads this month's Windmill execution count, runs one reconcile
-// pass in dry run (D-167), the cancel pass on the kill switch (D-202) and, with `dry_run` off, the
-// live passes (./lib/live-passes.ts). Every pass lists held items and stalled work (D-272, D-302).
+// The reconcile flow (M3.1, section 2.5) on its schedule (D-164), the safety net for missed events
+// (D-274). It checks the month's Windmill runs (D-167), lists held and stalled work (D-272, D-302)
+// and runs one pass; the kill switch runs the cancel pass, and live mode acts (O-103, live-passes).
 import { reconcile, type ExecutionAlert } from "../src/core/reconcile.ts";
 import { cancelActiveRuns, type CancelRunsReport } from "./lib/cancel-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
 import { dailyCheckLists, type DailyCheck } from "./lib/held-items.ts";
 import { runLivePasses, type LivePasses } from "./lib/live-passes.ts";
 import { windmillEnvironment } from "./lib/windmill.ts";
-
 type Planned = "releases" | "dispatches" | "advances" | "merges" | "staging";
 export interface ReconcileFlowResult extends Omit<LivePasses, "problems">, DailyCheck {
-  stopped: "kill_switch" | "live_mode_not_built" | null;
+  mode: "dry_run" | "live"; // live: the flow acted on the plan
+  stopped: "kill_switch" | null;
   planned: Record<Planned, number>;
   attention: number;
   stalls: number;
@@ -36,6 +35,7 @@ export async function run(deps: FlowDeps): Promise<ReconcileFlowResult> {
   const live = await runLivePasses(deps, report);
   return {
     ...live,
+    mode: report.mode,
     stopped: report.stopped,
     planned: {
       releases: report.releases.length,

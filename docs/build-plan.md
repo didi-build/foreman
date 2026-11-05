@@ -173,7 +173,7 @@ Goal: the runner can say what it would do, and be right.
 - Why: it is how the cutover is rehearsed.
 - How: a function in the library plus a Windmill schedule every 2 hours until Kubernetes exists (D-164; setting `reconcile_interval_minutes`), with the execution count alert (P-21). It respects the kill switch and `dry_run`.
 - Success: against the imported state it releases the right blocked items, flags the right stalls, and plans the right dispatches. Nothing outside the store changes.
-- Built: `reconcile()` in `src/core/reconcile.ts`, dry run only, with the dry-run dispatch path `planDispatch` in `src/core/runs.ts`, `checkTransition` in `src/core/library.ts` and the execution count alert `executionAlert`. Tests: `test/reconcile.test.ts` and `test/db/reconcile.test.ts`. The Windmill schedule is M3.1.
+- Built: `reconcile()` in `src/core/reconcile.ts`, with the dry-run dispatch path `planDispatch` in `src/core/runs.ts`, `checkTransition` in `src/core/library.ts` and the execution count alert `executionAlert`. Tests: `test/reconcile.test.ts` and `test/db/reconcile.test.ts`. The Windmill schedule is M3.1. Live mode (D-329 slice 3, O-103): the pass plans release, dispatch and advance from evidence with the same code in both modes, the dispatch step deciding each ready item with the first-run check the flows share (`src/core/ready-runs.ts`). With `dry_run` false it writes nothing and the reconcile flow acts on the plan (`flows/lib/reconcile-steps.ts`): each move through the library with the pass's trigger and guards, each first run and QA's run after an advance through the dispatch's start path. A flow whose move makes an item ready starts the item's first run at once (`flows/lib/ready-runs.ts`). Tests: `test/reconcile-live.test.ts` (the live plan equals the dry-run plan for the same store, and the first-run check), `test/flows/reconcile-live-flow.test.ts` and the live race in `test/db/reconcile.test.ts`.
 
 ### M2.5 Dry-run report
 
@@ -193,7 +193,7 @@ Goal: Machine 2 works end to end on a throwaway project, with real agents.
 - Why: this is the runner.
 - How: flows call the library and adapters, check the kill switch and settings, and are idempotent. No business rules inside flows.
 - Success: flow tests with fake adapters pass. A duplicate trigger produces one transition.
-- Built: the flows in `flows/` (reconcile, dispatch, run end, one transition per run, and the approval resume step), composed in `flows/lib/compose.ts` and described as data in `flows/windmill.yaml`, with `requestTransitionOnce` in `src/core/library.ts` for triggers with their own id. Tests: `test/flows/` (see `docs/test-plan.md`, "Windmill flows"). Nothing is deployed: the Windmill binding refuses until the workspace and token exist (first-hosting runbook step 15).
+- Built: the flows in `flows/` (reconcile, dispatch, run end, one transition per run, and the approval resume step), composed in `flows/lib/compose.ts` and described as data in `flows/windmill.yaml`, with `requestTransitionOnce` in `src/core/library.ts` for triggers with their own id. Tests: `test/flows/` (see `docs/test-plan.md`, "Windmill flows"). Nothing is deployed: the Windmill binding refuses until the workspace and token exist (first-hosting runbook step 15). With `dry_run` off the reconcile flow acts on the pass's plan before its other live passes (D-329 slice 3, O-103), and the dispatch flow has no automatic caller: the pass and the flows whose move makes an item ready start runs in their own run.
 
 ### M3.2 Dispatch adapters and runs
 

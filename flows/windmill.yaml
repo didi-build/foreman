@@ -20,11 +20,16 @@ flows:
     entry: flows/reconcile.ts
     trigger: schedule
     # Every `reconcile_interval_minutes` (setting, 120 until Kubernetes, D-164). Windmill reads
-    # the schedule from here, not from the setting; changing one means changing both. With
-    # `dry_run` off it runs the merge pass (M3.3, O-31), which merges through the runner App's
-    # GitHub credential (D-127) once that App exists (D-178), then the staging pass (M3.4, O-37),
-    # whose check needs the deploy adapter's staging target (M3.7), then the builder runs pass,
-    # which starts the fix round of an item a failed QA round or staging check sent back (O-41).
+    # the schedule from here, not from the setting; changing one means changing both. It is the
+    # safety net for missed events (D-274): its pass plans release, dispatch and advance from
+    # evidence the same way in dry run and live mode. With `dry_run` off it acts on that plan
+    # first (D-329 slice 3, O-103): each release, the first run of each ready item, and each move
+    # into QA review with QA's run on the head, all started inside this one run, so a pass adds no
+    # Windmill run per item. Then it runs the merge pass (M3.3, O-31), which merges through the
+    # runner App's GitHub credential (D-127) once that App exists (D-178), then the staging pass
+    # (M3.4, O-37), whose check needs the deploy adapter's staging target (M3.7), and last the
+    # builder runs pass, which starts the fix round of an item a failed QA round or staging check
+    # sent back (O-41). The full order is in flows/lib/live-passes.ts.
     # Its plan approval pass opens Didi's request for each plan the planning chat submitted and
     # takes the idea's move on Didi's answer (D-266); its hold release pass releases a held item
     # Didi approved (D-269); its option capture pass captures each design item's exploration
@@ -75,8 +80,10 @@ flows:
   - name: dispatch
     path: f/foreman/dispatch
     entry: flows/dispatch.ts
-    # Who calls it in live mode is open: the live reconcile pass is not built (M2.4 stops on
-    # `dry_run` false). Until then, by hand from the Windmill page.
+    # No flow or service calls it (D-329 slice 3, O-103): the reconcile flow's live pass and
+    # every flow whose move makes an item ready start the run in their own run, through the same
+    # start path (flows/lib/start-run.ts, flows/lib/ready-runs.ts), so a start adds no Windmill
+    # run (D-164). It stays for a start by hand from its Windmill page, for example at rehearsal.
     trigger: called
 
   - name: record_run_end
@@ -103,7 +110,8 @@ flows:
     # Called with a repository and a commit when GitHub reports a staging deploy (a
     # `deployment_status` event, O-34). It verifies each item of the repository in Verifying on
     # staging, since a later commit's deploy may cover its merge commit (D-225), reading the deploy
-    # from GitHub itself. A fail move starts the builder's fix round (O-41). Who calls it on the
+    # from GitHub itself. A fail move starts the builder's fix round (O-41), and a move to Done
+    # starts the first run of each item that Done frees (D-329, O-103). Who calls it on the
     # event is open, as for dispatch: the receiver records the delivery and holds no Windmill
     # credential. The reconcile flow's staging pass is the backstop.
     trigger: called

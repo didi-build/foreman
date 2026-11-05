@@ -42,7 +42,15 @@
 // switch or in dry run it cancels nothing, and the move refuses and writes nothing. The reconcile
 // flow's live passes run it for every stale item, after the Council pass, so an item an
 // escalation returned, or a pass cut short, is taken on later. For a merged item it opens the
-// item's rework item instead (D-233): no run is cancelled, since the item does not move.
+// item's rework item instead (D-233): no run is cancelled, since the item does not move. The item
+// back at the start of its track, or the rework item, then gets its first run at once (D-329,
+// ./ready-runs.ts).
+//
+// After a Council run's end, `afterCouncilRun` also starts the first run of each item the answer
+// made ready: the run's own item when it is back in a ready state (an escalation the Council
+// resolved there, or a "still needed" item it kept, whose question no longer holds it), and each
+// item in a ready state whose stale flag the reversal answer cleared (D-329). After a Triage
+// run's end, each item the handoff created in a ready state gets its first run (D-329).
 //
 // A QA run of task type `qa:visual` (D-242) is checked the same way before its end is recorded:
 // the runner validates its answer and records `visual_comparison` itself
@@ -125,6 +133,7 @@ import {
 import { createPullRequestCloses, type CloseStatus } from "../../src/core/pr-close.ts";
 import { isCloseTaskType } from "../../src/core/task-types.ts";
 import { cancelRun } from "./cancel-runs.ts";
+import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
 import { closePass } from "./close-runs.ts";
 import { countedRefusal } from "./option-capture.ts";
 import type { FlowDeps } from "./compose.ts";
@@ -259,6 +268,8 @@ export interface RedoPassStep {
   /** Runs the runtime could not stop: the move waits for the next pass. */
   cancelFailed: string[];
   redo: RedoStep;
+  /** The first run of the item back at the start of its track, or of its rework item (D-329). */
+  firstRuns?: ReadyRunStart[];
 }
 
 /**
@@ -289,6 +300,14 @@ export async function redoPass(
       check.step === "rework_due"
     ) {
       step.redo = await council.redo(nodeId);
+      const ready =
+        step.redo.step === "moved" && step.redo.outcome === "applied"
+          ? nodeId
+          : step.redo.step === "reworked" && step.redo.outcome !== "refused"
+            ? step.redo.reworkNodeId
+            : null;
+      const firstRuns = ready ? await startReadyRuns(deps, [ready]) : [];
+      if (firstRuns.length > 0) step.firstRuns = firstRuns;
     }
     steps.push(step);
   }
@@ -312,6 +331,8 @@ export interface AfterCouncilRun {
   plan?: PlanApprovalStep;
   /** After a `stop`: the cancel step, or Didi's request to confirm it (D-308). */
   cancels?: CancelStep[];
+  /** The first runs of the items the answer made ready (D-329). */
+  firstRuns?: ReadyRunStart[];
 }
 
 /**
@@ -366,6 +387,17 @@ export async function afterCouncilRun(
     const cancels = await cancelAfterRun(deps, run.nodeId);
     if (cancels) after.cancels = cancels;
   }
+  // Last, once the cancel above has taken any stop: the first run of each item the answer made
+  // ready. The check decides, so an item still held by a gate, a cancel or another blocker, or
+  // one whose run has started, gets nothing.
+  const cleared = (answer?.recorded === true ? (answer.verdicts ?? []) : [])
+    .filter((v) => v.result === "cleared")
+    .map((v) => v.nodeId);
+  const firstRuns = await startReadyRuns(deps, [
+    ...(run.nodeId ? [run.nodeId] : []),
+    ...cleared,
+  ]);
+  if (firstRuns.length > 0) after.firstRuns = firstRuns;
   return after;
 }
 
@@ -391,6 +423,8 @@ export type AfterRunEnd = AfterReport &
     triageAnswer?: TriageRecord;
     /** After a Triage run: the idea's re-run, or its escalation to the Council (D-262). */
     triage?: TriagePassStep[];
+    /** After a Triage run's handoff: the first runs of the items it created ready (D-329). */
+    firstRuns?: ReadyRunStart[];
     /** After a run on an item a cancel waits on: the cancel's next step (D-308). */
     cancels?: CancelStep[];
     /** After a close run (D-318): its outcome as recorded on the item. */
@@ -579,11 +613,20 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       if (isTriage) {
         // The idea's next step: its re-run after a rejected answer, or the Council after two.
         const triage = run.nodeId ? await triagePass(deps, [run.nodeId]) : undefined;
+        // The items a handoff created (`split_into` from the idea): each one in a ready state
+        // with nothing holding it gets its first run now. A repeated trigger finds them started.
+        const items = run.nodeId
+          ? (
+              await deps.store.listEdges({ fromNode: run.nodeId, type: "split_into" })
+            ).map((e) => e.toNode)
+          : [];
+        const firstRuns = await startReadyRuns(deps, items);
         return {
           ...reported,
           ...(triageAnswer ? { triageAnswer } : {}),
           ...(triage ? { triage } : {}),
           ...(cancels ? { cancels } : {}),
+          ...(firstRuns.length > 0 ? { firstRuns } : {}),
         };
       }
       // The report escalated the item (or an earlier call did): its Council run starts now

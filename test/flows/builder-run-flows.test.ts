@@ -221,6 +221,9 @@ describe("a fix round under the switches and limits (flow: fake adapters, O-41)"
   it("the reconcile flow in live mode starts a fix round no trigger started, once", async () => {
     const { f, node } = await sentBack();
     const result = await reconcileFlow(f.deps);
+    // The pass plans the fix round with its dispatch step, as in dry run, and the builder runs
+    // pass starts it: the live dispatch step starts only first runs (O-103).
+    expect(result.dispatched).toEqual([]);
     expect(result.builderRuns).toMatchObject([
       { nodeId: node.id, role: "developer", result: { outcome: "started" } },
     ]);
