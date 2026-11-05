@@ -13,6 +13,7 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src/service-kit ./src/service-kit
 COPY src/core ./src/core
 COPY src/adapters/store-postgres ./src/adapters/store-postgres
+COPY src/adapters/windmill/client.ts ./src/adapters/windmill/client.ts
 COPY src/adapters/windmill/plan-approval-flow.ts ./src/adapters/windmill/plan-approval-flow.ts
 COPY src/api ./src/api
 

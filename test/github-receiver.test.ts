@@ -5,6 +5,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { checkCompletedEvent, pullRequestEvent } from "../src/adapters/github/fake.ts";
+import { createFakeFlowStart } from "../src/adapters/windmill/fake-flow-start.ts";
+import { createFlowStarts } from "../src/github-receiver/flow-starts.ts";
 import {
   MAX_BODY_BYTES,
   WEBHOOK_PATH,
@@ -22,6 +24,7 @@ import {
   passing,
   type IngestFixture,
 } from "./github-fixture.ts";
+import { machines } from "./reconcile-fixture.ts";
 
 let f: IngestFixture;
 let service: RunningService;
@@ -39,6 +42,14 @@ beforeAll(async () => {
     handle: createReceiverHandler({
       github: f.github,
       ingest: { store, clock, ids, appLogins, runnerAppSlug },
+      // A code item is never due a capture, so nothing is started here
+      // (test/github-receiver-starts.test.ts covers the starts).
+      flowStarts: createFlowStarts({
+        store,
+        contracts: machines(),
+        optionCapture: createFakeFlowStart(),
+        logger,
+      }),
       logger,
     }),
   });

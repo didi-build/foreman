@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createFakePlanApprovalFlow } from "../adapters/windmill/fake-plan-approval-flow.ts";
+import { createFakeFlowStart } from "../adapters/windmill/fake-flow-start.ts";
 import { createLibrary } from "../core/library.ts";
 import { createMemoryStore } from "../core/memory-store.ts";
 import type { Store } from "../core/store.ts";
@@ -31,7 +31,7 @@ const logLines: string[] = [];
 let nowMs = START;
 let store: Store;
 let service: RunningService;
-const approvalFlow = createFakePlanApprovalFlow();
+const approvalFlow = createFakeFlowStart();
 
 const submission = {
   projectSlug: "rehearsal",

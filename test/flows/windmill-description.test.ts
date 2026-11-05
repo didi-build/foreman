@@ -14,10 +14,16 @@ import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
+import { runScope } from "../../src/adapters/windmill/client.ts";
 import {
   PLAN_APPROVAL_FLOW_PATH,
   WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
 } from "../../src/adapters/windmill/plan-approval-flow.ts";
+import {
+  OPTION_CAPTURE_FLOW_PATH,
+  RECEIVER_FLOW_PATHS,
+  RECEIVER_WINDMILL_TOKEN_PATH,
+} from "../../src/adapters/windmill/receiver-flows.ts";
 import { APPROVAL_CHOICE_LABELS } from "../../src/core/approvals.ts";
 import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
@@ -122,7 +128,7 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     );
     // The secrets a service other than the flows reads: the planning chat's token hash (D-266)
     // and the state API's Windmill credential for the plan-approval flow (D-273), both read by
-    // the state API.
+    // the state API, and the GitHub receiver's Windmill token (D-291).
     expect(description.resources.secrets.filter((s) => s.read_by)).toEqual([
       expect.objectContaining({
         path: PLANNING_TOKEN_SHA256_PATH,
@@ -131,6 +137,10 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       expect.objectContaining({
         path: WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
         read_by: "state API",
+      }),
+      expect.objectContaining({
+        path: RECEIVER_WINDMILL_TOKEN_PATH,
+        read_by: "GitHub receiver",
       }),
     ]);
     expect(description.resources.values.map((v) => v.name).sort()).toEqual(
@@ -145,6 +155,36 @@ describe("the plan-approval flow (unit: repo guard, D-273)", () => {
     expect(flow?.path).toBe(PLAN_APPROVAL_FLOW_PATH);
     expect(flow?.trigger).toBe("called");
     expect(flow?.entry).toBe("flows/plan-approval.ts");
+  });
+});
+
+describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101)", () => {
+  it("are called flows, option capture among them, at the paths the receiver's port starts", () => {
+    expect(RECEIVER_FLOW_PATHS).toContain(OPTION_CAPTURE_FLOW_PATH);
+    for (const path of RECEIVER_FLOW_PATHS) {
+      const flow = description.flows.find((f) => f.path === path);
+      expect(flow?.trigger, path).toBe("called");
+    }
+    expect(description.flows.find((f) => f.name === "option_capture")?.entry).toBe(
+      "flows/option-capture.ts",
+    );
+  });
+
+  it("the first-hosting runbook creates each token with exactly its flows' run scopes", () => {
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    const scopes = (text: string) =>
+      [...text.matchAll(/`(jobs:run:scripts:[^`]+)`/g)].map((m) => m[1]);
+    // One line per token: each names its secret path and its scopes, and nothing more.
+    const lineFor = (path: string) =>
+      runbook
+        .split("\n")
+        .find((line) => line.includes(path) && line.includes("jobs:run:"));
+    expect(scopes(lineFor(WINDMILL_PLAN_APPROVAL_TOKEN_PATH) ?? "")).toEqual([
+      runScope(PLAN_APPROVAL_FLOW_PATH),
+    ]);
+    expect(scopes(lineFor(RECEIVER_WINDMILL_TOKEN_PATH) ?? "")).toEqual(
+      RECEIVER_FLOW_PATHS.map(runScope),
+    );
   });
 });
 

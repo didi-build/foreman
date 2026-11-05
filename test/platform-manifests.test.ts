@@ -18,6 +18,7 @@ import type {
   NetworkPolicyPeer,
   Resources,
 } from "../src/adapters/agent-runtime/kubernetes/objects.ts";
+import { readProxyConfig } from "../src/egress-proxy/config.ts";
 import { parseStateApiUpstream } from "../src/egress-proxy/state-api.ts";
 import {
   CLOUDFLARED,
@@ -29,6 +30,7 @@ import {
   STATE_API,
   STATE_API_PUBLIC,
   TUNNEL_EDGE_PORT,
+  WINDMILL_PROXY,
   platformObjects,
   serviceUrl,
   stateApiRunSettings,
@@ -38,8 +40,10 @@ import {
 } from "../infra/kubernetes/platform.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../src/api/auth.ts";
+import { windmillSettings, windmillTargetOf } from "../src/adapters/windmill/client.ts";
 import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../src/adapters/windmill/plan-approval-flow.ts";
-import { secretEnvName } from "../src/service-kit/config.ts";
+import { RECEIVER_WINDMILL_TOKEN_PATH } from "../src/adapters/windmill/receiver-flows.ts";
+import { readConfig, secretEnvName } from "../src/service-kit/config.ts";
 
 // Unit: the platform namespace's objects as data (ADR 0106 sections 1 and 4, D-193, D-195).
 // Nothing here talks to a cluster. Policies are checked by evaluating their selectors against the
@@ -54,9 +58,16 @@ const PLATFORM: PlatformSettings = {
   images: {
     stateApi: `registry.example.com/foreman/state-api${digest("d")}`,
     receiver: `registry.example.com/foreman/github-receiver${digest("e")}`,
+    egressProxy: `registry.example.com/foreman/egress-proxy${digest("a")}`,
   },
   serviceUser: 1000,
-  resources: { stateApi: resources, receiver: resources, cloudflared: resources },
+  resources: {
+    stateApi: resources,
+    receiver: resources,
+    cloudflared: resources,
+    windmillProxy: resources,
+  },
+  windmill: { host: "windmill.example.com", workspace: "rehearsal" },
   receiver: {
     developerAppLogin: "example-developer[bot]",
     designerAppLogin: "example-designer[bot]",
@@ -196,11 +207,12 @@ describe("platform namespace (unit: ADR 0106 section 1)", () => {
     }
   });
 
-  it("runs the state API, the receiver and the tunnel connector, each with a ClusterIP Service where called", () => {
+  it("runs the state API, the receiver, the tunnel connector and the Windmill proxy, each with a ClusterIP Service where called", () => {
     expect(deployments.map((d) => d.metadata.name)).toEqual([
       STATE_API.name,
       RECEIVER.name,
       CLOUDFLARED.name,
+      WINDMILL_PROXY.name,
     ]);
     const services = ofKind("Service");
     expect(
@@ -209,6 +221,7 @@ describe("platform namespace (unit: ADR 0106 section 1)", () => {
       [STATE_API.name, "ClusterIP", STATE_API.port],
       [STATE_API_PUBLIC.name, "ClusterIP", STATE_API_PUBLIC.port],
       [RECEIVER.name, "ClusterIP", RECEIVER.port],
+      [WINDMILL_PROXY.name, "ClusterIP", WINDMILL_PROXY.port],
     ]);
     for (const s of services) {
       const target =
@@ -356,8 +369,23 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
       [
         PLATFORM_SECRETS.receiverDatabase.name,
         PLATFORM_SECRETS.receiverWebhookSecret.name,
+        PLATFORM_SECRETS.receiverWindmillToken.name,
       ].sort(),
     );
+    // The Windmill proxy holds no credential at all (D-328).
+    expect(used(WINDMILL_PROXY.name)).toEqual([]);
+  });
+
+  it("gives the receiver its Windmill token at its secret path, optional until first hosting (D-291)", () => {
+    const env = deploymentOf(RECEIVER.name)
+      .spec.template.spec.containers.flatMap((c) => c.env)
+      .find((e) => e.name === secretEnvName(RECEIVER_WINDMILL_TOKEN_PATH));
+    expect(env).toEqual({
+      name: "SECRET_PLATFORM_GITHUB_RECEIVER_WINDMILL_TOKEN",
+      valueFrom: {
+        secretKeyRef: { ...PLATFORM_SECRETS.receiverWindmillToken, optional: true },
+      },
+    });
   });
 });
 
@@ -468,14 +496,24 @@ describe("tunnel connector and receiver (unit: D-195)", () => {
     }
   });
 
-  it("the state API and receiver reach only DNS and the database port on public addresses", () => {
+  it("the state API and receiver reach only DNS, the database port on public addresses and the Windmill proxy's pods, never 443 (D-284)", () => {
     for (const name of [STATE_API.name, RECEIVER.name]) {
       const ports = policyOf(name).spec.egress.flatMap((r) =>
         r.ports.map((p) => `${p.protocol}/${p.port}`),
       );
-      expect(ports).toEqual(["UDP/53", "TCP/53", "TCP/5432"]);
+      expect(ports).toEqual([
+        "UDP/53",
+        "TCP/53",
+        "TCP/5432",
+        `TCP/${WINDMILL_PROXY.port}`,
+      ]);
+      expect(ports).not.toContain("TCP/443");
       const db = policyOf(name).spec.egress[1];
       expect(db?.to[0]?.ipBlock?.except).toEqual([...NON_PUBLIC_IPV4]);
+      const toProxy = policyOf(name).spec.egress[2];
+      expect(toProxy?.to).toEqual([
+        { podSelector: { matchLabels: WINDMILL_PROXY.podLabels } },
+      ]);
     }
   });
 });
@@ -532,5 +570,95 @@ describe("special egress ports belong to one kind of pod each (unit: D-195)", ()
   it("only the state API and the receiver may reach the database port", () => {
     expect(allows("TCP/5432")).toEqual([STATE_API.name, RECEIVER.name]);
     for (const p of runPolicies) expect(egressPorts(p)).not.toContain("TCP/5432");
+  });
+
+  it("only the tunnel connector and the Windmill proxy may reach 443 (D-284)", () => {
+    expect(allows("TCP/443").sort()).toEqual([CLOUDFLARED.name, WINDMILL_PROXY.name]);
+    expect(allows("UDP/443")).toEqual([]);
+  });
+});
+
+describe("the shared Windmill proxy (unit: D-284, D-328, O-101)", () => {
+  const proxyPolicy = policies.find((p) => p.metadata.name === WINDMILL_PROXY.name);
+  const plainEnv = (name: string): Record<string, string> =>
+    Object.fromEntries(
+      deploymentOf(name)
+        .spec.template.spec.containers.flatMap((c) => c.env)
+        .flatMap((e) => ("value" in e ? [[e.name, e.value]] : [])),
+    );
+
+  it("accepts only the state API and the receiver, on its port", () => {
+    expect(ingressPorts(WINDMILL_PROXY.name, platformPod(STATE_API.name))).toEqual([
+      WINDMILL_PROXY.port,
+    ]);
+    expect(ingressPorts(WINDMILL_PROXY.name, platformPod(RECEIVER.name))).toEqual([
+      WINDMILL_PROXY.port,
+    ]);
+    expect(ingressPorts(WINDMILL_PROXY.name, platformPod(CLOUDFLARED.name))).toEqual(
+      [],
+    );
+    for (const pod of [agentProxyPod, agentPod]) {
+      expect(ingressPorts(WINDMILL_PROXY.name, pod)).toEqual([]);
+    }
+  });
+
+  it("reaches only DNS and 443 on public addresses: the host check is the proxy's own", () => {
+    const reachable = proxyPolicy?.spec.egress.map((rule) => ({
+      ports: rule.ports.map((p) => `${p.protocol}/${p.port}`),
+      to: rule.to.map((peer) =>
+        peer.ipBlock ? `public:${peer.ipBlock.cidr}` : "cluster-dns",
+      ),
+    }));
+    expect(reachable).toEqual([
+      { ports: ["UDP/53", "TCP/53"], to: ["cluster-dns"] },
+      { ports: ["TCP/443"], to: ["public:0.0.0.0/0"] },
+    ]);
+    expect(proxyPolicy?.spec.egress[1]?.to[0]?.ipBlock?.except).toEqual([
+      ...NON_PUBLIC_IPV4,
+    ]);
+  });
+
+  it("runs the agents' egress proxy image with Windmill's host only: no provider, no state API route, no credential", () => {
+    const pod = deploymentOf(WINDMILL_PROXY.name).spec.template.spec;
+    expect(pod.containers.map((c) => c.image)).toEqual([PLATFORM.images.egressProxy]);
+    // The proxy's own reader, on exactly the manifest's environment.
+    const config = readProxyConfig(plainEnv(WINDMILL_PROXY.name));
+    expect([...config.allowedHosts]).toEqual([PLATFORM.windmill.host]);
+    expect(config.providers).toEqual([]);
+    expect(config.stateApi).toBeUndefined();
+    expect(config.credentials.size).toBe(0);
+    expect(config.port).toBe(WINDMILL_PROXY.port);
+  });
+
+  it("is where the state API and the receiver send their starts, at the configured host and workspace", () => {
+    for (const name of [STATE_API.name, RECEIVER.name]) {
+      // The services' own settings reader, on the manifest's plain environment.
+      const config = readConfig(windmillSettings("platform/test/windmill-token"), {
+        ...plainEnv(name),
+      });
+      expect(windmillTargetOf(config)).toEqual({
+        host: PLATFORM.windmill.host,
+        workspace: PLATFORM.windmill.workspace,
+        proxy: new URL(serviceUrl(WINDMILL_PROXY)),
+      });
+      expect(config.windmillToken).toBeNull();
+    }
+    expect(serviceUrl(WINDMILL_PROXY)).toBe(
+      "http://windmill-proxy.foreman-platform.svc.cluster.local:8080",
+    );
+  });
+
+  it("refuses a Windmill host that is not a plain name, and a bad workspace id", () => {
+    for (const host of ["https://windmill.example.com", "10.0.0.1", "windmill"]) {
+      expect(() =>
+        platformObjects({ ...PLATFORM, windmill: { ...PLATFORM.windmill, host } }),
+      ).toThrow(/windmill host/);
+    }
+    expect(() =>
+      platformObjects({
+        ...PLATFORM,
+        windmill: { ...PLATFORM.windmill, workspace: "a/b" },
+      }),
+    ).toThrow(/windmill workspace/);
   });
 });

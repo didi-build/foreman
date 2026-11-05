@@ -6,7 +6,8 @@ FROM node:22.23.4-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d
 ENV NODE_ENV=production
 WORKDIR /app
 
-# Runtime dependencies only (pg). Scripts are skipped: the dev tooling's hooks are not installed.
+# Runtime dependencies only (pg, and yaml for the contracts). Scripts are skipped: the dev
+# tooling's hooks are not installed.
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
@@ -14,6 +15,12 @@ COPY src/service-kit ./src/service-kit
 COPY src/core ./src/core
 COPY src/adapters/store-postgres ./src/adapters/store-postgres
 COPY src/adapters/github ./src/adapters/github
+COPY src/adapters/windmill/client.ts ./src/adapters/windmill/client.ts
+COPY src/adapters/windmill/receiver-flows.ts ./src/adapters/windmill/receiver-flows.ts
+# The contracts, read only for the states option capture works in (O-101).
+COPY src/adapters/contracts-file/load.ts ./src/adapters/contracts-file/load.ts
+COPY contracts/machine-1 ./contracts/machine-1
+COPY contracts/machine-2 ./contracts/machine-2
 COPY src/github-receiver ./src/github-receiver
 
 USER node

@@ -9,13 +9,16 @@
 // paths to, and serves the planning chat's routes only (`POST /plans` and the three planning
 // reads), with a size and a rate limit (D-271, D-282, ./public.ts).
 // After each submission the API starts the plan-approval flow with its own narrow Windmill
-// credential at `platform/state-api/windmill-plan-approval-token` (D-273 (2)); until Didi creates
-// it at first hosting the start is refused and the reconcile pass opens the request.
+// credential at `platform/state-api/windmill-plan-approval-token` (D-273 (2), D-283), through the
+// shared Windmill egress proxy in HTTPS_PROXY (D-284, D-328), at WINDMILL_HOST in the workspace
+// WINDMILL_WORKSPACE; until Didi creates the credential at first hosting the start is refused and
+// the reconcile pass opens the request.
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createLibrary } from "../core/library.ts";
 import { createPostgresStore } from "../adapters/store-postgres/store.ts";
+import { windmillSettings, windmillTargetOf } from "../adapters/windmill/client.ts";
 import {
   WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
   windmillPlanApprovalFlow,
@@ -49,13 +52,6 @@ const planningTokenSha256: Setting<string | null> = {
   },
 };
 
-/** The state API's Windmill credential: optional until Didi creates it (D-273 (2)). */
-const windmillPlanApprovalToken: Setting<string | null> = {
-  env: secretEnvName(WINDMILL_PLAN_APPROVAL_TOKEN_PATH),
-  fallback: "",
-  parse: (raw) => (raw.trim() === "" ? null : raw),
-};
-
 let config;
 try {
   config = readConfig({
@@ -63,7 +59,8 @@ try {
     publicPort: port("PUBLIC_PORT", "8081"),
     databaseUrl: text("DATABASE_URL"),
     planningTokenSha256,
-    windmillPlanApprovalToken,
+    // The Windmill credential is optional until Didi creates it (D-273 (2), D-283).
+    ...windmillSettings(WINDMILL_PLAN_APPROVAL_TOKEN_PATH),
   });
 } catch (error) {
   logger.error("invalid configuration", {
@@ -102,7 +99,10 @@ const api = createApiHandler({
           tokenSha256: config.planningTokenSha256,
           ids,
           store,
-          approvalFlow: windmillPlanApprovalFlow(config.windmillPlanApprovalToken),
+          approvalFlow: windmillPlanApprovalFlow(
+            config.windmillToken,
+            windmillTargetOf(config),
+          ),
           logger,
         },
       }),

@@ -52,6 +52,8 @@ Managed Postgres: Supabase in `ca-central-1` (ADR 0103). Schema in ADR 0104 and 
 
 A thin HTTP API over the library for agents, the viewer and adapters: create idea, record decision, report done with evidence, read a node, read the attention list. Hosting options for the M0 ADR: Windmill scripts exposed as endpoints, or a small service (for example a plain Node service; a Worker is allowed only if the code stays portable). Choose the simplest option that keeps agents from touching the database directly, and keep Cloudflare-specific APIs out of the API and the library (D-132). Agents authenticate with their own identity and can only write what their role allows.
 
+Starting a flow (D-283, D-284, D-328, O-101): after a plan submission is recorded, the state API starts `f/foreman/plan_approval` itself, with a Windmill token that can start only that flow, through the shared Windmill egress proxy in the platform namespace. The GitHub receiver does the same for `f/foreman/option_capture` after it records CI's end on a design item's PR head, only when capture's own due check says a capture is due, with its own token limited to its flows (D-291, D-327). Neither pod reaches 443 directly; the proxy allows only Windmill's host and holds no credential. A failed start changes nothing the service recorded, and the reconcile pass catches up.
+
 ### 2.4 Runner (Windmill)
 
 - One flow per transition, plus the reconcile flow, event handlers for webhooks, and the daily check flow. Windmill's flow format is acyclic, and our machine has cycles (a QA failure sends work back), so durable state lives in the store and each flow handles exactly one transition.
@@ -71,6 +73,8 @@ Runs every 2 hours until Kubernetes exists, then every 5 minutes once Windmill i
 6. Clean up: close gate requests that are no longer needed or are absorbed by a newer request on the same topic.
 7. Mirror: dropped with the Linear mirror (D-192). The pass has no mirror step.
 8. Spend: roll up cost per day, raise the alert threshold, and raise a call at `daily_spend_call_usd`.
+
+Events come first (D-274): a flow starts when the event that needs it happens, and each pass step above stays as the safety net for an event that was missed. Before first hosting the runner is made fully event-driven in four slices (D-329): (1) the state API starts plan approval on a submission and the GitHub receiver starts option capture on CI's end (O-101); (2) a run's end is recorded when the run ends; (3) the live pass; (4) the receiver's other events (green CI on a head, a staging deploy, a merge). Until slices 2 and 3, a ready item's first build run and the recording of a run's end have no automatic caller in live mode.
 
 In `dry_run` mode the pass computes the same plan but writes transitions with mode `dry_run` and acts on nothing. The pass also runs the GitHub polling backstop for each repository with dispatched work, before step 2 (ADR 0113 section 6). The dry-run pass is built in `src/core/reconcile.ts` (M2.4): it writes only `dry_run` transition rows and the evidence polling records, and stops if `dry_run` is false, since live mode is not built yet.
 
@@ -261,7 +265,7 @@ Rules:
 ## 7. Deployment
 
 - Windmill Cloud for the runner. Managed Postgres for the state store. The API location is set in ADR 0102, amended by D-193. Infrastructure is declared as code (section 2.9).
-- The API and agent runners ship as containers. In the first release they run on one small DigitalOcean Kubernetes cluster with two node pools ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-193). The state API and the GitHub receiver run on the platform pool. Agent runs go to the agents pool, which is tainted so nothing else runs there. Only the receiver takes traffic from the internet, through a Cloudflare Tunnel; the state API is internal (D-195). Supabase stays the database and Windmill Cloud stays the runner. The second release adds self-hosted Windmill, Vault, the model gateway, monitoring, GitOps and project deploys (section 2.10).
+- The API and agent runners ship as containers. In the first release they run on one small DigitalOcean Kubernetes cluster with two node pools ([ADR 0106](../decisions/0106-agent-execution-environment.md), D-193). The state API and the GitHub receiver run on the platform pool, with one shared egress proxy that carries their calls to Windmill (D-284, D-328). Agent runs go to the agents pool, which is tainted so nothing else runs there. Only the receiver takes traffic from the internet, through a Cloudflare Tunnel; the state API is internal (D-195). Supabase stays the database and Windmill Cloud stays the runner. The second release adds self-hosted Windmill, Vault, the model gateway, monitoring, GitOps and project deploys (section 2.10).
 - The factory is its own first project. Its production deploys stay with Didi. Gates stay fully on during bootstrap.
 - Environments: a staging project used for rehearsals, and the real projects. A rehearsal never touches real projects.
 

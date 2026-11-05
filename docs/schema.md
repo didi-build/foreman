@@ -296,6 +296,8 @@ Built (M3.4 and M3.5). A failed staging check, or a failed staging deploy coveri
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
 
+Roles: the receiver's `factory_ingest` reads only the `kill_switch` and `dry_run` rows, for capture's due check before it starts the option capture flow (migration 0020, O-101), and writes none.
+
 ## github_deliveries (append-only, migration 0002)
 
 One row per GitHub webhook delivery the receiver authenticated (ADR 0113 section 3). Never the payload.
