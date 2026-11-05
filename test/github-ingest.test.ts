@@ -180,6 +180,29 @@ describe("webhook deliveries to evidence (unit: GitHub ingestion, ADR 0113)", ()
     expect((await head(f))?.payload).toMatchObject({ conclusion: "failure" });
   });
 
+  it("names the head whose CI just ended, once: never a pending result, a replay or a fact already recorded (O-101)", async () => {
+    const f = await createIngestFixture();
+    expect((await opened(f)).finishedCi).toEqual([]);
+    f.github.setCheckRuns(REPO, SHA_A, [
+      ...passing("build"),
+      check("test", "completed", "failure"),
+    ]);
+    const ended = await checksDone(f, SHA_A);
+    expect(ended).toMatchObject({ outcome: "recorded" });
+    expect(ended.finishedCi).toEqual([{ nodeId: f.nodeId, commitSha: SHA_A }]);
+    const payload = checkCompletedEvent("workflow_run", REPO, SHA_A, [PR]);
+    const same = await deliver(f, "workflow_run", payload, "delivery-same");
+    expect(same).toMatchObject({ outcome: "ignored", finishedCi: [] });
+    expect(
+      (await deliver(f, "workflow_run", payload, "delivery-same")).finishedCi,
+    ).toEqual([]);
+    // A rerun is a new CI attempt on the same head, so its end is named again.
+    f.github.setCheckRuns(REPO, SHA_A, passing("build", "test"));
+    expect((await checksDone(f, SHA_A)).finishedCi).toEqual([
+      { nodeId: f.nodeId, commitSha: SHA_A },
+    ]);
+  });
+
   it("records nothing while other checks on the head are still running", async () => {
     const f = await createIngestFixture();
     await opened(f);

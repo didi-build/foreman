@@ -13,10 +13,10 @@
 //
 // When it runs (D-274). The run-end flow tries it for a Designer run at once, before asking for
 // the report's move (./council-runs.ts), so a bundle CI has already made is captured with no
-// wait. CI usually finishes after that: the GitHub receiver records CI's end on the head but holds
-// no Windmill credential to start a flow (ADR 0113), so the reconcile flow's capture pass, which
-// runs every pending item, is what captures it until a caller of the `option_capture` flow on CI's
-// end is decided (flows/windmill.yaml).
+// wait. CI usually finishes after that: the GitHub receiver records CI's end on the head and then
+// starts the `option_capture` flow when capture's own due check says a capture is due (D-291,
+// O-101, src/github-receiver/flow-starts.ts). The reconcile flow's capture pass, which runs every
+// pending item, stays as the safety net for a start that failed or never came.
 import {
   createOptionCaptures,
   type CaptureStep,

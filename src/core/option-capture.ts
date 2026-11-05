@@ -253,11 +253,53 @@ export function featuresOf(changedPaths: readonly string[]): string[] {
   return [...new Set(features)].sort();
 }
 
-export function createOptionCaptures(options: OptionCaptureOptions) {
-  const { store, contracts, clock, ids, screenshots, repoVisibility } = options;
-  const library = createLibrary(options);
-  const failures = createFailures(options);
+/**
+ * Which switch holds capture now, read as the library reads them: the kill switch is on only when
+ * set to true, and dry run is on unless set to false, so a missing setting never acts for real.
+ */
+async function heldBy(
+  ops: Pick<StoreOps, "getSetting">,
+): Promise<"kill_switch" | "dry_run" | null> {
+  if ((await ops.getSetting("kill_switch"))?.value === true) return "kill_switch";
+  if ((await ops.getSetting("dry_run"))?.value !== false) return "dry_run";
+  return null;
+}
 
+/** Why capture waits before it reads CI's bundle: a switch, or what the item lacks yet. */
+export type CaptureWait =
+  | "kill_switch"
+  | "dry_run"
+  | "no_item"
+  | "not_exploring"
+  | "no_designer_report"
+  | "designer_running"
+  | "no_head";
+
+/** The only store reads capture's first checks make: settings, nodes, runs and evidence. */
+export type CaptureReadOps = Pick<
+  StoreOps,
+  "getSetting" | "getNode" | "listRuns" | "listEvidence"
+>;
+
+/** The item, its latest Designer run and its PR head, or why capture waits. */
+export type CaptureHead =
+  { wait: CaptureWait } | { wait: null; node: Node; run: Run; headSha: string };
+
+/** Whether a capture is due on an item now, and if not, why. */
+export type CaptureDue =
+  | { due: true; headSha: string }
+  | { due: false; reason: CaptureWait | "already_captured" };
+
+/**
+ * What capture reads first, from settings, nodes, runs and evidence only: the switches, the item
+ * in a capture state, its latest Designer run ended `success`, and its PR head. `capture` below
+ * starts with `head`, and the GitHub receiver asks `due` before it starts the option capture flow
+ * (src/github-receiver/flow-starts.ts, O-101), so the two cannot drift. `due` reads only what the
+ * receiver's role `factory_ingest` may read (migration 0020): it takes a head as captured when
+ * capture's own screenshots on it exist, which capture writes in the transaction that opens the
+ * request for that head, instead of reading the request.
+ */
+export function createCaptureReads(contracts: Contracts) {
   /** The states and tracks capture works in: those the move guarded by `options_attached` leaves. */
   const moves = contracts.transitions.filter(
     (m) => !m.escalation && m.guards.includes(OPTIONS_GUARD),
@@ -269,11 +311,63 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
         (!m.tracks || (node.track !== null && m.tracks.includes(node.track))),
     );
 
-  async function stopped(tx: StoreOps): Promise<"kill_switch" | "dry_run" | null> {
-    if ((await tx.getSetting("kill_switch"))?.value === true) return "kill_switch";
-    if ((await tx.getSetting("dry_run"))?.value !== false) return "dry_run";
-    return null;
+  /** The item's latest Designer run, or null. */
+  async function designerRun(
+    ops: Pick<StoreOps, "listRuns">,
+    nodeId: string,
+  ): Promise<Run | null> {
+    return (
+      latest((await ops.listRuns({ nodeId })).filter((r) => r.bot === "designer")) ??
+      null
+    );
   }
+
+  async function head(ops: CaptureReadOps, nodeId: string): Promise<CaptureHead> {
+    const held = await heldBy(ops);
+    if (held) return { wait: held };
+    const node = await ops.getNode(nodeId);
+    if (!node) return { wait: "no_item" };
+    if (!exploring(node)) return { wait: "not_exploring" };
+    const run = await designerRun(ops, nodeId);
+    if (!run) return { wait: "no_designer_report" };
+    if (run.endedAt === null) return { wait: "designer_running" };
+    if (run.outcome !== "success") return { wait: "no_designer_report" };
+    const ci = latest(await ops.listEvidence({ nodeId, kind: "ci_run" }));
+    const headSha = ci?.commitSha;
+    if (!ci || !headSha) return { wait: "no_head" };
+    return { wait: null, node, run, headSha };
+  }
+
+  return {
+    exploring,
+    /** The states capture works in, each once. */
+    states: (): string[] => [...new Set(moves.map((m) => m.from))],
+    designerRun,
+    head,
+    /** Whether capture would read CI's bundle at the item's head now (O-101). Writes nothing. */
+    async due(ops: CaptureReadOps, nodeId: string): Promise<CaptureDue> {
+      const read = await head(ops, nodeId);
+      if (read.wait !== null) return { due: false, reason: read.wait };
+      const prefix = optionScreenshotRef(read.headSha, "");
+      const shots = await ops.listEvidence({
+        nodeId,
+        kind: "screenshot",
+        commitSha: read.headSha,
+      });
+      if (shots.some((s) => s.recordedBy === "runner" && s.ref.startsWith(prefix))) {
+        return { due: false, reason: "already_captured" };
+      }
+      return { due: true, headSha: read.headSha };
+    },
+  };
+}
+
+export function createOptionCaptures(options: OptionCaptureOptions) {
+  const { store, contracts, clock, ids, screenshots, repoVisibility } = options;
+  const library = createLibrary(options);
+  const failures = createFailures(options);
+  const reads = createCaptureReads(contracts);
+  const { exploring, designerRun } = reads;
 
   /** The newest request on the item's visual-approval topic, whatever its status. */
   async function newestRequest(
@@ -287,14 +381,6 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
     return [...requests].sort(
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
     )[0];
-  }
-
-  /** The item's latest Designer run, or null. */
-  async function designerRun(ops: StoreOps, nodeId: string): Promise<Run | null> {
-    return (
-      latest((await ops.listRuns({ nodeId })).filter((r) => r.bot === "designer")) ??
-      null
-    );
   }
 
   const refuse = (nodeId: string, reason: CaptureRefusal): CaptureStep => ({
@@ -359,9 +445,8 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
   return {
     /** Design items in a capture state: the ones the reconcile pass looks at. */
     async pending(): Promise<string[]> {
-      const states = [...new Set(moves.map((m) => m.from))];
       const nodes = (
-        await Promise.all(states.map((state) => store.listNodes({ state })))
+        await Promise.all(reads.states().map((state) => store.listNodes({ state })))
       ).flat();
       return nodes.filter(exploring).map((n) => n.id);
     },
@@ -371,19 +456,11 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
      * Repeating it for the same head writes nothing more.
      */
     async capture(nodeId: string): Promise<CaptureStep> {
-      const stop = await stopped(store);
-      if (stop) return { nodeId, step: stop };
-      const node = await store.getNode(nodeId);
-      const project = node && (await store.getProject(node.projectId));
-      if (!node || !project) return { nodeId, step: "no_item" };
-      if (!exploring(node)) return { nodeId, step: "not_exploring" };
-      const run = await designerRun(store, nodeId);
-      if (!run) return { nodeId, step: "no_designer_report" };
-      if (run.endedAt === null) return { nodeId, step: "designer_running" };
-      if (run.outcome !== "success") return { nodeId, step: "no_designer_report" };
-      const head = latest(await store.listEvidence({ nodeId, kind: "ci_run" }));
-      const headSha = head?.commitSha;
-      if (!head || !headSha) return { nodeId, step: "no_head" };
+      const first = await reads.head(store, nodeId);
+      if (first.wait !== null) return { nodeId, step: first.wait };
+      const { node, run, headSha } = first;
+      const project = await store.getProject(node.projectId);
+      if (!project) return { nodeId, step: "no_item" };
 
       const newest = await newestRequest(store, node);
       if (newest && captureCommitOf(newest) === headSha) {
@@ -447,7 +524,7 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
       }
 
       return store.transaction(async (tx): Promise<CaptureStep> => {
-        const held = await stopped(tx);
+        const held = await heldBy(tx);
         if (held) return { nodeId, step: held };
         const locked = await tx.getNodeForUpdate(nodeId);
         if (!locked || !exploring(locked)) return { nodeId, step: "changed_meanwhile" };

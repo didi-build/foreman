@@ -25,7 +25,9 @@ import { captureRefusalKey } from "../src/core/failures.ts";
 import {
   CAPTURE_REFUSAL_TEXT,
   ciRunLink,
+  createCaptureReads,
   createOptionCaptures,
+  type CaptureReadOps,
   DESIGNER_REFUSALS,
   featuresOf,
   MAX_CAPTURED_OPTIONS,
@@ -500,6 +502,132 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
     expect(await captures.pending()).toEqual([c.nodeId]);
     expect(await captures.capture(code.id)).toMatchObject({ step: "not_exploring" });
     expect(await captures.capture(waiting.id)).toMatchObject({ step: "not_exploring" });
+  });
+});
+
+describe("the due check the GitHub receiver asks before it starts the flow (unit: memory store, O-101)", () => {
+  /** Only the reads the receiver's role may make (migration 0020); any other call throws. */
+  const onlyReads = (t: Awaited<ReturnType<typeof setup>>): CaptureReadOps => ({
+    getSetting: (key) => t.f.store.getSetting(key),
+    getNode: (id) => t.f.store.getNode(id),
+    listRuns: (filter) => t.f.store.listRuns(filter),
+    listEvidence: (filter) => t.f.store.listEvidence(filter),
+  });
+
+  it("is due exactly until capture captures the head, and again on a new head", async () => {
+    const t = await setup();
+    const reads = createCaptureReads(t.f.contracts);
+    expect(await reads.due(onlyReads(t), t.c.nodeId)).toEqual({
+      due: true,
+      headSha: HEAD,
+    });
+    expect((await t.captures.capture(t.c.nodeId)).step).toBe("opened");
+    expect(await reads.due(onlyReads(t), t.c.nodeId)).toEqual({
+      due: false,
+      reason: "already_captured",
+    });
+    expect((await t.captures.capture(t.c.nodeId)).step).toBe("already_captured");
+    // Didi's answer closes the request; the head stays captured for both.
+    const [gate] = await t.gates();
+    await createLibrary(t.f.deps).answerGateRequest(
+      gate!.id,
+      approvalDecision(gate!, {
+        choice: "changes_requested",
+        words: "Make b's button larger.",
+        approvers: ["anonymous"],
+        options: ["b"],
+      }),
+    );
+    expect(await reads.due(onlyReads(t), t.c.nodeId)).toMatchObject({ due: false });
+    expect((await t.captures.capture(t.c.nodeId)).step).toBe("already_captured");
+    t.f.advanceMinutes(5);
+    await t.c.ciAt(NEXT, ["a", "b"]);
+    expect(await reads.due(onlyReads(t), t.c.nodeId)).toEqual({
+      due: true,
+      headSha: NEXT,
+    });
+  });
+
+  it("waits for the same reasons capture waits, under the same names", async () => {
+    const cases: [
+      string,
+      () => Promise<{ t: Awaited<ReturnType<typeof setup>>; id: string }>,
+    ][] = [
+      [
+        "kill_switch",
+        async () => {
+          const t = await setup();
+          await t.f.setting("kill_switch", true);
+          return { t, id: t.c.nodeId };
+        },
+      ],
+      [
+        "dry_run",
+        async () => {
+          const t = await setup();
+          await t.f.setting("dry_run", true);
+          return { t, id: t.c.nodeId };
+        },
+      ],
+      [
+        "no_item",
+        async () => {
+          const t = await setup();
+          return { t, id: "50000000-0000-4000-8000-999999999999" };
+        },
+      ],
+      [
+        "not_exploring",
+        async () => {
+          const t = await setup();
+          return { t, id: (await t.f.node("in_development")).id };
+        },
+      ],
+      [
+        "designer_running",
+        async () => {
+          const t = await setup({ designerRun: { endedAt: null, outcome: null } });
+          return { t, id: t.c.nodeId };
+        },
+      ],
+      [
+        "no_designer_report",
+        async () => {
+          const t = await setup({ designerRun: { outcome: "fail" } });
+          return { t, id: t.c.nodeId };
+        },
+      ],
+      [
+        "no_head",
+        async () => {
+          const t = await setup();
+          const node = await t.f.node("in_design_exploration", { track: "design" });
+          await t.f.run(node.id, "designer", 30, {
+            endedAt: t.f.clock.now(),
+            outcome: "success",
+          });
+          return { t, id: node.id };
+        },
+      ],
+    ];
+    for (const [reason, make] of cases) {
+      const { t, id } = await make();
+      const reads = createCaptureReads(t.f.contracts);
+      expect(await reads.due(onlyReads(t), id), reason).toEqual({ due: false, reason });
+      expect(await t.captures.capture(id), reason).toEqual({
+        nodeId: id,
+        step: reason,
+      });
+    }
+  });
+
+  it("is due when capture would read CI's bundle, whatever the bundle then holds", async () => {
+    // A head CI has not rendered yet: due, and capture then waits for the bundle.
+    const t = await setup({ bundle: false });
+    expect(
+      await createCaptureReads(t.f.contracts).due(onlyReads(t), t.c.nodeId),
+    ).toEqual({ due: true, headSha: HEAD });
+    expect((await t.captures.capture(t.c.nodeId)).step).toBe("bundle_missing");
   });
 });
 

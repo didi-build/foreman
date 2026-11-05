@@ -49,7 +49,7 @@ What it declares (ADR 0106 section 1, D-193 to D-195):
 
 The stack calls the two platform modules directly, not through `modules/project`: the cluster and the tunnel are the factory's own platform, not a project deployed onto a target. It still names no provider (D-146). Its state is `factory/production.tfstate` in the same R2 bucket.
 
-The Kubernetes objects that run on the cluster (the `foreman-platform` namespace, its default-deny policies, the state API, the receiver and the `cloudflared` connector, the runner's namespace and the agent namespaces) are in `kubernetes/`. They are typed data like the agent namespace objects of M3.2 slice 3, so the pool labels, Service names and ports are shared constants and the tests check both sides against them. Didi renders and applies them with his admin kubeconfig:
+The Kubernetes objects that run on the cluster (the `foreman-platform` namespace, its default-deny policies, the state API, the receiver, the `cloudflared` connector and the shared Windmill egress proxy (D-328), the runner's namespace and the agent namespaces) are in `kubernetes/`. They are typed data like the agent namespace objects of M3.2 slice 3, so the pool labels, Service names and ports are shared constants and the tests check both sides against them. Didi renders and applies them with their admin kubeconfig:
 
 ```bash
 node infra/kubernetes/render.ts <settings.json outside the repo> | kubectl apply -f -

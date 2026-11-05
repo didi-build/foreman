@@ -1,15 +1,21 @@
 // The platform namespace on the cluster's platform pool (ADR 0106 section 1, D-193, D-195), as
-// data: the state API, the GitHub receiver and the Cloudflare Tunnel connector, their Services,
-// and default-deny network policies with three narrow openings:
+// data: the state API, the GitHub receiver, the Cloudflare Tunnel connector and the shared
+// Windmill egress proxy (D-284, D-328), their Services, and default-deny network policies with
+// four narrow openings:
 //
 // - the agents' egress proxy pods (and nothing else in agent namespaces) reach the state API port;
 // - the tunnel connector reaches the receiver port and the state API's public port (which serves
 //   only the planning chat's `POST /plans`, D-271, src/api/public.ts), and Cloudflare on 443;
-// - the state API and the receiver reach cluster DNS and the database port on public addresses.
+// - the state API and the receiver reach cluster DNS, the database port on public addresses and
+//   the Windmill proxy's port, and nothing on 443;
+// - the Windmill proxy accepts only those two pods, and reaches DNS and 443 on public addresses.
+//   Network policies match addresses, not names, so the proxy is what holds the calls to
+//   Windmill's host name: it is the agents' egress proxy image with that one host allowed, no
+//   model provider, no state API route and no credential, and it never decrypts the tunnel.
 //
 // Written as typed objects like the agent namespace objects of slice 3, so the same constants
 // (pool labels, Service names, ports) are shared and tested together. `render.ts` prints them for
-// Didi to apply with his admin kubeconfig (D-188). No Secret is declared here: Secrets are
+// Didi to apply with their admin kubeconfig (D-188). No Secret is declared here: Secrets are
 // referenced by name only and created by Didi at first hosting.
 import {
   AGENTS_POOL,
@@ -37,7 +43,13 @@ import type {
 } from "../../src/adapters/agent-runtime/kubernetes/objects.ts";
 import { WEBHOOK_PATH } from "../../src/github-receiver/handler.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
+import {
+  WINDMILL_ENV,
+  parseWindmillHost,
+  parseWindmillWorkspace,
+} from "../../src/adapters/windmill/client.ts";
 import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../../src/adapters/windmill/plan-approval-flow.ts";
+import { RECEIVER_WINDMILL_TOKEN_PATH } from "../../src/adapters/windmill/receiver-flows.ts";
 import { secretEnvName } from "../../src/service-kit/config.ts";
 
 export const PLATFORM_NAMESPACE = "foreman-platform";
@@ -79,6 +91,26 @@ export const RECEIVER = {
   webhookPath: WEBHOOK_PATH,
 } as const;
 
+/**
+ * The shared Windmill egress proxy (D-284, D-328): one pod that carries the state API's and the
+ * receiver's calls to Windmill, from the same image as the agents' egress proxies
+ * (src/egress-proxy/). Not a container in each service's pod: a network policy applies to the
+ * whole pod, so the service itself could then reach 443 past it. If it is down, both services'
+ * starts fail and the reconcile pass opens or captures later. It can run as several replicas
+ * behind this one Service when usage grows.
+ */
+export const WINDMILL_PROXY = {
+  name: "windmill-proxy",
+  port: SERVICE_PORT,
+  podLabels: { app: "windmill-proxy" },
+  /**
+   * The proxy reads a run id, a provider list and two model request ceilings, which have no
+   * meaning here: the id is only its log label, and the rest take the QA fetch proxy's values for
+   * a proxy that serves no model traffic, so the proxy's code is unchanged (O-101).
+   */
+  runId: "windmill-proxy",
+} as const;
+
 /** The tunnel connector (D-195). Its metrics port serves /ready for the kubelet only. */
 export const CLOUDFLARED = {
   name: "cloudflared",
@@ -113,6 +145,11 @@ export const PLATFORM_SECRETS = {
     name: "state-api-windmill-plan-approval-token",
     key: "token",
   },
+  /**
+   * The receiver's Windmill token that can start only its flows (D-291, RECEIVER_FLOW_PATHS).
+   * Optional: without it the start is refused and the reconcile pass captures.
+   */
+  receiverWindmillToken: { name: "github-receiver-windmill-token", key: "token" },
 } as const;
 
 /** The receiver's webhook secret path (src/github-receiver/main.ts). */
@@ -138,11 +175,24 @@ export function stateApiRunSettings(): KubernetesRunSettings["stateApi"] {
 
 /** Settings for the platform objects. Not secret; Didi keeps them outside the repo. */
 export interface PlatformSettings {
-  /** The state API and receiver images, pinned by digest (ADR 0111). */
-  images: { stateApi: string; receiver: string };
+  /**
+   * The state API and receiver images, and the egress proxy image the agent runs use (the
+   * runner's `proxyImage`), each pinned by digest (ADR 0111).
+   */
+  images: { stateApi: string; receiver: string; egressProxy: string };
   /** The numeric user of the Node service images (`node` is 1000). Never 0. */
   serviceUser: number;
-  resources: { stateApi: Resources; receiver: Resources; cloudflared: Resources };
+  resources: {
+    stateApi: Resources;
+    receiver: Resources;
+    cloudflared: Resources;
+    windmillProxy: Resources;
+  };
+  /**
+   * Where the state API and the receiver start their flows (D-283, D-291): the Windmill host,
+   * the one host the Windmill proxy allows, and the workspace id. Plain settings, not secrets.
+   */
+  windmill: { host: string; workspace: string };
   receiver: {
     developerAppLogin: string;
     designerAppLogin: string;
@@ -236,6 +286,16 @@ export function checkPlatformSettings(settings: PlatformSettings): void {
   for (const [name, value] of Object.entries(settings.receiver)) {
     if (value.trim() === "") throw new Error(`receiver ${name} is empty`);
   }
+  try {
+    parseWindmillHost(settings.windmill.host);
+  } catch (error) {
+    throw new Error(`windmill host ${(error as Error).message}`);
+  }
+  try {
+    parseWindmillWorkspace(settings.windmill.workspace);
+  } catch (error) {
+    throw new Error(`windmill workspace ${(error as Error).message}`);
+  }
 }
 
 const labels = (): Labels => ({ [LABEL_MANAGED_BY]: MANAGED_BY_INFRA });
@@ -277,6 +337,11 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
   const database: NetworkPolicy["spec"]["egress"][number] = {
     to: [PUBLIC_IPV4],
     ports: [{ protocol: "TCP", port: databasePortOf(settings) }],
+  };
+  // The state API and the receiver reach Windmill only through the shared proxy (D-284, D-328).
+  const windmillProxy: NetworkPolicy["spec"]["egress"][number] = {
+    to: [samePods(WINDMILL_PROXY.podLabels)],
+    ports: [{ protocol: "TCP", port: WINDMILL_PROXY.port }],
   };
 
   const namespace: Namespace = {
@@ -327,7 +392,7 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
           ports: [{ protocol: "TCP", port: STATE_API_PUBLIC.port }],
         },
       ],
-      [dns, database],
+      [dns, database, windmillProxy],
     ),
     // The receiver: only the tunnel connector delivers webhooks to it.
     policy(
@@ -339,7 +404,20 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
           ports: [{ protocol: "TCP", port: RECEIVER.port }],
         },
       ],
-      [dns, database],
+      [dns, database, windmillProxy],
+    ),
+    // The Windmill proxy: only the state API and the receiver call it; it reaches DNS and 443 on
+    // public addresses, and its allow-list holds the calls to Windmill's host (D-284, D-328).
+    policy(
+      WINDMILL_PROXY.name,
+      WINDMILL_PROXY.podLabels,
+      [
+        {
+          from: [samePods(STATE_API.podLabels), samePods(RECEIVER.podLabels)],
+          ports: [{ protocol: "TCP", port: WINDMILL_PROXY.port }],
+        },
+      ],
+      [dns, { to: [PUBLIC_IPV4], ports: [{ protocol: "TCP", port: 443 }] }],
     ),
     // The connector: no ingress; egress to DNS, the receiver, the state API's public port,
     // Cloudflare's API on 443 and Cloudflare's tunnel edge on 7844 (TCP and UDP). Only this pod
@@ -370,16 +448,20 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
     ),
   ];
 
-  const services = [STATE_API, STATE_API_PUBLIC, RECEIVER].map((svc): Service => ({
-    apiVersion: "v1",
-    kind: "Service",
-    metadata: { name: svc.name, namespace: PLATFORM_NAMESPACE, labels: labels() },
-    spec: {
-      type: "ClusterIP",
-      selector: { ...svc.podLabels },
-      ports: [{ name: "http", protocol: "TCP", port: svc.port, targetPort: svc.port }],
-    },
-  }));
+  const services = [STATE_API, STATE_API_PUBLIC, RECEIVER, WINDMILL_PROXY].map(
+    (svc): Service => ({
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: { name: svc.name, namespace: PLATFORM_NAMESPACE, labels: labels() },
+      spec: {
+        type: "ClusterIP",
+        selector: { ...svc.podLabels },
+        ports: [
+          { name: "http", protocol: "TCP", port: svc.port, targetPort: svc.port },
+        ],
+      },
+    }),
+  );
 
   const health = (port: number, path: string): ContainerProbe => ({
     httpGet: { path, port },
@@ -389,6 +471,12 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
     name,
     valueFrom: { secretKeyRef: { name: ref.name, key: ref.key } },
   });
+  // Where both services start their flows, through the shared proxy. Plain values, not secrets.
+  const windmillEnv: EnvVar[] = [
+    { name: WINDMILL_ENV.host, value: settings.windmill.host },
+    { name: WINDMILL_ENV.workspace, value: settings.windmill.workspace },
+    { name: WINDMILL_ENV.proxy, value: serviceUrl(WINDMILL_PROXY) },
+  ];
 
   const stateApi = deployment(
     STATE_API.name,
@@ -413,6 +501,7 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
             secretKeyRef: { ...PLATFORM_SECRETS.stateApiWindmillToken, optional: true },
           },
         },
+        ...windmillEnv,
       ],
       port: STATE_API.port,
       publicPort: STATE_API_PUBLIC.port,
@@ -436,6 +525,13 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
       },
       { name: "GITHUB_DESIGNER_APP_LOGIN", value: settings.receiver.designerAppLogin },
       { name: "GITHUB_RUNNER_APP_SLUG", value: settings.receiver.runnerAppSlug },
+      {
+        name: secretEnvName(RECEIVER_WINDMILL_TOKEN_PATH),
+        valueFrom: {
+          secretKeyRef: { ...PLATFORM_SECRETS.receiverWindmillToken, optional: true },
+        },
+      },
+      ...windmillEnv,
     ],
     port: RECEIVER.port,
     probe: health(RECEIVER.port, "/health"),
@@ -458,7 +554,31 @@ export function platformObjects(settings: PlatformSettings): PlatformObject[] {
     },
   );
 
-  return [namespace, ...policies, ...services, stateApi, receiver, connector];
+  // The agents' egress proxy, configured from the environment with Windmill's host only: no
+  // model provider, no state API route and no Secret (D-284, D-328, O-101).
+  const proxy = deployment(
+    WINDMILL_PROXY.name,
+    WINDMILL_PROXY.podLabels,
+    settings.serviceUser,
+    {
+      name: WINDMILL_PROXY.name,
+      image: settings.images.egressProxy,
+      env: [
+        { name: "PORT", value: String(WINDMILL_PROXY.port) },
+        { name: "RUN_ID", value: WINDMILL_PROXY.runId },
+        { name: "ALLOWED_HOSTS", value: settings.windmill.host },
+        { name: "MODEL_PROVIDERS", value: "[]" },
+        { name: "MAX_MODEL_REQUESTS", value: "1" },
+        { name: "MAX_REJECTED_MODEL_REQUESTS", value: "1" },
+        { name: "STATE_API_UPSTREAM", value: "" },
+      ],
+      port: WINDMILL_PROXY.port,
+      probe: health(WINDMILL_PROXY.port, "/health"),
+      resources: settings.resources.windmillProxy,
+    },
+  );
+
+  return [namespace, ...policies, ...services, stateApi, receiver, connector, proxy];
 }
 
 interface DeploymentParts {

@@ -8,6 +8,8 @@
 // submissions, by the project the request names, framed as data. The token is generated per test
 // run and never asserted on or logged.
 import { randomBytes } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createLibrary } from "../core/library.ts";
@@ -19,9 +21,15 @@ import {
   planApprovalTopic,
 } from "../core/plans.ts";
 import { PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
-import { createFakePlanApprovalFlow } from "../adapters/windmill/fake-plan-approval-flow.ts";
+import { windmillSettings, windmillTargetOf } from "../adapters/windmill/client.ts";
+import { createFakeFlowStart } from "../adapters/windmill/fake-flow-start.ts";
+import {
+  WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
+  windmillPlanApprovalFlow,
+} from "../adapters/windmill/plan-approval-flow.ts";
 import { testRouteColumns } from "../core/routing-testing.ts";
 import type { AgentRole, Decision, Node, Store } from "../core/store.ts";
+import { readConfig, secretEnvName } from "../service-kit/config.ts";
 import { createLogger } from "../service-kit/logger.ts";
 import { startService, type RunningService } from "../service-kit/server.ts";
 import { hashToken } from "./auth.ts";
@@ -38,7 +46,7 @@ let n = 0;
 const nextId = () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`;
 
 const planningToken = randomBytes(32).toString("base64url");
-const approvalFlow = createFakePlanApprovalFlow();
+const approvalFlow = createFakeFlowStart();
 /** Every line the API logged, to check no secret, id or text from a plan reaches the log. */
 const logLines: string[] = [];
 let store: Store;
@@ -614,6 +622,104 @@ describe("each submission starts the plan-approval flow once (API seam, D-273 (2
       expect(text).not.toContain(PLAN);
     } finally {
       approvalFlow.failWith = null;
+    }
+  });
+});
+
+describe("the real Windmill adapter as the state API composes it (API seam, D-283, D-284, O-101)", () => {
+  const WINDMILL_HOST = "windmill.example.com";
+  /** Stands in for the shared Windmill proxy: records each CONNECT and refuses it. */
+  let proxy: Server;
+  const tunnels: string[] = [];
+
+  beforeAll(async () => {
+    proxy = createServer();
+    proxy.on("connect", (request, socket) => {
+      tunnels.push(request.url ?? "");
+      socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  });
+  afterAll(() => new Promise((resolve) => proxy.close(resolve)));
+
+  /** The API with the adapter built from these settings exactly as main.ts builds it. */
+  async function apiWith(token: string | undefined) {
+    const env: Record<string, string> = {
+      WINDMILL_HOST,
+      WINDMILL_WORKSPACE: "rehearsal",
+      HTTPS_PROXY: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`,
+      ...(token === undefined
+        ? {}
+        : { [secretEnvName(WINDMILL_PLAN_APPROVAL_TOKEN_PATH)]: token }),
+    };
+    const config = readConfig(windmillSettings(WINDMILL_PLAN_APPROVAL_TOKEN_PATH), env);
+    const lines: string[] = [];
+    const clock = { now: () => NOW };
+    const ids = { next: nextId };
+    const service = await startService({
+      name: "state-api-windmill-test",
+      port: 0,
+      logger: createLogger("state-api-windmill-test", () => undefined),
+      handle: createApiHandler({
+        store,
+        library: createLibrary({
+          store,
+          contracts: ENTRY_CONTRACTS,
+          guards: {},
+          clock,
+          ids,
+        }),
+        clock,
+        planning: {
+          tokenSha256: hashToken(planningToken),
+          ids,
+          store,
+          approvalFlow: windmillPlanApprovalFlow(
+            config.windmillToken,
+            windmillTargetOf(config),
+          ),
+          logger: createLogger("state-api-windmill-test", (line) => lines.push(line)),
+        },
+      }),
+    });
+    return { service, lines };
+  }
+
+  it("keeps the start refused while the token's secret is unset: the submission stands and nothing is called", async () => {
+    const { service, lines } = await apiWith(undefined);
+    try {
+      const result = await call(service, "POST", "/plans", planningToken, submission());
+      expect(result.status).toBe(201);
+      const ideaId = result.body.ideaId as string;
+      expect((await store.getNode(ideaId))?.state).toBe("submitted");
+      expect(lines.map((l) => JSON.parse(l) as object)).toEqual([
+        expect.objectContaining({ level: "warn", errorType: "NotBuiltError" }),
+      ]);
+      expect(tunnels).toEqual([]);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("with a token, starts through the proxy in HTTPS_PROXY, to Windmill's host only; a refused tunnel leaves the submission standing", async () => {
+    const token = randomBytes(24).toString("base64url");
+    const { service, lines } = await apiWith(token);
+    try {
+      const result = await call(service, "POST", "/plans", planningToken, submission());
+      expect(result.status).toBe(201);
+      expect(tunnels).toEqual([`${WINDMILL_HOST}:443`]);
+      expect(lines.map((l) => JSON.parse(l) as object)).toEqual([
+        expect.objectContaining({
+          level: "warn",
+          errorType: "WindmillStartError",
+          step: "tunnel",
+          status: 403,
+        }),
+      ]);
+      expect(lines.join("\n")).not.toContain(token);
+      expect(lines.join("\n")).not.toContain(result.body.ideaId as string);
+    } finally {
+      await service.stop();
     }
   });
 });

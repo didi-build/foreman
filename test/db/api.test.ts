@@ -11,7 +11,7 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
-import { createFakePlanApprovalFlow } from "../../src/adapters/windmill/fake-plan-approval-flow.ts";
+import { createFakeFlowStart } from "../../src/adapters/windmill/fake-flow-start.ts";
 import { hashToken } from "../../src/api/auth.ts";
 import { ENTRY_CONTRACTS } from "../../src/api/entry.ts";
 import { createApiHandler } from "../../src/api/routes.ts";
@@ -26,7 +26,7 @@ import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 const DB = `foreman_api_test_${process.pid}`;
 /** The planning chat's token for this test run only (D-266); never asserted on or logged. */
 const PLANNING_TOKEN = randomBytes(32).toString("base64url");
-const approvalFlow = createFakePlanApprovalFlow();
+const approvalFlow = createFakeFlowStart();
 const NOW = new Date("2026-10-29T12:00:00Z");
 const HEAD = "c".repeat(40);
 const PROJECT = "00000000-0000-4000-8000-0000000000b1";

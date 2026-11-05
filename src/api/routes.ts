@@ -17,6 +17,7 @@ import {
 } from "../core/library.ts";
 import { createPlanSubmissions, readPlanSubmission } from "../core/plans.ts";
 import { createPlanningReads, PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
+import { startErrorFields } from "../adapters/windmill/client.ts";
 import type { PlanApprovalFlow } from "../adapters/windmill/plan-approval-flow.ts";
 import type { Logger } from "../service-kit/logger.ts";
 import {
@@ -291,7 +292,8 @@ export function createApiHandler({
   /**
    * Starts the plan-approval flow for the submission just recorded, so Didi's request opens at
    * once (D-273 (2)). A failure never undoes the submission: the reconcile pass's plan approval
-   * step opens the request later (D-274). The log names the error's type only, never an id.
+   * step opens the request later (D-274). The log names the error's type, and for the Windmill
+   * client's own error its step and status (O-101), never an id, a token or a text.
    */
   async function startApprovalFlow(ideaId: string): Promise<void> {
     if (!planning) return;
@@ -301,7 +303,7 @@ export function createApiHandler({
     } catch (error) {
       planning.logger.warn(
         "plan approval flow not started; the reconcile pass opens the request",
-        { errorType: error instanceof Error ? error.name : typeof error },
+        startErrorFields(error),
       );
     }
   }

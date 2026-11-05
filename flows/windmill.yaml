@@ -111,10 +111,12 @@ flows:
     path: f/foreman/plan_approval
     entry: flows/plan-approval.ts
     # Called with an idea id by the state API, right after it records the planning chat's
-    # submission (D-273 (2), D-274), with its own Windmill credential that can start only this
-    # flow (platform/state-api/windmill-plan-approval-token, below). One run per submission. It
-    # opens Didi's plan-approval request at once; the reconcile flow's plan approval pass stays
-    # as the safety net for a start that failed.
+    # submission (D-273 (2), D-274, D-283), with its own Windmill token that can start only this
+    # flow (platform/state-api/windmill-plan-approval-token, below), through the shared Windmill
+    # egress proxy (D-284, D-328). The call is src/adapters/windmill/plan-approval-flow.ts: an
+    # async run of this script by path, with `{"input": {"ideaId": ...}}` (O-101). One run per
+    # submission. It opens Didi's plan-approval request at once; the reconcile flow's plan
+    # approval pass stays as the safety net for a start that failed.
     trigger: called
 
   - name: option_capture
@@ -124,8 +126,12 @@ flows:
     # captures the Designer's exploration options from CI's `options` bundle, opens Didi's
     # visual-approval request and asks again for the Designer report's move into Waiting for
     # Didi. A refusal the Designer caused counts once per head and starts the fix round; the
-    # request links CI's run only on a private repository (O-89). Who calls it on CI's end is open, as for verify_staging: the receiver records the
-    # delivery and holds no Windmill credential. The run-end flow tries the same capture at a
+    # request links CI's run only on a private repository (O-89). The GitHub receiver calls it
+    # (D-291, D-327, O-101): after it records CI's end on a PR head, and only when capture's own
+    # due check says a capture is due, so a replay, a pending result, an item not due and the
+    # switches start nothing. It uses the receiver's Windmill token
+    # (platform/github-receiver/windmill-token, below) through the shared Windmill egress proxy
+    # (D-328), with `{"input": {"nodeId": ...}}`. The run-end flow tries the same capture at a
     # Designer run's end, and the reconcile flow's capture pass is the backstop.
     trigger: called
 
@@ -229,6 +235,13 @@ resources:
     - path: platform/state-api/windmill-plan-approval-token
       holds: A Windmill token that can start only f/foreman/plan_approval (D-273). New credential at first hosting
       read_by: state API
+    # Read by the GitHub receiver, not by a flow (D-291): a Windmill token that can start only the
+    # flows in RECEIVER_FLOW_PATHS (src/adapters/windmill/receiver-flows.ts), today
+    # option_capture above, copied into the receiver's Secret `github-receiver-windmill-token`
+    # (key `token`) at first hosting.
+    - path: platform/github-receiver/windmill-token
+      holds: A Windmill token that can start only the GitHub receiver's flows, today f/foreman/option_capture (D-291). New credential at first hosting
+      read_by: GitHub receiver
   values:
     - name: spec_version
       holds: The git commit of docs/spec.md and contracts/ the bundle was built from

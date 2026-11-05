@@ -68,6 +68,18 @@ export interface IngestResult {
   repo: string | null;
   pr: number | null;
   evidenceIds: string[];
+  /**
+   * Each PR head whose CI end this delivery recorded: a newly inserted final `ci_run` (success or
+   * failure), never a pending one. A replay, or a fact another delivery already recorded, names
+   * none, so the receiver starts a flow at most once per CI end (O-101).
+   */
+  finishedCi: FinishedCi[];
+}
+
+/** A node's PR head whose CI has just finished. */
+export interface FinishedCi {
+  nodeId: string;
+  commitSha: string;
 }
 
 /** Evidence to record under its ingest key. */
@@ -351,6 +363,25 @@ async function insertFacts(
   return inserted;
 }
 
+/** The final `ci_run` facts among those just inserted (`inserted`, their evidence ids). */
+function finishedCiOf(
+  findings: readonly Finding[],
+  inserted: readonly string[],
+): FinishedCi[] {
+  const ids = new Set(inserted);
+  return findings
+    .flatMap((f) => f.facts)
+    .map((fact) => fact.evidence)
+    .filter(
+      (e) =>
+        ids.has(e.id) &&
+        e.kind === "ci_run" &&
+        e.commitSha !== null &&
+        field(e.payload, "conclusion") !== "pending",
+    )
+    .map((e) => ({ nodeId: e.nodeId, commitSha: e.commitSha as string }));
+}
+
 class DuplicateDelivery extends Error {}
 
 /**
@@ -364,7 +395,14 @@ export async function ingestDelivery(
   const repository = field(field(delivery.payload, "repository"), "full_name");
   const repo = typeof repository === "string" && repository !== "" ? repository : null;
   if (!HANDLED_EVENTS.has(delivery.event)) {
-    return { outcome: "unhandled", reason: null, repo, pr: null, evidenceIds: [] };
+    return {
+      outcome: "unhandled",
+      reason: null,
+      repo,
+      pr: null,
+      evidenceIds: [],
+      finishedCi: [],
+    };
   }
 
   let findings: Finding[] | null = null;
@@ -402,11 +440,19 @@ export async function ingestDelivery(
       });
       // Rolls back any evidence this copy inserted; the first copy owns the result.
       if (!fresh) throw new DuplicateDelivery();
-      return { outcome, reason, repo, pr, evidenceIds };
+      const finishedCi = findings ? finishedCiOf(findings, evidenceIds) : [];
+      return { outcome, reason, repo, pr, evidenceIds, finishedCi };
     });
   } catch (error) {
     if (!(error instanceof DuplicateDelivery)) throw error;
-    return { outcome: "duplicate", reason: null, repo, pr, evidenceIds: [] };
+    return {
+      outcome: "duplicate",
+      reason: null,
+      repo,
+      pr,
+      evidenceIds: [],
+      finishedCi: [],
+    };
   }
 }
 

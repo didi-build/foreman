@@ -72,11 +72,17 @@ Download the cluster's kubeconfig from the DigitalOcean control panel and keep i
 
 Write a settings file outside the repo (images pinned by digest, the app logins, resource limits (`databasePort` defaults to 5432), the projects and their quotas; no secrets), then:
 
+- `images.egressProxy`: the egress proxy image the agent runs use, the same digest as `proxyImage` in `agent_run_settings`. It runs once more here as the shared Windmill proxy (D-284, D-328).
+- `resources.windmillProxy`: its requests and limits, like an agent run's proxy.
+- `windmill.host`: the Windmill host the state API and the receiver start their flows on, a plain host name with no scheme (for Windmill Cloud, the host name of its app), and `windmill.workspace`: the workspace id. If the workspace does not exist yet, choose its id now and create it with that id in step 15. Both are plain settings, not secrets. The proxy allows this one host and nothing else; it has no model provider, no state API route and no credential.
+
+Then render and apply:
+
 ```bash
 node infra/kubernetes/render.ts <settings.json> | kubectl apply -f -
 ```
 
-This creates the `foreman-platform` namespace and its policies and Deployments, the `foreman-runner` namespace and service account, and each `agents-<slug>` namespace. The platform pods wait for their Secrets (steps 8 to 10). Then run ADR 0106 checks 1 and 15: default deny holds, and pods stay on their own pool.
+This creates the `foreman-platform` namespace and its policies and Deployments (the state API, the receiver, the tunnel connector and the Windmill proxy), the `foreman-runner` namespace and service account, and each `agents-<slug>` namespace. The platform pods wait for their Secrets (steps 8 to 10). Then run ADR 0106 checks 1 and 15: default deny holds, and pods stay on their own pool.
 
 ## 8. The runner's cluster token (new-credentials gate)
 
@@ -153,14 +159,19 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
   The Secret is optional for the state API's pod: until it exists, no planning token is accepted. The chat reaches the state API at `https://<receiver host name>/plans` once step 11a is applied (D-271). Its read routes are not reachable from outside (N-75).
 
-- The state API's Windmill credential for the plan-approval flow (D-273 (2)). First check that Windmill can issue a token that can run `f/foreman/plan_approval` and nothing else (N-76); if it cannot, stop and ask Didi. The state API also needs egress on 443 to Windmill, a wider permission for its pod (N-76). Store the token at `platform/state-api/windmill-plan-approval-token` in Windmill resources and in the state API's Secret, piped straight in:
+- The two Windmill tokens that start flows (D-283, D-291, D-327, O-101), each its own approval. Before creating either, check on Windmill's token page ("Limit token permissions" and "Restrict paths") that a token can be limited to running exactly the scripts named below and nothing else: no other script, no reading or changing scripts, jobs, resources or variables. **If Windmill cannot narrow a token that far, stop and ask Didi before creating any credential** (D-283, D-291). Do not create a wider token, and do not use another kind of token (such as a webhook's own token) instead, without asking.
+  - The state API's token: exactly the scope `jobs:run:scripts:f/foreman/plan_approval`, stored at `platform/state-api/windmill-plan-approval-token` in Windmill resources and in the Secret `state-api-windmill-plan-approval-token` (key `token`).
+  - The GitHub receiver's token: exactly the scopes of its flow list (`RECEIVER_FLOW_PATHS` in `src/adapters/windmill/receiver-flows.ts`), today only `jobs:run:scripts:f/foreman/option_capture`, stored at `platform/github-receiver/windmill-token` in Windmill resources and in the Secret `github-receiver-windmill-token` (key `token`). A later slice that adds a flow to the list creates this token again with the new list (D-329).
+
+  Generate each token in Windmill, copy it into the password manager, and never paste its value anywhere else: not in a file, the shell history, chat, Linear or a log. Pipe it from the password manager's command line straight into its Secret:
 
   ```bash
   kubectl -n foreman-platform create secret generic state-api-windmill-plan-approval-token --from-file=token=/dev/stdin
-  kubectl -n foreman-platform rollout restart deployment/state-api
+  kubectl -n foreman-platform create secret generic github-receiver-windmill-token --from-file=token=/dev/stdin
+  kubectl -n foreman-platform rollout restart deployment/state-api deployment/github-receiver
   ```
 
-  Then write the Windmill call in `src/adapters/windmill/plan-approval-flow.ts` against Windmill's own API. Until then every start is refused, the API logs `plan approval flow not started` with the error's type, and the reconcile pass opens the request.
+  Neither service reaches Windmill directly: both go through the Windmill proxy of step 7, which allows only `windmill.host`, and neither pod's network policy allows 443 (D-284, D-328). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started` or `option capture flow not started` with the error's type, and the reconcile pass opens the request or captures the options. If the proxy is down, both services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 
@@ -176,6 +187,20 @@ Then check the approval form on Didi's phone with a throwaway request, as the M0
 - An answer that breaks a rule (Approve with no option, Request changes with no feedback) records nothing and a fresh request opens with its one-line note.
 
 If Windmill cannot fill the choices per request, stop and record what it does instead: the form's shape is Didi's decision (D-254), so a different form goes back to Didi.
+
+### Starting flows from the state API and the receiver
+
+The state API starts `f/foreman/plan_approval` after each recorded plan submission (D-283), and the receiver starts `f/foreman/option_capture` after it records CI's end on a design item's PR head, only when a capture is due (D-291, D-327). Both call `src/adapters/windmill/client.ts` through the Windmill proxy. Built from Windmill's docs as read on 2026-11-04, without a real Windmill. To verify at rehearsal, with synthetic data and the two tokens of step 15 only, and record each result with the date in O-101:
+
+- The endpoint: `POST https://<windmill.host>/api/w/<workspace>/jobs/run/p/<script path>` starts the script pushed at that path and answers at once with the job's id. If the entries are deployed as flows rather than scripts, the endpoint is `.../jobs/run/f/<path>`: fix `RUN_BY_PATH_ENDPOINT` in `src/adapters/windmill/client.ts`.
+- The arguments: each entry's `main(input)` takes one argument named `input`, so the body is `{"input": {"ideaId": "..."}}` or `{"input": {"nodeId": "..."}}`. Check that Windmill reads the entry's `main` (written `export const main = (input) => ...`) with that one argument, and that the run shows the id.
+- The token: the run endpoint takes it as `Authorization: Bearer <token>`.
+- The scopes: with each token, a start of its own script is accepted; a start of the other token's script, of any other script, and any other API call (for example listing jobs) are refused. Record the status Windmill gives a refusal (401 or 403).
+- The answer: the status of an accepted start (201 is expected). The client accepts any 2xx and never reads the body.
+- The proxy: the Windmill host resolves only to public addresses, over IPv4 (the proxy refuses private addresses, and its policy allows public IPv4 on 443). From the state API's and the receiver's pods, a direct HTTPS call to the Windmill host fails, a CONNECT through the proxy to it opens, and one to any other host is refused with 403. The proxy's log names the host and never a token.
+- The timing: a start is accepted well inside the client's 5 seconds, so a webhook is still answered within GitHub's 10.
+- The runs: each recorded submission and each due capture adds one run to the month's count (D-164); a replayed webhook, a pending CI result and a capture not due add none.
+- The workspace id passes the manifest check (letters, digits, `-` and `_`, at most 50).
 
 ### Reading the daily check
 

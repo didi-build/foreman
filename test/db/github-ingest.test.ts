@@ -1,7 +1,9 @@
 // Seam: GitHub ingestion against Postgres (build plan M2.3, ADR 0113, migration 0002). The core's
 // ingestion functions on the real Postgres store, connected as the factory_ingest role, so the
 // role's grants and row level security back up the core's rules: it writes only deliveries and
-// ingested evidence kinds under a key, changes nothing, and a replay is a no-op.
+// ingested evidence kinds under a key, changes nothing, and a replay is a no-op. Migration 0020
+// (O-101): it reads the kill switch and dry run and no other setting, so capture's due check runs
+// as this role before the receiver starts the option capture flow.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -21,6 +23,12 @@ import {
   pollRepository,
   type IngestDeps,
 } from "../../src/core/github-ingest.ts";
+import {
+  createCaptureReads,
+  optionScreenshotRef,
+} from "../../src/core/option-capture.ts";
+import { testRouteColumns } from "../../src/core/routing-testing.ts";
+import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
 import type { Evidence, Store } from "../../src/core/store.ts";
 import {
   BRANCH,
@@ -32,6 +40,7 @@ import {
   passing,
   type IngestFixture,
 } from "../github-fixture.ts";
+import { machines } from "../reconcile-fixture.ts";
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 
 const DB = `foreman_ingest_test_${process.pid}`;
@@ -237,7 +246,8 @@ describe.skipIf(!adminUrl)(
       for (const table of [
         "github_deliveries",
         "projects",
-        "settings",
+        "settings_log",
+        "gate_requests",
         "decisions",
         "run_tokens",
       ]) {
@@ -246,6 +256,127 @@ describe.skipIf(!adminUrl)(
           `select * from factory.${table}`,
           /permission denied/,
         );
+      }
+    });
+
+    it("reads the kill switch and dry run and no other setting, and changes none (migration 0020)", async () => {
+      const visible = await ingestPool.query(
+        "select key, value from factory.settings order by key",
+      );
+      expect(visible.rows).toEqual([
+        { key: "dry_run", value: true },
+        { key: "kill_switch", value: false },
+      ]);
+      expect(await ingest.getSetting("reconcile_interval_minutes")).toBeNull();
+      await refused(
+        ingestPool,
+        "update factory.settings set value = 'false' where key = 'dry_run'",
+        /permission denied/,
+      );
+      await refused(
+        ingestPool,
+        `insert into factory.settings (key, value, updated_by, updated_at)
+         values ('kill_switch_extra', 'true', 'github', now())`,
+        /permission denied/,
+      );
+      await refused(ingestPool, "delete from factory.settings", /permission denied/);
+    });
+
+    it("runs capture's due check as factory_ingest, reading only what the role may read (O-101)", async () => {
+      const at = deps.clock.now();
+      const nodeId = deps.ids.next();
+      await runner.insertNode({
+        id: nodeId,
+        projectId: f.projectId,
+        type: "work_item",
+        track: "design",
+        state: "in_design_exploration",
+        substate: null,
+        ownerRole: "designer",
+        title: "A design item",
+        body: {},
+        hold: false,
+        agentReady: true,
+        stale: false,
+        blockedReason: null,
+        stateSince: at,
+        linearIssueId: null,
+        linearStatusSynced: null,
+        version: 0,
+        createdAt: at,
+        updatedAt: at,
+      });
+      await runner.insertRun({
+        id: deps.ids.next(),
+        projectId: f.projectId,
+        nodeId,
+        bot: "designer",
+        agentId: null,
+        runtime: "opencode",
+        model: "claude-sonnet-5-5",
+        headSha: null,
+        prNumber: null,
+        botVersion: "v1",
+        startedAt: at,
+        endedAt: deps.clock.now(),
+        outcome: "success",
+        turns: null,
+        minutes: null,
+        costUsd: null,
+        tokens: null,
+        budget: { ...REHEARSAL_RUN_LIMITS.designer },
+        parentRunId: null,
+        transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
+        questionTopic: null,
+        ...testRouteColumns("designer"),
+      });
+      const head = "d".repeat(40);
+      await ingest.insertEvidenceOnce(
+        ciRun({ nodeId, commitSha: head, payload: { conclusion: "success", pr: 8 } }),
+        ciRunKey(REPO, 8, head, "success", 1),
+      );
+      const reads = createCaptureReads(machines());
+      // Dry run is seeded on (0001), so nothing is due until it is turned off.
+      expect(await reads.due(ingest, nodeId)).toEqual({
+        due: false,
+        reason: "dry_run",
+      });
+      const set = (key: string, value: boolean) =>
+        runner.setSetting({
+          key,
+          value,
+          updatedBy: "test",
+          updatedAt: deps.clock.now(),
+        });
+      await set("dry_run", false);
+      try {
+        expect(await reads.due(ingest, nodeId)).toEqual({ due: true, headSha: head });
+        await set("kill_switch", true);
+        expect(await reads.due(ingest, nodeId)).toEqual({
+          due: false,
+          reason: "kill_switch",
+        });
+        await set("kill_switch", false);
+        await runner.insertEvidence({
+          id: deps.ids.next(),
+          nodeId,
+          runId: null,
+          kind: "screenshot",
+          ref: optionScreenshotRef(head, "a"),
+          commitSha: head,
+          payload: {},
+          recordedBy: "runner",
+          recordedAt: deps.clock.now(),
+          supersedesId: null,
+        });
+        expect(await reads.due(ingest, nodeId)).toEqual({
+          due: false,
+          reason: "already_captured",
+        });
+      } finally {
+        await set("dry_run", true);
       }
     });
 
