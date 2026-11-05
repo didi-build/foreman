@@ -30,6 +30,8 @@
 //    (`staging_deploy_failed:<evidence id>`), so a repeated call writes one row.
 // An item that waits in Verifying on staging with no deploy recorded for longer than
 // `staging_deploy_attention_after_minutes` is reported for the attention list (D-225, O-40).
+// The GitHub receiver asks `createStagingReads(...).due` before it starts the staging flow on a
+// `deployment_status` event (D-329 slice 4, O-104), with the same staging moves as here.
 // A failure part way is recovered by the next call: the facts are keyed, the moves are taken once
 // per trigger, and the live pass (`verifyReady`) asks again for an escalation or a release that a
 // failure left behind.
@@ -51,7 +53,7 @@ import {
   type TransitionOutcome,
   type Trigger,
 } from "./library.ts";
-import type { Evidence, Json, Node, Project, Store } from "./store.ts";
+import type { Evidence, Json, Node, Project, Store, StoreOps } from "./store.ts";
 
 export { STAGING_CHECK_ATTEMPTS };
 
@@ -270,12 +272,45 @@ const field = (value: Json | undefined, key: string): Json | undefined =>
 const failedNames = (report: { name: string; pass: boolean }[]): string[] =>
   report.filter((c) => !c.pass).map((c) => c.name);
 
-export function createStaging(deps: StagingDeps) {
-  const { store, contracts, clock, ids, github, checker } = deps;
-  const library = createLibrary(deps);
+/** What the GitHub receiver's staging check reads: two settings, nodes and dispatch records. */
+export type StagingReadOps = Pick<
+  StoreOps,
+  "getSetting" | "getNode" | "listDispatches"
+>;
 
-  const stateOf = (name: string) =>
-    Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
+/** A deploy as a `deployment_status` delivery reported it (src/core/github-ingest.ts). */
+export interface ReportedDeploy {
+  repo: string;
+  sha: string;
+  environment: string;
+  state: Deployment["state"];
+}
+
+/** Whether the staging flow is due for a reported deploy, and if not, why. */
+export type StagingDue =
+  | { due: true; repo: string; sha: string }
+  | {
+      due: false;
+      reason:
+        | "kill_switch"
+        | "dry_run"
+        /** A deploy to another environment than `staging`. */
+        | "not_staging"
+        /** A status that does not end the deployment: pending, queued, in progress, inactive. */
+        | "not_finished"
+        /** No item of the repository is in Verifying on staging. */
+        | "none_verifying";
+    };
+
+/**
+ * The staging moves and the GitHub receiver's check before it starts `f/foreman/verify_staging`
+ * on a `deployment_status` event (D-329 slice 4, O-104). `createStaging` below takes its moves
+ * from here, so the check and the flow cannot drift. `due` reads the kill switch and dry run as
+ * every flow reads them, and finds the repository's items through their dispatch records, which
+ * name the repository (ADR 0113 section 9), so the receiver's role reads nothing new. It writes
+ * nothing; the flow reads the deploy from GitHub again and never from the event.
+ */
+export function createStagingReads(contracts: Contracts) {
   const trackMatches = (move: TransitionContract, node: Node): boolean =>
     !move.tracks || (node.track !== null && move.tracks.includes(node.track));
 
@@ -292,6 +327,46 @@ export function createStaging(deps: StagingDeps) {
     if (!pass) return null;
     return { pass, fail: out.find((m) => m.guards.includes(STAGING_FAIL_GUARD)) };
   }
+
+  return {
+    stagingMovesFor,
+
+    /**
+     * Whether a reported deploy calls for the staging flow: a finished deploy to `staging`, no
+     * switch holding the runner, and some item of the repository in Verifying on staging.
+     */
+    async due(ops: StagingReadOps, deploy: ReportedDeploy): Promise<StagingDue> {
+      if (deploy.environment !== STAGING_ENVIRONMENT) {
+        return { due: false, reason: "not_staging" };
+      }
+      if (!FINISHED.has(deploy.state)) return { due: false, reason: "not_finished" };
+      if ((await ops.getSetting("kill_switch"))?.value === true) {
+        return { due: false, reason: "kill_switch" };
+      }
+      // A missing setting means dry run, as in the library.
+      if ((await ops.getSetting("dry_run"))?.value !== false) {
+        return { due: false, reason: "dry_run" };
+      }
+      for (const dispatch of await ops.listDispatches({ repo: deploy.repo })) {
+        const node = await ops.getNode(dispatch.nodeId);
+        if (node && stagingMovesFor(node)) {
+          return { due: true, repo: deploy.repo, sha: deploy.sha };
+        }
+      }
+      return { due: false, reason: "none_verifying" };
+    },
+  };
+}
+
+export function createStaging(deps: StagingDeps) {
+  const { store, contracts, clock, ids, github, checker } = deps;
+  const library = createLibrary(deps);
+
+  const stateOf = (name: string) =>
+    Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
+  const trackMatches = (move: TransitionContract, node: Node): boolean =>
+    !move.tracks || (node.track !== null && move.tracks.includes(node.track));
+  const { stagingMovesFor } = createStagingReads(contracts);
 
   /** States a passed staging check leads to (Done). */
   const doneStates = new Set(

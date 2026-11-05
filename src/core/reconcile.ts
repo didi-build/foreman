@@ -30,19 +30,26 @@
 // Which contract moves each step uses comes from the contracts, never from a list here: release
 // takes the moves out of a non-escalated state that requires a blocked reason (Blocked);
 // dispatch takes the moves guarded by `agent_ready_not_on_hold`, the guard that says a node is
-// ready for an agent, decided by the first-run check the flows also use (./ready-runs.ts), and
-// plans with no move the builder run of an item a fail move sent back
+// ready for an agent, decided by the first-run check the flows also use (./ready-runs.ts), plans
+// with no move QA's run on an item in review whose head QA has not run on (the review, then on
+// the design track the visual comparison), decided by QA's check in the same module (N-80,
+// O-104), and plans with no move the builder run of an item a fail move sent back
 // (src/core/builder-runs.ts); advance from evidence takes the moves guarded by
 // `ci_green_on_head`, the evidence section 2.5 step 4 names, except the moves on which the runner
 // merges (guard `qa_verdict_independent_on_head`): those need the merge, so the merge step plans
-// them through src/core/merge.ts, which also records GitHub's mergeable state as a fact. The
+// them through src/core/merge.ts, which also records GitHub's mergeable state as a fact. Which
+// moves advance is ./advances.ts, which the GitHub receiver's check and the called flow
+// `f/foreman/advance_item` share, and that flow plans one item with this pass's own step 4
+// (`planAdvance`, D-329 slice 4, O-104). The
 // moves a staging check takes (guards `staging_check_on_merge_commit` and `staging_check_failed`)
 // go through src/core/staging.ts, which records the staging deploy of the merge commit as a fact.
 // The bot to dispatch is the owner of the state, from the contracts. The merge and the staging
 // check are never done here: in live mode the reconcile flow runs the merge pass, the staging pass
 // and the builder runs pass (flows/reconcile.ts, O-31, O-37, O-41).
 // The pass is the safety net (D-274): a flow whose move makes an item ready starts its first run
-// at once (flows/lib/ready-runs.ts), so live mode's dispatch step finds only what an event missed.
+// at once (flows/lib/ready-runs.ts), the run-end flow starts QA's run once a builder's report
+// moves an item into review, and the receiver starts the advance on CI's end, so live mode's
+// dispatch and advance steps find only what an event missed.
 import {
   isTerminalState,
   type Contracts,
@@ -63,7 +70,7 @@ import {
   type TransitionRequest,
 } from "./library.ts";
 import type { OutputSchema } from "./output-schema.ts";
-import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
+import { createMerges } from "./merge.ts";
 import {
   createRuns,
   type DispatchRefusal,
@@ -73,15 +80,18 @@ import {
 } from "./runs.ts";
 import { createReadyRuns } from "./ready-runs.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
+import {
+  ADVANCE_ACTOR,
+  ADVANCE_GUARD,
+  ADVANCE_TRIGGER,
+  advanceMovesFor,
+} from "./advances.ts";
 import { createStaging, type StagingResult } from "./staging.ts";
 import { qaHeadOf, stalledRuns, type StalledRun } from "./stalls.ts";
 import type { AgentRole, GateRequest, Node, Run, Store, StoreOps } from "./store.ts";
 import type { TaskTypes } from "./task-types.ts";
 
-export { DISPATCH_GUARD };
-
-/** The guard section 2.5 step 4 advances on: CI green on the head commit. */
-export const ADVANCE_GUARD = "ci_green_on_head";
+export { ADVANCE_GUARD, DISPATCH_GUARD };
 
 const AGENT_ROLES: readonly AgentRole[] = [
   "developer",
@@ -91,8 +101,8 @@ const AGENT_ROLES: readonly AgentRole[] = [
   "triage",
 ];
 
-const ACTOR = { kind: "runner" as const, id: "reconcile" };
-const TRIGGER = { kind: "reconcile" as const, ref: null };
+const ACTOR = ADVANCE_ACTOR;
+const TRIGGER = ADVANCE_TRIGGER;
 
 /**
  * What the core needs from a role's bot file (contracts/bots/, docs/bot-files.md). The model is
@@ -351,6 +361,141 @@ const sameIds = (a: readonly string[], b: readonly string[]): boolean =>
 
 const MINUTE = 60_000;
 
+/**
+ * The pass's planning of a move and a dispatch, shared by the pass and by the called flow that
+ * advances one item on its event (`planAdvance`, flows/advance-item.ts), so the two cannot drift.
+ * `live` is the mode: in live mode a move whose guards pass is `due` and nothing is written.
+ */
+function createPlanner(deps: ReconcileDeps, live: boolean) {
+  const { store, contracts } = deps;
+  const library = createLibrary(deps);
+  const runs = createRuns(deps);
+  const stateOf = (name: string) =>
+    Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
+
+  /**
+   * Asks the library for one move, skipping a dry-run row identical to the node's latest
+   * transition: same from and to state, same spec version, same evidence ids, written since the
+   * node entered its state. An unchanged plan therefore writes one row, however many passes see
+   * it; a change in the evidence the guards relied on writes a new one. In live mode it writes
+   * nothing: a move whose guards pass is `due`, for the reconcile flow to ask for.
+   */
+  async function requestMove(node: Node, toState: string): Promise<MovePlan> {
+    const request: TransitionRequest = {
+      nodeId: node.id,
+      toState,
+      trigger: TRIGGER,
+      actor: ACTOR,
+    };
+    const base = { nodeId: node.id, fromState: node.state, toState };
+    const check = await library.checkTransition(request);
+    if (check.outcome !== "allowed") {
+      return {
+        ...base,
+        outcome: check.outcome,
+        reason: check.reason,
+        guardReport: check.guardReport,
+      };
+    }
+    if (live) return { ...base, outcome: "due", guardReport: check.guardReport };
+    const latest = (await store.listTransitions(node.id)).at(-1);
+    if (
+      latest &&
+      latest.mode === "dry_run" &&
+      latest.fromState === node.state &&
+      latest.toState === toState &&
+      latest.specVersion === contracts.version &&
+      latest.at.getTime() >= node.stateSince.getTime() &&
+      sameIds(latest.evidenceIds, check.evidenceIds)
+    ) {
+      return {
+        ...base,
+        outcome: "already_planned",
+        guardReport: check.guardReport,
+        transitionId: latest.id,
+      };
+    }
+    const result = await library.requestTransition(request);
+    return {
+      ...base,
+      outcome: result.outcome,
+      reason: result.reason,
+      guardReport: result.guardReport,
+      transitionId: result.transitionId,
+    };
+  }
+
+  // Runs this pass planned. They count as active for admission, so the limits hold.
+  const planned: Run[] = [];
+
+  /**
+   * Admission for a run of `role` on the node, read only. A QA run names its pull request and
+   * head commit: `qa` when the caller read them (QA's run in review, with its task type), else
+   * the newest `ci_run` (`qaHeadOf`).
+   */
+  async function planDispatch(
+    node: Node,
+    role: AgentRole,
+    qa?: { prNumber: number; headSha: string; taskType: string | null },
+  ): Promise<DispatchPlan> {
+    const plan: DispatchPlan = {
+      nodeId: node.id,
+      state: node.state,
+      role,
+      outcome: "planned",
+    };
+    const { runtime, botVersion } = deps.bots[role];
+    const request: DispatchRequest = { nodeId: node.id, role, runtime, botVersion };
+    if (role === "qa") {
+      const head = qa ?? (await qaHeadOf(store, node.id));
+      if (!head) return { ...plan, outcome: "no_head" };
+      request.prNumber = head.prNumber;
+      request.headSha = head.headSha;
+      if (qa?.taskType) request.taskType = qa.taskType;
+    }
+    const result = await runs.planDispatch(request, planned);
+    if (!result.admitted) return { ...plan, outcome: "refused", reason: result.reason };
+    planned.push(result.run);
+    return { ...plan, run: result.run };
+  }
+
+  /** Step 4 for one node: each advance move, then the dispatch of the next state's owner (QA). */
+  async function planAdvances(node: Node): Promise<AdvancePlan[]> {
+    const plans: AdvancePlan[] = [];
+    for (const move of advanceMovesFor(contracts, node)) {
+      const advance: AdvancePlan = await requestMove(node, move.to);
+      if (
+        advance.outcome === "planned" ||
+        advance.outcome === "already_planned" ||
+        advance.outcome === "due"
+      ) {
+        const role = roleOf(stateOf(move.to)?.owner);
+        advance.dispatch = role
+          ? await planDispatch(node, role)
+          : { nodeId: node.id, state: node.state, role, outcome: "no_role" };
+      }
+      plans.push(advance);
+    }
+    return plans;
+  }
+
+  return { requestMove, planDispatch, planAdvances };
+}
+
+/**
+ * One item's advance from evidence in live mode, with the pass's own step 4 (`planAdvances`):
+ * each advance move due, and QA's dispatch admission would allow. Writes nothing. The called flow
+ * `f/foreman/advance_item` acts on it as the reconcile flow acts on the pass's plan
+ * (flows/lib/reconcile-steps.ts). Empty for a node with no advance move, or none.
+ */
+export async function planAdvance(
+  deps: ReconcileDeps,
+  nodeId: string,
+): Promise<AdvancePlan[]> {
+  const node = await deps.store.getNode(nodeId);
+  return node ? createPlanner(deps, true).planAdvances(node) : [];
+}
+
 /** Runs one reconcile pass in dry run and returns what it planned. */
 export async function reconcile(
   deps: ReconcileDeps,
@@ -432,80 +577,8 @@ export async function reconcile(
     }
   }
 
-  /**
-   * Asks the library for one move, skipping a dry-run row identical to the node's latest
-   * transition: same from and to state, same spec version, same evidence ids, written since the
-   * node entered its state. An unchanged plan therefore writes one row, however many passes see
-   * it; a change in the evidence the guards relied on writes a new one. In live mode it writes
-   * nothing: a move whose guards pass is `due`, for the reconcile flow to ask for.
-   */
-  async function requestMove(node: Node, toState: string): Promise<MovePlan> {
-    const request: TransitionRequest = {
-      nodeId: node.id,
-      toState,
-      trigger: TRIGGER,
-      actor: ACTOR,
-    };
-    const base = { nodeId: node.id, fromState: node.state, toState };
-    const check = await library.checkTransition(request);
-    if (check.outcome !== "allowed") {
-      return {
-        ...base,
-        outcome: check.outcome,
-        reason: check.reason,
-        guardReport: check.guardReport,
-      };
-    }
-    if (live) return { ...base, outcome: "due", guardReport: check.guardReport };
-    const latest = (await store.listTransitions(node.id)).at(-1);
-    if (
-      latest &&
-      latest.mode === "dry_run" &&
-      latest.fromState === node.state &&
-      latest.toState === toState &&
-      latest.specVersion === contracts.version &&
-      latest.at.getTime() >= node.stateSince.getTime() &&
-      sameIds(latest.evidenceIds, check.evidenceIds)
-    ) {
-      return {
-        ...base,
-        outcome: "already_planned",
-        guardReport: check.guardReport,
-        transitionId: latest.id,
-      };
-    }
-    const result = await library.requestTransition(request);
-    return {
-      ...base,
-      outcome: result.outcome,
-      reason: result.reason,
-      guardReport: result.guardReport,
-      transitionId: result.transitionId,
-    };
-  }
-
-  // Runs this pass planned. They count as active for admission, so the limits hold.
-  const planned: Run[] = [];
-
-  async function planDispatch(node: Node, role: AgentRole): Promise<DispatchPlan> {
-    const plan: DispatchPlan = {
-      nodeId: node.id,
-      state: node.state,
-      role,
-      outcome: "planned",
-    };
-    const { runtime, botVersion } = deps.bots[role];
-    const request: DispatchRequest = { nodeId: node.id, role, runtime, botVersion };
-    if (role === "qa") {
-      const head = await qaHeadOf(store, node.id);
-      if (!head) return { ...plan, outcome: "no_head" };
-      Object.assign(request, head);
-    }
-    const result = await runs.planDispatch(request, planned);
-    if (!result.admitted) return { ...plan, outcome: "refused", reason: result.reason };
-    planned.push(result.run);
-    return { ...plan, run: result.run };
-  }
+  const planner = createPlanner(deps, live);
+  const { requestMove, planDispatch } = planner;
 
   /**
    * Step 3 for a node in a ready state: the first-run check the flows also use
@@ -543,6 +616,28 @@ export async function reconcile(
     }
   }
 
+  /**
+   * Step 3 for a node in review (N-80, O-104): QA's next run on its head, by the check the
+   * run-end flow also uses (./ready-runs.ts), then admission. QA's run has no move. Null when
+   * nothing is due: QA has run on the head, CI is not green there, or there is no head.
+   */
+  async function planQaRun(node: Node): Promise<DispatchPlan | null> {
+    const check = await ready.qaCheckNode(node);
+    if (check.due) return planDispatch(node, "qa", check);
+    const base = { nodeId: node.id, state: node.state, role: "qa" as const };
+    if (check.reason === "waiting") {
+      return {
+        ...base,
+        outcome: "waiting",
+        reason: check.cause,
+        resumeAt: check.resumeAt,
+      };
+    }
+    if (check.reason === "not_dispatchable")
+      return { ...base, outcome: "not_dispatchable" };
+    return null;
+  }
+
   // Step 2. Release: each Blocked node whose guards for the move to Ready pass.
   for (const node of nodes) {
     const state = stateOf(node.state);
@@ -552,9 +647,10 @@ export async function reconcile(
       report.releases.push(await requestMove(node, move.to));
   }
 
-  // Step 3. Dispatch: each node ready for an agent with no active run, each node queued after
-  // `usage_exhausted` once its wait has passed, and each node a failed QA round or staging check
-  // sent back to its building state with no builder run since (src/core/builder-runs.ts).
+  // Step 3. Dispatch: each node ready for an agent with no active run, each node in review whose
+  // QA run on its head is due (N-80, O-104), each node queued after `usage_exhausted` once its
+  // wait has passed, and each node a failed QA round or staging check sent back to its building
+  // state with no builder run since (src/core/builder-runs.ts).
   const intervalMinutes = await positiveNumberSetting(
     store,
     "reconcile_interval_minutes",
@@ -567,6 +663,13 @@ export async function reconcile(
   const activeNodeIds = new Set((await store.listActiveRuns()).map((r) => r.nodeId));
   for (const node of nodes) {
     if (stateOf(node.state)?.escalated || activeNodeIds.has(node.id)) continue;
+    // In review, QA's check decides alone, its resume after `usage_exhausted` included, so the
+    // item is planned once.
+    if (ready.ownerRole(node) === "qa") {
+      const plan = await planQaRun(node);
+      if (plan) report.dispatches.push(plan);
+      continue;
+    }
     const dispatchMove = ready.dispatchMoveOf(node);
     const latestRun = (await store.listRuns({ nodeId: node.id })).at(-1);
     // A Council run queued after `usage_exhausted` is the Council pass's to run again, for its
@@ -629,26 +732,9 @@ export async function reconcile(
   }
 
   // Step 4. Advance from evidence: the moves guarded by CI green on the head, then the dispatch
-  // of the next state's owner (QA).
-  for (const node of nodes) {
-    if (stateOf(node.state)?.escalated) continue;
-    for (const move of movesFrom(node).filter(
-      (m) => m.guards.includes(ADVANCE_GUARD) && !m.guards.includes(MERGE_MOVE_GUARD),
-    )) {
-      const advance: AdvancePlan = await requestMove(node, move.to);
-      if (
-        advance.outcome === "planned" ||
-        advance.outcome === "already_planned" ||
-        advance.outcome === "due"
-      ) {
-        const role = roleOf(stateOf(move.to)?.owner);
-        advance.dispatch = role
-          ? await planDispatch(node, role)
-          : { nodeId: node.id, state: node.state, role, outcome: "no_role" };
-      }
-      report.advances.push(advance);
-    }
-  }
+  // of the next state's owner (QA). The called flow `f/foreman/advance_item` plans one item the
+  // same way (`planAdvance`).
+  for (const node of nodes) report.advances.push(...(await planner.planAdvances(node)));
   if (!live) {
     // Step 4, the merge moves, in dry run: a node whose QA passed on its head merges, or, when its
     // PR is merged already, records the move. The merge step reads the PR and records its mergeable

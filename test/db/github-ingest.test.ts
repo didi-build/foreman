@@ -3,7 +3,9 @@
 // role's grants and row level security back up the core's rules: it writes only deliveries and
 // ingested evidence kinds under a key, changes nothing, and a replay is a no-op. Migration 0020
 // (O-101): it reads the kill switch and dry run and no other setting, so capture's due check runs
-// as this role before the receiver starts the option capture flow.
+// as this role before the receiver starts the option capture flow. The advance and staging checks
+// run as this role too (O-104), with no new grant: the one read they could need beyond it, a
+// decision on a design head QA already reported on, is refused, so the check fails closed.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -23,13 +25,16 @@ import {
   pollRepository,
   type IngestDeps,
 } from "../../src/core/github-ingest.ts";
+import { createAdvances } from "../../src/core/advances.ts";
+import { GUARDS } from "../../src/core/guards/index.ts";
 import {
   createCaptureReads,
   optionScreenshotRef,
 } from "../../src/core/option-capture.ts";
+import { createStagingReads } from "../../src/core/staging.ts";
 import { testRouteColumns } from "../../src/core/routing-testing.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
-import type { Evidence, Store } from "../../src/core/store.ts";
+import type { Evidence, Json, Node, Store } from "../../src/core/store.ts";
 import {
   BRANCH,
   MERGE_SHA,
@@ -376,6 +381,173 @@ describe.skipIf(!adminUrl)(
           reason: "already_captured",
         });
       } finally {
+        await set("dry_run", true);
+      }
+    });
+
+    it("runs the advance and staging checks as factory_ingest with no new grant, and a decision read fails closed (O-104)", async () => {
+      const at = deps.clock.now();
+      const node = async (state: string, extra: Partial<Node> = {}): Promise<Node> => {
+        const created: Node = {
+          id: deps.ids.next(),
+          projectId: f.projectId,
+          type: "work_item",
+          track: "code",
+          state,
+          substate: null,
+          ownerRole: "developer",
+          title: `An item in ${state}`,
+          body: {},
+          hold: false,
+          agentReady: true,
+          stale: false,
+          blockedReason: null,
+          stateSince: at,
+          linearIssueId: null,
+          linearStatusSynced: null,
+          version: 0,
+          createdAt: at,
+          updatedAt: at,
+          ...extra,
+        };
+        await runner.insertNode(created);
+        return created;
+      };
+      const runnerEvidence = (
+        nodeId: string,
+        kind: Evidence["kind"],
+        payload: Json,
+        commitSha: string | null = null,
+      ) =>
+        runner.insertEvidence({
+          id: deps.ids.next(),
+          nodeId,
+          runId: null,
+          kind,
+          ref: `${kind}/test`,
+          commitSha,
+          payload,
+          recordedBy: "runner",
+          recordedAt: deps.clock.now(),
+          supersedesId: null,
+        });
+      const head = "e".repeat(40);
+      // A code item In development with CI green on its head and the Developer's docs note.
+      const code = await node("in_development");
+      await ingest.insertEvidenceOnce(
+        ciRun({
+          nodeId: code.id,
+          commitSha: head,
+          payload: { conclusion: "success", pr: 31, changedPaths: [] },
+        }),
+        ciRunKey(REPO, 31, head, "success", 1),
+      );
+      await runnerEvidence(code.id, "docs_note", { impact: "none" }, head);
+      // An item of the repository in Verifying on staging.
+      const merged = await node("verifying_on_staging");
+      await runnerEvidence(merged.id, "dispatch_record", {
+        repo: REPO,
+        branch: "foreman/merged",
+      });
+      // A design item back in Building components on a head QA passed, whose PR still carries
+      // an option folder: the guard asks which option Didi approved.
+      const design = await node("building_components", {
+        track: "design",
+        ownerRole: "designer",
+      });
+      await ingest.insertEvidenceOnce(
+        ciRun({
+          nodeId: design.id,
+          commitSha: head,
+          payload: {
+            conclusion: "success",
+            pr: 32,
+            changedPaths: ["design/gallery/button/options/a/index.html"],
+          },
+        }),
+        ciRunKey(REPO, 32, head, "success", 2),
+      );
+      await runner.insertRun({
+        id: deps.ids.next(),
+        projectId: f.projectId,
+        nodeId: design.id,
+        bot: "qa",
+        agentId: null,
+        runtime: "messages_api",
+        model: "claude-opus-5-5",
+        headSha: head,
+        prNumber: 32,
+        botVersion: "v1",
+        startedAt: at,
+        endedAt: deps.clock.now(),
+        outcome: "success",
+        turns: null,
+        minutes: null,
+        costUsd: null,
+        tokens: null,
+        budget: { ...REHEARSAL_RUN_LIMITS.qa },
+        parentRunId: null,
+        transcriptRef: null,
+        usageExhaustedCause: null,
+        retryAfterSeconds: null,
+        questionTopic: null,
+        ...testRouteColumns("qa"),
+      });
+
+      const advances = createAdvances({
+        ...deps,
+        contracts: machines(),
+        guards: GUARDS,
+      });
+      const staging = createStagingReads(machines());
+      const deploy = {
+        repo: REPO,
+        sha: MERGE_SHA,
+        environment: "staging",
+        state: "success" as const,
+      };
+      // Dry run is seeded on (0001): nothing is due until it is off.
+      expect(await advances.due(code.id)).toMatchObject({
+        due: false,
+        reason: "dry_run",
+      });
+      expect(await staging.due(ingest, deploy)).toEqual({
+        due: false,
+        reason: "dry_run",
+      });
+      const set = (key: string, value: boolean) =>
+        runner.setSetting({
+          key,
+          value,
+          updatedBy: "test",
+          updatedAt: deps.clock.now(),
+        });
+      await set("dry_run", false);
+      try {
+        expect(await advances.due(code.id)).toEqual({
+          due: true,
+          nodeId: code.id,
+          toState: "in_qa_review",
+        });
+        expect(await staging.due(ingest, deploy)).toEqual({
+          due: true,
+          repo: REPO,
+          sha: MERGE_SHA,
+        });
+        expect(await advances.due(merged.id)).toMatchObject({
+          due: false,
+          reason: "no_advance_move",
+        });
+        // The role cannot read decisions, and no grant is added: the check throws, and the
+        // receiver starts nothing (src/github-receiver/flow-starts.ts).
+        await expect(advances.due(design.id)).rejects.toThrow(/permission denied/);
+        await set("kill_switch", true);
+        expect(await advances.due(code.id)).toMatchObject({ reason: "kill_switch" });
+        expect(await staging.due(ingest, deploy)).toMatchObject({
+          reason: "kill_switch",
+        });
+      } finally {
+        await set("kill_switch", false);
         await set("dry_run", true);
       }
     });

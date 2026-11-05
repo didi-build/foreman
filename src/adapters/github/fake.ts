@@ -233,3 +233,22 @@ export function checkCompletedEvent(
     repository: { full_name: repo },
   };
 }
+
+/** A `deployment_status` event: one status of one deployment of `sha` to `environment`. */
+export function deploymentStatusEvent(
+  repo: string,
+  sha: string,
+  environment: string,
+  state: string,
+): Record<string, unknown> {
+  return {
+    action: "created",
+    deployment_status: {
+      state,
+      environment,
+      description: "Text from the status is never read.",
+    },
+    deployment: { id: 4100, sha, ref: "main", environment },
+    repository: { full_name: repo },
+  };
+}

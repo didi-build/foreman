@@ -5,7 +5,13 @@
 // The head rule (D-178, docs/guards.md): a guard takes the head commit from the newest `ci_run`,
 // so a `ci_run` is recorded only for the PR's current head as GitHub reports it at that moment.
 // A late event about an older commit records nothing, and the head never moves back.
-import type { GitHubReader, CheckRun, PullRequest } from "./github.ts";
+//
+// A `deployment_status` delivery is still recorded as a delivery only, never as evidence (ADR 0113
+// section 5): the runner reads the deploy from GitHub itself. For a delivery recorded now, and
+// never for a duplicate, the result names the deployment it reported (`deployment`: repository,
+// commit, environment and state as the signed payload gives them), so the GitHub receiver can
+// decide whether the staging flow is due before it starts it (D-329 slice 4, O-104).
+import type { GitHubReader, CheckRun, DeploymentState, PullRequest } from "./github.ts";
 import type { Clock, IdSource } from "./library.ts";
 import type {
   Evidence,
@@ -74,6 +80,45 @@ export interface IngestResult {
    * none, so the receiver starts a flow at most once per CI end (O-101).
    */
   finishedCi: FinishedCi[];
+  /**
+   * The deployment a `deployment_status` delivery reported, when this delivery was recorded now:
+   * never for a replay, another event or a payload that does not name all four fields. Read from
+   * the signed payload only to decide whether a flow is due; never evidence (O-104).
+   */
+  deployment: DeploymentReport | null;
+}
+
+/** A deployment status as a `deployment_status` delivery reported it. */
+export interface DeploymentReport {
+  repo: string;
+  /** The commit deployed, 40 lowercase hex characters. */
+  sha: string;
+  environment: string;
+  state: DeploymentState;
+}
+
+const DEPLOYMENT_STATES: ReadonlySet<string> = new Set<DeploymentState>([
+  "success",
+  "failure",
+  "error",
+  "inactive",
+  "in_progress",
+  "queued",
+  "pending",
+]);
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+const ENVIRONMENT = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/** The deployment a `deployment_status` payload names, or null when any field is missing. */
+function deploymentOf(repo: string, payload: unknown): DeploymentReport | null {
+  const deployment = field(payload, "deployment");
+  const sha = field(deployment, "sha");
+  const environment = field(deployment, "environment");
+  const state = field(field(payload, "deployment_status"), "state");
+  if (typeof sha !== "string" || !COMMIT_SHA.test(sha)) return null;
+  if (typeof environment !== "string" || !ENVIRONMENT.test(environment)) return null;
+  if (typeof state !== "string" || !DEPLOYMENT_STATES.has(state)) return null;
+  return { repo, sha, environment, state: state as DeploymentState };
 }
 
 /** A node's PR head whose CI has just finished. */
@@ -402,6 +447,7 @@ export async function ingestDelivery(
       pr: null,
       evidenceIds: [],
       finishedCi: [],
+      deployment: null,
     };
   }
 
@@ -441,7 +487,11 @@ export async function ingestDelivery(
       // Rolls back any evidence this copy inserted; the first copy owns the result.
       if (!fresh) throw new DuplicateDelivery();
       const finishedCi = findings ? finishedCiOf(findings, evidenceIds) : [];
-      return { outcome, reason, repo, pr, evidenceIds, finishedCi };
+      const deployment =
+        delivery.event === "deployment_status" && repo !== null
+          ? deploymentOf(repo, delivery.payload)
+          : null;
+      return { outcome, reason, repo, pr, evidenceIds, finishedCi, deployment };
     });
   } catch (error) {
     if (!(error instanceof DuplicateDelivery)) throw error;
@@ -452,6 +502,7 @@ export async function ingestDelivery(
       pr,
       evidenceIds: [],
       finishedCi: [],
+      deployment: null,
     };
   }
 }

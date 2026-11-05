@@ -10,6 +10,7 @@
 // ends those runs. It never touches a counter itself: the reported move does, by the P-03 rules
 // (a QA fail, or a builder's done report refused on its guards, which also starts the next fix
 // round, O-43). A Council run's answer is checked and recorded first (./lib/council-runs.ts, D-228).
+// Then QA's next run in review (N-80) and the freed slot's first runs (N-81, O-104).
 import { createRuns, type RunReport } from "../src/core/runs.ts";
 import { runEndSteps, type AfterRunEnd } from "./lib/council-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";

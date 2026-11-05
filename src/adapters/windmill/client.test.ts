@@ -37,9 +37,11 @@ import {
   windmillPlanApprovalFlow,
 } from "./plan-approval-flow.ts";
 import {
+  ADVANCE_ITEM_FLOW_PATH,
   OPTION_CAPTURE_FLOW_PATH,
   RECEIVER_FLOW_PATHS,
-  windmillOptionCaptureFlow,
+  VERIFY_STAGING_FLOW_PATH,
+  windmillReceiverFlows,
 } from "./receiver-flows.ts";
 import {
   RECORD_RUN_END_FLOW_PATH,
@@ -243,12 +245,28 @@ describe("the Windmill start client through the shared proxy (integration: local
     ]);
   });
 
-  it("the receiver's port starts only the option capture flow, with the item's id", async () => {
-    await windmillOptionCaptureFlow(TOKEN, target(), { ca: cert }).start("node-2");
-    expect(seen.map((s) => [s.path, s.body])).toEqual([
+  it("the receiver's ports start option capture and the advance with the item's id, and the staging flow with the repository and commit (O-101, O-104)", async () => {
+    const flows = windmillReceiverFlows(TOKEN, target(), { ca: cert });
+    await flows.optionCapture.start("node-2");
+    await flows.advanceItem.start("node-3");
+    await flows.verifyStaging.start("didi-build/rehearsal", "a".repeat(40));
+    expect(seen.map((s) => [s.path, s.authorization, s.body])).toEqual([
       [
         `/api/w/${WORKSPACE}/jobs/run/p/${OPTION_CAPTURE_FLOW_PATH}`,
+        `Bearer ${TOKEN}`,
         { input: { nodeId: "node-2" } },
+      ],
+      [
+        `/api/w/${WORKSPACE}/jobs/run/p/${ADVANCE_ITEM_FLOW_PATH}`,
+        `Bearer ${TOKEN}`,
+        // flows/advance-item.ts reads `{ nodeId }` as its input.
+        { input: { nodeId: "node-3" } },
+      ],
+      [
+        `/api/w/${WORKSPACE}/jobs/run/p/${VERIFY_STAGING_FLOW_PATH}`,
+        `Bearer ${TOKEN}`,
+        // flows/verify-staging.ts reads `{ repo, sha }` as its input.
+        { input: { repo: "didi-build/rehearsal", sha: "a".repeat(40) } },
       ],
     ]);
   });
@@ -338,13 +356,18 @@ describe("the Windmill start client through the shared proxy (integration: local
   });
 
   it("refuses, with NotBuiltError and no call, while a service's token does not exist", async () => {
+    const receiver = windmillReceiverFlows(null, target(), { ca: cert });
     for (const flow of [
       windmillPlanApprovalFlow(null, target(), { ca: cert }),
-      windmillOptionCaptureFlow(null, target(), { ca: cert }),
+      receiver.optionCapture,
+      receiver.advanceItem,
       windmillRunEndFlow(null, target(), { ca: cert }),
     ]) {
       await expect(flow.start("id-1")).rejects.toBeInstanceOf(NotBuiltError);
     }
+    await expect(
+      receiver.verifyStaging.start("didi-build/rehearsal", "a".repeat(40)),
+    ).rejects.toBeInstanceOf(NotBuiltError);
     expect(seen).toEqual([]);
     expect(connected).toEqual([]);
   });
@@ -436,8 +459,11 @@ describe("the Windmill start's settings and endpoint (unit, O-101)", () => {
     expect(runScope(PLAN_APPROVAL_FLOW_PATH)).toBe(
       "jobs:run:scripts:f/foreman/plan_approval",
     );
+    // The receiver's token starts its three flows and nothing else (D-291, O-104).
     expect(RECEIVER_FLOW_PATHS.map(runScope)).toEqual([
       "jobs:run:scripts:f/foreman/option_capture",
+      "jobs:run:scripts:f/foreman/advance_item",
+      "jobs:run:scripts:f/foreman/verify_staging",
     ]);
     // The run watcher's token starts the run-end flow and nothing else (D-330).
     expect(RUN_WATCHER_FLOW_PATHS.map(runScope)).toEqual([

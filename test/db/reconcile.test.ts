@@ -4,7 +4,9 @@
 // no call for the pass; this checks its reads and the dry-run write against the real schema.
 // Then the live pass through the reconcile flow (D-329 slice 3, O-103): two passes at once, as
 // two Windmill runs of the schedule could be, give one release and one first run per item, held
-// by the node's version check and admission's lock, with the fake agent runtime.
+// by the node's version check and admission's lock, with the fake agent runtime. And the
+// receiver's advance flow on CI's end racing the pass (D-329 slice 4, O-104): one move into QA
+// review and one QA run between them.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -14,6 +16,7 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { run as advanceItem } from "../../flows/advance-item.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { flowDepsFor } from "../flows/flow-fixture.ts";
 import { createReconcileFixture } from "../reconcile-fixture.ts";
@@ -137,6 +140,47 @@ describe.skipIf(!adminUrl)(
       expect(mineOf(third.released)).toEqual([]);
       expect(mineOf(third.dispatched)).toEqual([]);
       expect(mine()).toHaveLength(2);
+    });
+
+    it("the advance flow on CI's end and a live pass at once give one move into review and one QA run", async () => {
+      const f = await createReconcileFixture({
+        store,
+        idPrefix: "62000000-0000-4000-8000",
+        slug: "advance",
+      });
+      await f.setting("dry_run", false);
+      const item = await f.node("in_development");
+      const head = "a".repeat(40);
+      await f.evidence(
+        item.id,
+        "ci_run",
+        { conclusion: "success", pr: 21, changedPaths: ["src/a.ts"] },
+        { commitSha: head },
+      );
+      await f.evidence(item.id, "docs_note", { impact: "none" }, { commitSha: head });
+      const { deps, tasksFor } = flowDepsFor(f.deps);
+
+      const [event, pass] = await Promise.all([
+        advanceItem(deps, { nodeId: item.id }),
+        reconcileFlow(deps),
+      ]);
+
+      const rows = (await f.transitions(item.id)).filter((t) => t.mode === "applied");
+      expect(rows.map((t) => [t.fromState, t.toState])).toEqual([
+        ["in_development", "in_qa_review"],
+      ]);
+      expect(await store.getNode(item.id)).toMatchObject({ state: "in_qa_review" });
+      const runs = await store.listRuns({ nodeId: item.id });
+      expect(runs.map((r) => [r.bot, r.headSha, r.prNumber, r.endedAt])).toEqual([
+        ["qa", head, 21, null],
+      ]);
+      expect(tasksFor.filter((t) => t.run.nodeId === item.id)).toHaveLength(1);
+      // Whichever lost says so and throws nothing.
+      const steps = [
+        ...(event.outcome === "advanced" ? event.advances : []),
+        ...(pass.advanced ?? []).filter((a) => a.nodeId === item.id),
+      ];
+      expect(steps.filter((a) => a.move.outcome === "applied")).toHaveLength(1);
     });
   },
 );

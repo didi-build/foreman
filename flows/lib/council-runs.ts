@@ -21,6 +21,9 @@
 //
 // The reconcile flow's live passes run the Council pass for every open question; the run-end
 // flow runs it for an item whose report has just escalated it, so its Council run starts at once.
+// An escalation answered back to the building state the item came from starts its fix round at
+// once, whether the Council answered (at its run's end) or Didi did (the approval resume step,
+// O-104): `afterEscalationReturned`.
 //
 // When a Council run has finished, the run-end flow (flows/record-run-end.ts) takes the steps of
 // `runEndSteps`. Before the end is recorded, the runner validates the run's structured
@@ -80,7 +83,10 @@
 // merged its item, each open item touching the same design feature folder is asked about, and
 // after a builder run that stopped reporting the work already done, its own item is; the Council
 // pass then starts each question's run. The reconcile flow's live passes ask about merges again
-// as a safety net (`mergedChangePass`).
+// as a safety net (`mergedChangePass`). These are the runner's two merges, each followed by the
+// merged-change check in the same flow run (O-104): QA's pass report here, and the live merge
+// pass (./live-passes.ts). A merge made by hand on GitHub has no flow; the receiver records its
+// `merge_commit`, and the live passes complete its move and ask about it.
 //
 // The follow-up pass (`followUpPass`, D-234) opens the follow-up Council question on a reversal
 // whose gate request Didi has answered, and the Council pass then starts its run. The approval
@@ -133,7 +139,13 @@ import {
 import { createPullRequestCloses, type CloseStatus } from "../../src/core/pr-close.ts";
 import { isCloseTaskType } from "../../src/core/task-types.ts";
 import { cancelRun } from "./cancel-runs.ts";
-import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
+import {
+  startFreedSlots,
+  startQaRuns,
+  startReadyRuns,
+  type QaRunStart,
+  type ReadyRunStart,
+} from "./ready-runs.ts";
 import { closePass } from "./close-runs.ts";
 import { countedRefusal } from "./option-capture.ts";
 import type { FlowDeps } from "./compose.ts";
@@ -314,6 +326,33 @@ export async function redoPass(
   return steps;
 }
 
+/** The next run of an item an escalation's move sent back where it came from. */
+export interface EscalationReturnRuns {
+  /** A work item back in its building state: its fix round (O-41). */
+  builderRuns: BuilderRunStart[];
+  /** An idea back in Triage: its next Triage run (M3.6). */
+  triage?: TriagePassStep[];
+}
+
+/**
+ * After an escalation's move back out of Escalated to Council or Escalated to Didi: an idea goes on
+ * with the Triage pass, and a work item back in its building state gets its fix round, if one is
+ * due (src/core/builder-runs.ts decides). The Council's answer takes it at its run's end
+ * (`afterCouncilRun`), and Didi's answer in the approval resume step (./approval.ts, O-104), so
+ * both answers go on the same way. A work item back in a ready state gets its first run from the
+ * caller instead (./ready-runs.ts).
+ */
+export async function afterEscalationReturned(
+  deps: FlowDeps,
+  nodeId: string,
+): Promise<EscalationReturnRuns> {
+  const returned = await deps.store.getNode(nodeId);
+  if (returned?.type === "idea") {
+    return { builderRuns: [], triage: await triagePass(deps, [nodeId]) };
+  }
+  return { builderRuns: await startBuilderRuns(deps, [nodeId]) };
+}
+
 /** What follows a Council run's recorded end. */
 export interface AfterCouncilRun {
   /** The run's answer as the runner recorded it, when the end was recorded now. */
@@ -357,10 +396,9 @@ export async function afterCouncilRun(
   if (topic.startsWith(ESCALATION_PREFIX) && run.nodeId) {
     after.escalation = await createEscalations(deps).resolve(run.nodeId);
     if (after.escalation.step === "returned") {
-      const returned = await deps.store.getNode(run.nodeId);
-      if (returned?.type === "idea")
-        after.triage = await triagePass(deps, [run.nodeId]);
-      else after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
+      const next = await afterEscalationReturned(deps, run.nodeId);
+      after.builderRuns = next.builderRuns;
+      if (next.triage) after.triage = next.triage;
     }
   }
   if (topic.startsWith(REVERSAL_PREFIX) && answer?.recorded === true) {
@@ -417,6 +455,16 @@ export type AfterRunEnd = AfterReport &
     visual?: VisualRecord;
     /** After a QA run: the visual comparison's one more run after a `cannot_tell` (D-252). */
     visualRerun?: VisualRerunStart;
+    /**
+     * QA's next run on the item in review (N-80, O-104): its review once a builder's report moved
+     * it there, and on a design item the visual comparison once the review passed.
+     */
+    qaRuns?: QaRunStart[];
+    /**
+     * The first runs of the project's ready items the run's freed slot let start (N-81), in the
+     * pass's order, after everything else the run's end started.
+     */
+    freedSlots?: ReadyRunStart[];
     /** After a Designer run: the capture of its options at the PR head, or why not (O-88). */
     optionCapture?: CaptureStep;
     /** A Triage run's answer as the runner checked it: handed off or rejected (M3.6). */
@@ -484,7 +532,9 @@ export async function visualRerun(
  * The ideas never change the report or the item's move. `after` runs once the end is recorded:
  * for a Designer run the capture of its exploration options when CI has already rendered them
  * (src/core/option-capture.ts, O-88), the reported move and fix round (./builder-runs.ts), then
- * for a Council run `afterCouncilRun`.
+ * for a Council run `afterCouncilRun`. After a builder's or QA's run on an item in review, QA's
+ * next run on its head starts (N-80, O-104). Last, for every run, the first runs of the project's
+ * ready items its freed slot lets start (N-81, ./ready-runs.ts).
  */
 export function runEndSteps(deps: FlowDeps, run: Run) {
   let answer: CouncilAnswer | undefined;
@@ -553,6 +603,117 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       ? { ...report, outcome: "fail" }
       : report;
   }
+  async function afterEnd(): Promise<AfterRunEnd> {
+    if (isClose && run.nodeId && run.prNumber !== null) {
+      // A close run's item is Cancelled: its report triggers no move (Cancelled is the
+      // runner's), and nothing else follows it.
+      return {
+        ...(await reportedMoveAndFixRound(deps, run.id)),
+        closeRun: {
+          nodeId: run.nodeId,
+          close: await createPullRequestCloses(deps).closeOf(run.nodeId, run.prNumber),
+        },
+      };
+    }
+    // A run on an idea or a work item a cancel waits on: the cancel takes its next step first,
+    // so the item it waited on is cancelled before any next run of it could start (D-308). A
+    // Council run's own stop is taken after its answer, below.
+    const cancels = isCouncil ? undefined : await cancelAfterRun(deps, run.nodeId);
+    // A Designer run in exploration: its options are captured first when CI has already
+    // rendered them, so the report's move finds them (O-88).
+    const optionCapture =
+      run.bot === "designer" && run.nodeId
+        ? await createOptionCaptures(deps).capture(run.nodeId)
+        : undefined;
+    const after = await reportedMoveAndFixRound(deps, run.id);
+    // A capture refusal the Designer caused counted toward `failure` (O-89): the report's own
+    // move does not count it, so its fix round starts here, when one is due.
+    if (
+      optionCapture &&
+      countedRefusal(optionCapture) &&
+      after.builderRuns.length === 0 &&
+      run.nodeId
+    ) {
+      after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
+    }
+    const reported = {
+      ...(optionCapture ? { optionCapture } : {}),
+      ...after,
+      ...(findingIdeas ? { findingIdeas } : {}),
+      ...(visual ? { visual } : {}),
+    };
+    if (isCouncil) {
+      return { ...reported, council: await afterCouncilRun(deps, run, answer) };
+    }
+    if (isTriage) {
+      // The idea's next step: its re-run after a rejected answer, or the Council after two.
+      const triage = run.nodeId ? await triagePass(deps, [run.nodeId]) : undefined;
+      // The items a handoff created (`split_into` from the idea): each one in a ready state
+      // with nothing holding it gets its first run now. A repeated trigger finds them started.
+      const items = run.nodeId
+        ? (
+            await deps.store.listEdges({ fromNode: run.nodeId, type: "split_into" })
+          ).map((e) => e.toNode)
+        : [];
+      const firstRuns = await startReadyRuns(deps, items);
+      return {
+        ...reported,
+        ...(triageAnswer ? { triageAnswer } : {}),
+        ...(triage ? { triage } : {}),
+        ...(cancels ? { cancels } : {}),
+        ...(firstRuns.length > 0 ? { firstRuns } : {}),
+      };
+    }
+    // The report escalated the item (or an earlier call did): its Council run starts now
+    // rather than at the next reconcile pass.
+    const node = run.nodeId ? await deps.store.getNode(run.nodeId) : null;
+    const escalated =
+      node !== null && node.state === createEscalations(deps).councilState;
+    // After any QA run on an item still in review: the visual comparison's one more run after
+    // a `cannot_tell`, once no other run on the item is active (D-252).
+    const rerun =
+      run.bot === "qa" && node !== null && !escalated
+        ? await visualRerun(deps, node.id)
+        : null;
+    // QA's next run on the item in review, when its check says it is due (N-80, O-104): after a
+    // builder's report moved the item into In QA review, QA's review on the head; after QA's
+    // review passed on a design item, the visual comparison. The check reads the head from the
+    // newest `ci_run`, never from the agent.
+    const qaRuns =
+      node !== null && !escalated ? await startQaRuns(deps, [node.id]) : [];
+    // The questions on work items this end raises (D-308 (3)): a QA run whose report merged
+    // its item, and a builder run that stopped reporting the work already done.
+    const stillNeeded = createStillNeeded(deps);
+    const opened: StillNeededOpen[] = [];
+    if (run.bot === "qa" && run.nodeId)
+      opened.push(...(await stillNeeded.afterMerge(run.nodeId)));
+    if (escalated) {
+      const done = await stillNeeded.afterAlreadyDone(run.id);
+      if (done) opened.push(done);
+    }
+    const asked = opened.filter((o) => o.opened);
+    const stillNeededSteps =
+      asked.length > 0
+        ? {
+            opened,
+            council: await councilPass(
+              deps,
+              asked.map((o) => `${STILL_NEEDED_PREFIX}${o.nodeId}`),
+            ),
+          }
+        : null;
+    return {
+      ...reported,
+      ...(escalated
+        ? { councilRuns: await councilPass(deps, [escalationTopic(node.id)]) }
+        : {}),
+      ...(stillNeededSteps ? { stillNeeded: stillNeededSteps } : {}),
+      ...(rerun ? { visualRerun: rerun } : {}),
+      ...(qaRuns.length > 0 ? { qaRuns } : {}),
+      ...(cancels ? { cancels } : {}),
+    };
+  }
+
   return {
     async record(result: AgentRunResult, report: RunReport): Promise<RunReport> {
       const recorded = await reportToRecord(result, report);
@@ -566,110 +727,11 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       return recorded;
     },
     async after(): Promise<AfterRunEnd> {
-      if (isClose && run.nodeId && run.prNumber !== null) {
-        // A close run's item is Cancelled: its report triggers no move (Cancelled is the
-        // runner's), and nothing else follows it.
-        return {
-          ...(await reportedMoveAndFixRound(deps, run.id)),
-          closeRun: {
-            nodeId: run.nodeId,
-            close: await createPullRequestCloses(deps).closeOf(
-              run.nodeId,
-              run.prNumber,
-            ),
-          },
-        };
-      }
-      // A run on an idea or a work item a cancel waits on: the cancel takes its next step first,
-      // so the item it waited on is cancelled before any next run of it could start (D-308). A
-      // Council run's own stop is taken after its answer, below.
-      const cancels = isCouncil ? undefined : await cancelAfterRun(deps, run.nodeId);
-      // A Designer run in exploration: its options are captured first when CI has already
-      // rendered them, so the report's move finds them (O-88).
-      const optionCapture =
-        run.bot === "designer" && run.nodeId
-          ? await createOptionCaptures(deps).capture(run.nodeId)
-          : undefined;
-      const after = await reportedMoveAndFixRound(deps, run.id);
-      // A capture refusal the Designer caused counted toward `failure` (O-89): the report's own
-      // move does not count it, so its fix round starts here, when one is due.
-      if (
-        optionCapture &&
-        countedRefusal(optionCapture) &&
-        after.builderRuns.length === 0 &&
-        run.nodeId
-      ) {
-        after.builderRuns = await startBuilderRuns(deps, [run.nodeId]);
-      }
-      const reported = {
-        ...(optionCapture ? { optionCapture } : {}),
-        ...after,
-        ...(findingIdeas ? { findingIdeas } : {}),
-        ...(visual ? { visual } : {}),
-      };
-      if (isCouncil) {
-        return { ...reported, council: await afterCouncilRun(deps, run, answer) };
-      }
-      if (isTriage) {
-        // The idea's next step: its re-run after a rejected answer, or the Council after two.
-        const triage = run.nodeId ? await triagePass(deps, [run.nodeId]) : undefined;
-        // The items a handoff created (`split_into` from the idea): each one in a ready state
-        // with nothing holding it gets its first run now. A repeated trigger finds them started.
-        const items = run.nodeId
-          ? (
-              await deps.store.listEdges({ fromNode: run.nodeId, type: "split_into" })
-            ).map((e) => e.toNode)
-          : [];
-        const firstRuns = await startReadyRuns(deps, items);
-        return {
-          ...reported,
-          ...(triageAnswer ? { triageAnswer } : {}),
-          ...(triage ? { triage } : {}),
-          ...(cancels ? { cancels } : {}),
-          ...(firstRuns.length > 0 ? { firstRuns } : {}),
-        };
-      }
-      // The report escalated the item (or an earlier call did): its Council run starts now
-      // rather than at the next reconcile pass.
-      const node = run.nodeId ? await deps.store.getNode(run.nodeId) : null;
-      const escalated =
-        node !== null && node.state === createEscalations(deps).councilState;
-      // After any QA run on an item still in review: the visual comparison's one more run after
-      // a `cannot_tell`, once no other run on the item is active (D-252).
-      const rerun =
-        run.bot === "qa" && node !== null && !escalated
-          ? await visualRerun(deps, node.id)
-          : null;
-      // The questions on work items this end raises (D-308 (3)): a QA run whose report merged
-      // its item, and a builder run that stopped reporting the work already done.
-      const stillNeeded = createStillNeeded(deps);
-      const opened: StillNeededOpen[] = [];
-      if (run.bot === "qa" && run.nodeId)
-        opened.push(...(await stillNeeded.afterMerge(run.nodeId)));
-      if (escalated) {
-        const done = await stillNeeded.afterAlreadyDone(run.id);
-        if (done) opened.push(done);
-      }
-      const asked = opened.filter((o) => o.opened);
-      const stillNeededSteps =
-        asked.length > 0
-          ? {
-              opened,
-              council: await councilPass(
-                deps,
-                asked.map((o) => `${STILL_NEEDED_PREFIX}${o.nodeId}`),
-              ),
-            }
-          : null;
-      return {
-        ...reported,
-        ...(escalated
-          ? { councilRuns: await councilPass(deps, [escalationTopic(node.id)]) }
-          : {}),
-        ...(stillNeededSteps ? { stillNeeded: stillNeededSteps } : {}),
-        ...(rerun ? { visualRerun: rerun } : {}),
-        ...(cancels ? { cancels } : {}),
-      };
+      const after = await afterEnd();
+      // Last, the slot the run held is free (N-81): the project's ready items start in the pass's
+      // order, as many as admission now lets, after the run's own next steps took theirs.
+      const freedSlots = await startFreedSlots(deps, run.projectId);
+      return freedSlots.length > 0 ? { ...after, freedSlots } : after;
     },
   };
 }

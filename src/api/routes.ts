@@ -5,8 +5,9 @@
 // The planning chat's identity (D-266, ./auth.ts) may call `POST /plans` and the three planning
 // reads under `/planning/projects/:slug/` (D-273 (3)) and nothing else, and no run token may call
 // them. Every other route refuses a planning caller with 403. After a submission is recorded, the
-// API starts the plan-approval flow for it (D-273 (2)); if that fails the submission stands and
-// the reconcile pass opens the request later.
+// API starts the plan-approval flow for it (D-273 (2)), unless the kill switch or dry run is on
+// (D-333); if a switch holds it or the start fails, the submission stands and the reconcile pass
+// opens the request later.
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
@@ -291,13 +292,23 @@ export function createApiHandler({
   }
   /**
    * Starts the plan-approval flow for the submission just recorded, so Didi's request opens at
-   * once (D-273 (2)). A failure never undoes the submission: the reconcile pass's plan approval
-   * step opens the request later (D-274). The log names the error's type, and for the Windmill
-   * client's own error its step and status (O-101), never an id, a token or a text.
+   * once (D-273 (2)). Under the kill switch or dry run it starts nothing, so a held runner spends
+   * no Windmill run on a flow that would do nothing (D-333); the reconcile pass's plan approval
+   * step opens the request once both are off. A failure never undoes the submission: the pass
+   * opens the request later (D-274). The log names the switch, or the error's type and for the
+   * Windmill client's own error its step and status (O-101), never an id, a token or a text.
    */
   async function startApprovalFlow(ideaId: string): Promise<void> {
     if (!planning) return;
     try {
+      const held = await heldBy(store);
+      if (held) {
+        planning.logger.info(
+          "plan approval flow not started under a switch; the reconcile pass opens the request",
+          { switch: held },
+        );
+        return;
+      }
       await planning.approvalFlow.start(ideaId);
       planning.logger.info("plan approval flow started");
     } catch (error) {
@@ -309,6 +320,17 @@ export function createApiHandler({
   }
 
   /** One planning read for one project, framed as data (D-273 (3)). */
+  /**
+   * Which switch, if any, holds the runner, read as the library and the flows read them: the kill
+   * switch is on only when set to true, and dry run is on unless set to false (D-333).
+   */
+  async function heldBy(
+    ops: Pick<Store, "getSetting">,
+  ): Promise<"kill_switch" | "dry_run" | null> {
+    if ((await ops.getSetting("kill_switch"))?.value === true) return "kill_switch";
+    return (await ops.getSetting("dry_run"))?.value !== false ? "dry_run" : null;
+  }
+
   async function readPlanning(slug: string, read: string) {
     if (!SLUG.test(slug)) throw new HttpError(404, "project not found");
     const project = await store.getProjectBySlug(slug);

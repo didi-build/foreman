@@ -1,10 +1,15 @@
 // Seam: GitHub ingestion in the core (build plan M2.3, ADR 0113). The core's plain functions over
 // the memory store and the fake GitHub: events to evidence, linking, the head rule, the QA check
-// exclusion, both levels of idempotency, and the polling backstop. The receiver's HTTP and
-// signature layer is tested in test/github-receiver.test.ts; Postgres in test/db/.
+// exclusion, both levels of idempotency, the polling backstop, and the deployment a fresh
+// `deployment_status` delivery reports (O-104). The receiver's HTTP and signature layer is tested
+// in test/github-receiver.test.ts; Postgres in test/db/.
 import { describe, expect, it } from "vitest";
 
-import { checkCompletedEvent, pullRequestEvent } from "../src/adapters/github/fake.ts";
+import {
+  checkCompletedEvent,
+  deploymentStatusEvent,
+  pullRequestEvent,
+} from "../src/adapters/github/fake.ts";
 import {
   ciRunKey,
   conclude,
@@ -351,6 +356,37 @@ describe("webhook deliveries to evidence (unit: GitHub ingestion, ADR 0113)", ()
       expect((await f.store.getGithubDelivery("d-1"))?.outcome).toBe("ignored");
     },
   );
+
+  it("names the deployment a fresh deployment_status delivery reports, and never for a replay (O-104)", async () => {
+    const f = await createIngestFixture();
+    const event = deploymentStatusEvent(REPO, MERGE_SHA, "staging", "success");
+    const fresh = await deliver(f, "deployment_status", event, "d-1");
+    expect(fresh).toMatchObject({
+      outcome: "ignored",
+      reason: "not evidence by itself",
+      deployment: {
+        repo: REPO,
+        sha: MERGE_SHA,
+        environment: "staging",
+        state: "success",
+      },
+    });
+    expect(await f.evidence()).toHaveLength(0);
+    expect(await deliver(f, "deployment_status", event, "d-1")).toMatchObject({
+      outcome: "duplicate",
+      deployment: null,
+    });
+    // A payload missing a field, or with a commit that is not one, names none.
+    for (const payload of [
+      { repository: { full_name: REPO } },
+      deploymentStatusEvent(REPO, "not-a-commit", "staging", "success"),
+      deploymentStatusEvent(REPO, MERGE_SHA, "staging", "exploded"),
+    ]) {
+      expect((await deliver(f, "deployment_status", payload)).deployment).toBeNull();
+    }
+    // Any other event names none.
+    expect((await opened(f)).deployment).toBeNull();
+  });
 
   it("stores nothing for an event type it does not read", async () => {
     const f = await createIngestFixture();

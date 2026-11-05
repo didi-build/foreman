@@ -71,6 +71,18 @@ const ideaCount = async () => (await store.listNodes({})).length;
 
 beforeAll(async () => {
   store = createMemoryStore();
+  // A live runner, so a submission starts the plan-approval flow (D-333).
+  for (const [key, value] of [
+    ["kill_switch", false],
+    ["dry_run", false],
+  ] as const) {
+    await store.setSetting({
+      key,
+      value,
+      updatedBy: "test",
+      updatedAt: new Date(nowMs),
+    });
+  }
   const clock = { now: () => new Date(nowMs) };
   const ids = { next: nextId };
   const library = createLibrary({

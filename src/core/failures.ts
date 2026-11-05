@@ -17,7 +17,19 @@
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import type { Contracts, GuardRegistry } from "./contracts.ts";
 import type { Clock, IdSource, Trigger } from "./library.ts";
-import type { Evidence, Json, Run, Store } from "./store.ts";
+import type { Evidence, Json, Run, Store, StoreOps } from "./store.ts";
+
+/**
+ * A run admitted and ended `fail` by the runner before it started: it has no handle. Such a run
+ * never reached an agent, so a caller that asks whether a role already ran on an item leaves it
+ * out (QA's run in review, src/core/ready-runs.ts).
+ */
+export async function failedStart(
+  store: Pick<StoreOps, "getRunHandle">,
+  run: Run,
+): Promise<boolean> {
+  return run.outcome === "fail" && (await store.getRunHandle(run.id)) === null;
+}
 
 /** Why a `failure_count` row added one to `failure`. */
 export type FailureCause = "report_refused" | "dispatch_failed" | "capture_refused";
@@ -137,11 +149,6 @@ export function createFailures(options: FailuresOptions) {
   const withNode = (run: Run | null): (Run & { nodeId: string }) | null =>
     run && run.nodeId ? (run as Run & { nodeId: string }) : null;
 
-  /** A run admitted and ended `fail` by the runner before it started: it has no handle. */
-  async function failedStart(run: Run): Promise<boolean> {
-    return run.outcome === "fail" && (await store.getRunHandle(run.id)) === null;
-  }
-
   return {
     /**
      * A done report the runner refused on the guards of its move (P-03): `failure` up by one,
@@ -180,7 +187,7 @@ export function createFailures(options: FailuresOptions) {
       if (!(await store.getNode(run.nodeId)))
         return { counted: false, reason: "no_node" };
       if (run.bot === "council") return { counted: false, reason: "council_run" };
-      if (!(await failedStart(run))) {
+      if (!(await failedStart(store, run))) {
         return { counted: false, reason: "not_a_failed_start" };
       }
       // The item's own work only: a Council run on the item is not part of the row.
@@ -190,7 +197,7 @@ export function createFailures(options: FailuresOptions) {
       const upTo = runs.slice(0, runs.findIndex((r) => r.id === run.id) + 1);
       let inRow = 0;
       for (let i = upTo.length - 1; i >= 0; i--) {
-        if (!(await failedStart(upTo[i] as Run))) break;
+        if (!(await failedStart(store, upTo[i] as Run))) break;
         inRow++;
       }
       if (inRow <= DISPATCH_FAILURES_BEFORE_COUNT) {

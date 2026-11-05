@@ -3,7 +3,8 @@
 // report on a head QA already failed (refused, counted, and the fix round goes on), the dispatch
 // flow after repeated failed starts (counted, then the Council), the reconcile flow's escalation
 // pass after a Council decision, and the approval resume step after Didi's answer to an
-// escalation question. The rules themselves are in test/escalations.test.ts.
+// escalation question, which starts the fix round of an item it returns to its building state
+// (O-104), never under a switch. The rules themselves are in test/escalations.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
@@ -70,16 +71,14 @@ describe("run-end flow after a done report on a head QA failed (flow: fake adapt
       { commitSha: HEAD },
     );
     await f.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: HEAD });
-    expect(await finish(f, first.runId)).toMatchObject({
+    // The report's move into review starts QA's run on the head (N-80, O-104).
+    const reported = await finish(f, first.runId);
+    expect(reported).toMatchObject({
       move: { outcome: "applied", toState: "in_qa_review" },
+      qaRuns: [{ nodeId: node.id, prNumber: 7, headSha: HEAD }],
     });
-    const qa = await dispatch(f.deps, {
-      nodeId: node.id,
-      role: "qa",
-      prNumber: 7,
-      headSha: HEAD,
-    });
-    if (qa.outcome !== "started") throw new Error("QA was not started");
+    const qa = "qaRuns" in reported ? reported.qaRuns?.[0]?.result : undefined;
+    if (qa?.outcome !== "started") throw new Error("QA was not started");
     await f.evidence(
       node.id,
       "qa_verdict",
@@ -334,7 +333,7 @@ describe("the escalation pass and Didi's answer (flow: fake adapters, O-46)", ()
     expect((await reconcileFlow(f.deps)).escalations).toBeNull();
   });
 
-  it("the approval resume step records Didi's answer to the escalation question and moves the item back", async () => {
+  it("the approval resume step records Didi's answer to the escalation question, moves the item back and starts its fix round once (O-104)", async () => {
     const f = await createFlowFixture();
     ticking(f);
     await f.live();
@@ -367,8 +366,32 @@ describe("the escalation pass and Didi's answer (flow: fake adapters, O-46)", ()
         step: "returned",
         move: { outcome: "applied", toState: "in_development" },
       },
+      // As the Council's answer does at its run's end: the Developer's fix round, at once.
+      builderRuns: [
+        {
+          nodeId: node.id,
+          role: "developer",
+          cause: "returned",
+          result: { outcome: "started" },
+        },
+      ],
     });
     expect(await f.store.getCounter(node.id, "failure")).toBe(0);
+    const developerRuns = async () =>
+      (await f.store.listRuns({ nodeId: node.id })).filter(
+        (r) => r.bot === "developer",
+      );
+    expect(await developerRuns()).toHaveLength(1);
+    expect(f.tasksFor.at(-1)?.run).toMatchObject({ bot: "developer", nodeId: node.id });
+    // The same page answered again records nothing and starts nothing more.
+    expect(
+      await resume(f.deps, {
+        gateRequestId: gate!.id,
+        resume: { answer: "Approve", reply: "Ship the smaller version." },
+        approvers: ["anonymous"],
+      }),
+    ).toEqual({ outcome: "already_closed" });
+    expect(await developerRuns()).toHaveLength(1);
   });
 
   it("records the answer but moves nothing under the kill switch", async () => {
@@ -404,5 +427,38 @@ describe("the escalation pass and Didi's answer (flow: fake adapters, O-46)", ()
       },
     });
     expect((await f.store.getNode(node.id))?.state).toBe("escalated_to_didi");
+    expect(await f.store.listRuns({ nodeId: node.id })).toEqual([]);
+    expect(f.runtime.started).toEqual([]);
+  });
+
+  it("in dry run records the answer, writes the move as dry run and starts no fix round (O-104)", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const node = await escalated(f);
+    await createLibrary(f.deps).recordDecision({
+      projectId: f.projectId,
+      nodeId: node.id,
+      kind: "council_decision",
+      scope: { ...KEEPS, outcome: "cannot_resolve" },
+      textVerbatim: "Needs Didi.",
+      byActor: "council",
+    });
+    await createEscalations(f.deps).resolve(node.id);
+    const gate = await f.store.findOpenGateRequest(
+      f.projectId,
+      escalationTopic(node.id),
+    );
+    await f.setting("dry_run", true);
+    const result = await resume(f.deps, {
+      gateRequestId: gate!.id,
+      resume: { answer: "Approve", reply: "Go." },
+      approvers: ["anonymous"],
+    });
+    expect(result).toMatchObject({ outcome: "recorded", heldBy: "dry_run" });
+    expect(result).not.toHaveProperty("builderRuns");
+    expect((await f.store.getNode(node.id))?.state).toBe("escalated_to_didi");
+    expect(await f.store.listRuns({ nodeId: node.id })).toEqual([]);
+    expect(f.runtime.started).toEqual([]);
+    expect(f.tokens).toEqual([]);
   });
 });
