@@ -85,8 +85,16 @@ flows:
     # Called with a run id. The handle the dispatch kept on the run (runs.handle, migration 0006)
     # is read from the store. Once the end is recorded it asks for the move the run's report
     # triggers, and the guards decide (O-23); a QA pass goes through the merge (O-31), and QA's
-    # fail starts the builder's fix round (O-41). Who calls it in live mode is open, as for
-    # dispatch.
+    # fail starts the builder's fix round (O-41). The run watcher calls it (D-330, O-102): a small
+    # service in the platform namespace that watches the run Jobs of the agent namespaces and,
+    # when a run's agent Job, or QA's fetch Job, stops for any reason (finished, crashed, out of
+    # memory, killed or past its deadline), starts this flow once for that run, with
+    # `{"input": {"runId": ...}}`, using its own Windmill token
+    # (platform/run-watcher/windmill-token, below) through the shared Windmill egress proxy
+    # (D-328). On a restart it sends each stopped Job still present, since the end's cleanup
+    # deletes the Job. A QA fetch Job's success moves the run to its review here. The cancel-runs
+    # flow records the ends it causes itself, and the live reconcile pass (D-329 slice 3) is the
+    # backstop.
     trigger: called
 
   - name: verify_staging
@@ -242,6 +250,13 @@ resources:
     - path: platform/github-receiver/windmill-token
       holds: A Windmill token that can start only the GitHub receiver's flows, today f/foreman/option_capture (D-291). New credential at first hosting
       read_by: GitHub receiver
+    # Read by the run watcher, not by a flow (D-330): a Windmill token that can start only the
+    # flows in RUN_WATCHER_FLOW_PATHS (src/adapters/windmill/run-watcher-flows.ts), the
+    # record_run_end flow above and nothing else, copied into the watcher's Secret
+    # `run-watcher-windmill-token` (key `token`) at first hosting.
+    - path: platform/run-watcher/windmill-token
+      holds: A Windmill token that can start only f/foreman/record_run_end (D-330). New credential at first hosting
+      read_by: run watcher
   values:
     - name: spec_version
       holds: The git commit of docs/spec.md and contracts/ the bundle was built from

@@ -24,6 +24,11 @@ import {
   RECEIVER_FLOW_PATHS,
   RECEIVER_WINDMILL_TOKEN_PATH,
 } from "../../src/adapters/windmill/receiver-flows.ts";
+import {
+  RECORD_RUN_END_FLOW_PATH,
+  RUN_WATCHER_FLOW_PATHS,
+  RUN_WATCHER_WINDMILL_TOKEN_PATH,
+} from "../../src/adapters/windmill/run-watcher-flows.ts";
 import { APPROVAL_CHOICE_LABELS } from "../../src/core/approvals.ts";
 import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
@@ -128,7 +133,7 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     );
     // The secrets a service other than the flows reads: the planning chat's token hash (D-266)
     // and the state API's Windmill credential for the plan-approval flow (D-273), both read by
-    // the state API, and the GitHub receiver's Windmill token (D-291).
+    // the state API, the GitHub receiver's Windmill token (D-291) and the run watcher's (D-330).
     expect(description.resources.secrets.filter((s) => s.read_by)).toEqual([
       expect.objectContaining({
         path: PLANNING_TOKEN_SHA256_PATH,
@@ -141,6 +146,10 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       expect.objectContaining({
         path: RECEIVER_WINDMILL_TOKEN_PATH,
         read_by: "GitHub receiver",
+      }),
+      expect.objectContaining({
+        path: RUN_WATCHER_WINDMILL_TOKEN_PATH,
+        read_by: "run watcher",
       }),
     ]);
     expect(description.resources.values.map((v) => v.name).sort()).toEqual(
@@ -155,6 +164,16 @@ describe("the plan-approval flow (unit: repo guard, D-273)", () => {
     expect(flow?.path).toBe(PLAN_APPROVAL_FLOW_PATH);
     expect(flow?.trigger).toBe("called");
     expect(flow?.entry).toBe("flows/plan-approval.ts");
+  });
+});
+
+describe("the flow the run watcher starts (unit: repo guard, D-330, O-102)", () => {
+  it("is the called run-end flow, at the path the watcher's port starts, and nothing else", () => {
+    expect(RUN_WATCHER_FLOW_PATHS).toEqual([RECORD_RUN_END_FLOW_PATH]);
+    const flow = description.flows.find((f) => f.path === RECORD_RUN_END_FLOW_PATH);
+    expect(flow?.name).toBe("record_run_end");
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/record-run-end.ts");
   });
 });
 
@@ -184,6 +203,9 @@ describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101)"
     ]);
     expect(scopes(lineFor(RECEIVER_WINDMILL_TOKEN_PATH) ?? "")).toEqual(
       RECEIVER_FLOW_PATHS.map(runScope),
+    );
+    expect(scopes(lineFor(RUN_WATCHER_WINDMILL_TOKEN_PATH) ?? "")).toEqual(
+      RUN_WATCHER_FLOW_PATHS.map(runScope),
     );
   });
 });

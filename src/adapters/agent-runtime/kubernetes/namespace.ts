@@ -1,9 +1,11 @@
 // The objects around the runs, as data (ADR 0106 sections 1, 2 and 4): each project's agent
 // namespace with Pod Security Admission `restricted`, a default-deny NetworkPolicy and a
 // ResourceQuota, the runner's ServiceAccount in its own namespace, and the namespaced Role and
-// RoleBinding that are its only rights. Infrastructure code applies them, never the runner
-// (ADR 0110, D-188); they are written and tested here, next to the code that relies on them.
-// The runner's token is a new-credentials gate at first hosting and is not declared here.
+// RoleBinding that are its only rights. Each agent namespace also has the run watcher's Role and
+// RoleBinding (D-330): get, list and watch on Jobs there, and nothing else. Infrastructure code
+// applies them, never the runner (ADR 0110, D-188); they are written and tested here, next to the
+// code that relies on them. The runner's token is a new-credentials gate at first hosting and is
+// not declared here.
 import { LABEL_MANAGED_BY, LABEL_PROJECT, agentNamespace } from "./names.ts";
 import type {
   Namespace,
@@ -18,7 +20,25 @@ import type {
 
 export const RUNNER_NAMESPACE = "foreman-runner";
 export const RUNNER_SERVICE_ACCOUNT = "foreman-runner";
+/** The platform namespace (D-193): the state API, the receiver and the run watcher run there. */
+export const PLATFORM_NAMESPACE = "foreman-platform";
 const MANAGED_BY_INFRA = "foreman-infra";
+
+/**
+ * The run watcher's ServiceAccount (D-330), in the platform namespace. Its pod is the only one
+ * that mounts a ServiceAccount token (infra/kubernetes/platform.ts).
+ */
+export const RUN_WATCHER_SERVICE_ACCOUNT = "run-watcher";
+
+/**
+ * The run watcher's rights in an agent namespace, exactly D-330: get, list and watch on Jobs, and
+ * nothing else. No Pods, no logs, no Secrets, no write. A Role in each agent namespace, not a
+ * ClusterRole, so it holds nothing in any other namespace. The run-end flow still reads a run's
+ * result with the runner's own access (./job-watch.ts reads Job objects only).
+ */
+export const RUN_WATCHER_ROLE_RULES: readonly PolicyRule[] = [
+  { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "list", "watch"] },
+];
 
 /**
  * The runner's rights in an agent namespace, exactly ADR 0106 section 1. No Secret get, list or
@@ -147,7 +167,42 @@ export function agentNamespaceObjects(
       },
     ],
   };
-  return [namespace, defaultDeny, resourceQuota, role, binding];
+  const watcherRole: Role = {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: "Role",
+    metadata: { name: RUN_WATCHER_SERVICE_ACCOUNT, namespace: name, labels },
+    rules: RUN_WATCHER_ROLE_RULES.map((rule) => ({
+      apiGroups: [...rule.apiGroups],
+      resources: [...rule.resources],
+      verbs: [...rule.verbs],
+    })),
+  };
+  const watcherBinding: RoleBinding = {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: "RoleBinding",
+    metadata: { name: RUN_WATCHER_SERVICE_ACCOUNT, namespace: name, labels },
+    roleRef: {
+      apiGroup: "rbac.authorization.k8s.io",
+      kind: "Role",
+      name: RUN_WATCHER_SERVICE_ACCOUNT,
+    },
+    subjects: [
+      {
+        kind: "ServiceAccount",
+        name: RUN_WATCHER_SERVICE_ACCOUNT,
+        namespace: PLATFORM_NAMESPACE,
+      },
+    ],
+  };
+  return [
+    namespace,
+    defaultDeny,
+    resourceQuota,
+    role,
+    binding,
+    watcherRole,
+    watcherBinding,
+  ];
 }
 
 /** Pod Security Admission: a pod that breaks ADR 0106 section 4 is refused at creation. */

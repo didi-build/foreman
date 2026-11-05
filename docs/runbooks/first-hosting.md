@@ -1,6 +1,6 @@
 # First hosting runbook
 
-**Purpose:** the gates Didi passes by hand, in order, to bring up the agent and platform cluster, the state API, the GitHub receiver and its tunnel for the first time (ADR 0106, ADR 0110, D-183 to D-195). Nothing here has been done yet. No agent or runner does any step.
+**Purpose:** the gates Didi passes by hand, in order, to bring up the agent and platform cluster, the state API, the GitHub receiver and its tunnel, and the run watcher, for the first time (ADR 0106, ADR 0110, D-183 to D-195, D-330). Nothing here has been done yet. No agent or runner does any step.
 
 **Rules for every step**
 
@@ -12,10 +12,10 @@
 
 Settle these before the apply in step 5.
 
-Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Still open, each needing Didi:
+Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Both questions are decided (D-331, D-332):
 
-1. **Whether the cloud firewall limits outbound at all.** DOKS manages its own firewall for the worker nodes. DigitalOcean combines the allow rules of every firewall on a droplet, so if the managed one allows all outbound traffic, the outbound rules here change nothing. Network policies stay the real egress control either way. Recommended: read DigitalOcean's docs on the DOKS managed firewall at this step, and keep the rules here as a second layer only if they take effect.
-2. **The admin credential in state.** The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted and the credential is set to expire after 1 hour, but it is still an admin key outside the password manager (D-188). Recommended: accept it under ADR 0110 secrets rule 3, as listed in `infra/README.md`.
+1. **Whether the cloud firewall limits outbound at all.** Decided by D-331 (Didi, 2026-11-05). DOKS manages its own firewall for the worker nodes, and DigitalOcean combines the allow rules of every firewall on a droplet, so if the managed one allows all outbound traffic, the outbound rules here change nothing. Inside the cluster, network policies and the egress proxies are the real outbound control. At step 5, check what the managed worker firewall allows outbound, keep our cloud firewall as a second layer if its outbound rules take effect, and record the result there. No deny rules are added, and DigitalOcean's managed firewalls are never edited: its reconciler owns them by name.
+2. **The admin credential in state.** Decided by D-332 (Didi, 2026-11-05): accepted under ADR 0110 secrets rule 3, as listed in `infra/README.md`. The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted, the credential expires after 1 hour (`kubeconfig_expire_seconds`) and it is never an output, but it is still an admin key outside the password manager (D-188).
 
 ## 1. Read the real prices
 
@@ -64,6 +64,10 @@ rm plan.out
 
 Then run the secret-value scan on the plan text and state as in `infra/README.md`, step 4 of the M0.7 proof, with the tunnel token among the values scanned for in the plan text.
 
+**The managed worker firewall (D-331).** Once the cluster exists, read the firewall DOKS made for the worker nodes (in the control panel's Networking page, or `doctl compute firewall list`) and its outbound rules. Read it only: never edit it, and add no deny rule, because DigitalOcean's reconciler owns that firewall by name. If it allows all outbound traffic, our cloud firewall's outbound rules take no effect and the network policies and egress proxies are the only outbound control; if its outbound rules are narrower, ours stay as a second layer. Record which, with the date, here:
+
+- Result: not checked yet.
+
 ## 6. The admin kubeconfig, kept by Didi only (D-188)
 
 Download the cluster's kubeconfig from the DigitalOcean control panel and keep it only in the password manager. It never goes to the runner, an agent or Windmill. Use it for steps 7 to 10.
@@ -74,7 +78,16 @@ Write a settings file outside the repo (images pinned by digest, the app logins,
 
 - `images.egressProxy`: the egress proxy image the agent runs use, the same digest as `proxyImage` in `agent_run_settings`. It runs once more here as the shared Windmill proxy (D-284, D-328).
 - `resources.windmillProxy`: its requests and limits, like an agent run's proxy.
-- `windmill.host`: the Windmill host the state API and the receiver start their flows on, a plain host name with no scheme (for Windmill Cloud, the host name of its app), and `windmill.workspace`: the workspace id. If the workspace does not exist yet, choose its id now and create it with that id in step 15. Both are plain settings, not secrets. The proxy allows this one host and nothing else; it has no model provider, no state API route and no credential.
+- `windmill.host`: the Windmill host the state API, the receiver and the run watcher start their flows on, a plain host name with no scheme (for Windmill Cloud, the host name of its app), and `windmill.workspace`: the workspace id. If the workspace does not exist yet, choose its id now and create it with that id in step 15. Both are plain settings, not secrets. The proxy allows this one host and nothing else; it has no model provider, no state API route and no credential.
+- `images.runWatcher`: the run watcher's image (D-330), built from `src/run-watcher/Dockerfile` at the repo root and pinned by digest, and `resources.runWatcher`: its requests and limits (it holds a few watches open and does little else; start like the receiver's).
+- `kubernetesApi`: where the run watcher reaches the API server, as its network policy allows it. A policy sees the address the `kubernetes` Service sends to, not the Service's own, so read the address and port from that Service's EndpointSlice with the admin kubeconfig of step 6, and write them as `{"addresses": ["<address>"], "port": <port>}`:
+
+  ```bash
+  kubectl -n default get endpointslices -l kubernetes.io/service-name=kubernetes \
+    -o jsonpath='{range .items[*]}{.endpoints[*].addresses}{" "}{.ports[*].port}{"\n"}{end}'
+  ```
+
+  Plain IPv4 addresses and a port only, not secrets. The watcher's policy allows exactly these and nothing else on that port.
 
 Then render and apply:
 
@@ -82,7 +95,24 @@ Then render and apply:
 node infra/kubernetes/render.ts <settings.json> | kubectl apply -f -
 ```
 
-This creates the `foreman-platform` namespace and its policies and Deployments (the state API, the receiver, the tunnel connector and the Windmill proxy), the `foreman-runner` namespace and service account, and each `agents-<slug>` namespace. The platform pods wait for their Secrets (steps 8 to 10). Then run ADR 0106 checks 1 and 15: default deny holds, and pods stay on their own pool.
+This creates the `foreman-platform` namespace and its policies and Deployments (the state API, the receiver, the tunnel connector, the Windmill proxy and the run watcher), the run watcher's ServiceAccount `run-watcher` there, the `foreman-runner` namespace and service account, and each `agents-<slug>` namespace. The platform pods wait for their Secrets (steps 8 to 10). Then run ADR 0106 checks 1 and 15: default deny holds, and pods stay on their own pool.
+
+Each `agents-<slug>` namespace also gets the run watcher's RBAC (D-330), next to the runner's: a Role `run-watcher` with get, list and watch on `batch` Jobs and nothing else, and a RoleBinding that gives it to the ServiceAccount `run-watcher` in `foreman-platform`. There is no ClusterRole or ClusterRoleBinding, so the watcher holds nothing in any other namespace. These are the rights Didi approved in D-330, exactly: if a plan or a render shows any other right for `run-watcher`, stop and ask Didi before applying it. Check them with the admin kubeconfig:
+
+```bash
+sa=system:serviceaccount:foreman-platform:run-watcher
+for verb in get list watch; do kubectl auth can-i "$verb" jobs.batch -n agents-<slug> --as="$sa"; done   # yes, yes, yes
+kubectl auth can-i list pods -n agents-<slug> --as="$sa"                    # no
+kubectl auth can-i get pods --subresource=log -n agents-<slug> --as="$sa"   # no
+kubectl auth can-i get secrets -n agents-<slug> --as="$sa"                  # no
+kubectl auth can-i list secrets -n agents-<slug> --as="$sa"                 # no
+kubectl auth can-i delete jobs.batch -n agents-<slug> --as="$sa"            # no
+kubectl auth can-i list jobs.batch -n foreman-platform --as="$sa"           # no
+kubectl auth can-i list jobs.batch --all-namespaces --as="$sa"              # no
+kubectl auth can-i list namespaces --as="$sa"                               # no
+```
+
+A new project later is the same re-render and apply: it adds the namespace with both Roles and puts the namespace into the watcher's `AGENT_NAMESPACES`, which restarts the watcher.
 
 ## 8. The runner's cluster token (new-credentials gate)
 
@@ -159,19 +189,21 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
   The Secret is optional for the state API's pod: until it exists, no planning token is accepted. The chat reaches the state API at `https://<receiver host name>/plans` once step 11a is applied (D-271). Its read routes are not reachable from outside (N-75).
 
-- The two Windmill tokens that start flows (D-283, D-291, D-327, O-101), each its own approval. Before creating either, check on Windmill's token page ("Limit token permissions" and "Restrict paths") that a token can be limited to running exactly the scripts named below and nothing else: no other script, no reading or changing scripts, jobs, resources or variables. **If Windmill cannot narrow a token that far, stop and ask Didi before creating any credential** (D-283, D-291). Do not create a wider token, and do not use another kind of token (such as a webhook's own token) instead, without asking.
+- The three Windmill tokens that start flows (D-283, D-291, D-327, D-330, O-101, O-102), each its own approval. Before creating any of them, check on Windmill's token page ("Limit token permissions" and "Restrict paths") that a token can be limited to running exactly the scripts named below and nothing else: no other script, no reading or changing scripts, jobs, resources or variables. **If Windmill cannot narrow a token that far, stop and ask Didi before creating any credential** (D-283, D-291, D-330). Do not create a wider token, and do not use another kind of token (such as a webhook's own token) instead, without asking.
   - The state API's token: exactly the scope `jobs:run:scripts:f/foreman/plan_approval`, stored at `platform/state-api/windmill-plan-approval-token` in Windmill resources and in the Secret `state-api-windmill-plan-approval-token` (key `token`).
   - The GitHub receiver's token: exactly the scopes of its flow list (`RECEIVER_FLOW_PATHS` in `src/adapters/windmill/receiver-flows.ts`), today only `jobs:run:scripts:f/foreman/option_capture`, stored at `platform/github-receiver/windmill-token` in Windmill resources and in the Secret `github-receiver-windmill-token` (key `token`). A later slice that adds a flow to the list creates this token again with the new list (D-329).
+  - The run watcher's token: exactly the scope of its flow list (`RUN_WATCHER_FLOW_PATHS` in `src/adapters/windmill/run-watcher-flows.ts`), only `jobs:run:scripts:f/foreman/record_run_end`, stored at `platform/run-watcher/windmill-token` in Windmill resources and in the Secret `run-watcher-windmill-token` (key `token`).
 
   Generate each token in Windmill, copy it into the password manager, and never paste its value anywhere else: not in a file, the shell history, chat, Linear or a log. Pipe it from the password manager's command line straight into its Secret:
 
   ```bash
   kubectl -n foreman-platform create secret generic state-api-windmill-plan-approval-token --from-file=token=/dev/stdin
   kubectl -n foreman-platform create secret generic github-receiver-windmill-token --from-file=token=/dev/stdin
-  kubectl -n foreman-platform rollout restart deployment/state-api deployment/github-receiver
+  kubectl -n foreman-platform create secret generic run-watcher-windmill-token --from-file=token=/dev/stdin
+  kubectl -n foreman-platform rollout restart deployment/state-api deployment/github-receiver deployment/run-watcher
   ```
 
-  Neither service reaches Windmill directly: both go through the Windmill proxy of step 7, which allows only `windmill.host`, and neither pod's network policy allows 443 (D-284, D-328). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started` or `option capture flow not started` with the error's type, and the reconcile pass opens the request or captures the options. If the proxy is down, both services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
+  None of the three services reaches Windmill directly: all go through the Windmill proxy of step 7, which allows only `windmill.host`, and no pod's network policy allows them public 443 (D-284, D-328, D-330). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started`, `option capture flow not started` or `run end flow not started` with the error's type, and the reconcile pass opens the request, captures the options or records the end. The run watcher's restart above then sends the run-end flow for every stopped run Job still present, once each. If the proxy is down, the services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 
@@ -201,6 +233,23 @@ The state API starts `f/foreman/plan_approval` after each recorded plan submissi
 - The timing: a start is accepted well inside the client's 5 seconds, so a webhook is still answered within GitHub's 10.
 - The runs: each recorded submission and each due capture adds one run to the month's count (D-164); a replayed webhook, a pending CI result and a capture not due add none.
 - The workspace id passes the manifest check (letters, digits, `-` and `_`, at most 50).
+
+### Recording run ends with the run watcher
+
+When a run's agent Job, or QA's fetch Job, stops for any reason, the run watcher starts `f/foreman/record_run_end` for that run, once per Job in each process (D-330, O-102). It lists, then watches, each agent namespace's run Jobs with its own ServiceAccount token, and reaches Windmill through the Windmill proxy with its token of step 15. Built from the Kubernetes API's documented list and watch, without a real cluster. To verify at rehearsal, in the rehearsal project with synthetic data only, and record each result with the date in O-102:
+
+- The ends: a Job that finishes, one that crashes (its agent exits with an error), one past its deadline (it outlives `activeDeadlineSeconds`), one killed (`kubectl -n agents-<slug> delete pod <its agent pod>`) and one out of memory (a run over its memory limit) each start the run-end flow once, within a few seconds of the stop. Each run's end is then recorded with the outcome `poll` gives it, and its Job is deleted by the flow's cleanup.
+- QA: a review run's fetch Job that succeeds starts the flow once and the review stage starts; one that fails records the run's end as a failed fetch step. A visual comparison run, which has no fetch step, starts the flow once at its end.
+- Nothing else starts it: a running Job, a proxy Job and a repo map read start nothing. A run the kill switch cancels is recorded by the cancel-runs flow, and the watcher starts nothing for it.
+- A restart: with one run's end recorded and its Job cleaned up, and one stopped Job left unrecorded (for example while the token did not exist yet), `kubectl -n foreman-platform rollout restart deployment/run-watcher` starts the flow for the unrecorded Job only. The month's count of runs goes up by exactly one.
+- The watch: it stays open past the API server's 5-minute time limit by resuming without a new list, and after a 410 or a dropped connection it lists again without starting any Job a second time (the count of runs does not move).
+- The RBAC: the `kubectl auth can-i` checks of step 7 answer as written there. From the watcher's pod, with its own token, listing Jobs in an agent namespace works; listing Pods, reading a pod's log, reading or listing Secrets, deleting a Job, and listing Jobs in `foreman-platform`, `default` or all namespaces are each refused with 403.
+- The token mount: only the watcher's pod has `/var/run/secrets/kubernetes.io/serviceaccount`; the state API's, the receiver's, the connector's and the proxy's pods have none.
+- The network: the watcher's pod becomes Ready with no ingress rule (the kubelet's probe comes from the node). From it, `https://kubernetes.default.svc` answers with the mounted CA through the `kubernetesApi` rule only; a direct HTTPS call to Windmill's host, and a call to any other address on the API server's port, fail; a CONNECT through the Windmill proxy to Windmill's host opens. If DOKS's network policies do not let the watcher reach the API server with that one rule, stop and ask Didi: no wider rule is added without asking.
+- The address: whether the `kubernetes` EndpointSlice's address changes after a control-plane upgrade. If it does, render and apply again with the new `kubernetesApi`.
+- The run budget: each stopped run adds one run to the month's count, and a QA review run two (its fetch step and its review) (D-164). The watcher adds no other run.
+- The logs: a refused start logs `run end flow not started` with the step and the status only, and `run end flow start failed; trying again` before it. No line shows a run id, a Job's name or a token.
+- The token: with its one scope, a start of `f/foreman/record_run_end` is accepted, and a start of any other script and any other call are refused.
 
 ### Reading the daily check
 

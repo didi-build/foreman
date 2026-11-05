@@ -8,6 +8,9 @@ export interface ObjectMeta {
   namespace?: string;
   labels?: Labels;
   deletionTimestamp?: string;
+  /** Read only: the API server sets them. The run watcher keys a Job by its uid (D-330). */
+  uid?: string;
+  resourceVersion?: string;
 }
 
 export interface LabelSelector {

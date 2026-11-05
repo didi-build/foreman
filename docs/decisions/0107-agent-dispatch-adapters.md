@@ -42,6 +42,8 @@ interface AgentRunResult {
 
 `status` uses the `runs.outcome` values from `docs/schema.md`, so every run maps straight into the `runs` table. A runtime that only offers a blocking call (one HTTP request) is wrapped so `start` returns a handle and the result is read by `poll`.
 
+Note (D-330, O-102): `poll` is no longer called only from the reconcile pass. On the Kubernetes runtime, the run watcher starts the run-end flow as soon as a run's Job stops, and that flow calls `poll`, records the end and calls `cleanup`. The interface is unchanged; the reconcile pass is the backstop.
+
 ### Implementations, in order of confidence
 
 | Runtime                         | Used for                                  | How                                                                                     |

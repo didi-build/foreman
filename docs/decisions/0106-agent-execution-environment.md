@@ -62,6 +62,7 @@ The platform namespace has its own default-deny NetworkPolicy. Agent namespaces 
 | PersistentVolumeClaims | create, delete                   | QA's fetched tree (section 5)                                          |
 
 - It has no ClusterRole, cannot create namespaces, Roles or RoleBindings, and has no rights outside agent namespaces.
+- **The run watcher** (D-330, O-102) has its own ServiceAccount, `run-watcher`, in the platform namespace, and in each agent namespace a Role with get, list and watch on Jobs and nothing else, beside the runner's. It has no ClusterRole either, and its pod is the only one that mounts a ServiceAccount token. Its Kubernetes calls are in this adapter (`src/adapters/agent-runtime/kubernetes/job-watch.ts`).
 - The token is stored like any other platform secret, at `platform/agent-cluster/runner-token`, read through the secrets interface (Windmill resources now, Vault later). The cluster's address and CA certificate are plain settings. Creating the token is a **new-credentials gate** (approve-once).
 - The cluster admin kubeconfig is not given to the runner or to any agent (open question 6).
 - The cluster, its two node pools and the agents pool's taint, the namespaces, RBAC, default policies, quotas and Pod Security labels are infrastructure code (ADR 0110). Adding a project's namespace is an infrastructure change, not something the runner does.
@@ -174,6 +175,8 @@ Rehearsal values (D-185). They are settings in each bot file. The dollar caps ar
 1. At a limit (the deadline, or the runtime's own turn or dollar cap), or on `cancel` (kill switch, a new commit for QA), the agent pod gets SIGTERM, then is stopped after the grace period.
 2. `poll` reports the outcome: `timeout` (deadline exceeded), `budget_exceeded` or `cancelled`.
 3. Only then does the runner, in its own flow, record the run's end, revoke its tokens, delete its Secrets and decide any transition through its guards. Nothing on the cluster touches the store or interrupts a runner step.
+
+Note (D-330, O-102): that flow, `f/foreman/record_run_end`, is started on the event. The run watcher, a small service in the platform namespace with read-only access to Jobs, starts it once when a run's agent Job, or QA's fetch Job, gets a `Complete` or `Failed` condition, whatever the cause: finished, crashed, out of memory, killed, or past `activeDeadlineSeconds`. Step 2's `poll` still runs inside the flow, with the runner's own access. A cancel is recorded by the flow that cancels, and the reconcile pass stays as the backstop, so a run's end no longer waits for the 2-hour pass (D-164).
 
 Work the agent did not push before it stopped is lost. The next run starts from the branch. An item that ran over budget follows the contract: Escalated to Council (spec, failure modes table).
 
