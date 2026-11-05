@@ -184,8 +184,15 @@ async function footprint(): Promise<string> {
   });
 }
 
+/** Sets one switch, as the operator would. */
+const setSwitch = (key: "kill_switch" | "dry_run", value: boolean) =>
+  store.setSetting({ key, value, updatedBy: "test", updatedAt: NOW });
+
 beforeAll(async () => {
   store = createMemoryStore();
+  // The runner is live unless a test turns a switch on (D-333).
+  await setSwitch("kill_switch", false);
+  await setSwitch("dry_run", false);
   const clock = { now: () => NOW };
   const ids = { next: nextId };
   const library = createLibrary({
@@ -581,6 +588,63 @@ describe("each submission starts the plan-approval flow once (API seam, D-273 (2
     await call(withPlanning, "POST", "/plans", null, submission());
     await call(withPlanning, "POST", "/plans", await runToken("council"), submission());
     expect(approvalFlow.started.slice(before)).toEqual([ideaId, ideaId]);
+  });
+
+  it("starts nothing under the kill switch or dry run, and keeps the submission (D-333)", async () => {
+    for (const [held, on] of [
+      ["kill_switch", true],
+      ["dry_run", true],
+    ] as const) {
+      await setSwitch(held, on);
+      const before = approvalFlow.started.length;
+      const logged = logLines.length;
+      try {
+        const result = await call(
+          withPlanning,
+          "POST",
+          "/plans",
+          planningToken,
+          submission({ title: `Held by ${held}` }),
+        );
+        expect(result.status).toBe(201);
+        const ideaId = result.body.ideaId as string;
+        expect((await store.getNode(ideaId))?.state).toBe("submitted");
+        expect(approvalFlow.started.length).toBe(before);
+        const lines = logLines.slice(logged).map((l) => JSON.parse(l) as object);
+        expect(lines).toEqual([
+          expect.objectContaining({
+            level: "info",
+            message:
+              "plan approval flow not started under a switch; the reconcile pass opens the request",
+            switch: held,
+          }),
+        ]);
+        expect(logLines.slice(logged).join("\n")).not.toContain(ideaId);
+      } finally {
+        await setSwitch(held, false);
+      }
+    }
+    // A missing dry run setting counts as on, so nothing starts either.
+    await store.setSetting({
+      key: "dry_run",
+      value: null,
+      updatedBy: "test",
+      updatedAt: NOW,
+    });
+    const before = approvalFlow.started.length;
+    try {
+      const result = await call(
+        withPlanning,
+        "POST",
+        "/plans",
+        planningToken,
+        submission({ title: "Dry run unset" }),
+      );
+      expect(result.status).toBe(201);
+      expect(approvalFlow.started.length).toBe(before);
+    } finally {
+      await setSwitch("dry_run", false);
+    }
   });
 
   it("keeps the submission when the start fails, and logs only the error's type", async () => {

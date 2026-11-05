@@ -161,8 +161,9 @@ flows:
     # flow (platform/state-api/windmill-plan-approval-token, below), through the shared Windmill
     # egress proxy (D-284, D-328). The call is src/adapters/windmill/plan-approval-flow.ts: an
     # async run of this script by path, with `{"input": {"ideaId": ...}}` (O-101). One run per
-    # submission. It opens Didi's plan-approval request at once; the reconcile flow's plan
-    # approval pass stays as the safety net for a start that failed.
+    # submission, and none under the kill switch or dry run (D-333), as the receiver's starts. It
+    # opens Didi's plan-approval request at once; the reconcile flow's plan approval pass stays as
+    # the safety net for a start that failed or that a switch held.
     trigger: called
 
   - name: option_capture

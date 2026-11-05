@@ -123,6 +123,18 @@ describe.skipIf(!adminUrl)(
         options: "-c role=factory_api",
       });
       runner = createPostgresStore(runnerPool);
+      // A live runner, so a submission starts the plan-approval flow (D-333).
+      for (const [key, value] of [
+        ["kill_switch", false],
+        ["dry_run", false],
+      ] as const) {
+        await runner.setSetting({
+          key,
+          value,
+          updatedBy: "test",
+          updatedAt: new Date(),
+        });
+      }
       for (const [id, slug] of [
         [PROJECT, "rehearsal"],
         [OTHER_PROJECT, "elsewhere"],
