@@ -268,3 +268,17 @@ To verify at rehearsal, with a check built from synthetic data only, and record 
 ## Verification
 
 Run the remaining checks in ADR 0106 "How success is judged" on the real cluster, and record their output and date in the M3.2 PR. Never paste a secret value, `plan.json` or `state.json`.
+
+### The live reconcile pass and first runs on the move
+
+With `dry_run` false the reconcile pass acts on its plan: release, the first run of each ready item, and the advance from evidence into QA review with QA's run (D-329 slice 3, O-103). Each flow whose move makes an item ready starts the item's first run inside its own run, and the pass is the safety net. Built and tested with fakes, without a real Windmill, cluster or agent. To verify at rehearsal, in the rehearsal project with synthetic data only, and record each result with the date in O-103:
+
+- A release on the move: a Blocked item whose only blocker passes its staging check is released by the staging flow, and its first run starts in that same flow run, with no reconcile pass in between. The item is In development with one run, and the run's result lists it under `firstRuns`. A design item waiting in Ready for design exploration on the same blocker starts the same way.
+- A release by the pass: a Blocked item whose blocker was finished with no flow (for example a blocker moved by hand at rehearsal setup) is released by the next reconcile pass, and its first run starts in that pass, before the dispatch step.
+- The Triage handoff: once a Triage run's end is recorded, each item the handoff created in a ready state with nothing holding it (no hold, no request for Didi, no open blocker) has its first run started in the same run-end flow run. The held, gated and blocked items start nothing.
+- Dry run: with `dry_run` true, a reconcile pass writes only `dry_run` transition rows, no run starts and no agent Job is created. An approval answered meanwhile is recorded and starts nothing.
+- The kill switch: with `kill_switch` true, the pass stops first: no GitHub read, no transition and no run, and only the cancel pass runs.
+- Once: two reconcile runs started by hand at the same time give one release and one run per item, and a third pass after them starts nothing.
+- Advance from evidence: an item In development with CI green on its head and a docs note, whose move was not taken on the Developer's report, moves to In QA review on the next pass, and QA's run starts for that pull request and head commit.
+- Refusals: with `agent_cluster_max_active_runs` set to the number of runs already active, the pass reports `cluster_full` for each first run it could not start, and the Windmill run still succeeds.
+- The run budget: each reconcile pass adds one run to the month's count, whatever it starts, and a first run started inside another flow adds none (D-164). Each agent run started still adds its run-end flow's run (O-102), as a run started by hand does.

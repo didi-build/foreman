@@ -279,7 +279,7 @@ Against the fake GitHub only (D-178): `test/github-ingest.test.ts` (core functio
 
 Unit tests on the memory store with the real machine-2 contracts and guards and the fake GitHub: `test/reconcile.test.ts`, with its fixture in `test/reconcile-fixture.ts`. The dry-run dispatch path is in `src/core/runs.test.ts` and `checkTransition` in `src/core/library.test.ts`. On Postgres as `factory_runner`: `test/db/reconcile.test.ts`.
 
-1. Kill switch: the pass stops before anything, the polling backstop included. With `dry_run` false it also stops, since live mode is not built.
+1. Kill switch: the pass stops before anything, the polling backstop included. With `dry_run` false the pass plans in live mode and writes no row (the next section); a missing `dry_run` setting plans in dry run.
 2. Release: a Blocked item whose blockers are Done gets one `dry_run` transition to Ready for dev and its node is unchanged. A blocker not Done, or a Done design blocker without a merged spec, writes nothing.
 3. Dispatch: ready items get planned dispatches within the Developer limit, counting active runs and the runs planned earlier in the pass. An item with an active run is skipped. A pending gate, hold or not agent-ready blocks the plan. No run is inserted. An item a failed QA round or staging check sent back gets a planned builder run with no move (O-41).
 4. Attention list: a ready item still not running one `reconcile_interval_minutes` later is listed.
@@ -291,6 +291,20 @@ Unit tests on the memory store with the real machine-2 contracts and guards and 
 10. Idempotency: a second pass on the same state writes no new row and returns the same plan; new evidence behind a plan writes a new row.
 11. Execution count: the alert is raised at 80% of the monthly limit, from settings, with the D-167 values when a setting is missing.
 12. Mutation checks, run by hand for M2.4: dispatching for real in dry run, dropping the kill-switch check, and dropping the duplicate-row check each fail these tests.
+
+### Reconcile pass in live mode (D-329 slice 3, O-103)
+
+Unit tests on the memory store with the real contracts and guards: `test/reconcile-live.test.ts`. Flow tests with fake adapters: `test/flows/reconcile-live-flow.test.ts`, and the flows whose move makes an item ready in `test/flows/triage-flows.test.ts`, `test/flows/council-flows.test.ts` and `test/flows/builder-run-flows.test.ts`. On Postgres as `factory_runner`: the live race in `test/db/reconcile.test.ts`.
+
+1. Same plan (unit): for one store with every kind of outcome (a release due and one refused, first runs planned, refused for the Developer limit, gated, held and waiting after `usage_exhausted`, an advance with QA's dispatch, the attention list, a stall and a clean-up candidate), the live plan equals the dry-run plan once the dry-run rows are set aside. Live mode writes no transition row, run or node change, and leaves the merge, staging and cancel steps to the flow's live passes.
+2. First-run check (unit, `src/core/ready-runs.ts`): due for a ready item with nothing holding it, with the owner's role and the dispatch move's target; otherwise the reason (not a ready state, on hold or stale, a gate or another guard by name, an active run, the wait after `usage_exhausted`, no node). The dispatch step's first runs agree with it in both modes.
+3. A Council run queued after `usage_exhausted` is left to the Council pass in both modes, and the pass no longer stops on it.
+4. Live pass (flow): a Blocked item whose blocker is Done is released with the pass's trigger and its first run starts in the same pass; a ready item's first run starts once; each start takes the dispatch move on the item's one branch.
+5. Duplicate pass (flow and Postgres): a second pass, in turn or at once, starts nothing more: one release row and one run per item, and the pass that lost the race reports it and throws nothing.
+6. Switches (flow): under the kill switch nothing changes; in dry run only dry-run rows are written and no run starts. The first-run starter itself starts and plans nothing under either switch, and starts a node once however often it is named.
+7. Refusals (flow): the cluster limit at the plan and at the start, and a missing route, are reported with their reason and never thrown; a start that fails is reported and the item stays ready for the next pass.
+8. Advance from evidence (flow): CI green on the head and a docs note move the item into In QA review and start QA's run on that pull request and head, once.
+9. A ready move starts the first run once (flow): the staging flow's Done (a released Blocked item and a design item waiting in Ready for design exploration), the transition flow's release, the Council's answer returning an escalated item to Ready for dev, Didi's answer to the only request holding a ready item (never under a switch), a reversal answer clearing a ready item's stale flag, the Triage handoff (only the item with nothing holding it), Didi's approval of a held item's release request, and a redo back to the start of the track and the rework item. A repeated trigger starts nothing more.
 
 ### Infrastructure as code
 

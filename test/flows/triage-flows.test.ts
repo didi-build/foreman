@@ -199,13 +199,29 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
         n.agentReady,
       ]),
     ).toEqual([
-      ["settings-design", "design", "ready_for_design_exploration", false, true],
+      // The one item ready with nothing holding it starts at once, in the run-end flow (D-329).
+      ["settings-design", "design", "in_design_exploration", false, true],
       ["settings-wire", "code", "blocked", false, true],
       ["settings-docs", "docs", "blocked", false, true],
       ["settings-dns", "infra", "ready_for_dev", false, true],
       ["old-settings", "code", "blocked", true, true],
     ]);
     const id = (key: string) => byKey.get(key)?.id as string;
+    // Only that one: the others are blocked, gated by Didi's request, or held.
+    expect(ended).toMatchObject({
+      firstRuns: [
+        {
+          nodeId: id("settings-design"),
+          role: "designer",
+          result: { outcome: "started" },
+        },
+      ],
+    });
+    expect((ended as { firstRuns: unknown[] }).firstRuns).toHaveLength(1);
+    expect(f.tasksFor.at(-1)?.run).toMatchObject({
+      bot: "designer",
+      nodeId: id("settings-design"),
+    });
     // The Developer's input fields (D-213) are filled.
     expect(byKey.get("settings-wire")?.body).toMatchObject({
       acceptanceCriteria: ["settings-wire is done"],
@@ -267,13 +283,18 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
         (await f.store.listDecisionsForNode(item.id)).map((d) => d.kind).sort(),
       ).toEqual(["council_decision", "product_direction"]);
     }
-    const design = await createLibrary(f.deps).checkTransition({
-      nodeId: id("settings-design"),
+    // The design item's start took its dispatch move, which plan_attached guards.
+    const [designMove] = await f.transitions(id("settings-design"));
+    expect(designMove).toMatchObject({
       toState: "in_design_exploration",
-      trigger: { kind: "reconcile", ref: null },
-      actor: { kind: "runner", id: "test" },
+      mode: "applied",
+      triggerRef: `dispatch:${f.tasksFor.at(-1)?.run.id}`,
     });
-    expect(design.outcome).toBe("allowed");
+    expect(
+      (designMove?.guardResult as { name: string; pass: boolean }[]).find(
+        (c) => c.name === "plan_attached",
+      ),
+    ).toMatchObject({ pass: true });
     // The DNS item is ready but waits on Didi's gate.
     const dns = await createLibrary(f.deps).checkTransition({
       nodeId: id("settings-dns"),
@@ -288,11 +309,11 @@ describe("the M3.6 success test (flow: fake model, D-265)", () => {
       items.map((n) => [TRACK_DECIDER, n.id, n.track === "design" ? 0.5 : 1]),
     );
 
-    // A repeated run-end trigger writes nothing more.
+    // A repeated run-end trigger writes nothing more and starts no second run.
     const before = await f.footprint(idea.id, ...items.map((n) => n.id));
-    expect(await recordRunEnd(f.deps, { runId: start.run.id })).toMatchObject({
-      outcome: "already_recorded",
-    });
+    const repeated = await recordRunEnd(f.deps, { runId: start.run.id });
+    expect(repeated).toMatchObject({ outcome: "already_recorded" });
+    expect(repeated).not.toHaveProperty("firstRuns");
     expect(await f.footprint(idea.id, ...items.map((n) => n.id))).toBe(before);
   });
 });
@@ -378,7 +399,7 @@ const answerPage = (
   });
 
 describe("a held item's release request (flow: fake model, D-269)", () => {
-  it("keeps the held item from starting; Didi's Approve releases it once and it starts", async () => {
+  it("keeps the held item from starting; Didi's Approve releases it once and it starts at once (D-329)", async () => {
     const f = await createFlowFixture();
     const { held, request } = await heldItem(f);
     const waiting = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
@@ -394,8 +415,15 @@ describe("a held item's release request (flow: fake model, D-269)", () => {
       outcome: "recorded",
       heldBy: null,
       holdRelease: { nodeId: held.id, step: "released" },
+      // The released item's first run starts in the same approval step.
+      firstRuns: [
+        { nodeId: held.id, role: "developer", result: { outcome: "started" } },
+      ],
     });
-    expect((await f.store.getNode(held.id))?.hold).toBe(false);
+    expect(await f.store.getNode(held.id)).toMatchObject({
+      hold: false,
+      state: "in_development",
+    });
     const decisions = (await f.store.listDecisionsForNode(held.id)).filter(
       (d) => d.kind === "approval",
     );
@@ -415,11 +443,15 @@ describe("a held item's release request (flow: fake model, D-269)", () => {
       nodeId: held.id,
       step: "not_held",
     });
-    expect((await reconcileFlow(f.deps)).holdReleases).toEqual([]);
+    const pass = await reconcileFlow(f.deps);
+    expect(pass.holdReleases).toEqual([]);
+    expect(pass.dispatched).toEqual([]);
     expect(await f.footprint(held.id)).toBe(before);
-
-    const started = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
-    expect(started).toMatchObject({ outcome: "started" });
+    expect(
+      (await f.store.listRuns({ nodeId: held.id })).filter(
+        (r) => r.bot === "developer",
+      ),
+    ).toHaveLength(1);
   });
 
   it("keeps the item held on Reject, with Didi's words recorded", async () => {
@@ -510,9 +542,10 @@ describe("held items in Didi's daily check (flow: fake model, D-272)", () => {
         title: held.title,
         state: "ready_for_dev",
         heldSince: held.createdAt,
-        // Two weeks and an hour, plus the minutes the handoff's own steps took.
+        // Two weeks and an hour, plus the minutes the handoff's steps and the passes took: the
+        // test clock moves one second on every read.
         heldForMinutes: expect.toSatisfy(
-          (m: number) => m >= 60 + 14 * 12 * 120 && m < 60 + 14 * 12 * 120 + 15,
+          (m: number) => m >= 60 + 14 * 12 * 120 && m < 60 + 14 * 12 * 120 + 30,
         ),
         reworkOf: null,
         lastNote: { text: words, outcome: "rejected", answeredAt: expect.any(Date) },
@@ -562,14 +595,14 @@ describe("held items in Didi's daily check (flow: fake model, D-272)", () => {
 
     expect(await answerPage(f, fresh?.id ?? "", "Approve")).toMatchObject({
       holdRelease: { nodeId: held.id, step: "released" },
+      firstRuns: [{ nodeId: held.id, result: { outcome: "started" } }],
     });
     expect(await requestRelease(f.deps, { nodeId: held.id })).toEqual({
       nodeId: held.id,
       step: "not_held",
     });
     expect((await reconcileFlow(f.deps)).heldItems).toEqual([]);
-    const started = await dispatch(f.deps, { nodeId: held.id, role: "developer" });
-    expect(started).toMatchObject({ outcome: "started" });
+    expect((await f.store.getNode(held.id))?.state).toBe("in_development");
   });
 
   it("refuses under the kill switch and dry run, writing nothing", async () => {

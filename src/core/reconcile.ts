@@ -1,27 +1,37 @@
-// The reconcile pass in dry run (build plan M2.4, technical architecture section 2.5). A plain
-// function over an injected store, contracts, guards, clock, id source and GitHub reader (D-162).
-// The reconcile flow (M3.1) calls it on the `reconcile_interval_minutes` schedule; the schedule and
-// the Windmill execution count are the flow's, and the count is passed in here.
+// The reconcile pass (build plan M2.4, technical architecture section 2.5), in dry run and in live
+// mode (D-329 slice 3, O-103). A plain function over an injected store, contracts, guards, clock,
+// id source and GitHub reader (D-162). The reconcile flow (M3.1) calls it on the
+// `reconcile_interval_minutes` schedule; the schedule and the Windmill execution count are the
+// flow's, and the count is passed in here.
 //
-// What a dry-run pass writes, and what it never writes:
-// - It writes dry-run transition rows (mode `dry_run`) through the library, which writes that mode
-//   whenever the `dry_run` setting is on or missing. The node itself never changes.
-// - It writes the evidence the GitHub polling backstop records (`ci_run`, `merge_commit`), the
-//   `merge_check` the merge step reads from GitHub (M3.3), and the `staging_deploy` or
-//   `staging_deploy_failed` the staging step reads from GitHub (M3.4, D-225). That is real evidence of what GitHub reports, recorded the same
-//   way as a webhook, and webhooks record it in dry run too (ADR 0113 sections 5 and 6).
-//   Recording a fact is not acting on it. It runs no staging check.
-// - It never inserts a run, starts an agent, records a dispatch, closes or opens a gate request,
-//   changes a counter or a setting, or sends anything. Dispatch admission is evaluated with
-//   `runs.planDispatch`, which reads only.
-// Live mode is not built: with `dry_run` set to false the pass stops before doing anything.
-// Cancels and the Council's stops (D-308, ./cancel.ts) are reported as what the step would do;
-// nothing is cancelled or asked in dry run.
+// One plan in both modes. The kill switch stops the pass first. Then the GitHub polling backstop,
+// then steps 2 to 4 (release, dispatch, advance from evidence), each decided by the same code in
+// both modes, so live mode and dry run cannot drift. Then the stall check and the clean-up
+// candidates, which only report in both modes. The two modes differ only in what the plan writes:
+// - In dry run (`dry_run` on or missing) the pass writes dry-run transition rows (mode `dry_run`)
+//   through the library for each move it plans, and the node never changes. It also runs the
+//   dry-run halves of the merge, staging and cancel steps below.
+// - In live mode (`dry_run` false) the pass writes no transition row: a move whose guards pass is
+//   reported `due`, and a dispatch admission allows is reported `planned`, as in dry run. The
+//   reconcile flow then acts on that plan through the existing paths: each move through the
+//   library with the same trigger and guards, and each run through the dispatch's start path
+//   (flows/lib/reconcile-steps.ts), where admission decides again under its lock. The merge,
+//   staging and cancel steps are the flow's live passes (flows/lib/live-passes.ts), not here.
+// In both modes the pass writes the evidence the GitHub polling backstop records (`ci_run`,
+// `merge_commit`), and in dry run the `merge_check` the merge step reads from GitHub (M3.3) and
+// the `staging_deploy` or `staging_deploy_failed` the staging step reads from GitHub (M3.4,
+// D-225). That is real evidence of what GitHub reports, recorded the same way as a webhook, and
+// webhooks record it in dry run too (ADR 0113 sections 5 and 6). Recording a fact is not acting
+// on it. The pass itself never inserts a run, starts an agent, records a dispatch, closes or opens
+// a gate request, changes a counter or a setting, or sends anything: dispatch admission is
+// evaluated with `runs.planDispatch`, which reads only. Cancels and the Council's stops (D-308,
+// ./cancel.ts) are reported in dry run as what the step would do; nothing is cancelled or asked.
 //
 // Which contract moves each step uses comes from the contracts, never from a list here: release
 // takes the moves out of a non-escalated state that requires a blocked reason (Blocked);
 // dispatch takes the moves guarded by `agent_ready_not_on_hold`, the guard that says a node is
-// ready for an agent, and plans with no move the builder run of an item a fail move sent back
+// ready for an agent, decided by the first-run check the flows also use (./ready-runs.ts), and
+// plans with no move the builder run of an item a fail move sent back
 // (src/core/builder-runs.ts); advance from evidence takes the moves guarded by
 // `ci_green_on_head`, the evidence section 2.5 step 4 names, except the moves on which the runner
 // merges (guard `qa_verdict_independent_on_head`): those need the merge, so the merge step plans
@@ -31,6 +41,8 @@
 // The bot to dispatch is the owner of the state, from the contracts. The merge and the staging
 // check are never done here: in live mode the reconcile flow runs the merge pass, the staging pass
 // and the builder runs pass (flows/reconcile.ts, O-31, O-37, O-41).
+// The pass is the safety net (D-274): a flow whose move makes an item ready starts its first run
+// at once (flows/lib/ready-runs.ts), so live mode's dispatch step finds only what an event missed.
 import {
   isTerminalState,
   type Contracts,
@@ -59,6 +71,7 @@ import {
   type RoleRunLimits,
   type RunLimits,
 } from "./runs.ts";
+import { createReadyRuns } from "./ready-runs.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
 import { createStaging, type StagingResult } from "./staging.ts";
 import { qaHeadOf, stalledRuns, type StalledRun } from "./stalls.ts";
@@ -122,12 +135,16 @@ export interface ReconcileInput {
   windmillExecutionsThisMonth?: number;
 }
 
-/** One transition the pass asked for. `already_planned`: an identical dry-run row exists. */
+/**
+ * One transition the pass asked for, or found due. `already_planned`: in dry run, an identical
+ * dry-run row exists. `due`: in live mode, the guards pass now and nothing was written; the
+ * reconcile flow asks the library for the move (flows/lib/reconcile-steps.ts).
+ */
 export interface MovePlan {
   nodeId: string;
   fromState: string;
   toState: string;
-  outcome: TransitionOutcome | "already_planned";
+  outcome: TransitionOutcome | "already_planned" | "due";
   reason?: string;
   guardReport: GuardCheck[];
   transitionId?: string;
@@ -231,9 +248,13 @@ export interface ExecutionAlert extends ExecutionLimits {
 }
 
 export interface ReconcileReport {
-  mode: "dry_run";
+  /**
+   * `dry_run` while the `dry_run` setting is on or missing; `live` when it is false, and the
+   * reconcile flow then acts on the plan.
+   */
+  mode: "dry_run" | "live";
   /** Why the pass did nothing, or null when it ran. */
-  stopped: "kill_switch" | "live_mode_not_built" | null;
+  stopped: "kill_switch" | null;
   at: Date;
   specVersion: string;
   polls: PollReport[];
@@ -241,19 +262,26 @@ export interface ReconcileReport {
   dispatches: DispatchPlan[];
   attention: AttentionItem[];
   advances: AdvancePlan[];
-  /** The merge moves (In QA review to Verifying on staging) the pass planned or found blocked. */
+  /**
+   * The merge moves (In QA review to Verifying on staging) the pass planned or found blocked. In
+   * dry run only; in live mode the reconcile flow's merge pass takes them (M3.3).
+   */
   merges: MovePlan[];
   /**
    * The items in Verifying on staging: the staging deploy covering each merge commit, recorded
    * when GitHub reports it, and the dry-run row of the move a recorded staging check or failed
-   * deploy calls for.
+   * deploy calls for. In dry run only; in live mode the reconcile flow's staging pass checks them
+   * (M3.4).
    */
   staging: StagingResult[];
+  /** Report only, in both modes. */
   stalls: Stall[];
+  /** Report only, in both modes: closing a request is the gate lifecycle (M4.1). */
   gateCleanup: GateCleanupCandidate[];
   /**
-   * The cancels and Council stops still to act on (D-308, ./cancel.ts): in dry run,
-   * what the step would cancel. Nothing is written for them.
+   * The cancels and Council stops still to act on (D-308, ./cancel.ts): in dry run, what the
+   * step would cancel. Nothing is written for them. Empty in live mode, where the reconcile
+   * flow's cancel pass takes them.
    */
   cancels: CancelStep[];
   executions: ExecutionAlert | null;
@@ -332,6 +360,7 @@ export async function reconcile(
   const library = createLibrary(deps);
   const runs = createRuns(deps);
   const builderRuns = createBuilderRuns(deps);
+  const ready = createReadyRuns(deps);
   const now = clock.now();
   const problems: string[] = [];
   const report: ReconcileReport = {
@@ -365,11 +394,10 @@ export async function reconcile(
     report.stopped = "kill_switch";
     return report;
   }
-  // Only dry run is built. A missing setting means dry run, as in the library.
-  if ((await store.getSetting("dry_run"))?.value === false) {
-    report.stopped = "live_mode_not_built";
-    return report;
-  }
+  // A missing setting means dry run, as in the library. The plan below is the same in both modes;
+  // only what it writes differs.
+  const live = (await store.getSetting("dry_run"))?.value === false;
+  if (live) report.mode = "live";
 
   const stateOf = (name: string) =>
     Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
@@ -408,7 +436,8 @@ export async function reconcile(
    * Asks the library for one move, skipping a dry-run row identical to the node's latest
    * transition: same from and to state, same spec version, same evidence ids, written since the
    * node entered its state. An unchanged plan therefore writes one row, however many passes see
-   * it; a change in the evidence the guards relied on writes a new one.
+   * it; a change in the evidence the guards relied on writes a new one. In live mode it writes
+   * nothing: a move whose guards pass is `due`, for the reconcile flow to ask for.
    */
   async function requestMove(node: Node, toState: string): Promise<MovePlan> {
     const request: TransitionRequest = {
@@ -427,6 +456,7 @@ export async function reconcile(
         guardReport: check.guardReport,
       };
     }
+    if (live) return { ...base, outcome: "due", guardReport: check.guardReport };
     const latest = (await store.listTransitions(node.id)).at(-1);
     if (
       latest &&
@@ -477,6 +507,42 @@ export async function reconcile(
     return { ...plan, run: result.run };
   }
 
+  /**
+   * Step 3 for a node in a ready state: the first-run check the flows also use
+   * (./ready-runs.ts), then admission, then the dispatch move's dry-run row (or `due`).
+   */
+  async function planFirstRun(node: Node): Promise<DispatchPlan> {
+    const check = await ready.checkNode(node);
+    if (check.due) {
+      const plan = await planDispatch(node, check.role);
+      if (plan.outcome === "planned")
+        plan.transition = await requestMove(node, check.toState);
+      return plan;
+    }
+    const base = { nodeId: node.id, state: node.state, role: check.role };
+    switch (check.reason) {
+      case "no_role":
+        return { ...base, outcome: "no_role" };
+      case "waiting":
+        return {
+          ...base,
+          outcome: "waiting",
+          reason: check.cause,
+          resumeAt: check.resumeAt,
+        };
+      case "guard_failed":
+        return {
+          ...base,
+          outcome: "guard_failed",
+          reason: check.failedGuards.join(", "),
+        };
+      default:
+        // `not_dispatchable`. The step skips nodes with an active run and nodes not in a ready
+        // state before it asks, so no other reason reaches here.
+        return { ...base, outcome: "not_dispatchable" };
+    }
+  }
+
   // Step 2. Release: each Blocked node whose guards for the move to Ready pass.
   for (const node of nodes) {
     const state = stateOf(node.state);
@@ -501,67 +567,49 @@ export async function reconcile(
   const activeNodeIds = new Set((await store.listActiveRuns()).map((r) => r.nodeId));
   for (const node of nodes) {
     if (stateOf(node.state)?.escalated || activeNodeIds.has(node.id)) continue;
-    const dispatchMove = movesFrom(node).find((move) =>
-      move.guards.includes(DISPATCH_GUARD),
-    );
+    const dispatchMove = ready.dispatchMoveOf(node);
     const latestRun = (await store.listRuns({ nodeId: node.id })).at(-1);
-    const queuedBot = latestRun?.outcome === "usage_exhausted" ? latestRun.bot : null;
+    // A Council run queued after `usage_exhausted` is the Council pass's to run again, for its
+    // question (./council.ts counts it as no attempt, and admission holds the wait): a dispatch
+    // here would have no question to name, and the dispatch refuses one without it (O-103).
+    const queuedBot =
+      latestRun?.outcome === "usage_exhausted" && latestRun.bot !== "council"
+        ? latestRun.bot
+        : null;
     // A builder run due with no move: the item came back from a failed QA round or staging
     // check (O-41). It is planned like a queued dispatch.
     const builderRun = dispatchMove ? null : await builderRuns.check(node.id);
     const builderRole = builderRun?.due ? builderRun.role : null;
     if (!dispatchMove && queuedBot === null && builderRole === null) continue;
 
-    const role = dispatchMove
-      ? roleOf(stateOf(node.state)?.owner)
-      : (builderRole ?? roleOf(queuedBot));
+    const role = builderRole ?? roleOf(queuedBot);
     let plan: DispatchPlan;
-    if (role === null) {
+    if (dispatchMove) {
+      plan = await planFirstRun(node);
+    } else if (role === null) {
       plan = { nodeId: node.id, state: node.state, role, outcome: "no_role" };
     } else if (!library.canDispatch(node)) {
       plan = { nodeId: node.id, state: node.state, role, outcome: "not_dispatchable" };
     } else {
       const queued = await runs.queuedDispatch(node.id);
-      if (queued && !queued.ready) {
-        plan = {
-          nodeId: node.id,
-          state: node.state,
-          role,
-          outcome: "waiting",
-          reason: queued.cause,
-          resumeAt: queued.resumeAt,
-        };
-      } else if (dispatchMove) {
-        const check = await library.checkTransition({
-          nodeId: node.id,
-          toState: dispatchMove.to,
-          trigger: TRIGGER,
-          actor: ACTOR,
-        });
-        if (check.outcome !== "allowed") {
-          plan = {
-            nodeId: node.id,
-            state: node.state,
-            role,
-            outcome: "guard_failed",
-            reason: check.guardReport
-              .filter((c) => !c.pass)
-              .map((c) => c.name)
-              .join(", "),
-          };
-        } else {
-          plan = await planDispatch(node, role);
-          if (plan.outcome === "planned")
-            plan.transition = await requestMove(node, dispatchMove.to);
-        }
-      } else {
-        plan = await planDispatch(node, role);
-      }
+      plan =
+        queued && !queued.ready
+          ? {
+              nodeId: node.id,
+              state: node.state,
+              role,
+              outcome: "waiting",
+              reason: queued.cause,
+              resumeAt: queued.resumeAt,
+            }
+          : await planDispatch(node, role);
     }
     report.dispatches.push(plan);
 
     // Ready at the previous pass (one interval ago) and still not running: in dry run that is
-    // every ready node older than one interval, since nothing is started.
+    // every ready node older than one interval, since nothing is started. In live mode the
+    // previous pass, or the flow that made it ready, should have started it, so the item is listed
+    // even when this pass now starts it.
     const waiting = plan.outcome === "waiting" || plan.outcome === "not_dispatchable";
     if (
       dispatchMove &&
@@ -588,7 +636,11 @@ export async function reconcile(
       (m) => m.guards.includes(ADVANCE_GUARD) && !m.guards.includes(MERGE_MOVE_GUARD),
     )) {
       const advance: AdvancePlan = await requestMove(node, move.to);
-      if (advance.outcome === "planned" || advance.outcome === "already_planned") {
+      if (
+        advance.outcome === "planned" ||
+        advance.outcome === "already_planned" ||
+        advance.outcome === "due"
+      ) {
         const role = roleOf(stateOf(move.to)?.owner);
         advance.dispatch = role
           ? await planDispatch(node, role)
@@ -597,65 +649,69 @@ export async function reconcile(
       report.advances.push(advance);
     }
   }
-  // Step 4, the merge moves: a node whose QA passed on its head merges, or, when its PR is merged
-  // already, records the move. The merge step reads the PR and records its mergeable state on the
-  // head (a fact, like the polling backstop), then plans the move as a dry-run row. It merges
-  // nothing and opens no gate request.
-  const merges = createMerges(deps);
-  for (const node of nodes) {
-    if (stateOf(node.state)?.escalated) continue;
-    const move = merges.mergeMoveFor(node);
-    if (!move) continue;
-    const base = { nodeId: node.id, fromState: node.state, toState: move.to };
-    let inspected;
-    try {
-      inspected = await merges.inspect(node.id);
-    } catch {
-      report.merges.push({
-        ...base,
-        outcome: "rejected",
-        reason: "github_read_failed",
-        guardReport: [],
-      });
-      continue;
-    }
-    if (inspected.stop) {
-      // Guards that fail before GitHub is read: the plan names them, and nothing is written.
-      if (inspected.stop.reason === "guard_failed") {
-        report.merges.push(await requestMove(node, move.to));
-      } else {
+  if (!live) {
+    // Step 4, the merge moves, in dry run: a node whose QA passed on its head merges, or, when its
+    // PR is merged already, records the move. The merge step reads the PR and records its mergeable
+    // state on the head (a fact, like the polling backstop), then plans the move as a dry-run row.
+    // It merges nothing and opens no gate request. In live mode the merge pass takes these
+    // (flows/lib/live-passes.ts, M3.3).
+    const merges = createMerges(deps);
+    for (const node of nodes) {
+      if (stateOf(node.state)?.escalated) continue;
+      const move = merges.mergeMoveFor(node);
+      if (!move) continue;
+      const base = { nodeId: node.id, fromState: node.state, toState: move.to };
+      let inspected;
+      try {
+        inspected = await merges.inspect(node.id);
+      } catch {
         report.merges.push({
           ...base,
-          outcome: inspected.stop.outcome,
-          reason: inspected.stop.reason,
+          outcome: "rejected",
+          reason: "github_read_failed",
           guardReport: [],
         });
+        continue;
       }
-      continue;
+      if (inspected.stop) {
+        // Guards that fail before GitHub is read: the plan names them, and nothing is written.
+        if (inspected.stop.reason === "guard_failed") {
+          report.merges.push(await requestMove(node, move.to));
+        } else {
+          report.merges.push({
+            ...base,
+            outcome: inspected.stop.outcome,
+            reason: inspected.stop.reason,
+            guardReport: [],
+          });
+        }
+        continue;
+      }
+      report.merges.push(await requestMove(node, move.to));
     }
-    report.merges.push(await requestMove(node, move.to));
-  }
 
-  // Step 4 also says to dispatch the staging check once main has deployed to staging (M3.4). The
-  // polling backstop for the deploy: the staging step reads GitHub's staging deployments covering
-  // each merge commit and records the newest finished one as `staging_deploy` or
-  // `staging_deploy_failed` (D-225). It runs no check (no checker in dry
-  // run); a check already recorded gets the dry-run row of its move. A node that has waited past
-  // `staging_deploy_attention_after_minutes` with no deploy recorded goes on the attention list
-  // (D-225, O-40).
-  const staging = createStaging({ ...deps, checker: null });
-  for (const node of nodes) {
-    if (stateOf(node.state)?.escalated || !staging.stagingMovesFor(node)) continue;
-    report.staging.push(await staging.verify(node.id));
-  }
-  const stagingWaits = await staging.deployWaits(report.staging);
-  if (stagingWaits.problem) problems.push(stagingWaits.problem);
-  for (const wait of stagingWaits.waits) {
-    report.attention.push({
-      kind: "staging_deploy_wait",
-      state: nodeById.get(wait.nodeId)?.state ?? "",
-      ...wait,
-    });
+    // Step 4 also says to dispatch the staging check once main has deployed to staging (M3.4). The
+    // polling backstop for the deploy: the staging step reads GitHub's staging deployments covering
+    // each merge commit and records the newest finished one as `staging_deploy` or
+    // `staging_deploy_failed` (D-225). It runs no check (no checker in dry
+    // run); a check already recorded gets the dry-run row of its move. A node that has waited past
+    // `staging_deploy_attention_after_minutes` with no deploy recorded goes on the attention list
+    // (D-225, O-40). In dry run only: in live mode the staging pass checks these items and lists
+    // the waits (flows/lib/live-passes.ts, M3.4).
+    const staging = createStaging({ ...deps, checker: null });
+    for (const node of nodes) {
+      if (stateOf(node.state)?.escalated || !staging.stagingMovesFor(node)) continue;
+      report.staging.push(await staging.verify(node.id));
+    }
+    const stagingWaits = await staging.deployWaits(report.staging);
+    if (stagingWaits.problem) problems.push(stagingWaits.problem);
+    for (const wait of stagingWaits.waits) {
+      report.attention.push({
+        kind: "staging_deploy_wait",
+        state: nodeById.get(wait.nodeId)?.state ?? "",
+        ...wait,
+      });
+    }
   }
 
   // Step 5. Stall check: active runs with no activity within their budget window. Activity is
@@ -665,8 +721,9 @@ export async function reconcile(
 
   // Step 6. Clean up (D-199). A newer request on the same topic already supersedes the older one
   // when it is opened (schema invariant 5). A request on a node that reached Done would be
-  // cancelled, and one left unanswered for `gate_request_expiry_days` would expire. Dry run only
-  // reports them; reopening a still-needed request after expiry is the gate lifecycle (M4.1).
+  // cancelled, and one left unanswered for `gate_request_expiry_days` would expire. The pass only
+  // reports them, in both modes; closing them, and reopening a still-needed request after expiry,
+  // is the gate lifecycle (M4.1).
   const expiryDays = await positiveNumberSetting(store, "gate_request_expiry_days");
   for (const projectId of projectIds) {
     const open: GateRequest[] = await store.listOpenGateRequests(projectId);
@@ -690,10 +747,12 @@ export async function reconcile(
   }
 
   // Cancels and the Council's stops (D-308): in dry run the step only reports what it would
-  // cancel. The reconcile flow's live passes take the step for real.
-  const stops = createCancels(deps);
-  for (const ideaId of await stops.pending()) {
-    report.cancels.push(await stops.step(ideaId));
+  // cancel. In live mode the step would act, so it is left to the reconcile flow's cancel pass.
+  if (!live) {
+    const stops = createCancels(deps);
+    for (const ideaId of await stops.pending()) {
+      report.cancels.push(await stops.step(ideaId));
+    }
   }
 
   // Step 7, the Linear mirror, is dropped (D-192). Step 8, the spend roll-up, is M4.5.

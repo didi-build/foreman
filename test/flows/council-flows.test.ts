@@ -345,7 +345,7 @@ describe("a reversal's question (flow: fake adapters, D-229)", () => {
 });
 
 describe("a reversal's redo (flow: fake adapters, D-231)", () => {
-  it("cancels the item's run first, sends it back to Ready for dev, and the dispatch starts it again on the same branch", async () => {
+  it("cancels the item's run first, sends it back to Ready for dev, and starts its first run again at once on the same branch (D-329)", async () => {
     const f = await createFlowFixture();
     ticking(f);
     await f.live();
@@ -384,6 +384,10 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
             cancelled: [first.runId],
             cancelFailed: [],
             redo: { step: "moved", outcome: "applied", toState: "ready_for_dev" },
+            // As for a fresh item, the Developer starts at once, in the same flow.
+            firstRuns: [
+              { nodeId: item.id, role: "developer", result: { outcome: "started" } },
+            ],
           },
         ],
       },
@@ -391,19 +395,26 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
     // The run was stopped through the runtime before the move.
     expect(f.runtime.cancelled).toHaveLength(1);
     expect(await f.store.getRun(first.runId)).toMatchObject({ outcome: "cancelled" });
+    expect(await f.store.getCounter(item.id, "failure")).toBe(0);
+    // The first run is on the item's one branch, and its start took the dispatch move.
+    const again = f.tasksFor.at(-1);
+    expect(again?.run.bot).toBe("developer");
+    expect(again?.branch).toBe(`foreman/${item.id}`);
     expect(await f.store.getNode(item.id)).toMatchObject({
-      state: "ready_for_dev",
+      state: "in_development",
       stale: false,
     });
-    expect(await f.store.getCounter(item.id, "failure")).toBe(0);
-    // The next reconcile pass finds nothing more to redo.
-    expect((await reconcileFlow(f.deps)).redos).toEqual([]);
-
-    // As for a fresh item: the dispatch starts the Developer, on the item's one branch.
-    const again = await dispatch(f.deps, { nodeId: item.id, role: "developer" });
-    expect(again).toMatchObject({ outcome: "started" });
-    expect(f.tasksFor.at(-1)?.branch).toBe(`foreman/${item.id}`);
-    expect((await f.store.getNode(item.id))?.state).toBe("in_development");
+    expect((await f.transitions(item.id)).map((t) => t.toState)).toEqual([
+      "in_development",
+      "ready_for_dev",
+      "in_development",
+    ]);
+    // The next reconcile pass finds nothing more to redo and starts nothing more.
+    const runs = (await f.store.listRuns({ nodeId: item.id })).length;
+    const pass = await reconcileFlow(f.deps);
+    expect(pass.redos).toEqual([]);
+    expect(pass.dispatched).toEqual([]);
+    expect(await f.store.listRuns({ nodeId: item.id })).toHaveLength(runs);
   });
 
   it("the reconcile flow takes a redo a cut-short run-end left, and opens a merged item's rework item", async () => {
@@ -446,33 +457,40 @@ describe("a reversal's redo (flow: fake adapters, D-231)", () => {
       verdicts: [{ result: "redo_move_due" }, { result: "rework_due" }],
     });
     const pass = await reconcileFlow(f.deps);
+    const [edge] = await f.store.listEdges({ toNode: merged.id, type: "reworks" });
+    const rework = edge!.fromNode;
+    // Each item back at the start, and the rework item, gets its first run at once (D-329).
     expect(pass.redos).toMatchObject([
-      { nodeId: built.id, redo: { step: "moved", outcome: "applied" } },
+      {
+        nodeId: built.id,
+        redo: { step: "moved", outcome: "applied" },
+        firstRuns: [{ nodeId: built.id, result: { outcome: "started" } }],
+      },
       {
         nodeId: merged.id,
         cancelled: [],
-        redo: { step: "reworked", outcome: "created" },
+        redo: { step: "reworked", outcome: "created", reworkNodeId: rework },
+        firstRuns: [{ nodeId: rework, result: { outcome: "started" } }],
       },
     ]);
     expect(await f.store.getNode(built.id)).toMatchObject({
-      state: "ready_for_dev",
+      state: "in_development",
       stale: false,
     });
     expect(await f.store.getNode(merged.id)).toMatchObject({
       state: "done",
       stale: false,
     });
-    const [edge] = await f.store.listEdges({ toNode: merged.id, type: "reworks" });
-    // The rework item is a fresh item in Ready for dev: the dispatch starts it on its own branch.
-    const started = await dispatch(f.deps, {
-      nodeId: edge!.fromNode,
-      role: "developer",
-    });
-    expect(started).toMatchObject({ outcome: "started" });
-    expect(f.tasksFor.at(-1)?.branch).toBe(`foreman/${edge!.fromNode}`);
-    expect(f.tasksFor.at(-1)?.input).toContain(`reworks item ${merged.id}`);
+    // The rework item is a fresh item: its run is on its own branch, and its input says what it
+    // reworks.
+    const start = f.tasksFor.find((t) => t.run.nodeId === rework);
+    expect(start?.branch).toBe(`foreman/${rework}`);
+    expect(start?.input).toContain(`reworks item ${merged.id}`);
+    expect((await f.store.getNode(rework))?.state).toBe("in_development");
     // The next pass has nothing more to do for either.
-    expect((await reconcileFlow(f.deps)).redos).toEqual([]);
+    const again = await reconcileFlow(f.deps);
+    expect(again.redos).toEqual([]);
+    expect(again.dispatched).toEqual([]);
   });
 
   it("cancels nothing and moves nothing under the kill switch or in dry run", async () => {
@@ -583,12 +601,18 @@ describe("Didi's answer to a reversal's gate request (flow: fake adapters, D-234
     ).toMatchObject({
       council: {
         answer: { recorded: true, verdicts: [{ result: "redo_move_due" }] },
-        redos: [{ nodeId: item.id, redo: { step: "moved", outcome: "applied" } }],
+        redos: [
+          {
+            nodeId: item.id,
+            redo: { step: "moved", outcome: "applied" },
+            firstRuns: [{ nodeId: item.id, result: { outcome: "started" } }],
+          },
+        ],
         council: [],
       },
     });
     expect(await f.store.getNode(item.id)).toMatchObject({
-      state: "ready_for_dev",
+      state: "in_development",
       stale: false,
     });
     expect(await f.store.findOpenGateRequest(f.projectId, topic)).toBeNull();

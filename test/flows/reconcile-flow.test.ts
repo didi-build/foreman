@@ -95,7 +95,7 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
       close: async () => undefined,
     };
     const first = await run(deps);
-    expect(first.stopped).toBe("live_mode_not_built");
+    expect(first).toMatchObject({ mode: "live", stopped: null });
     expect(first.merged).toMatchObject([
       { nodeId: t.node.id, result: { outcome: "applied" } },
     ]);
@@ -186,6 +186,7 @@ describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
       outcome: "verified",
       results: [],
       builderRuns: [],
+      firstRuns: [],
     });
   });
 

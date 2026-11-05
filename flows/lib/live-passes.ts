@@ -1,39 +1,56 @@
-// The passes the reconcile flow runs with `dry_run` off, while the live reconcile pass is not
-// built (M2.4 stops on `dry_run` false, which the pass reports as `live_mode_not_built`). The
-// merge pass merges what QA passed and recovers a merge whose move was not written (M3.3, O-31).
-// The staging pass then checks each merged item on staging and recovers its moves, its escalation
-// and its dependents' release (M3.4, O-37), and reports the items that have waited past
-// `staging_deploy_attention_after_minutes` with no deploy recorded (D-225, O-40). The escalation
-// pass then takes each escalated item on once the Council or Didi has answered (M3.5,
-// src/core/escalations.ts): back where it was escalated from with the counters reset, or on to
-// Didi with a gate request. The follow-up pass then opens the follow-up Council question on each
-// reversal whose gate request Didi has answered (D-234, ./council-runs.ts). The Council pass then
-// starts a Council run for each open question
-// that has none, or sends a question whose runs gave no usable answer to Didi (D-228, D-229,
-// ./council-runs.ts). The redo pass then sends each stale item whose Council redo stands back to
-// the start of its track, cancelling its runs first (D-231), or opens a merged item's rework item
-// (D-233). The Triage pass then takes each idea in Plan accepted to Triage and gives each idea in
-// Triage its run, its re-run, or the Council after two runs with no usable answer (M3.6,
-// ./triage-runs.ts). The hold release pass then clears the hold flag of each held item whose
-// release request Didi approved, when the approval step could not (a switch held it, or it was cut
-// short; D-269, src/core/hold-release.ts). The option capture pass then captures each design
-// item's exploration options once CI has rendered them at its PR head, opens Didi's
-// visual-approval request and asks again for the Designer report's move into Waiting for Didi
-// (O-88, ./option-capture.ts). The plan approval pass runs before the Triage pass: for
-// each idea in Submitted or Council planning with a plan from the planning chat, it opens Didi's
-// plan-approval request for the latest plan, or takes the move Didi's answer calls for (D-266,
-// src/core/plans.ts), so an idea Didi approved goes on to Triage in the same pass. Last, the builder runs pass starts the fix round of each item a failed
-// QA round, a staging check, a refused done report or an answered escalation sent back, and
-// resumes a builder run queued after `usage_exhausted` (O-41, O-43). It runs after the staging and
-// escalation passes, so an escalation that pass recovers is taken first. Under any other stop,
-// none runs. The merged-change pass runs right after the merge pass: it asks the Council whether
-// each open item that touches the same design feature folder as a merged item is still needed
-// (D-308 (3), src/core/still-needed.ts), once per pair, before the Council pass starts the runs.
-// The cancel pass runs right after the redo pass: it opens Didi's request to confirm each
-// Council stop on a plan Didi approved, cancels each work item a cancel stands on once no run is
-// active on it, and then moves the idea to Rejected (D-308, ./council-runs.ts). The close pass runs
-// right after it: it starts the close-only run of each cancelled item's pull request that has had
-// none, which a refused start, or a pass cut short, left due (D-318, ./close-runs.ts).
+// What the reconcile flow does with `dry_run` off, after the pass (src/core/reconcile.ts) has
+// polled GitHub and planned steps 2 to 4 with the same code as in dry run (O-103). The kill
+// switch stops the pass before any of this, and then only the cancel pass runs
+// (./cancel-runs.ts, D-202). In live mode, in this order:
+//
+// 1. Release, dispatch and advance from evidence, the steps 2 to 4 of architecture section 2.5:
+//    the moves and runs the plan found due (./reconcile-steps.ts). A released item's first run
+//    starts at once, and QA's run starts once an item advances into review.
+// 2. The merge pass merges what QA passed and recovers a merge whose move was not written (M3.3,
+//    O-31): the rest of step 4.
+// 3. The merged-change pass asks the Council whether each open item that touches the same design
+//    feature folder as a merged item is still needed (D-308 (3), src/core/still-needed.ts), once
+//    per pair, before the Council pass starts the runs.
+// 4. The staging pass checks each merged item on staging and recovers its moves, its escalation
+//    and its dependents' release (M3.4, O-37): the staging part of step 4. It reports the items
+//    that have waited past `staging_deploy_attention_after_minutes` with no deploy recorded
+//    (D-225, O-40), and each item a node's Done frees gets its first run at once (D-329).
+// 5. The escalation pass takes each escalated item on once the Council or Didi has answered (M3.5,
+//    src/core/escalations.ts): back where it was escalated from with the counters reset, or on to
+//    Didi with a gate request. An item back in a ready state gets its first run at once.
+// 6. The follow-up pass opens the follow-up Council question on each reversal whose gate request
+//    Didi has answered (D-234, ./council-runs.ts).
+// 7. The Council pass starts a Council run for each open question that has none, or sends a
+//    question whose runs gave no usable answer to Didi (D-228, D-229, ./council-runs.ts).
+// 8. The redo pass sends each stale item whose Council redo stands back to the start of its
+//    track, cancelling its runs first (D-231), or opens a merged item's rework item (D-233); the
+//    item back at the start, or the rework item, gets its first run at once.
+// 9. The cancel pass opens Didi's request to confirm each Council stop on a plan Didi approved,
+//    cancels each work item a cancel stands on once no run is active on it, and then moves the
+//    idea to Rejected (D-308, ./council-runs.ts).
+// 10. The close pass starts the close-only run of each cancelled item's pull request that has had
+//    none, which a refused start, or a pass cut short, left due (D-318, ./close-runs.ts).
+// 11. The plan approval pass, for each idea in Submitted or Council planning with a plan from the
+//    planning chat, opens Didi's plan-approval request for the latest plan, or takes the move
+//    Didi's answer calls for (D-266, src/core/plans.ts), so an idea Didi approved goes on to Triage
+//    in the same pass.
+// 12. The Triage pass takes each idea in Plan accepted to Triage and gives each idea in Triage its
+//    run, its re-run, or the Council after two runs with no usable answer (M3.6,
+//    ./triage-runs.ts).
+// 13. The hold release pass clears the hold flag of each held item whose release request Didi
+//    approved, when the approval step could not (a switch held it, or it was cut short; D-269,
+//    src/core/hold-release.ts), and the released item gets its first run at once.
+// 14. The option capture pass captures each design item's exploration options once CI has
+//    rendered them at its PR head, opens Didi's visual-approval request and asks again for the
+//    Designer report's move into Waiting for Didi (O-88, ./option-capture.ts).
+// 15. Last, the builder runs pass starts the fix round of each item a failed QA round, a staging
+//    check, a refused done report or an answered escalation sent back, and resumes a builder run
+//    queued after `usage_exhausted` (O-41, O-43). It runs after the staging and escalation passes,
+//    so an escalation that pass recovers is taken first, and after step 1, whose dispatch already
+//    started what the plan found due, so it finds those runs active and starts nothing twice.
+// The stall check and the clean-up candidates (steps 5 and 6) are the pass's own reports, in both
+// modes. In dry run none of this runs: the result carries the cancel step's report of what it
+// would do instead. Everything here runs inside the reconcile flow's one Windmill run (D-164).
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import {
   createHoldReleases,
@@ -51,6 +68,17 @@ import {
   type StagingResult,
 } from "../../src/core/staging.ts";
 import { startBuilderRuns, type BuilderRunStart } from "./builder-runs.ts";
+import {
+  firstRunsAfterStaging,
+  startReadyRuns,
+  type ReadyRunStart,
+} from "./ready-runs.ts";
+import {
+  runReconcileSteps,
+  type AdvanceStep,
+  type DispatchStep,
+  type ReleaseStep,
+} from "./reconcile-steps.ts";
 import { optionCapturePass, type OptionCapturePassStep } from "./option-capture.ts";
 import { triagePass, type TriagePassStep } from "./triage-runs.ts";
 import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans.ts";
@@ -69,6 +97,17 @@ import {
 } from "./council-runs.ts";
 
 export interface LivePasses {
+  /** Step 2: each release the plan found due, its move, and the released item's first run. */
+  released: ReleaseStep[] | null;
+  /** Step 3: each first run the plan admitted and what its start did, or admission's refusal. */
+  dispatched: DispatchStep[] | null;
+  /** Step 4: each advance the plan found due, its move, and QA's run on the head. */
+  advanced: AdvanceStep[] | null;
+  /**
+   * The first runs the staging, escalation and hold release passes started for the items they
+   * made ready (D-329); the redo pass's are in `redos`.
+   */
+  firstRuns: ReadyRunStart[] | null;
   merged: { nodeId: string; result: MergeResult }[] | null;
   verified: StagingResult[] | null;
   /** Items in Verifying on staging past the wait setting with no deploy, for the attention list. */
@@ -106,10 +145,18 @@ export interface LivePasses {
 
 export async function runLivePasses(
   deps: FlowDeps,
-  { stopped, cancels: wouldStop }: Pick<ReconcileReport, "stopped" | "cancels">,
+  report: Pick<
+    ReconcileReport,
+    "mode" | "stopped" | "cancels" | "releases" | "dispatches" | "advances"
+  >,
 ): Promise<LivePasses> {
-  if (stopped !== "live_mode_not_built") {
+  const { stopped, cancels: wouldStop } = report;
+  if (stopped !== null || report.mode !== "live") {
     return {
+      released: null,
+      dispatched: null,
+      advanced: null,
+      firstRuns: null,
       merged: null,
       verified: null,
       stagingWaits: null,
@@ -129,12 +176,20 @@ export async function runLivePasses(
       problems: [],
     };
   }
+  const steps = await runReconcileSteps(deps, report);
   const merged = await createMerges(deps).mergeReady();
   const stillNeeded = await createStillNeeded(deps).mergedChangePass();
   const staging = createStaging({ ...deps, checker: deps.stagingChecker });
   const verified = await staging.verifyReady();
   const { waits, problem } = await staging.deployWaits(verified);
+  const firstRuns = await firstRunsAfterStaging(deps, verified);
   const escalations = await createEscalations(deps).resolveAll();
+  firstRuns.push(
+    ...(await startReadyRuns(
+      deps,
+      escalations.filter((e) => e.step === "returned").map((e) => e.nodeId),
+    )),
+  );
   const followUps = await followUpPass(deps);
   const councilRuns = await councilPass(deps);
   const redos = await redoPass(deps);
@@ -151,9 +206,19 @@ export async function runLivePasses(
   for (const nodeId of await releases.pending()) {
     holdReleases.push(await releases.release(nodeId));
   }
+  firstRuns.push(
+    ...(await startReadyRuns(
+      deps,
+      holdReleases.filter((h) => h.step === "released").map((h) => h.nodeId),
+    )),
+  );
   const optionCaptures = await optionCapturePass(deps);
   const builderRuns = await startBuilderRuns(deps);
   return {
+    released: steps.releases,
+    dispatched: steps.dispatches,
+    advanced: steps.advances,
+    firstRuns,
     merged,
     verified,
     stagingWaits: waits,

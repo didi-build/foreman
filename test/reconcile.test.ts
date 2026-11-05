@@ -66,18 +66,48 @@ describe("reconcile pass, kill switch and mode (unit: section 2.5 step 1)", () =
     expect(await f.transitions(blocked.id)).toEqual([]);
   });
 
-  it("stops when dry_run is false, since live mode is not built", async () => {
+  it("with dry_run false plans in live mode and writes nothing: the flow acts on the plan", async () => {
     const f = await createReconcileFixture();
     const blocker = await f.node("done");
     const blocked = await f.node("blocked");
     await f.blocks(blocker.id, blocked.id);
+    const ready = await f.node("ready_for_dev");
     await f.setting("dry_run", false);
 
     const report = await f.pass();
 
-    expect(report.stopped).toBe("live_mode_not_built");
-    expect(await f.transitions(blocked.id)).toEqual([]);
+    expect(report).toMatchObject({ mode: "live", stopped: null });
+    expect(report.releases).toMatchObject([
+      { nodeId: blocked.id, toState: "ready_for_dev", outcome: "due" },
+    ]);
+    expect(report.dispatches).toMatchObject([
+      {
+        nodeId: ready.id,
+        outcome: "planned",
+        transition: { toState: "in_development", outcome: "due" },
+      },
+    ]);
+    expect(report.releases[0]?.transitionId).toBeUndefined();
+    expect(await f.transitions(blocked.id, ready.id)).toEqual([]);
     expect((await f.store.getNode(blocked.id))?.state).toBe("blocked");
+    expect((await f.store.getNode(ready.id))?.state).toBe("ready_for_dev");
+    await expectNothingActed(f, 0, 0);
+  });
+
+  it("a missing dry_run setting plans in dry run, as the library reads it", async () => {
+    const f = await createReconcileFixture();
+    await f.store.setSetting({
+      key: "dry_run",
+      value: null,
+      updatedBy: "test",
+      updatedAt: f.clock.now(),
+    });
+    const ready = await f.node("ready_for_dev");
+
+    const report = await f.pass();
+
+    expect(report.mode).toBe("dry_run");
+    expect((await f.transitions(ready.id)).map((t) => t.mode)).toEqual(["dry_run"]);
   });
 });
 
