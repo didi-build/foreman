@@ -1,6 +1,8 @@
 // Seam: API against the database (docs/test-plan.md, build plan M1.4). The state API on the real
 // Postgres store, connected as the factory_api role, so ADR 0104's grants and row level security
-// back up the API's own checks (ADR 0102, essentials 1 and 6).
+// back up the API's own checks (ADR 0102, essentials 1 and 6). The planning chat's calls go
+// through the public listener under `/api`, as the tunnel forwards them (D-343), over the same
+// API handler as the internal port, as `src/api/main.ts` builds both.
 import { randomBytes } from "node:crypto";
 
 import pg from "pg";
@@ -14,6 +16,7 @@ import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts"
 import { createFakeFlowStart } from "../../src/adapters/windmill/fake-flow-start.ts";
 import { hashToken } from "../../src/api/auth.ts";
 import { ENTRY_CONTRACTS } from "../../src/api/entry.ts";
+import { createPublicHandler } from "../../src/api/public.ts";
 import { createApiHandler } from "../../src/api/routes.ts";
 import { docsUpdatedOrNone } from "../../src/core/guards/review.ts";
 import { createLibrary } from "../../src/core/library.ts";
@@ -42,7 +45,9 @@ describe.skipIf(!adminUrl)(
     let apiPool: pg.Pool;
     let runner: Store;
     let service: RunningService;
+    let publicService: RunningService;
     let base: string;
+    let publicBase: string;
     const item = nextId();
     const foreignItem = nextId();
     const ciEvidence = nextId();
@@ -92,8 +97,14 @@ describe.skipIf(!adminUrl)(
       return token;
     }
 
-    async function call(method: string, path: string, token: string, body?: unknown) {
-      const response = await fetch(`${base}${path}`, {
+    async function call(
+      method: string,
+      path: string,
+      token: string,
+      body?: unknown,
+      at: "internal" | "public" = "internal",
+    ) {
+      const response = await fetch(`${at === "public" ? publicBase : base}${path}`, {
         method,
         headers: {
           authorization: `Bearer ${token}`,
@@ -200,28 +211,38 @@ describe.skipIf(!adminUrl)(
         clock,
         ids: { next: nextId },
       });
+      const logger = createLogger("state-api-db-test", () => undefined);
+      const api = createApiHandler({
+        store,
+        library,
+        clock,
+        planning: {
+          tokenSha256: hashToken(PLANNING_TOKEN),
+          ids: { next: nextId },
+          store,
+          approvalFlow,
+          logger,
+        },
+      });
       service = await startService({
         name: "state-api-db-test",
         port: 0,
-        logger: createLogger("state-api-db-test", () => undefined),
-        handle: createApiHandler({
-          store,
-          library,
-          clock,
-          planning: {
-            tokenSha256: hashToken(PLANNING_TOKEN),
-            ids: { next: nextId },
-            store,
-            approvalFlow,
-            logger: createLogger("state-api-db-test", () => undefined),
-          },
-        }),
+        logger,
+        handle: api,
       });
       base = `http://127.0.0.1:${service.port}`;
+      publicService = await startService({
+        name: "state-api-db-test",
+        port: 0,
+        logger,
+        handle: createPublicHandler({ api, clock, logger }),
+      });
+      publicBase = `http://127.0.0.1:${publicService.port}`;
     });
 
     afterAll(async () => {
       await service?.stop();
+      await publicService?.stop();
       await apiPool?.end();
       await runnerPool?.end();
       dropTestDatabase(DB);
@@ -351,14 +372,26 @@ describe.skipIf(!adminUrl)(
     });
 
     it("records the planning chat's plan as factory_api, and nothing a guard trusts (D-266)", async () => {
-      const result = await call("POST", "/plans", PLANNING_TOKEN, {
+      const submission = {
         projectSlug: "rehearsal",
         title: "Settings page",
         plan: "Plan: a settings page.",
         productDirection: "Settings stay on one page.",
         answers: [{ question: "One page?", answer: "Yes." }],
         needsDidi: { needed: "yes", reason: "A settings page is a new feature." },
-      });
+      };
+      // The public door takes the routes under /api only (D-343).
+      expect(
+        (await call("POST", "/plans", PLANNING_TOKEN, submission, "public")).status,
+      ).toBe(404);
+      expect(approvalFlow.started).toEqual([]);
+      const result = await call(
+        "POST",
+        "/api/plans",
+        PLANNING_TOKEN,
+        submission,
+        "public",
+      );
       expect(result.status).toBe(201);
       const ideaId = result.body.ideaId as string;
       const idea = await runner.getNode(ideaId);
@@ -386,8 +419,10 @@ describe.skipIf(!adminUrl)(
       // Its status reads back with only the API's grants, framed as data (D-273 (3)).
       const status = await call(
         "GET",
-        "/planning/projects/rehearsal/submissions",
+        "/api/planning/projects/rehearsal/submissions",
         PLANNING_TOKEN,
+        undefined,
+        "public",
       );
       expect(status.status).toBe(200);
       expect(status.body).toMatchObject({
@@ -395,8 +430,15 @@ describe.skipIf(!adminUrl)(
         data: { submissions: [{ ideaId, title: "Settings page", status: "waiting" }] },
       });
       expect(
-        (await call("GET", "/planning/projects/rehearsal/feedback", PLANNING_TOKEN))
-          .status,
+        (
+          await call(
+            "GET",
+            "/api/planning/projects/rehearsal/feedback",
+            PLANNING_TOKEN,
+            undefined,
+            "public",
+          )
+        ).status,
       ).toBe(200);
       // An accepted plan, as the runner records it, reads back as factory_api.
       const [submissionReport] = await runner.listEvidence({ nodeId: ideaId });
@@ -416,8 +458,10 @@ describe.skipIf(!adminUrl)(
       });
       const accepted = await call(
         "GET",
-        "/planning/projects/rehearsal/accepted",
+        "/api/planning/projects/rehearsal/accepted",
         PLANNING_TOKEN,
+        undefined,
+        "public",
       );
       expect(accepted.status).toBe(200);
       expect(accepted.body).toMatchObject({

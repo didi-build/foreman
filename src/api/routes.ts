@@ -4,7 +4,9 @@
 //
 // The planning chat's identity (D-266, ./auth.ts) may call `POST /plans` and the three planning
 // reads under `/planning/projects/:slug/` (D-273 (3)) and nothing else, and no run token may call
-// them. Every other route refuses a planning caller with 403. After a submission is recorded, the
+// them. From outside the cluster the chat calls them under `/api` on the public port, which takes
+// the prefix off before this handler sees the path (./public.ts, D-343). Every other route
+// refuses a planning caller with 403. After a submission is recorded, the
 // API starts the plan-approval flow for it (D-273 (2)), unless the kill switch or dry run is on
 // (D-333); if a switch holds it or the start fails, the submission stands and the reconcile pass
 // opens the request later.

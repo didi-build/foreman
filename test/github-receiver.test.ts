@@ -161,6 +161,38 @@ describe("GitHub receiver over HTTP (in-process end to end, ADR 0113)", () => {
     expect((await f.store.getGithubDelivery("delivery-4"))?.outcome).toBe("rejected");
   });
 
+  it("serves its one webhook path under /api, and answers 404 on the old path and near misses (D-343)", async () => {
+    expect(WEBHOOK_PATH).toBe("/api/github/webhook");
+    const body = await openedBody();
+    const base = `http://127.0.0.1:${service.port}`;
+    const reads = f.github.reads;
+    for (const path of [
+      "/github/webhook",
+      "/api/github/webhook/",
+      "/api/github/webhook/extra",
+      "/api/github",
+      "/API/github/webhook",
+      "/api/api/github/webhook",
+    ]) {
+      const response = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "pull_request",
+          "x-github-delivery": "wrong-path",
+          "x-hub-signature-256": f.github.sign(body),
+        },
+        body,
+      });
+      expect(response.status, path).toBe(404);
+      expect(await response.json(), path).toEqual({ error: "not found" });
+    }
+    // Only POST on the path itself is a delivery.
+    expect((await fetch(url)).status).toBe(404);
+    expect(f.github.reads).toBe(reads);
+    expect(await f.store.getGithubDelivery("wrong-path")).toBeNull();
+  });
+
   it("logs only the delivery id, event, repository, PR number and outcome", () => {
     const standard = new Set(["time", "level", "service", "message"]);
     const allowed = new Set(["deliveryId", "event", "repo", "pr", "outcome"]);

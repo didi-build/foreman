@@ -34,8 +34,8 @@ module "edge" {
     publish_dns = var.publish_receiver_dns
   }
 
-  # D-271: the planning chat's POST /plans on the same tunnel and host name, only once Didi
-  # passes the tunnel gate at first hosting.
+  # D-271, D-282, D-343: the planning chat's routes under /api on the same tunnel and host name,
+  # only once Didi passes the tunnel gate at first hosting.
   planning_service_url = var.expose_planning_route ? var.planning_service_url : null
 }
 

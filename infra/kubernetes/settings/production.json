@@ -1,0 +1,41 @@
+{
+  "platform": {
+    "images": {
+      "stateApi": "ghcr.io/didi-build/foreman-state-api@sha256:",
+      "receiver": "ghcr.io/didi-build/foreman-github-receiver@sha256:",
+      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:",
+      "runWatcher": "ghcr.io/didi-build/foreman-run-watcher@sha256:"
+    },
+    "serviceUser": 1000,
+    "resources": {
+      "stateApi": {
+        "requests": { "cpu": "100m", "memory": "128Mi", "ephemeral-storage": "64Mi" },
+        "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "256Mi" }
+      },
+      "receiver": {
+        "requests": { "cpu": "100m", "memory": "128Mi", "ephemeral-storage": "64Mi" },
+        "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "256Mi" }
+      },
+      "cloudflared": {
+        "requests": { "cpu": "100m", "memory": "128Mi", "ephemeral-storage": "64Mi" },
+        "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "256Mi" }
+      },
+      "windmillProxy": {
+        "requests": { "cpu": "100m", "memory": "128Mi", "ephemeral-storage": "64Mi" },
+        "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "256Mi" }
+      },
+      "runWatcher": {
+        "requests": { "cpu": "100m", "memory": "128Mi", "ephemeral-storage": "64Mi" },
+        "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "256Mi" }
+      }
+    },
+    "windmill": { "host": "", "workspace": "" },
+    "receiver": {
+      "developerAppLogin": "",
+      "designerAppLogin": "",
+      "runnerAppSlug": ""
+    },
+    "clusterDns": { "namespace": "kube-system", "podLabels": { "k8s-app": "kube-dns" } }
+  },
+  "projects": []
+}
