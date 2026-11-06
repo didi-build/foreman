@@ -18,7 +18,7 @@ variable "cluster_name" {
 }
 
 variable "kubernetes_version_prefix" {
-  description = "Kubernetes minor version, for example \"1.34.\". Read the supported versions on DigitalOcean at first hosting."
+  description = "Kubernetes minor version, for example \"1.37.\". Read the supported versions on DigitalOcean at first hosting."
   type        = string
 }
 
