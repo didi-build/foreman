@@ -47,7 +47,7 @@ New-credentials gate, one approval per credential:
 
 Check whether Windmill Cloud's outbound addresses are fixed. If they are, put them and Didi's address in `api_allowed_addresses`. If not, leave it empty: the runner's RBAC-limited token is the protection.
 
-Checked 2026-11-06: Windmill publishes no list of Windmill Cloud's outbound addresses in its documentation or pricing pages, and its community forum points users to support for a workspace's current addresses, which may change. Waiting for Didi's answer.
+Checked 2026-11-06: Windmill publishes no list of Windmill Cloud's outbound addresses in its documentation or pricing pages, and its community forum points users to support for a workspace's current addresses, which may change. Decided by Didi on 2026-11-06 (D-338): leave `api_allowed_addresses` empty, and revisit once Windmill is self-hosted in the cluster.
 
 ## 5. Create the cluster and the tunnel by applying the stack
 
