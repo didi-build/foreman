@@ -10,7 +10,7 @@ variable "region" {
 }
 
 variable "kubernetes_version_prefix" {
-  description = "Kubernetes minor version to run, for example \"1.34.\". The newest patch with this prefix is used."
+  description = "Kubernetes minor version to run, for example \"1.37.\". The newest patch with this prefix is used."
   type        = string
 }
 

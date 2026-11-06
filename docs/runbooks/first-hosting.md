@@ -29,6 +29,8 @@ On DigitalOcean's own pricing page and availability matrix:
 
 Two nodes were about 48 USD a month by search-result prices (D-193). A higher amount goes back to Didi before step 2.
 
+Read on DigitalOcean's own pages on 2026-11-06 (details in `docs/costs.md` section 1): DOKS is available in `tor1`; the control plane is free (high availability is 40 a month, not used); `s-2vcpu-4gb` is 24 a month with 4,000 GiB of transfer, pooled across nodes, so two nodes are 48; block storage is 0.10 per GiB a month, from 1 GiB, charged hourly while a volume exists. Kubernetes 1.34 left DigitalOcean's support on 2026-10-27 and new clusters can use only the three newest minor releases, so step 5 uses 1.37 (supported until 2027-10-28). Waiting for Didi's approval of the monthly amount.
+
 ## 2. DigitalOcean account and spend approval
 
 Spending money gate. Open or confirm the DigitalOcean account, set a billing alert at the approved monthly amount, and record the approval with its date.
@@ -45,13 +47,15 @@ New-credentials gate, one approval per credential:
 
 Check whether Windmill Cloud's outbound addresses are fixed. If they are, put them and Didi's address in `api_allowed_addresses`. If not, leave it empty: the runner's RBAC-limited token is the protection.
 
+Checked 2026-11-06: Windmill publishes no list of Windmill Cloud's outbound addresses in its documentation or pricing pages, and its community forum points users to support for a workspace's current addresses, which may change. Waiting for Didi's answer.
+
 ## 5. Create the cluster and the tunnel by applying the stack
 
 The cluster is the spending gate of step 2. The tunnel creates a new credential, its token: a new-credentials gate.
 
 ```bash
 cd infra/stacks/factory
-export TF_VAR_kubernetes_version_prefix=1.34.          # a version DigitalOcean lists as supported
+export TF_VAR_kubernetes_version_prefix=1.37.          # a version DigitalOcean lists as supported (1.37 on 2026-11-06)
 export TF_VAR_cloudflare_settings='{account_id="...",zone_id="..."}'
 export TF_VAR_receiver_hostname=...                    # the webhook host name on didi.build
 tofu init -input=false -backend-config=bucket=<state bucket> \

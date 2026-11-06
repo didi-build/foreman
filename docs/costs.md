@@ -1,26 +1,27 @@
 # Cost sheet
 
-Status: planning figures, 2026-10-31. Fixed costs are the amounts Didi accepted for planning. DeepInfra prices are read from deepinfra.com/pricing and deepinfra.com/models on 2026-10-31. Anthropic prices are Anthropic's list prices. **A price is read again on the provider's own page before a model is added to the model catalog.** Once agent runs exist, this sheet is updated from the model scorecard ([ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) section 4) and the M4.5 spend roll-up, and real cost per finished task replaces the estimates below.
+Status: planning figures, 2026-10-31; fixed costs and Anthropic prices read again 2026-11-06. Fixed costs are the amounts Didi accepted for planning. DeepInfra prices are read from deepinfra.com/pricing and deepinfra.com/models on 2026-10-31. Anthropic prices are Anthropic's list prices. **A price is read again on the provider's own page before a model is added to the model catalog.** Once agent runs exist, this sheet is updated from the model scorecard ([ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) section 4) and the M4.5 spend roll-up, and real cost per finished task replaces the estimates below.
 
 All amounts are US dollars.
 
 ## 1. Fixed monthly costs
 
-| Item                        | Per month                                 | Status                                                                          | Source                                                                                                  |
-| --------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| DigitalOcean cluster        | 48                                        | Confirmed                                                                       | D-194: two 2 vCPU / 4 GiB nodes at 24 each, DigitalOcean's pricing page (Didi's screenshot, 2026-10-31) |
-| Supabase Pro                | 25                                        | To confirm                                                                      | Accepted by Didi for planning, 2026-10-31                                                               |
-| DigitalOcean Spaces backups | 5                                         | To confirm                                                                      | Accepted by Didi for planning, 2026-10-31                                                               |
-| Cloudflare                  | 5                                         | To confirm                                                                      | Accepted by Didi for planning, 2026-10-31                                                               |
-| MagicPath                   | 10                                        | To confirm                                                                      | Accepted by Didi for planning, 2026-10-31                                                               |
-| Domains                     | Yearly renewals divided by 12             | To confirm. Amount not recorded                                                 | Accepted by Didi for planning, 2026-10-31                                                               |
-| Alerts provider (M4.3)      | A few dollars                             | To confirm when ADR 0109 picks the provider                                     | Accepted by Didi for planning, 2026-10-31                                                               |
-| Windmill Cloud              | 0                                         | Free tier for now (D-163). Self-hosting Windmill later may add a third node, 24 | D-163, D-165                                                                                            |
-| GitHub                      | 0                                         | For now                                                                         | Accepted by Didi for planning, 2026-10-31                                                               |
-| Weekly evaluation set       | up to about 40 (10 a week)                | Approved cap (D-204), a setting. Starts after the rehearsal                     |
-| Didi's own Claude plan      | 180 (Max) now, maybe about 20 (Pro) later | Didi's choice                                                                   | Didi, 2026-10-31                                                                                        |
-| Grok                        | 300                                       | Dropped at cutover                                                              | Didi, 2026-10-31                                                                                        |
-| Linear                      | Not recorded                              | Cancelled after cutover                                                         | Didi, 2026-10-31                                                                                        |
+| Item                        | Per month                                 | Status                                                      | Source                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ----------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DigitalOcean cluster        | 48                                        | Confirmed 2026-11-06                                        | D-194: two `s-2vcpu-4gb` Basic nodes (2 vCPU, 4 GiB) at 24 each, 4,000 GiB of transfer each, pooled; the DOKS control plane is free. digitalocean.com/pricing/droplets and /pricing/kubernetes, read 2026-11-06                                                                                                                                                  |
+| Supabase Pro                | 25                                        | Confirmed 2026-11-06                                        | supabase.com/pricing, read 2026-11-06: 25 a month including 10 a month of compute credits, enough for one Micro instance                                                                                                                                                                                                                                         |
+| DigitalOcean Spaces backups | 5                                         | Confirmed 2026-11-06                                        | digitalocean.com/pricing/spaces-object-storage, read 2026-11-06: 5 a month for 250 GiB                                                                                                                                                                                                                                                                           |
+| Cloudflare                  | 0 to 5                                    | Checked 2026-11-06                                          | The R2 state bucket fits the free tier (10 GB-month of storage, developers.cloudflare.com/r2/pricing, read 2026-11-06). The 5 is the Workers Paid minimum (developers.cloudflare.com/workers/platform/pricing), needed only if the gallery previews run on Workers                                                                                               |
+| MagicPath                   | 10                                        | To confirm                                                  | Accepted by Didi for planning, 2026-10-31                                                                                                                                                                                                                                                                                                                        |
+| Domains                     | Yearly renewals divided by 12             | To confirm. Amount not recorded                             | Accepted by Didi for planning, 2026-10-31                                                                                                                                                                                                                                                                                                                        |
+| Alerts provider (M4.3)      | A few dollars                             | To confirm when ADR 0109 picks the provider                 | Accepted by Didi for planning, 2026-10-31                                                                                                                                                                                                                                                                                                                        |
+| Windmill Cloud              | 0                                         | Confirmed 2026-11-06                                        | Free plan with 1,000 executions a month (windmill.dev/docs/getting_started/how_to_use_windmill, read 2026-11-06; D-163, D-164). Self-hosting Windmill later may add a third node, 24 (D-165)                                                                                                                                                                     |
+| Container registry          | 0 to 20                                   | Open: Didi's choice before sitting 3 of first hosting       | Seven images go to a registry (the OpenCode, Messages API and repo map agent images, the egress proxy, the state API, the GitHub receiver and the run watcher). DigitalOcean Container Registry, read 2026-11-06: Starter free with 1 repository, Basic 5 a month with 5 repositories and 5 GiB, Professional 20 a month with unlimited repositories and 100 GiB |
+| GitHub                      | 0                                         | For now                                                     | Accepted by Didi for planning, 2026-10-31                                                                                                                                                                                                                                                                                                                        |
+| Weekly evaluation set       | up to about 40 (10 a week)                | Approved cap (D-204), a setting. Starts after the rehearsal |
+| Didi's own Claude plan      | 180 (Max) now, maybe about 20 (Pro) later | Didi's choice                                               | Didi, 2026-10-31                                                                                                                                                                                                                                                                                                                                                 |
+| Grok                        | 300                                       | Dropped at cutover                                          | Didi, 2026-10-31                                                                                                                                                                                                                                                                                                                                                 |
+| Linear                      | Not recorded                              | Cancelled after cutover                                     | Didi, 2026-10-31                                                                                                                                                                                                                                                                                                                                                 |
 
 Infrastructure without Didi's own plans comes to about 93, plus domains and the alerts provider: about 100 to 110 a month.
 
@@ -43,7 +44,7 @@ Cache write prices on DeepInfra are not listed. Some models on the page also car
 | Model             | Input | Cached input | Output | Note                                                                                                                                                                                              |
 | ----------------- | ----- | ------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude Haiku 5.5  | 0.10  | 0.01         | 0.50   | Cached input from the price table the Messages API image had before the model catalog replaced it. A higher rate applies above 100,000 prompt tokens, which the catalog does not model yet (O-26) |
-| Claude Sonnet 5.5 | 2     | 0.20         | 10     | Anthropic list price                                                                                                                                                                              |
+| Claude Sonnet 5.5 | 2     | 0.10         | 10     | Anthropic list price, read 2026-11-06 (cache hits fell from 0.20 to 0.10)                                                                                                                         |
 | Claude Opus 5.5   | 4     | 0.20         | 20     | Anthropic list price                                                                                                                                                                              |
 
 ## 3. Workload model
@@ -78,7 +79,7 @@ Agent-capable models (tool calling listed) that are realistic candidates for eac
 | Kimi K3                                   | Escalation only      | 502         | 2,508       | no Flex            |
 | Developer on Qwen3 Coder, QA on Kimi K2.6 | Mixed                | about 100   | about 500   | about 400          |
 | Claude Haiku 5.5 (Anthropic)              | Comparison           | about 18    | about 90    | no Flex            |
-| Claude Sonnet 5.5 (Anthropic)             | Comparison           | about 350   | about 1,750 | no Flex            |
+| Claude Sonnet 5.5 (Anthropic)             | Comparison           | about 300   | about 1,510 | no Flex            |
 | Claude Opus 5.5 (Anthropic)               | Comparison           | about 605   | about 3,025 | no Flex            |
 
 Changes from the earlier search snapshot: GLM 5.3 is now at its list price (0.90 input, 0.20 cached, 4.00 output), so it costs about 203 a quiet month instead of about 127. DeepSeek V4 Flash 0731 is a newer, cheaper DeepSeek V4 Flash (0.06 input, 0.015 cached).
@@ -159,6 +160,33 @@ All work on one model, sorted by quiet month. Model names are DeepInfra's model 
 | `Qwen/Qwen3.7-Max`                              | 2.500 | 0.500        | 7.500  | Yes   | No   | 465         | 2,325           | no Flex            |
 | `moonshotai/Kimi-K3`                            | 2.850 | 0.285        | 14.250 | Yes   | No   | 502         | 2,508           | no Flex            |
 
+### DeepSeek direct (not approved: fails the D-154 check)
+
+Read on DeepSeek's own pricing page (api-docs.deepseek.com/quick_start/pricing) on 2026-11-06, per 1 million tokens. Off-peak is half of peak. Peak is 01:00 to 04:00 and 06:00 to 10:00 UTC, Monday to Friday (8 to 11 pm and 1 to 5 am Toronto time in winter, 9 pm to midnight and 2 to 6 am in summer), excluding Chinese public holidays. Every other hour is off-peak.
+
+| Model                                       | Cached input, off-peak / peak | Input, off-peak / peak | Output, off-peak / peak |
+| ------------------------------------------- | ----------------------------- | ---------------------- | ----------------------- |
+| `deepseek-flash` (DeepSeek V4.1 Flash 1017) | 0.003 / 0.006                 | 0.15 / 0.30            | 0.60 / 1.20             |
+| `deepseek-v4-pro` (DeepSeek V4 Pro 0813)    | 0.022 / 0.044                 | 0.66 / 1.32            | 1.98 / 3.96             |
+
+With the workload model of section 3. "Spread evenly" puts about 21% of the work in peak hours (35 of the 168 hours in a week):
+
+| Model               | Quiet month, all off-peak | Quiet month, spread evenly | Quiet month, all peak | Busy month, spread evenly | Same model on DeepInfra, quiet / busy |
+| ------------------- | ------------------------- | -------------------------- | --------------------- | ------------------------- | ------------------------------------- |
+| DeepSeek V4.1 Flash | 17                        | 21                         | 35                    | 105                       | 20 / 101 (81 on Flex)                 |
+| DeepSeek V4 Pro     | 68                        | 82                         | 136                   | 409                       | 136 / 679 (543 on Flex)               |
+
+Direct Flash costs about the same as DeepInfra. Direct Pro costs about 40% less, and about half if most work falls off-peak.
+
+**The D-154 check, read 2026-11-06 (Proposed: fails; Didi decides).** D-154 lets a hosted provider see a repository only if its API terms say it does not train on our data and it offers a data processing agreement. DeepSeek's own documents say neither:
+
+- The DeepSeek Open Platform Terms of Service (released 2026-04-22, effective 2026-04-29, cdn.deepseek.com) give us the rights in our inputs and outputs (section 4.2) and say nothing that stops DeepSeek training on API inputs. Section 5.5 sends personal data to the DeepSeek Privacy Policy.
+- The DeepSeek Privacy Policy (last updated 2026-02-10) lists, among the uses of "text input, ... prompt, uploaded files" and other inputs: "To improve and develop the Services and to train and improve our technology, such as our machine learning models and algorithms". It offers a "right to opt-out of using your Personal Data for training our models", which is an opt-out on request, not a commitment.
+- Neither document offers a data processing agreement or zero data retention. The policy says DeepSeek retains personal data "for as long as necessary".
+- The policy says DeepSeek will "directly collect, process and store your Personal Data in People's Republic of China". The terms are governed by the law of mainland China, with disputes in the courts at DeepSeek's registered office in Hangzhou (section 10).
+
+So DeepSeek's API may not see a repository under D-154. DeepSeek's models stay available through DeepInfra, which passed the check (D-208) and costs about the same for Flash.
+
 ## 5. Scenario totals per month
 
 | Scenario                                                                | Quiet month      | Busy month           | Made of                                                                                                          |
@@ -168,7 +196,7 @@ All work on one model, sorted by quiet month. Model names are DeepInfra's model 
 | Long term on DeepInfra                                                  | about 145 to 295 | about 195 to 950     | Infrastructure, Claude Pro, and open-model usage from DeepSeek V4 Flash 0731 to Kimi K2.6, at Standard           |
 | Long term on DeepInfra: Developer Qwen3 Coder, QA Kimi K2.6, Claude Pro | about 230        | about 630            | Infrastructure, Claude Pro, and model usage of about 100 quiet or about 500 busy at Standard (80 or 400 on Flex) |
 
-Infrastructure is about 110 a month with domains and the alerts provider, and does not change in a busy month. The totals are rounded planning figures from 2026-10-31.
+Infrastructure is about 110 a month with domains and the alerts provider, and does not change in a busy month. The totals are rounded planning figures from 2026-10-31. The fixed prices above were read again on 2026-11-06 for first hosting (runbook step 1) and are unchanged, apart from the container registry, which is new and open.
 
 ## 6. Budget options: busy month under 300
 
