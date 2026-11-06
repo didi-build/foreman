@@ -29,11 +29,11 @@ On DigitalOcean's own pricing page and availability matrix:
 
 Two nodes were about 48 USD a month by search-result prices (D-193). A higher amount goes back to Didi before step 2.
 
-Read on DigitalOcean's own pages on 2026-11-06 (details in `docs/costs.md` section 1): DOKS is available in `tor1`; the control plane is free (high availability is 40 a month, not used); `s-2vcpu-4gb` is 24 a month with 4,000 GiB of transfer, pooled across nodes, so two nodes are 48; block storage is 0.10 per GiB a month, from 1 GiB, charged hourly while a volume exists. Kubernetes 1.34 left DigitalOcean's support on 2026-10-27 and new clusters can use only the three newest minor releases, so step 5 uses 1.37 (supported until 2027-10-28). Waiting for Didi's approval of the monthly amount.
+Read on DigitalOcean's own pages on 2026-11-06 (details in `docs/costs.md` section 1): DOKS is available in `tor1`; the control plane is free (high availability is 40 a month, not used); `s-2vcpu-4gb` is 24 a month with 4,000 GiB of transfer, pooled across nodes, so two nodes are 48; block storage is 0.10 per GiB a month, from 1 GiB, charged hourly while a volume exists. Kubernetes 1.34 left DigitalOcean's support on 2026-10-27 and new clusters can use only the three newest minor releases, so step 5 uses 1.37 (supported until 2027-10-28). Approved by Didi on 2026-11-06: up to 60 a month on DigitalOcean, with the billing alert at 60 (D-337). The images go to GitHub Container Registry as public images, free (D-336).
 
 ## 2. DigitalOcean account and spend approval
 
-Spending money gate. Open or confirm the DigitalOcean account, set a billing alert at the approved monthly amount, and record the approval with its date.
+Spending money gate. Open or confirm the DigitalOcean account, set a billing alert at the approved monthly amount (60, D-337), and record the approval with its date.
 
 ## 3. Credentials for the stack
 
@@ -211,7 +211,7 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 
-The `agent_run_settings` value names the repo map Job's image (D-275 (2), O-87): build `src/agent-images/repo-map/Dockerfile` from the repo root, push it to the registry the agent images use, and put its reference pinned by digest in `repoMapImage`, with `resources.repoMap` (it unpacks an archive of up to 200 MiB in memory, so give it at least 1 GiB of memory) and `repoMapMaxMinutes` (5 to start). No new credential: the Job's only token is the runner App's `contents: read` token of step 13, minted per read. The same image serves the Scanner's stage 1 in scan mode (O-92), which also installs the YAML parser from the image's lockfile; nothing else changes. Deploying the flows creates the `f/foreman/scan` schedule (05:00 Toronto time). Migration 0017 (the `scans` table) is applied with the others, after Didi's review.
+The `agent_run_settings` value names the repo map Job's image (D-275 (2), O-87): build `src/agent-images/repo-map/Dockerfile` from the repo root, push it to the registry the agent images use (GitHub Container Registry, public, D-336), and put its reference pinned by digest in `repoMapImage`, with `resources.repoMap` (it unpacks an archive of up to 200 MiB in memory, so give it at least 1 GiB of memory) and `repoMapMaxMinutes` (5 to start). No new credential: the Job's only token is the runner App's `contents: read` token of step 13, minted per read. The same image serves the Scanner's stage 1 in scan mode (O-92), which also installs the YAML parser from the image's lockfile; nothing else changes. Deploying the flows creates the `f/foreman/scan` schedule (05:00 Toronto time). Migration 0017 (the `scans` table) is applied with the others, after Didi's review.
 
 Then check the approval form on Didi's phone with a throwaway request, as the M0.4 spike did (D-170, D-254). Use a test request with made-up option names and no real data. Record with the date:
 
