@@ -2,38 +2,45 @@
 
 OpenTofu 1.13, state in Cloudflare R2, state and plans encrypted. Why and how: [ADR 0110](../docs/decisions/0110-infrastructure-as-code.md).
 
-| Path                             | What                                                                                                     |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `stacks/scratch/`                | The M0.7 proof. Throwaway: never a real project, zone or account.                                        |
-| `stacks/factory/`                | The factory's own platform: the agent and platform cluster and the receiver's tunnel. Never applied yet. |
-| `modules/project/`               | Target-agnostic: stacks call it with a `deploy_target`.                                                  |
-| `modules/platform/cloudflare/`   | The only place Cloudflare is declared (D-146, checked by `npm run infra-boundaries`).                    |
-| `modules/platform/digitalocean/` | The only place DigitalOcean is declared (D-146, checked by `npm run infra-boundaries`).                  |
-| `kubernetes/`                    | The cluster's standing Kubernetes objects as typed data, and `render.ts`, which prints them to apply.    |
+| Path                             | What                                                                                                                                                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stacks/scratch/`                | The M0.7 proof. Throwaway: never a real project, zone or account.                                                                                                               |
+| `stacks/factory/`                | The factory's own platform: the agent and platform cluster and the receiver's tunnel, and `production.tfvars`, its reviewed variables. Never applied yet.                       |
+| `modules/project/`               | Target-agnostic: stacks call it with a `deploy_target`.                                                                                                                         |
+| `modules/platform/cloudflare/`   | The only place Cloudflare is declared (D-146, checked by `npm run infra-boundaries`).                                                                                           |
+| `modules/platform/digitalocean/` | The only place DigitalOcean is declared (D-146, checked by `npm run infra-boundaries`).                                                                                         |
+| `kubernetes/`                    | The cluster's standing Kubernetes objects as typed data, `render.ts`, which prints them to apply, and `settings/production.json`, the reviewed settings they are rendered from. |
 
-CI (`.github/workflows/infra.yml`) checks formatting and validates every stack on each PR that touches `infra/`. It uses no credentials and no backend. Each stack commits its `.terraform.lock.hcl` (hashes for Linux, Windows and macOS), and CI fails if providers drift from it. A new stack without one gets it generated and printed by CI, to commit.
+CI (`.github/workflows/infra.yml`) checks formatting and validates every stack on each PR that touches `infra/`. It uses no credentials and no backend.
+
+The applies run as GitHub Actions jobs that wait for Didi's approval, only from main and never on a pull request (D-339, O-105):
+
+- `.github/workflows/infra-apply.yml` plans the factory stack in the environment `infra-plan`, runs the secret-value scan below on the plan text before anything is published, writes the readable plan to the job summary, and keeps the encrypted plan file for one day. Its apply job, in the environment `infra` with Didi as the required reviewer, applies that saved plan file and nothing else.
+- `.github/workflows/platform.yml` renders `kubernetes/settings/production.json`, diffs it against the cluster in the environment `platform-plan`, and applies it in the environment `platform` once Didi approves, then runs the first-hosting checks. Its cluster Secrets job, also in `platform`, creates the Secrets the platform pods read.
+- Each job that reaches the cluster fetches its own short-lived admin credential with the DigitalOcean token (`doctl kubernetes cluster kubeconfig show --expiry-seconds`, for the job's time limit) and removes it at its end (D-340). Nothing long-lived is kept for cluster access. Each stack commits its `.terraform.lock.hcl` (hashes for Linux, Windows and macOS), and CI fails if providers drift from it. A new stack without one gets it generated and printed by CI, to commit.
 
 ## Secrets per stack
 
 No secret value is ever written in a `.tf` or `.tfvars` file in this repo.
 
-| Stack     | Secret                      | Where it comes from                                      | Stored in state? |
-| --------- | --------------------------- | -------------------------------------------------------- | ---------------- |
-| `scratch` | Cloudflare API token        | `CLOUDFLARE_API_TOKEN` at run time                       | No               |
-| `scratch` | R2 access key and secret    | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` at run time | No               |
-| `scratch` | State encryption passphrase | `TF_VAR_state_encryption_passphrase` at run time         | No               |
-| `factory` | DigitalOcean API token      | `DIGITALOCEAN_TOKEN` at run time                         | No               |
-| `factory` | Cloudflare API token        | `CLOUDFLARE_API_TOKEN` at run time                       | No               |
-| `factory` | R2 access key and secret    | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` at run time | No               |
-| `factory` | State encryption passphrase | `TF_VAR_state_encryption_passphrase` at run time         | No               |
-| `factory` | Receiver tunnel token       | Made by Cloudflare; read by a data source                | Yes, encrypted   |
-| `factory` | Cluster admin credential    | Fetched by the DigitalOcean provider, 1 hour lifetime    | Yes, encrypted   |
+| Stack     | Secret                             | Where it comes from                                                                                                                  | Stored in state? |
+| --------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| `scratch` | Cloudflare API token               | `CLOUDFLARE_API_TOKEN` at run time                                                                                                   | No               |
+| `scratch` | R2 access key and secret           | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` at run time                                                                             | No               |
+| `scratch` | State encryption passphrase        | `TF_VAR_state_encryption_passphrase` at run time                                                                                     | No               |
+| `factory` | DigitalOcean API token             | `DIGITALOCEAN_TOKEN` at run time, from the environments' secret `DIGITALOCEAN_TOKEN`                                                 | No               |
+| `factory` | Cloudflare API token               | `CLOUDFLARE_API_TOKEN` at run time, from the secret `CLOUDFLARE_API_TOKEN`                                                           | No               |
+| `factory` | R2 access key and secret           | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` at run time, from the secrets `R2_STATE_ACCESS_KEY_ID` and `R2_STATE_SECRET_ACCESS_KEY` | No               |
+| `factory` | State encryption passphrase        | `TF_VAR_state_encryption_passphrase` at run time, from the secret `STATE_ENCRYPTION_PASSPHRASE` (kept in Bitwarden, D-341)           | No               |
+| `factory` | Receiver tunnel token              | Made by Cloudflare; read by a data source                                                                                            | Yes, encrypted   |
+| `factory` | Cluster admin credential           | Fetched by the DigitalOcean provider, 1 hour lifetime                                                                                | Yes, encrypted   |
+| `factory` | The admin jobs' cluster credential | Fetched by each job with `doctl`, for the job's time limit, then removed (D-340)                                                     | No               |
 
-The two "Yes" rows are accepted only because state and plan are encrypted (ADR 0110, secrets rule 3). Neither is ever an output in plain form: the tunnel token is a sensitive output that is piped into a cluster Secret, and the admin credential is never an output at all (D-188).
+The two "Yes" rows are accepted only because state and plan are encrypted (ADR 0110, secrets rule 3). Neither is ever an output in plain form: the tunnel token is a sensitive output that the cluster Secrets job pipes into a cluster Secret, and the admin credential is never an output at all (D-188). The Cloudflare account and zone ids, the receiver's host name and the state bucket's name are not secrets: they are the environments' variables, checked against their own patterns before use and kept out of the public logs and summaries (O-105). The stack's other non-secret values are in `stacks/factory/production.tfvars`, so a change to them is a pull request.
 
 ## The factory stack: the cluster and the receiver's tunnel
 
-Nothing here has been applied or planned against a real account. Didi applies it at first hosting, step by step, in [docs/runbooks/first-hosting.md](../docs/runbooks/first-hosting.md).
+Nothing here has been applied or planned against a real account. The Infra apply workflow plans it and, once Didi approves, applies it at first hosting, step by step as [docs/runbooks/first-hosting.md](../docs/runbooks/first-hosting.md) says (D-339).
 
 What it declares (ADR 0106 section 1, D-193 to D-195):
 
@@ -49,13 +56,13 @@ What it declares (ADR 0106 section 1, D-193 to D-195):
 
 The stack calls the two platform modules directly, not through `modules/project`: the cluster and the tunnel are the factory's own platform, not a project deployed onto a target. It still names no provider (D-146). Its state is `factory/production.tfstate` in the same R2 bucket.
 
-The Kubernetes objects that run on the cluster (the `foreman-platform` namespace, its default-deny policies, the state API, the receiver, the `cloudflared` connector, the shared Windmill egress proxy (D-328) and the run watcher with its ServiceAccount (D-330), the runner's namespace and the agent namespaces with the runner's and the run watcher's Roles) are in `kubernetes/`. The run watcher's Role, in each agent namespace only, is get, list and watch on Jobs and nothing else; its network policy reaches only cluster DNS, the API server's own address and port (`kubernetesApi` in the settings file) and the Windmill proxy. They are typed data like the agent namespace objects of M3.2 slice 3, so the pool labels, Service names and ports are shared constants and the tests check both sides against them. Didi renders and applies them with their admin kubeconfig:
+The Kubernetes objects that run on the cluster (the `foreman-platform` namespace, its default-deny policies, the state API, the receiver, the `cloudflared` connector, the shared Windmill egress proxy (D-328) and the run watcher with its ServiceAccount (D-330), the runner's namespace and the agent namespaces with the runner's and the run watcher's Roles) are in `kubernetes/`. The run watcher's Role, in each agent namespace only, is get, list and watch on Jobs and nothing else; its network policy reaches only cluster DNS, the API server's own address and port (`kubernetesApi` in the settings file) and the Windmill proxy. They are typed data like the agent namespace objects of M3.2 slice 3, so the pool labels, Service names and ports are shared constants and the tests check both sides against them. The Platform workflow renders them from `kubernetes/settings/production.json`, with the API server's address read from the cluster at run time, in a job with no secret, and applies them once Didi approves, with a short-lived credential (D-339, D-340). The render on its own, with the settings file plus `kubernetesApi`:
 
 ```bash
-node infra/kubernetes/render.ts <settings.json outside the repo> | kubectl apply -f -
+node infra/kubernetes/render.ts <settings.json>
 ```
 
-No Secret is declared there. Every Secret is referenced by name and created by Didi.
+No Secret is declared there. Every Secret is referenced by name and created by the Platform workflow's cluster Secrets job from the `platform` environment's secrets.
 
 Not validated in this repo yet: `tofu fmt`, `tofu init` and `tofu validate` on the factory stack, because OpenTofu and the provider registry were not reachable when it was written. CI runs them on the first PR, and generates the stack's lock file for it to be committed (see above).
 

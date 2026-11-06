@@ -20,9 +20,9 @@
 // namespace.ts). It has no database access.
 //
 // Written as typed objects like the agent namespace objects of slice 3, so the same constants
-// (pool labels, Service names, ports) are shared and tested together. `render.ts` prints them for
-// Didi to apply with their admin kubeconfig (D-188). No Secret is declared here: Secrets are
-// referenced by name only and created by Didi at first hosting.
+// (pool labels, Service names, ports) are shared and tested together. `render.ts` prints them, and
+// the Platform workflow applies them once Didi approves (D-339, D-340). No Secret is declared
+// here: Secrets are referenced by name only and created by the workflow's cluster Secrets job.
 import {
   AGENTS_POOL,
   NON_PUBLIC_IPV4,
@@ -151,8 +151,9 @@ export const CLOUDFLARED = {
 } as const;
 
 /**
- * Secrets the platform pods read, by name and key. Didi creates each one at first hosting
- * (docs/runbooks/first-hosting.md). Nothing in this repo holds a value.
+ * Secrets the platform pods read, by name and key. The Platform workflow's cluster Secrets job
+ * creates each one from the `platform` environment's secrets (.github/scripts/cluster-secrets.sh,
+ * docs/runbooks/first-hosting.md). Nothing in this repo holds a value.
  */
 export const PLATFORM_SECRETS = {
   stateApiDatabase: { name: "state-api-database", key: "url" },
@@ -206,7 +207,7 @@ export function stateApiRunSettings(): KubernetesRunSettings["stateApi"] {
   };
 }
 
-/** Settings for the platform objects. Not secret; Didi keeps them outside the repo. */
+/** Settings for the platform objects. Not secret; reviewed in infra/kubernetes/settings/. */
 export interface PlatformSettings {
   /**
    * The state API, receiver and run watcher images, and the egress proxy image the agent runs use
@@ -250,7 +251,8 @@ export interface PlatformSettings {
    * Where the run watcher reaches the Kubernetes API server (D-330): the address or addresses and
    * the port the `kubernetes` Service in `default` sends to, as its EndpointSlice lists them.
    * Network policies see that address, not the Service's, so the watcher's policy allows exactly
-   * these and nothing else. Read at first hosting, step 7. Plain settings, not secrets.
+   * these and nothing else. The Platform workflow reads them from the cluster at each run, so
+   * the settings file leaves them out (runbook step 7). Plain settings, not secrets.
    */
   kubernetesApi: { addresses: string[]; port: number };
 }

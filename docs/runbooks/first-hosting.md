@@ -1,12 +1,21 @@
 # First hosting runbook
 
-**Purpose:** the gates Didi passes by hand, in order, to bring up the agent and platform cluster, the state API, the GitHub receiver and its tunnel, and the run watcher, for the first time (ADR 0106, ADR 0110, D-183 to D-195, D-330). Nothing here has been done yet. No agent or runner does any step.
+**Purpose:** the gates Didi passes, in order, to bring up the agent and platform cluster, the state API, the GitHub receiver and its tunnel, and the run watcher, for the first time (ADR 0106, ADR 0110, D-183 to D-195, D-330). Nothing here has been done yet. No agent or runner does any step.
+
+Since D-339, the admin work runs as GitHub Actions jobs that wait for Didi's approval, not from a terminal: Didi creates each credential at its provider, pastes it once into GitHub's secret form for the environment named here, reads each plan in its job's summary, and approves the job that applies it. Three workflows do the work (O-105):
+
+| Workflow                                          | What it does                                                                                                                                                                                                          | Jobs, with their environment                                                                                                             |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Images (`.github/workflows/images.yml`)           | Builds the seven images from main and pushes them to `ghcr.io/didi-build` (D-336). Gives each reference pinned by digest.                                                                                             | `build-and-push` (no environment, `packages: write`)                                                                                     |
+| Infra apply (`.github/workflows/infra-apply.yml`) | Plans the factory stack and, once Didi approves, applies that exact saved plan. Steps 5, 11 and 11a, and every later infrastructure change.                                                                           | `tofu-plan` (`infra-plan`), `tofu-apply` (`infra`, Didi approves)                                                                        |
+| Platform (`.github/workflows/platform.yml`)       | Renders the settings file, diffs it against the cluster and, once Didi approves, applies it and runs the checks; sets the cluster's Secrets. Steps 7, 9 and 10, the cluster Secrets of step 15, and adding a project. | `cluster-facts` and `kubectl-diff` (`platform-plan`), `render` (none), `kubectl-apply` and `cluster-secrets` (`platform`, Didi approves) |
 
 **Rules for every step**
 
-- Never paste a secret value into a file in the repo, a chat, Linear or a log. Read each one from the password manager or the vault and pipe it straight in (`--from-file=<key>=/dev/stdin`), so it never lands in a file or the shell history.
-- Each gate is approved once, for that one request.
-- In Git Bash on Windows, add `-input=false` to every `tofu` command (`infra/README.md`).
+- Never paste a secret value into a file in the repo, a chat, Linear or a log. Paste each one only into GitHub's secret form for its environment (step 3), or into the provider's or Windmill's own form where a step says so. What must be kept goes into the project's Bitwarden vault (D-341): the state encryption passphrase, the providers' logins and two-factor recovery codes, and the planning chat's token. A secret that can be made again at its provider is not kept anywhere else.
+- Each gate is approved once, for that one request. Approving a job approves the plan or the diff its summary shows, and nothing more.
+- The jobs run only from main. The repository is public, so their logs and summaries are public pages: they show names, counts and plans, with account, zone and resource ids, the receiver's host name and the state bucket replaced by placeholders, and never a secret value (O-105).
+- Every `tofu` command the jobs run passes `-input=false` (`infra/README.md`).
 
 ## 0. Answer the open questions first
 
@@ -35,13 +44,64 @@ Read on DigitalOcean's own pages on 2026-11-06 (details in `docs/costs.md` secti
 
 Spending money gate. Open or confirm the DigitalOcean account, set a billing alert at the approved monthly amount (60, D-337), and record the approval with its date.
 
-## 3. Credentials for the stack
+## 3. Credentials and the GitHub environments
 
-New-credentials gate, one approval per credential:
+New-credentials gate, one approval per credential. Creating an account or a paid plan is its own gate, and none is needed here.
 
-- A DigitalOcean API token with the narrowest scopes that can create a Kubernetes cluster and a firewall. Exported as `DIGITALOCEAN_TOKEN` only while applying.
-- A Cloudflare API token for the `didi.build` zone and account, allowed to edit Cloudflare Tunnels and DNS. Exported as `CLOUDFLARE_API_TOKEN`.
-- The R2 state bucket's access key and secret (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) and the state encryption passphrase (`TF_VAR_state_encryption_passphrase`, at least 16 characters, kept in the vault), as in ADR 0110.
+### The four environments
+
+In the repository's settings (Settings, Environments), create these four environments. Each one keeps its own secrets, and GitHub gives them only to a job that names the environment and runs from main.
+
+| Environment     | Required reviewers | Deployment branches            | What runs there                                                                          |
+| --------------- | ------------------ | ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `infra-plan`    | none               | Selected branches: `main` only | The Infra apply workflow's plan (`tofu-plan`)                                            |
+| `infra`         | Didi               | Selected branches: `main` only | The infrastructure apply (`tofu-apply`)                                                  |
+| `platform-plan` | none               | Selected branches: `main` only | The Platform workflow's cluster read and diff (`cluster-facts`, `kubectl-diff`)          |
+| `platform`      | Didi               | Selected branches: `main` only | The platform apply and its checks (`kubectl-apply`), and the Secrets (`cluster-secrets`) |
+
+For `infra` and `platform`, Didi is the only required reviewer. Leave "Prevent self-review" off: Didi starts most runs and is also the one who approves them. Set no wait timer. Set up all four, with these rules, before pasting any secret into one: a run that names an environment that does not exist yet creates it with no protection rule. Until the secrets are there, the jobs stop for want of one before they reach any account, and nothing is applied. Put none of these values in the repository's own secrets: any workflow on any branch could read those, which D-339 rules out.
+
+### The credentials and where each one goes
+
+Create each credential at its provider, then paste it once into the secret of each environment the table names for it (GitHub keeps each environment's secrets apart, so a value two environments need is pasted into both, N-88). The value is never shown again.
+
+- A DigitalOcean API token with the narrowest scopes that can create a Kubernetes cluster, its node pools and a firewall, and read the cluster's credentials (`doctl kubernetes cluster kubeconfig`, D-340). Check on DigitalOcean's token form which scopes that is, and record them here with the date.
+- A Cloudflare API token for the `didi.build` zone and account, allowed to edit Cloudflare Tunnels and DNS.
+- The R2 state bucket's access key and secret, a token for that bucket only, as in ADR 0110.
+- The state encryption passphrase, at least 16 characters, generated in Bitwarden and kept there (D-341): losing it makes the state unreadable.
+
+The later steps add the database URLs and the webhook secret (step 10) and the planning token and the three Windmill tokens (step 15).
+
+| Environment              | Secret                        | Where it comes from                                                                            | Step |
+| ------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------- | ---- |
+| `infra-plan` and `infra` | `DIGITALOCEAN_TOKEN`          | The DigitalOcean API token above                                                               | 3    |
+| `infra-plan` and `infra` | `CLOUDFLARE_API_TOKEN`        | The Cloudflare API token above                                                                 | 3    |
+| `infra-plan` and `infra` | `R2_STATE_ACCESS_KEY_ID`      | The R2 state bucket token's access key id                                                      | 3    |
+| `infra-plan` and `infra` | `R2_STATE_SECRET_ACCESS_KEY`  | The R2 state bucket token's secret access key                                                  | 3    |
+| `infra-plan` and `infra` | `STATE_ENCRYPTION_PASSPHRASE` | The passphrase in Bitwarden                                                                    | 3    |
+| `platform-plan`          | `DIGITALOCEAN_TOKEN`          | The same DigitalOcean API token                                                                | 3    |
+| `platform`               | `DIGITALOCEAN_TOKEN`          | The same DigitalOcean API token                                                                | 3    |
+| `platform`               | `R2_STATE_ACCESS_KEY_ID`      | The same R2 access key id (the Secrets job reads the tunnel token from the state)              | 3    |
+| `platform`               | `R2_STATE_SECRET_ACCESS_KEY`  | The same R2 secret access key                                                                  | 3    |
+| `platform`               | `STATE_ENCRYPTION_PASSPHRASE` | The same passphrase                                                                            | 3    |
+| `platform`               | `STATE_API_DATABASE_URL`      | The connection string of the `factory_api` login user, from Supabase                           | 10   |
+| `platform`               | `RECEIVER_DATABASE_URL`       | The connection string of the `factory_ingest` login user, from Supabase                        | 10   |
+| `platform`               | `RECEIVER_WEBHOOK_SECRET`     | A long random value from Bitwarden's generator, also pasted into the runner App's webhook form | 10   |
+| `platform`               | `PLANNING_TOKEN`              | The planning chat's token, kept in Bitwarden                                                   | 15   |
+| `platform`               | `STATE_API_WINDMILL_TOKEN`    | The Windmill token that runs only `f/foreman/plan_approval`                                    | 15   |
+| `platform`               | `RECEIVER_WINDMILL_TOKEN`     | The Windmill token that runs only the receiver's three flows                                   | 15   |
+| `platform`               | `RUN_WATCHER_WINDMILL_TOKEN`  | The Windmill token that runs only `f/foreman/record_run_end`                                   | 15   |
+
+The plain settings are environment variables, not secrets (Settings, Environments, the environment, Environment variables). They are checked against their own pattern before any job uses them, and masked in the logs.
+
+| Environment                          | Variable                | Value                                                                                             |
+| ------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `infra-plan`, `infra` and `platform` | `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account id of the `didi.build` zone and of the R2 state bucket (32 hex characters) |
+| `infra-plan`, `infra` and `platform` | `STATE_BUCKET`          | The R2 state bucket's name                                                                        |
+| `infra-plan` and `infra`             | `CLOUDFLARE_ZONE_ID`    | The `didi.build` zone id (32 hex characters)                                                      |
+| `infra-plan` and `infra`             | `RECEIVER_HOSTNAME`     | The webhook host name on `didi.build`                                                             |
+
+A secret only the cluster Secrets job reads (the rows of steps 10 and 15) can be removed from the environment once its run has put it in the cluster: the job then leaves that Secret as it is and names it as skipped (step 9).
 
 ## 4. Decide the API endpoint allow-list (D-189)
 
@@ -49,59 +109,56 @@ Check whether Windmill Cloud's outbound addresses are fixed. If they are, put th
 
 Checked 2026-11-06: Windmill publishes no list of Windmill Cloud's outbound addresses in its documentation or pricing pages, and its community forum points users to support for a workspace's current addresses, which may change. Decided by Didi on 2026-11-06 (D-338): leave `api_allowed_addresses` empty, and revisit once Windmill is self-hosted in the cluster.
 
-## 5. Create the cluster and the tunnel by applying the stack
+## 5. Create the cluster and the tunnel with the Infra apply workflow
 
 The cluster is the spending gate of step 2. The tunnel creates a new credential, its token: a new-credentials gate.
 
-```bash
-cd infra/stacks/factory
-export TF_VAR_kubernetes_version_prefix=1.37.          # a version DigitalOcean lists as supported (1.37 on 2026-11-06)
-export TF_VAR_cloudflare_settings='{account_id="...",zone_id="..."}'
-export TF_VAR_receiver_hostname=...                    # the webhook host name on didi.build
-tofu init -input=false -backend-config=bucket=<state bucket> \
-  -backend-config='endpoints={s3="https://<account id>.r2.cloudflarestorage.com"}'
-tofu plan -input=false -out=plan.out
-tofu show -no-color plan.out                           # read it: no DNS record yet, one cluster, one pool, one firewall, one tunnel
-tofu apply -input=false plan.out
-rm plan.out
-```
+1. Check the reviewed variables in `infra/stacks/factory/production.tfvars`: `kubernetes_version_prefix` is a version DigitalOcean lists as supported (1.37 on 2026-11-06), `publish_receiver_dns = false` and `expose_planning_route = false`. Any change to them is a pull request Didi reviews.
+2. Start the Infra apply workflow on main (Actions, Infra apply, Run workflow). A push to main that changes `infra/stacks/factory/` or `infra/modules/` starts it too.
+3. Its `tofu-plan` job (environment `infra-plan`) runs `tofu init -input=false -lockfile=readonly` against the R2 state and `tofu plan -input=false -var-file=production.tfvars`. Before anything is published it runs the secret-value scan of `infra/README.md` on the plan text and the plan's own output, for the DigitalOcean and Cloudflare tokens, the R2 secret, the passphrase and, once a tunnel exists, the tunnel token. If any is found the job stops and publishes nothing.
+4. Read the plan in the `tofu-plan` job's summary: the counts, the gates the plan touches, each resource that changes and the full plan as `tofu show -no-color` prints it. For this first apply: no DNS record yet, one cluster, one more node pool, one firewall, one tunnel and its routing. Values marked sensitive show as `(sensitive value)`; ids, the receiver's host name and the state bucket show as placeholders, because the page is public.
+5. If the plan is what is expected, approve the `tofu-apply` job (environment `infra`). It applies the saved plan file and nothing else, then runs the same scan on the apply's output, and on the state (piped from `tofu state pull`, never written to a file) for every secret value but the tunnel token, which the state holds by design (step 0). If the state changed since the plan, OpenTofu refuses the stale plan: start the workflow again. If the plan is not what is expected, reject the job, and nothing changes.
 
-Then run the secret-value scan on the plan text and state as in `infra/README.md`, step 4 of the M0.7 proof, with the tunnel token among the values scanned for in the plan text.
+The encrypted plan file is kept for one day: approve within a day, or start the workflow again.
 
-**The managed worker firewall (D-331).** Once the cluster exists, read the firewall DOKS made for the worker nodes (in the control panel's Networking page, or `doctl compute firewall list`) and its outbound rules. Read it only: never edit it, and add no deny rule, because DigitalOcean's reconciler owns that firewall by name. If it allows all outbound traffic, our cloud firewall's outbound rules take no effect and the network policies and egress proxies are the only outbound control; if its outbound rules are narrower, ours stay as a second layer. Record which, with the date, here:
+**The managed worker firewall (D-331).** Once the cluster exists, read the firewall DOKS made for the worker nodes in the DigitalOcean control panel's Networking page, and its outbound rules. Read it only: never edit it, and add no deny rule, because DigitalOcean's reconciler owns that firewall by name. If it allows all outbound traffic, our cloud firewall's outbound rules take no effect and the network policies and egress proxies are the only outbound control; if its outbound rules are narrower, ours stay as a second layer. Record which, with the date, here:
 
 - Result: not checked yet.
 
-## 6. The admin kubeconfig, kept by Didi only (D-188)
+## 6. No admin kubeconfig is kept (D-340, revising D-188)
 
-Download the cluster's kubeconfig from the DigitalOcean control panel and keep it only in the password manager. It never goes to the runner, an agent or Windmill. Use it for steps 7 to 10.
+Didi downloads and keeps no kubeconfig. Each job that reaches the cluster fetches its own short-lived admin credential with the DigitalOcean token (`doctl kubernetes cluster kubeconfig show foreman --expiry-seconds <the job's time limit in seconds>`, 10 to 20 minutes), masks its token in the log, and removes the file at the job's end; GitHub then discards the runner. The credential never goes to the runner, an agent or Windmill. doctl and DigitalOcean's API set no shortest expiry, so each job asks for its own time limit (O-105). The provider's own credential in the state (D-332, step 0) is unchanged.
 
-## 7. Apply the cluster's standing objects
+## 7. Apply the cluster's standing objects with the Platform workflow
 
-Write a settings file outside the repo (images pinned by digest, the app logins, resource limits (`databasePort` defaults to 5432), the projects and their quotas; no secrets), then:
+The settings file is `infra/kubernetes/settings/production.json`, in the repository and reviewed like code. It holds no secret: images pinned by digest, the app logins, resource limits (`databasePort` defaults to 5432), the projects and their quotas, and the Windmill host and workspace. The committed file leaves empty what first hosting fills in, so the render refuses it, naming the first setting at fault, until it is filled in one pull request:
 
-- `images.egressProxy`: the egress proxy image the agent runs use, the same digest as `proxyImage` in `agent_run_settings`. It runs once more here as the shared Windmill proxy (D-284, D-328).
-- `resources.windmillProxy`: its requests and limits, like an agent run's proxy.
+- `images.stateApi`, `images.receiver`, `images.egressProxy` and `images.runWatcher`: the references the Images workflow gives, pinned by digest. It runs on each push to main that changes `src/`, or by hand (Actions, Images, Run workflow), and its job summary and its artifact `foreman-images` (`settingsFile.platform.images`) give the four references in this file's shape. `images.egressProxy` is the egress proxy image the agent runs use, the same digest as `proxyImage` in `agent_run_settings`; it runs once more here as the shared Windmill proxy (D-284, D-328). `images.runWatcher` is the run watcher's image (D-330), built from `src/run-watcher/Dockerfile`.
+  - The first time, set each of the seven packages the Images workflow pushed (`foreman-agent-opencode`, `foreman-agent-claude-api`, `foreman-repo-map`, `foreman-egress-proxy`, `foreman-state-api`, `foreman-github-receiver`, `foreman-run-watcher`) to public in the organization's Packages page (each package's settings, Change visibility), as D-336 decided. Each image holds only code: the workflow passes no build argument or build secret.
+- `resources`: the requests and limits of each platform pod. The file starts every pod at 100m CPU, 128 MiB of memory and 64 MiB of scratch space requested, with limits of 500m, 512 MiB and 256 MiB (O-105). `resources.windmillProxy` is like an agent run's proxy, and `resources.runWatcher` like the receiver's (it holds a few watches open and does little else). Check them against the platform node's allocatable at the first apply.
 - `windmill.host`: the Windmill host the state API, the receiver and the run watcher start their flows on, a plain host name with no scheme (for Windmill Cloud, the host name of its app), and `windmill.workspace`: the workspace id. If the workspace does not exist yet, choose its id now and create it with that id in step 15. Both are plain settings, not secrets. The proxy allows this one host and nothing else; it has no model provider, no state API route and no credential.
-- `images.runWatcher`: the run watcher's image (D-330), built from `src/run-watcher/Dockerfile` at the repo root and pinned by digest, and `resources.runWatcher`: its requests and limits (it holds a few watches open and does little else; start like the receiver's).
-- `kubernetesApi`: where the run watcher reaches the API server, as its network policy allows it. A policy sees the address the `kubernetes` Service sends to, not the Service's own, so read the address and port from that Service's EndpointSlice with the admin kubeconfig of step 6, and write them as `{"addresses": ["<address>"], "port": <port>}`:
+- `receiver`: the Developer and Designer Apps' logins and the runner App's slug, the names the Apps get in step 13.
+- `projects`: each project's slug and quota (see "Adding a project" below).
 
-  ```bash
-  kubectl -n default get endpointslices -l kubernetes.io/service-name=kubernetes \
-    -o jsonpath='{range .items[*]}{.endpoints[*].addresses}{" "}{.ports[*].port}{"\n"}{end}'
-  ```
-
-  Plain IPv4 addresses and a port only, not secrets. The watcher's policy allows exactly these and nothing else on that port.
-
-Then render and apply:
+`kubernetesApi`, where the run watcher reaches the API server as its network policy allows it, is not in the file. A policy sees the address the `kubernetes` Service sends to, not the Service's own, so the Platform workflow's `cluster-facts` job reads the address and port from that Service's EndpointSlice at each run, as this command did by hand:
 
 ```bash
-node infra/kubernetes/render.ts <settings.json> | kubectl apply -f -
+kubectl -n default get endpointslices -l kubernetes.io/service-name=kubernetes \
+  -o jsonpath='{range .items[*]}{.endpoints[*].addresses}{" "}{.ports[*].port}{"\n"}{end}'
 ```
 
-This creates the `foreman-platform` namespace and its policies and Deployments (the state API, the receiver, the tunnel connector, the Windmill proxy and the run watcher), the run watcher's ServiceAccount `run-watcher` there, the `foreman-runner` namespace and service account, and each `agents-<slug>` namespace. The platform pods wait for their Secrets (steps 8 to 10). Then run ADR 0106 checks 1 and 15: default deny holds, and pods stay on their own pool.
+It accepts plain IPv4 addresses and one port only, and stops otherwise. The watcher's policy allows exactly these and nothing else on that port. An address that changes after a control-plane upgrade is picked up by the next run's plan, as a change to the run watcher's network policy.
 
-Each `agents-<slug>` namespace also gets the run watcher's RBAC (D-330), next to the runner's: a Role `run-watcher` with get, list and watch on `batch` Jobs and nothing else, and a RoleBinding that gives it to the ServiceAccount `run-watcher` in `foreman-platform`. There is no ClusterRole or ClusterRoleBinding, so the watcher holds nothing in any other namespace. These are the rights Didi approved in D-330, exactly: if a plan or a render shows any other right for `run-watcher`, stop and ask Didi before applying it. Check them with the admin kubeconfig:
+Once the pull request is merged, the Platform workflow runs (or start it by hand: Actions, Platform, Run workflow):
+
+1. `cluster-facts` (environment `platform-plan`) fetches a short-lived credential and reads the address above.
+2. `render` (no environment and no secret: the only job that runs the repository's TypeScript) renders the settings file with that address (`node infra/kubernetes/render.ts`) into one list of objects, kept as an artifact for one day. It stops if the list holds a Secret.
+3. `kubectl-diff` (environment `platform-plan`) runs `kubectl diff --server-side` against the cluster. Read its summary before approving: each object to create or change by action, kind, namespace and name, and the images in the render. It prints no object's content, so no field of a live object reaches the public log. An object in a namespace that does not exist yet is listed as created. Nothing is ever deleted: a project taken out of the settings keeps its namespace until Didi decides how it goes (a drop-data gate).
+4. If the summary is what is expected, approve `kubectl-apply` (environment `platform`). It applies exactly the objects the plan read, with `kubectl apply --server-side`, then runs the checks below and writes each answer to its summary. It runs only when the plan found a change.
+
+This creates the `foreman-platform` namespace and its policies and Deployments (the state API, the receiver, the tunnel connector, the Windmill proxy and the run watcher), the run watcher's ServiceAccount `run-watcher` there, the `foreman-runner` namespace and service account, and each `agents-<slug>` namespace. The platform pods wait for their Secrets (steps 9, 10 and 15). The apply job then runs ADR 0106 checks 1 and 15: default deny holds (a probe pod with no allow policy, in the platform namespace and in each agent namespace, reaches neither cluster DNS, a public address on 443, nor the API server), and pods stay on their own pool (each probe lands on its pool, platform pods run on platform nodes, agent nodes carry the `NoSchedule` taint).
+
+Each `agents-<slug>` namespace also gets the run watcher's RBAC (D-330), next to the runner's: a Role `run-watcher` with get, list and watch on `batch` Jobs and nothing else, and a RoleBinding that gives it to the ServiceAccount `run-watcher` in `foreman-platform`. There is no ClusterRole or ClusterRoleBinding, so the watcher holds nothing in any other namespace. These are the rights Didi approved in D-330, exactly: if a plan or a render shows any other right for `run-watcher`, stop and ask Didi before approving the apply. The apply job checks them with its short-lived credential, and fails, asking for Didi, if any answer differs:
 
 ```bash
 sa=system:serviceaccount:foreman-platform:run-watcher
@@ -116,42 +173,54 @@ kubectl auth can-i list jobs.batch --all-namespaces --as="$sa"              # no
 kubectl auth can-i list namespaces --as="$sa"                               # no
 ```
 
-A new project later is the same re-render and apply: it adds the namespace with both Roles and puts the namespace into the watcher's `AGENT_NAMESPACES`, which restarts the watcher.
+It asks the same of the runner's account (`system:serviceaccount:foreman-runner:foreman-runner`), the `can-i` half of ADR 0106 check 4: in each agent namespace it may create Jobs, read pod logs and create Secrets, and it may not get or list Secrets, create Pods, Roles or RoleBindings; it may create nothing in `foreman-platform`, no namespace, ClusterRole or ClusterRoleBinding, and list no Secrets across namespaces.
+
+### Adding a project
+
+A pull request that adds the project to `projects` in the settings file, with its slug and quota. Once it is merged, the Platform workflow's plan shows the new `agents-<slug>` namespace with both Roles, and the run watcher's Deployment changed (its `AGENT_NAMESPACES` gains the namespace, which restarts the watcher). Didi approves the apply, and its checks then cover the new namespace too. The project's own credentials and its first runs stay as their own steps.
 
 ## 8. The runner's cluster token (new-credentials gate)
 
-Create a token for the `foreman-runner` service account, and store it at `platform/agent-cluster/runner-token` in Windmill resources. Store the cluster's endpoint and CA certificate (`tofu output cluster_endpoint`, `tofu output cluster_ca_certificate`) as plain settings. Then run ADR 0106 check 4 (RBAC).
+This step stays by hand for now (O-105, N-89). The token goes into Windmill resources, outside the cluster, and a job could take it there only by printing it, which is never done, or with a new Windmill credential that can write resources, held in GitHub: a wider credential than any decision names. Until Didi decides N-89:
 
-## 9. The tunnel token Secret
+Create a token for the `foreman-runner` service account with a short-lived admin credential of its own (`doctl kubernetes cluster kubeconfig show foreman --expiry-seconds 900`, with doctl signed in for this step only, written to a file only for these commands and deleted after), and store it at `platform/agent-cluster/runner-token` in Windmill resources through Windmill's own form, never anywhere else. Store the cluster's endpoint and CA certificate as plain settings: the `server` and `certificate-authority-data` of that credential, the same values as the factory stack's outputs `cluster_endpoint` and `cluster_ca_certificate`. The Platform workflow's apply job runs the `can-i` half of ADR 0106 check 4 (RBAC) after each apply; the half with the token itself (creating a Job in `agents-<slug>` works, and the refused calls are refused) is checked at rehearsal.
+
+## 9. The tunnel token Secret and the cluster Secrets job
+
+The Platform workflow's `cluster-secrets` job (environment `platform`, Didi approves) creates or updates every Secret the platform pods read. Start it by hand: Actions, Platform, Run workflow, with "Also create or update the cluster's Secrets" checked. It runs after the plan and the apply of the same run, and only if both passed or the apply had nothing to do.
+
+For the tunnel token it runs `tofu output -raw receiver_tunnel_token` against the factory stack's state in the same job, into a shell variable that is masked and never printed, and pipes it into the Secret:
 
 ```bash
-tofu -chdir=infra/stacks/factory output -raw receiver_tunnel_token \
-  | kubectl -n foreman-platform create secret generic cloudflared-tunnel-token --from-file=token=/dev/stdin
+printf '%s' "$RECEIVER_TUNNEL_TOKEN" \
+  | kubectl -n foreman-platform create secret generic cloudflared-tunnel-token --from-file=token=/dev/stdin \
+      --dry-run=client -o json \
+  | kubectl apply --server-side --force-conflicts --field-manager=foreman-cluster-secrets -f -
 ```
 
-The token never touches a file.
+Every other Secret goes in the same way, from its environment secret. The token never touches a file, an argument or the log. The job's summary names each Secret as created or updated, already up to date, skipped (its environment secret is empty, and the Secret is left as it is, which is not a failure), or refused (a value with a space or a newline at either end, or a planning token outside the state API's own rule, never shown); a refused Secret fails the run. It then restarts each deployment whose Secret changed and waits up to 3 minutes for it, naming any that is not ready.
 
 ## 10. Supabase role passwords as Secrets (new-credentials gate)
 
-Create the login users for the `factory_api` and `factory_ingest` roles if they do not exist yet, then put each connection string into its Secret from the password manager:
+Create the login users for the `factory_api` and `factory_ingest` roles if they do not exist yet, then paste each connection string into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
 
-```bash
-kubectl -n foreman-platform create secret generic state-api-database --from-file=url=/dev/stdin
-kubectl -n foreman-platform create secret generic github-receiver-database --from-file=url=/dev/stdin
-kubectl -n foreman-platform create secret generic github-receiver-webhook-secret --from-file=value=/dev/stdin
-```
+| Environment secret        | Secret in `foreman-platform`     | Key     |
+| ------------------------- | -------------------------------- | ------- |
+| `STATE_API_DATABASE_URL`  | `state-api-database`             | `url`   |
+| `RECEIVER_DATABASE_URL`   | `github-receiver-database`       | `url`   |
+| `RECEIVER_WEBHOOK_SECRET` | `github-receiver-webhook-secret` | `value` |
 
-The webhook secret is the one the runner App will use in step 13.
+Then run the cluster Secrets job (step 9). The webhook secret is the one the runner App will use in step 13: paste the same value into the App's webhook form there. It can be made again at any time by setting a new value in both places.
 
 ## 11. The DNS record (DNS gate)
 
-Set `TF_VAR_publish_receiver_dns=true`, plan, and check the plan adds exactly one `cloudflare_dns_record` and changes nothing else. Then apply it.
+A pull request sets `publish_receiver_dns = true` in `infra/stacks/factory/production.tfvars`. Once it is merged, the Infra apply workflow plans: check that the summary's gates name exactly one DNS change, and that the plan adds exactly one `cloudflare_dns_record` and changes nothing else. Then approve the apply.
 
 ## 11a. The planning chat's paths on the tunnel (tunnel gate, D-271, D-282)
 
 This changes the tunnel's routing only: one more rule on the receiver's host name, for the planning chat's paths exactly (`/plans` and `/planning/projects/<slug>/{submissions,feedback,accepted}`), to the state API's public Service (`http://state-api-public.foreman-platform.svc.cluster.local:8081`). That port serves `POST /plans` and those three reads as `GET` and nothing else, with a 64 KiB size limit and 20 requests a minute (ADR 0102, O-83, D-282). No DNS record is added.
 
-Set `TF_VAR_expose_planning_route=true`, plan, and check the plan changes only `cloudflare_zero_trust_tunnel_cloudflared_config.receiver`, adding exactly one ingress rule with `path = "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$"` before the 404 rule, and nothing else. Then apply it. Check from outside: `POST https://<receiver host name>/plans` and `GET https://<receiver host name>/planning/projects/<slug>/submissions` with no token answer 401, and `GET /plans`, `POST` on a read path and any other path answer 404. Only after step 15 creates the planning token does a submission go through.
+A pull request sets `expose_planning_route = true` in `infra/stacks/factory/production.tfvars`. Once it is merged, check the plan changes only `cloudflare_zero_trust_tunnel_cloudflared_config.receiver`, adding exactly one ingress rule with `path = "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$"` before the 404 rule, and nothing else. Then approve the apply. Check from outside: `POST https://<receiver host name>/plans` and `GET https://<receiver host name>/planning/projects/<slug>/submissions` with no token answer 401, and `GET /plans`, `POST` on a read path and any other path answer 404. Only after step 15 creates the planning token does a submission go through.
 
 ## 12. The model key with a spend cap (new-credentials gate)
 
@@ -169,6 +238,8 @@ The Developer's and Designer's runs open their own pull requests with their run'
 
 In each project repository, protect builder branches against force pushes (a branch ruleset covering the runner's branch names), so the rule in the Developer's and Designer's instructions is also enforced by GitHub (D-245).
 
+The admin workflows' four environments send deployment events like any other; the receiver acts only on deployments to `staging` (O-104), so it records theirs as deliveries and starts nothing.
+
 ## 14. Set `agent_cluster_max_active_runs`
 
 Size it to the agents pool: the node's allocatable CPU and memory divided by one run's requests (agent, proxy and, for QA, fetch pods together). Write it as the setting in the store. While it is unset, every dispatch is refused.
@@ -181,37 +252,29 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
 - The runner's database login, a user in the `factory_runner` role (ADR 0104), stored at `platform/state-store/runner-database-url` in Windmill resources.
 - A Windmill token that can list the workspace's jobs, for the monthly execution count (D-167). Until it exists, the reconcile flow skips the alert check and says so.
-- The planning chat's state API token (D-266). It lets the Council's planning chat submit a plan with `POST /plans` and read its submissions' status, Didi's feedback and the accepted plans, and nothing else (ADR 0102, D-282). Generate a long random value (at least 32 characters of letters, digits, `-` and `_`) in the password manager and keep it there. Put the value itself only into the planning chat's own settings. The state API holds only its SHA-256: store the hash at `platform/state-api/planning-token-sha256` in Windmill resources, and in the state API's Secret, piped straight in so neither value lands in a file or the shell history:
+- The planning chat's state API token (D-266). It lets the Council's planning chat submit a plan with `POST /plans` and read its submissions' status, Didi's feedback and the accepted plans, and nothing else (ADR 0102, D-282). Generate a long random value (at least 32 characters of letters, digits, `-` and `_`) in Bitwarden and keep it there (D-341). Put the value itself into the planning chat's own settings and into the `platform` environment secret `PLANNING_TOKEN`, and nowhere else. The state API holds only its SHA-256: the cluster Secrets job (step 9) makes it exactly as this step did by hand, the token with no trailing newline (a newline changes the hash and the API then refuses the token), through `sha256sum`, the hex only with no newline, piped straight into the Secret:
 
   ```bash
-  # The token comes from the password manager's command line on stdin, with no trailing newline
-  # (a newline changes the hash and the API then refuses the token). Only its hash goes on.
-  sha256sum | cut -d' ' -f1 | tr -d '\n' \
-    | kubectl -n foreman-platform create secret generic state-api-planning-token --from-file=sha256=/dev/stdin
-  kubectl -n foreman-platform rollout restart deployment/state-api
+  printf '%s' "$PLANNING_TOKEN" | sha256sum | cut -d' ' -f1 | tr -d '\n' \
+    | kubectl -n foreman-platform create secret generic state-api-planning-token --from-file=sha256=/dev/stdin \
+        --dry-run=client -o json \
+    | kubectl apply --server-side --force-conflicts --field-manager=foreman-cluster-secrets -f -
   ```
 
-  The Secret is optional for the state API's pod: until it exists, no planning token is accepted. The chat reaches the state API at `https://<receiver host name>/plans` once step 11a is applied (D-271). Its read routes are not reachable from outside (N-75).
+  The hash is masked and never printed, so the job cannot copy it to `platform/state-api/planning-token-sha256` in Windmill resources, where `flows/windmill.yaml` lists it as a kept copy that no flow reads: N-90 asks whether that copy is still kept. The job refuses a token outside the rule above, by name. Then it restarts the state API. The Secret is optional for the state API's pod: until it exists, no planning token is accepted. The chat reaches the state API at `https://<receiver host name>/plans` once step 11a is applied (D-271). Its read routes are not reachable from outside (N-75).
 
 - The three Windmill tokens that start flows (D-283, D-291, D-327, D-330, O-101, O-102), each its own approval. Before creating any of them, check on Windmill's token page ("Limit token permissions" and "Restrict paths") that a token can be limited to running exactly the scripts named below and nothing else: no other script, no reading or changing scripts, jobs, resources or variables. **If Windmill cannot narrow a token that far, stop and ask Didi before creating any credential** (D-283, D-291, D-330). Do not create a wider token, and do not use another kind of token (such as a webhook's own token) instead, without asking.
-  - The state API's token: exactly the scope `jobs:run:scripts:f/foreman/plan_approval`, stored at `platform/state-api/windmill-plan-approval-token` in Windmill resources and in the Secret `state-api-windmill-plan-approval-token` (key `token`).
-  - The GitHub receiver's token: exactly the scopes of its flow list (`RECEIVER_FLOW_PATHS` in `src/adapters/windmill/receiver-flows.ts`), the three scopes `jobs:run:scripts:f/foreman/option_capture`, `jobs:run:scripts:f/foreman/advance_item` and `jobs:run:scripts:f/foreman/verify_staging` (D-329, O-101, O-104), stored at `platform/github-receiver/windmill-token` in Windmill resources and in the Secret `github-receiver-windmill-token` (key `token`). A token made earlier with only the first scope is made again with all three, and the old one revoked.
-  - The run watcher's token: exactly the scope of its flow list (`RUN_WATCHER_FLOW_PATHS` in `src/adapters/windmill/run-watcher-flows.ts`), only `jobs:run:scripts:f/foreman/record_run_end`, stored at `platform/run-watcher/windmill-token` in Windmill resources and in the Secret `run-watcher-windmill-token` (key `token`).
+  - The state API's token: exactly the scope `jobs:run:scripts:f/foreman/plan_approval`, stored at `platform/state-api/windmill-plan-approval-token` in Windmill resources and, through the `platform` environment secret `STATE_API_WINDMILL_TOKEN`, in the Secret `state-api-windmill-plan-approval-token` (key `token`).
+  - The GitHub receiver's token: exactly the scopes of its flow list (`RECEIVER_FLOW_PATHS` in `src/adapters/windmill/receiver-flows.ts`), the three scopes `jobs:run:scripts:f/foreman/option_capture`, `jobs:run:scripts:f/foreman/advance_item` and `jobs:run:scripts:f/foreman/verify_staging` (D-329, O-101, O-104), stored at `platform/github-receiver/windmill-token` in Windmill resources and, through the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in the Secret `github-receiver-windmill-token` (key `token`). A token made earlier with only the first scope is made again with all three, and the old one revoked.
+  - The run watcher's token: exactly the scope of its flow list (`RUN_WATCHER_FLOW_PATHS` in `src/adapters/windmill/run-watcher-flows.ts`), only `jobs:run:scripts:f/foreman/record_run_end`, stored at `platform/run-watcher/windmill-token` in Windmill resources and, through the `platform` environment secret `RUN_WATCHER_WINDMILL_TOKEN`, in the Secret `run-watcher-windmill-token` (key `token`).
 
-  Generate each token in Windmill, copy it into the password manager, and never paste its value anywhere else: not in a file, the shell history, chat, Linear or a log. Pipe it from the password manager's command line straight into its Secret:
-
-  ```bash
-  kubectl -n foreman-platform create secret generic state-api-windmill-plan-approval-token --from-file=token=/dev/stdin
-  kubectl -n foreman-platform create secret generic github-receiver-windmill-token --from-file=token=/dev/stdin
-  kubectl -n foreman-platform create secret generic run-watcher-windmill-token --from-file=token=/dev/stdin
-  kubectl -n foreman-platform rollout restart deployment/state-api deployment/github-receiver deployment/run-watcher
-  ```
+  Generate each token in Windmill and paste it only into Windmill's resource form at its path and into its `platform` environment secret: never into a file, the shell history, chat, Linear or a log. Each can be made again in Windmill, so it need not be kept in Bitwarden (D-341). Then run the cluster Secrets job (step 9), which puts each one into its Secret through stdin and restarts `state-api`, `github-receiver` and `run-watcher` as their Secrets change.
 
   None of the three services reaches Windmill directly: all go through the Windmill proxy of step 7, which allows only `windmill.host`, and no pod's network policy allows them public 443 (D-284, D-328, D-330). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started`, `option capture flow not started`, `advance flow not started`, `staging flow not started` or `run end flow not started` with the error's type, and the reconcile pass opens the request, captures the options, advances the item, verifies staging or records the end. The run watcher's restart above then sends the run-end flow for every stopped run Job still present, once each. If the proxy is down, the services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
 
 Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
 
-The `agent_run_settings` value names the repo map Job's image (D-275 (2), O-87): build `src/agent-images/repo-map/Dockerfile` from the repo root, push it to the registry the agent images use (GitHub Container Registry, public, D-336), and put its reference pinned by digest in `repoMapImage`, with `resources.repoMap` (it unpacks an archive of up to 200 MiB in memory, so give it at least 1 GiB of memory) and `repoMapMaxMinutes` (5 to start). No new credential: the Job's only token is the runner App's `contents: read` token of step 13, minted per read. The same image serves the Scanner's stage 1 in scan mode (O-92), which also installs the YAML parser from the image's lockfile; nothing else changes. Deploying the flows creates the `f/foreman/scan` schedule (05:00 Toronto time). Migration 0017 (the `scans` table) is applied with the others, after Didi's review.
+The `agent_run_settings` value names the repo map Job's image (D-275 (2), O-87): the Images workflow builds `src/agent-images/repo-map/Dockerfile` from the repo root and pushes it to GitHub Container Registry as `foreman-repo-map`, public (D-336). Put its reference pinned by digest (the artifact `foreman-images`, `windmill.agent_run_settings.repoMapImage`) in `repoMapImage`, with `resources.repoMap` (it unpacks an archive of up to 200 MiB in memory, so give it at least 1 GiB of memory) and `repoMapMaxMinutes` (5 to start). The same artifact gives `agent_images` (`opencode` and `claude-api`) and `proxyImage`. No new credential: the Job's only token is the runner App's `contents: read` token of step 13, minted per read. The same image serves the Scanner's stage 1 in scan mode (O-92), which also installs the YAML parser from the image's lockfile; nothing else changes. Deploying the flows creates the `f/foreman/scan` schedule (05:00 Toronto time). Migration 0017 (the `scans` table) is applied with the others, after Didi's review.
 
 Then check the approval form on Didi's phone with a throwaway request, as the M0.4 spike did (D-170, D-254). Use a test request with made-up option names and no real data. Record with the date:
 
@@ -292,6 +355,22 @@ To verify at rehearsal, with a check built from synthetic data only, and record 
 - Whether that relative link, `/scripts/get/f/foreman/hold_release_request`, resolves to the Windmill origin and opens the right page signed in, and whether it needs the workspace (`?workspace=<id>`). If the entry is deployed as a flow rather than a script, the page may be `/flows/get/...` instead: fix `HOLD_RELEASE_REQUEST_PAGE` in `flows/lib/held-items.ts`.
 - Whether the page fills in the item's id. It is not relied on: the page shows the flow's path and the input (`{"nodeId": "..."}`) beside each link, so Didi can type or paste it.
 - That the page reads well on Didi's phone, in light and dark mode, with no sideways scrolling.
+
+### The admin workflows
+
+The three workflows (D-336, D-339, D-340, O-105) are built and tested with fake tools, without a real cluster, state, registry or GitHub environment. To verify at their first real run, with no real personal data, and record each result with the date in O-105:
+
+- The environments: the `tofu-apply`, `kubectl-apply` and `cluster-secrets` jobs wait for Didi's approval, and the approval page links the run whose plan job's summary Didi reads; the plan jobs start without one. A run started by hand from another branch skips every job, and the environments' branch rule would refuse it anyway.
+- The images: the job's own token with `packages: write` can create the seven packages under `didi-build`; whether they arrive private, and that each one, once public, pulls with no login (`docker pull ghcr.io/didi-build/foreman-state-api@sha256:...`) to the digest the summary gave. Each package shows this repository as its source.
+- The credential: DigitalOcean accepts `--expiry-seconds` of 600, 900 and 1200; a `kubectl` call with the credential after that time is refused; and whether a credential already fetched stops working when the DigitalOcean token is revoked. The narrowest DigitalOcean token scopes that can plan, apply and fetch the credential (step 3).
+- OpenTofu in the jobs: `-lockfile=readonly` passes with the committed lock file; the apply of the saved plan takes the passphrase from `TF_VAR_state_encryption_passphrase` and nothing else; `tofu output -raw receiver_tunnel_token` works in the Secrets job with only the R2 key and the passphrase, and no provider token.
+- The published plan: the secret-value scan passes on a real plan; the summary shows no value marked sensitive, and no account, zone or resource id, receiver host name or bucket name, only their placeholders; the plan stays readable and within GitHub's 1 MiB summary limit. Whether GitHub's own masking also covers the job summary (the jobs do not rely on it).
+- The platform diff: `kubectl diff --server-side` names its files `<group.>version.Kind.namespace.name`, so each object shows by kind, namespace and name; an object in a new namespace is listed as created; the apply creates each namespace before the objects in it.
+- The checks: the `can-i` answers are as the step 7 list says; the probe pod is admitted by Pod Security `restricted` and by the agent namespace's quota, pulls the egress proxy image, and its DNS lookup and both connections fail inside their time limits (default deny on DOKS); each probe lands on its own pool.
+- The address: the `kubernetes` EndpointSlice on DOKS lists plain IPv4 addresses and one `https` port, as `cluster-facts` expects.
+- The Secrets job: a server-side apply takes over a Secret first made by `kubectl create`; a second run with the same values changes nothing and restarts nothing; an empty environment secret is named as skipped and its Secret is left as it is.
+- One run at a time: a second run of a workflow waits while the first's apply waits for Didi, and a third replaces the waiting second.
+- The receiver: the deployment events of the four environments are recorded as deliveries and start nothing.
 
 ## Verification
 

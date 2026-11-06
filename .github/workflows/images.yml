@@ -1,0 +1,72 @@
+name: Images
+
+# Builds the seven images first hosting needs from main and pushes them to GitHub Container
+# Registry as public images, ghcr.io/didi-build/foreman-<name>, tagged with the commit (D-336,
+# O-105). The job summary and the artifact `foreman-images` give each image's reference pinned by
+# digest, which a settings pull request copies: the cluster and Windmill pin digests, never tags,
+# so a pushed image changes nothing until Didi merges that pull request and approves its apply.
+#
+# Only this job has `packages: write`, the built-in token's right to push to this repository's
+# packages, and nothing else. No secret goes into a build: the Dockerfiles take no build argument
+# and no build secret, and none is passed (.github/scripts/build-images.sh). Pull requests never
+# run this workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "contracts/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".dockerignore"
+      - ".github/workflows/images.yml"
+      - ".github/scripts/build-images.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: images
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build:
+    name: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io/didi-build
+      COMMIT: ${{ github.sha }}
+      SOURCE_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Sign in to GitHub Container Registry with this job's own token
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+      - name: Build and push the seven images
+        run: |
+          set -euo pipefail
+          .github/scripts/build-images.sh "$RUNNER_TEMP/images.json" >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload the image references
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foreman-images
+          path: ${{ runner.temp }}/images.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Sign out of the registry
+        if: always()
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io
