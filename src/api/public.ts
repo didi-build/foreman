@@ -4,10 +4,14 @@
 // on a second port of the state API that only the tunnel connector may reach (its network
 // policy, infra/kubernetes/platform.ts):
 //
-// - it serves the planning chat's routes and nothing else: `POST /plans` and the three reads
-//   `GET /planning/projects/<slug>/{submissions,feedback,accepted}` (D-282). Every other method or
-//   path answers 404 and never reaches the API's routes (the service kit's own `GET /health` is
-//   answered too, but the tunnel forwards only the planning chat's paths);
+// - it serves the planning chat's routes and nothing else, under the public host name's `/api`
+//   prefix (D-343): `POST /api/plans` and the three reads
+//   `GET /api/planning/projects/<slug>/{submissions,feedback,accepted}` (D-282). Every other
+//   method or path answers 404 and never reaches the API's routes, the same routes without the
+//   prefix included (the service kit's own `GET /health` is answered too, but the tunnel forwards
+//   only the planning chat's paths);
+// - the tunnel cannot rewrite a path, so this listener takes the prefix off: the API's own routes
+//   keep their names (`POST /plans`, ./routes.ts) and the internal port is unchanged (O-106);
 // - it counts every request in a fixed window, valid token or not, and answers 429 past the limit
 //   without reading the body, which also bounds how fast a token can be guessed;
 // - it refuses a declared body over the size limit with 413 before reading it; a body sent
@@ -22,6 +26,9 @@ import type { Clock } from "../core/library.ts";
 import type { Logger } from "../service-kit/logger.ts";
 import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
 import { MAX_BODY_BYTES, PLANNING_READ_PATH, PLANS_PATH } from "./routes.ts";
+
+/** The public host name's prefix for every machine-facing path (D-343). */
+export const PUBLIC_API_PREFIX = "/api";
 
 /** The public listener's limits (D-271, O-83). */
 export interface PublicLimits {
@@ -73,16 +80,22 @@ export function createPublicHandler({
     return Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000));
   }
 
-  /** Only the planning chat's routes (D-282): `POST /plans` and the three planning reads. */
-  function isPlanningRoute(request: IncomingMessage): boolean {
+  /**
+   * The API route a public request names, or null: only the planning chat's routes (D-282),
+   * `POST /api/plans` and the three planning reads, each under the `/api` prefix (D-343).
+   */
+  function planningRoute(request: IncomingMessage): string | null {
     const path = pathOnly(request.url);
-    if (request.method === "POST") return PLANS_PATH.test(path);
-    if (request.method === "GET") return PLANNING_READ_PATH.test(path);
-    return false;
+    if (!path.startsWith(`${PUBLIC_API_PREFIX}/`)) return null;
+    const route = path.slice(PUBLIC_API_PREFIX.length);
+    if (request.method === "POST") return PLANS_PATH.test(route) ? route : null;
+    if (request.method === "GET") return PLANNING_READ_PATH.test(route) ? route : null;
+    return null;
   }
 
   return async (request: IncomingMessage, response: ServerResponse) => {
-    if (!isPlanningRoute(request)) return false;
+    const route = planningRoute(request);
+    if (route === null) return false;
     const wait = overLimit();
     if (wait !== null) {
       logger.warn("public request refused", { reason: "rate_limited" });
@@ -97,6 +110,9 @@ export function createPublicHandler({
       sendJson(response, 413, { error: "request body is too large" });
       return true;
     }
+    // The API's own route, without the prefix; the query string is not passed on, and no route
+    // reads one.
+    request.url = route;
     return api(request, response);
   };
 }

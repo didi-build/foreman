@@ -253,6 +253,29 @@ describe("receiver tunnel (unit: D-195)", () => {
     );
   });
 
+  it("forwards only the webhook path under /api to the receiver, not the old path or a near miss (D-343)", () => {
+    const declared = /default\s*=\s*"([^"]+)"/.exec(
+      only(stackCode, /variable\s+"receiver_webhook_path"/),
+    )?.[1];
+    expect(declared).toBe("^/api/github/webhook$");
+    const webhookPath = new RegExp(declared ?? "");
+    expect(webhookPath.test("/api/github/webhook")).toBe(true);
+    for (const path of [
+      "/github/webhook",
+      "/api/github/webhook/",
+      "/api/github/webhook/extra",
+      "/api/github",
+      "/API/github/webhook",
+      "/api/GitHub/webhook",
+      "/api/api/github/webhook",
+      "/x/api/github/webhook",
+      "/api/plans",
+      "/",
+    ]) {
+      expect(webhookPath.test(path), path).toBe(false);
+    }
+  });
+
   it("validates that the tunnel targets an in-cluster Service", () => {
     expect(only(cfCode, /variable\s+"receiver_tunnel"/)).toMatch(
       /svc\\\\.cluster\\\\.local/,
@@ -293,33 +316,55 @@ describe("receiver tunnel (unit: D-195)", () => {
     );
   });
 
-  it("matches the planning chat's four paths and nothing else (D-282)", () => {
+  it("matches the planning chat's four paths under /api and nothing else (D-282, D-343)", () => {
+    expect(STATE_API_PUBLIC.tunnelPath).toBe(
+      "^/api/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$",
+    );
     const tunnelPath = new RegExp(STATE_API_PUBLIC.tunnelPath);
     for (const path of [
-      "/plans",
-      "/planning/projects/rehearsal/submissions",
-      "/planning/projects/rehearsal/feedback",
-      "/planning/projects/a-1/accepted",
+      "/api/plans",
+      "/api/planning/projects/rehearsal/submissions",
+      "/api/planning/projects/rehearsal/feedback",
+      "/api/planning/projects/a-1/accepted",
+      `/api/planning/projects/${"a".repeat(100)}/submissions`,
     ]) {
       expect(tunnelPath.test(path), path).toBe(true);
     }
     for (const path of [
+      // The old paths, without the prefix.
+      "/plans",
+      "/planning/projects/rehearsal/submissions",
+      "/planning/projects/rehearsal/feedback",
+      "/planning/projects/a-1/accepted",
+      // Near misses.
       "/",
+      "/api",
+      "/api/",
       "/health",
-      "/ideas",
-      "/decisions",
-      "/attention",
-      "/plans/",
-      "/plans/extra",
-      "/xplans",
-      "/planning/projects/rehearsal",
-      "/planning/projects/rehearsal/runs",
-      "/planning/projects/rehearsal/submissions/extra",
-      "/planning/projects/Rehearsal/submissions",
-      "/planning/projects/-x/submissions",
-      "/planning/projects/a/b/submissions",
-      "/planning/projects/../submissions",
-      `/planning/projects/${"a".repeat(101)}/submissions`,
+      "/api/health",
+      "/api/ideas",
+      "/api/decisions",
+      "/api/attention",
+      "/api/github/webhook",
+      "/api/plans/",
+      "/api/plans/extra",
+      "/api/xplans",
+      "/api//plans",
+      "/api/api/plans",
+      "/API/plans",
+      "/apiplans",
+      "/x/api/plans",
+      "/api/planning/projects/rehearsal",
+      "/api/planning/projects/rehearsal/",
+      "/api/planning/projects/rehearsal/runs",
+      "/api/planning/projects/rehearsal/submissions/",
+      "/api/planning/projects/rehearsal/submissions/extra",
+      "/api/planning/projects/Rehearsal/submissions",
+      "/api/planning/projects/rehearsal/Submissions",
+      "/api/planning/projects/-x/submissions",
+      "/api/planning/projects/a/b/submissions",
+      "/api/planning/projects/../submissions",
+      `/api/planning/projects/${"a".repeat(101)}/submissions`,
     ]) {
       expect(tunnelPath.test(path), path).toBe(false);
     }

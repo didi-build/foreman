@@ -6,8 +6,8 @@
 //
 // It listens on two ports. PORT (8080) is the internal one the agents' egress proxies call.
 // PUBLIC_PORT (8081) is the one the Cloudflare Tunnel connector forwards the planning chat's
-// paths to, and serves the planning chat's routes only (`POST /plans` and the three planning
-// reads), with a size and a rate limit (D-271, D-282, ./public.ts).
+// paths to, and serves the planning chat's routes only, under `/api` (`POST /api/plans` and the
+// three planning reads), with a size and a rate limit (D-271, D-282, D-343, ./public.ts).
 // After each submission the API starts the plan-approval flow with its own narrow Windmill
 // credential at `platform/state-api/windmill-plan-approval-token` (D-273 (2), D-283), through the
 // shared Windmill egress proxy in HTTPS_PROXY (D-284, D-328), at WINDMILL_HOST in the workspace

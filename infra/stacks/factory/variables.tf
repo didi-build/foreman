@@ -64,7 +64,7 @@ variable "cloudflare_settings" {
 }
 
 variable "receiver_hostname" {
-  description = "The receiver's public webhook host name on didi.build. Creating its DNS record is a DNS gate (D-195)."
+  description = "The cluster's one public host name on didi.build, foreman.didi.build (D-343), from the environment's RECEIVER_HOSTNAME. Creating its DNS record is a DNS gate (D-195)."
   type        = string
 }
 
@@ -81,19 +81,19 @@ variable "receiver_service_url" {
 }
 
 variable "receiver_webhook_path" {
-  description = "The one path the tunnel forwards: the receiver's webhook route (src/github-receiver/handler.ts)."
+  description = "The one path the tunnel forwards to the receiver: its webhook route, under /api (src/github-receiver/handler.ts, D-343)."
   type        = string
-  default     = "^/github/webhook$"
+  default     = "^/api/github/webhook$"
 }
 
 variable "expose_planning_route" {
-  description = "Add the planning chat's /plans route to the receiver's tunnel (D-271). False until Didi approves the tunnel change at first hosting; then one apply changes the tunnel's routing only."
+  description = "Add the planning chat's routes under /api to the receiver's tunnel (D-271, D-282, D-343). False until Didi approves the tunnel change at first hosting; then one apply changes the tunnel's routing only."
   type        = bool
   default     = false
 }
 
 variable "planning_service_url" {
-  description = "The state API's public Service, whose port serves POST /plans only (src/api/public.ts). Must match infra/kubernetes/platform.ts (test/infra-cluster.test.ts checks it)."
+  description = "The state API's public Service, whose port serves the planning chat's routes under /api only (src/api/public.ts). Must match infra/kubernetes/platform.ts (test/infra-cluster.test.ts checks it)."
   type        = string
   default     = "http://state-api-public.foreman-platform.svc.cluster.local:8081"
 }

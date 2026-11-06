@@ -5,7 +5,8 @@
 //
 // - the agents' egress proxy pods (and nothing else in agent namespaces) reach the state API port;
 // - the tunnel connector reaches the receiver port and the state API's public port (which serves
-//   only the planning chat's `POST /plans`, D-271, src/api/public.ts), and Cloudflare on 443;
+//   only the planning chat's routes under `/api`, D-271, D-282, D-343, src/api/public.ts), and
+//   Cloudflare on 443;
 // - the state API and the receiver reach cluster DNS, the database port on public addresses and
 //   the Windmill proxy's port, and nothing on 443;
 // - the run watcher reaches cluster DNS, the Kubernetes API server's own address and port, and the
@@ -90,12 +91,12 @@ export const STATE_API_PUBLIC = {
   port: 8081,
   podLabels: STATE_API.podLabels,
   /**
-   * The tunnel's path pattern for this Service (D-271, D-282): exactly `/plans` and the three
-   * planning reads, with the state API's own slug rule (src/api/routes.ts). The tunnel cannot
-   * match the method; the public port checks it.
+   * The tunnel's path pattern for this Service (D-271, D-282): exactly `/api/plans` and the three
+   * planning reads under `/api` (D-343), with the state API's own slug rule (src/api/routes.ts).
+   * The tunnel cannot match the method; the public port checks it.
    */
   tunnelPath:
-    "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$",
+    "^/api/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$",
 } as const;
 
 export const RECEIVER = {
@@ -467,7 +468,8 @@ export function platformObjects(
   const policies: NetworkPolicy[] = [
     policy("default-deny", undefined, [], []),
     // The state API: only the agents' egress proxies call its port (D-195); the runner does not.
-    // The tunnel connector reaches its public port only, which serves `POST /plans` (D-271).
+    // The tunnel connector reaches its public port only, which serves the planning chat's routes
+    // under `/api` (D-271, D-282, D-343).
     policy(
       STATE_API.name,
       STATE_API.podLabels,

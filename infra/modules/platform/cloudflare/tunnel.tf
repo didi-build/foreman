@@ -1,13 +1,17 @@
 # The GitHub receiver's Cloudflare Tunnel (D-195, ADR 0106 section 1). A connector pod on the
 # cluster's platform pool dials out to Cloudflare, so the cluster opens no inbound port. The tunnel
-# routes one host name and one path to the receiver's internal Service, and nothing else.
+# routes one host name and one path to the receiver's internal Service, and nothing else. The host
+# name is the cluster's one public door, `foreman.didi.build`, and every machine-facing path on it
+# is under `/api` (D-343): the webhook path is `/api/github/webhook`.
 #
 # D-271 adds one more rule on the same tunnel and host name, set only when Didi passes the tunnel
 # gate at first hosting: the planning chat's paths to the state API's public Service, whose port
-# serves the planning chat's routes and nothing else (`POST /plans` and, since D-282, the three
-# planning reads), with a size and a rate limit (src/api/public.ts). The tunnel's ingress rules
-# match host name and path only, not the method, so the method, size and rate checks live on that
-# port. The path pattern is fixed here, not a setting, so it cannot be widened by a variable.
+# serves the planning chat's routes and nothing else (`POST /api/plans` and, since D-282, the three
+# planning reads under `/api/planning/projects/<slug>/`), with a size and a rate limit
+# (src/api/public.ts). The tunnel's ingress rules match host name and path only, not the method,
+# and cannot rewrite the path, so the method, size and rate checks and the `/api` prefix are
+# handled on that port. The path pattern is fixed here, not a setting, so it cannot be widened by a
+# variable. Every other path gets the tunnel's 404.
 #
 # Gates at first hosting (D-195): the tunnel token is a new credential, and the DNS record is a DNS
 # change. The token is kept in (encrypted) state and is a sensitive output. It is piped straight
@@ -65,13 +69,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "receiver" {
           service  = var.receiver_tunnel.service_url
         },
       ],
-      # The planning chat's paths (D-271, D-282): exactly /plans and its three reads under
-      # /planning/projects/<slug>/, on the receiver's host name. The slug pattern is the state
-      # API's own (src/api/routes.ts); the public port also checks the method (src/api/public.ts).
+      # The planning chat's paths (D-271, D-282, D-343): exactly /api/plans and its three reads
+      # under /api/planning/projects/<slug>/, on the receiver's host name. The slug pattern is the
+      # state API's own (src/api/routes.ts); the public port also checks the method
+      # (src/api/public.ts).
       var.planning_service_url == null ? [] : [
         {
           hostname = var.receiver_tunnel.hostname
-          path     = "^/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$"
+          path     = "^/api/(plans|planning/projects/[a-z0-9][a-z0-9-]{0,99}/(submissions|feedback|accepted))$"
           service  = var.planning_service_url
         },
       ],
