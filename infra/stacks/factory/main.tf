@@ -3,7 +3,20 @@
 #
 # It calls the platform modules directly, not through modules/project. The cluster and the tunnel
 # are the factory's own platform, not a project deployed onto a target, so there is no deploy
-# target to switch on.
+# target to switch on. Each project's staging name and Workers route are made here too, on the
+# factory's own zone, from the project list below (D-357, O-112).
+
+locals {
+  # The project list is the platform settings file's `projects[]`, the one list the Platform
+  # workflow renders and the register-project form reads (D-345). The plan reads it from the
+  # commit it runs on, so the names Didi approves are that commit's projects (D-357).
+  settings      = jsondecode(file("${path.module}/../../kubernetes/settings/production.json"))
+  project_slugs = [for project in local.settings.projects : project.slug]
+
+  # Each project's staging name is `<slug>.didi.build` (D-345, projectStagingUrl in
+  # src/core/register-project.ts).
+  project_domain = "didi.build"
+}
 
 module "cluster" {
   source = "../../modules/platform/digitalocean"
@@ -37,6 +50,13 @@ module "edge" {
   # D-271, D-282, D-343: the planning chat's routes under /api on the same tunnel and host name,
   # only once Didi passes the tunnel gate at first hosting.
   planning_service_url = var.expose_planning_route ? var.planning_service_url : null
+
+  # D-357: a proxied record and a Workers route for each project. A project whose host name is the
+  # receiver's gets neither (O-112).
+  project_staging = {
+    domain = local.project_domain
+    slugs  = local.project_slugs
+  }
 }
 
 output "cluster_id" {

@@ -263,6 +263,13 @@ describe("the infra apply workflow (unit: D-339, ADR 0110)", () => {
     expect(run).not.toMatch(/show -json plan\.out\s*>/);
   });
 
+  it("plans again when the settings file changes, since the stack reads its project list there (D-357)", () => {
+    expect(wf.on.push?.paths).toContain(SETTINGS_FILE);
+    expect(text("infra/stacks/factory/main.tf")).toContain(
+      'file("${path.module}/../../kubernetes/settings/production.json")',
+    );
+  });
+
   it("plans with the reviewed variables file and saves the encrypted plan for one day", () => {
     expect(planStep.run).toContain("-var-file=production.tfvars -out=plan.out");
     const upload = plan.steps.find((s) =>

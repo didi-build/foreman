@@ -1,8 +1,8 @@
 # 0110. Infrastructure as code: tool, state, secrets and layout
 
-- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174). Updated 2026-11-06: applies run in GitHub Actions jobs Didi approves, not from a terminal (D-339), and reach the cluster with a short-lived credential (D-340); see "Applies run in jobs Didi approves" below (O-105). Updated 2026-11-07: the Kubernetes API's address stays out of those jobs' public logs, summaries and downloads (D-349, O-107), and a Platform workflow job writes the runner's cluster token into Windmill (D-352, O-110).
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174). Updated 2026-11-06: applies run in GitHub Actions jobs Didi approves, not from a terminal (D-339), and reach the cluster with a short-lived credential (D-340); see "Applies run in jobs Didi approves" below (O-105). Updated 2026-11-07: the Kubernetes API's address stays out of those jobs' public logs, summaries and downloads (D-349, O-107), and a Platform workflow job writes the runner's cluster token into Windmill (D-352, O-110). Also 2026-11-07: the factory stack makes each project's staging name and Workers route from the platform settings file's project list, each listed by name in the plan Didi approves (D-357, O-112).
 - **Date:** 2026-10-28
-- **Related:** O-08, D-133, D-134, D-339, D-340, D-341, D-349, D-352, O-105, O-107, O-110, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
+- **Related:** O-08, D-133, D-134, D-339, D-340, D-341, D-349, D-352, D-357, O-105, O-107, O-110, O-112, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
 
 ## Context
 
