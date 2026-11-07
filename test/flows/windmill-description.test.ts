@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
+import { PLATFORM_SECRETS } from "../../infra/kubernetes/platform.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
@@ -56,8 +57,8 @@ interface Description {
     };
   }[];
   resources: {
-    secrets: { path: string; read_by?: string }[];
-    values: { name: string }[];
+    secrets: { path: string; read_by?: string; windmill_path?: string }[];
+    values: { name: string; windmill_path?: string }[];
   };
 }
 
@@ -129,34 +130,37 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
   });
 
   it("lists exactly the secrets and values the composition module reads", () => {
-    const forFlows = description.resources.secrets.filter((s) => !s.read_by);
-    expect(forFlows.map((s) => s.path).sort()).toEqual(
+    expect(description.resources.secrets.map((s) => s.path).sort()).toEqual(
       Object.values(SECRET_PATHS).sort(),
     );
-    // The secrets a service other than the flows reads: the planning chat's token hash (D-266)
-    // and the state API's Windmill credential for the plan-approval flow (D-273), both read by
-    // the state API, the GitHub receiver's Windmill token (D-291) and the run watcher's (D-330).
-    expect(description.resources.secrets.filter((s) => s.read_by)).toEqual([
-      expect.objectContaining({
-        path: PLANNING_TOKEN_SHA256_PATH,
-        read_by: "state API",
-      }),
-      expect.objectContaining({
-        path: WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
-        read_by: "state API",
-      }),
-      expect.objectContaining({
-        path: RECEIVER_WINDMILL_TOKEN_PATH,
-        read_by: "GitHub receiver",
-      }),
-      expect.objectContaining({
-        path: RUN_WATCHER_WINDMILL_TOKEN_PATH,
-        read_by: "run watcher",
-      }),
-    ]);
     expect(description.resources.values.map((v) => v.name).sort()).toEqual(
       Object.values(VALUE_NAMES).sort(),
     );
+  });
+
+  it("keeps no Windmill copy of a secret only a service reads (D-351)", () => {
+    expect(description.resources.secrets.filter((s) => s.read_by)).toEqual([]);
+    const listed = JSON.stringify(description.resources);
+    for (const path of [
+      PLANNING_TOKEN_SHA256_PATH,
+      WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
+      RECEIVER_WINDMILL_TOKEN_PATH,
+      RUN_WATCHER_WINDMILL_TOKEN_PATH,
+    ]) {
+      expect(listed, path).not.toContain(path);
+    }
+  });
+
+  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes (D-352, O-110)", () => {
+    const withPath = [
+      ...description.resources.secrets.map((s) => [s.path, s.windmill_path]),
+      ...description.resources.values.map((v) => [v.name, v.windmill_path]),
+    ].filter(([, windmillPath]) => windmillPath !== undefined);
+    expect(Object.fromEntries(withPath)).toEqual({
+      [SECRET_PATHS.clusterToken]: `f/foreman/${SECRET_PATHS.clusterToken}`,
+      [VALUE_NAMES.clusterEndpoint]: `f/foreman/${VALUE_NAMES.clusterEndpoint}`,
+      [VALUE_NAMES.clusterCaCertificate]: `f/foreman/${VALUE_NAMES.clusterCaCertificate}`,
+    });
   });
 });
 
@@ -205,20 +209,21 @@ describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, 
     const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
     const scopes = (text: string) =>
       [...text.matchAll(/`(jobs:run:scripts:[^`]+)`/g)].map((m) => m[1]);
-    // One line per token: each names its secret path and its scopes, and nothing more.
-    const lineFor = (path: string) =>
+    // One line per token: each names the cluster Secret it goes into and its scopes, and nothing
+    // more. The token lives only there and in its `platform` environment secret (D-351).
+    const lineFor = (secret: string) =>
       runbook
         .split("\n")
-        .find((line) => line.includes(path) && line.includes("jobs:run:"));
-    expect(scopes(lineFor(WINDMILL_PLAN_APPROVAL_TOKEN_PATH) ?? "")).toEqual([
+        .find((line) => line.includes(`\`${secret}\``) && line.includes("jobs:run:"));
+    expect(scopes(lineFor(PLATFORM_SECRETS.stateApiWindmillToken.name) ?? "")).toEqual([
       runScope(PLAN_APPROVAL_FLOW_PATH),
     ]);
-    expect(scopes(lineFor(RECEIVER_WINDMILL_TOKEN_PATH) ?? "")).toEqual(
+    expect(scopes(lineFor(PLATFORM_SECRETS.receiverWindmillToken.name) ?? "")).toEqual(
       RECEIVER_FLOW_PATHS.map(runScope),
     );
-    expect(scopes(lineFor(RUN_WATCHER_WINDMILL_TOKEN_PATH) ?? "")).toEqual(
-      RUN_WATCHER_FLOW_PATHS.map(runScope),
-    );
+    expect(
+      scopes(lineFor(PLATFORM_SECRETS.runWatcherWindmillToken.name) ?? ""),
+    ).toEqual(RUN_WATCHER_FLOW_PATHS.map(runScope));
   });
 });
 

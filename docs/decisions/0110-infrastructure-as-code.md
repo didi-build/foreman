@@ -1,8 +1,8 @@
 # 0110. Infrastructure as code: tool, state, secrets and layout
 
-- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174).
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174). Updated 2026-11-06: applies run in GitHub Actions jobs Didi approves, not from a terminal (D-339), and reach the cluster with a short-lived credential (D-340); see "Applies run in jobs Didi approves" below (O-105). Updated 2026-11-07: the Kubernetes API's address stays out of those jobs' public logs, summaries and downloads (D-349, O-107), and a Platform workflow job writes the runner's cluster token into Windmill (D-352, O-110).
 - **Date:** 2026-10-28
-- **Related:** O-08, D-133, D-134, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
+- **Related:** O-08, D-133, D-134, D-339, D-340, D-341, D-349, D-352, O-105, O-107, O-110, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
 
 ## Context
 
@@ -44,8 +44,8 @@ Free tier: R2's free storage covers this many times over.
 2. Worker secrets are set at deploy time from the vault (for example `wrangler secret put` in the deploy job), not declared in IaC. Cloudflare provider v5 ignores secrets it does not manage, so this causes no drift. Secrets Store bindings, which name a secret and never hold its value, are the preferred form where they fit.
 3. Some resources store a sensitive value in state whatever we do: an API token's value, a Hyperdrive origin password, a Supabase database password. Those either stay out of IaC (created by hand or by the deploy adapter, then referenced by id) or are accepted only because state and plan are encrypted. Each case is listed in the stack's README.
 4. Variables that must carry a secret are declared `ephemeral = true`.
-5. CI posts only the human-readable `tofu show -no-color` output, which redacts sensitive values. The JSON form of a plan prints sensitive values in plain text, so it is never uploaded or logged. Scripts read only resource types and actions from it.
-6. A scan of plan output and state for known secret values (canaries in tests, real values in the deploy job) fails the run if any value appears. `scripts/lib/find-secret-values.mjs` matches each secret as is, JSON-escaped (as in `state.json`), URL-encoded, and base64 or base64url encoded at every alignment, and never prints what it found. The passphrase variable has a validation block requiring at least 16 characters. The scan becomes a CI step in the deploy adapter's plan job (M3.7); until then it is run by hand as in `infra/README.md`.
+5. CI posts only the human-readable `tofu show -no-color` output, which redacts sensitive values. The JSON form of a plan prints sensitive values in plain text, so it is never uploaded or logged. Scripts read only resource types and actions from it. The Infra apply workflow's plan job publishes the readable plan in its job summary, with account, zone and resource ids, the receiver's host name and the state bucket replaced by placeholders because the repository is public, and reads addresses, types and actions from the JSON form through a pipe, never a file (O-105).
+6. A scan of plan output and state for known secret values (canaries in tests, real values in the deploy job) fails the run if any value appears. `scripts/lib/find-secret-values.mjs` matches each secret as is, JSON-escaped (as in `state.json`), URL-encoded, and base64 or base64url encoded at every alignment, and never prints what it found. The passphrase variable has a validation block requiring at least 16 characters. For the factory stack, the Infra apply workflow's plan job runs it on the plan text and the plan's own output before anything is published, and the apply job on the apply's output (D-339, O-105). For project stacks it becomes a CI step in the deploy adapter's plan job (M3.7); until then it is run by hand as in `infra/README.md`.
 
 ### Layout
 
@@ -64,6 +64,17 @@ infra/
 
 Stacks say what a project needs (key-value stores, records, and later services and bindings) through `modules/project`, never naming a provider. `modules/platform/cloudflare/` turns that into Cloudflare resources: it is the infrastructure half of the deploy adapter. A new deploy target (Kubernetes in the second release) adds one platform module and one branch in the project module; existing stacks do not change (D-146). No module contains a `provider` block, so the project module can switch platform modules on and off; the Cloudflare provider takes its token from `CLOUDFLARE_API_TOKEN`.
 
+### Applies run in jobs Didi approves (D-339, D-340)
+
+Changed on 2026-11-06 (D-339, D-340, O-105). Production applies stay Didi's: each one runs as a GitHub Actions job that waits for Didi's approval, not as a command in a terminal.
+
+- **Where they run.** The Infra apply workflow (`.github/workflows/infra-apply.yml`) plans the factory stack in the environment `infra-plan` and applies the saved, encrypted plan file in the environment `infra`. The Platform workflow (`.github/workflows/platform.yml`) diffs the cluster's standing objects in `platform-plan` and applies them, creates the cluster's Secrets, and makes the runner's cluster token and writes it into Windmill (first-hosting step 8, D-352, O-110), in `platform`. `infra` and `platform` have Didi as the required reviewer; all four accept main only. No pull request event reaches them, and the workflow files are a privileged path Didi reviews.
+- **What Didi reads before approving.** The plan job's summary: what changes by address and action, the gates the change touches, and the full readable plan. The apply job applies that exact plan file, which OpenTofu refuses if the state moved on since.
+- **Secrets.** Each one is an environment secret Didi enters in GitHub's secret form, given only to the step that needs it. The passphrase is also kept in the Bitwarden vault (D-341). Plain ids and host names are environment variables, checked against their own patterns before use. The stack's other non-secret values are in `infra/stacks/factory/production.tfvars`, reviewed like code.
+- **Cluster access.** Each job that reaches the cluster fetches a short-lived admin credential with the DigitalOcean token (`doctl kubernetes cluster kubeconfig show --expiry-seconds`, for the job's own time limit) and removes it at its end. Nothing long-lived is kept for cluster access; this revises D-188.
+- **The API address.** The repository is public, and the Kubernetes API's address never appears in these jobs' logs, summaries or downloads (D-349, O-107). The factory stack's `cluster_endpoint` output is sensitive, the published plan and apply output have every IPv4 address but `0.0.0.0` replaced with `<ip>`, and only the jobs that hold the cluster credential read the address, from the cluster, masked before anything prints it.
+- **One at a time.** Each workflow has one concurrency group that never cancels a run in progress, so two applies of the same workflow never overlap.
+
 ### Windows (Didi's machine)
 
 Install with `winget install --exact --id=OpenTofu.Tofu`. In Git Bash, run with `-input=false`, and set `MSYS_NO_PATHCONV=1` when an argument starts with `/`. `.gitattributes` keeps `.tf` files and the provider lock file on LF line endings. The lock file holds hashes for both Windows and Linux (`tofu providers lock -platform=windows_amd64 -platform=linux_amd64`).
@@ -72,7 +83,7 @@ Install with `winget install --exact --id=OpenTofu.Tofu`. In Git Bash, run with 
 
 - Scratch project only in M0. No real project, zone or account is touched.
 - Creating the scratch Cloudflare token, the R2 bucket and its keys, and the encryption passphrase is the new-credentials gate: Didi does it.
-- Production applies are never run by the runner or an agent.
+- Production applies are never run by the runner or an agent. They run in the jobs above, after Didi's approval (D-339).
 - Cloudflare-specific application code lives only in `src/adapters/deploy/` (essential 9), enforced by lint for every code folder (ADR 0101). In infrastructure code, Cloudflare is declared only in `infra/modules/platform/cloudflare/` (D-146), enforced by `npm run infra-boundaries`.
 
 ## How success is judged
@@ -101,6 +112,6 @@ Alternatives considered:
 
 ## Consequences
 
-- Every apply needs the encryption passphrase. Losing it makes state unreadable, so it is backed up in the vault.
+- Every apply needs the encryption passphrase. Losing it makes state unreadable, so it is kept in the Bitwarden vault (D-341) and entered in the environments' secrets for the jobs (D-339).
 - Some resources stay outside IaC on purpose (those that only store a secret). They are listed, so nothing is hidden.
 - Existing resources of current projects are imported after cutover, per the architecture.

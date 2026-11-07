@@ -1,0 +1,232 @@
+name: Infra apply
+
+# Plans the factory stack (infra/stacks/factory) on main and, once Didi approves, applies that
+# exact saved plan (D-339, D-340, ADR 0110, O-105). This replaces the by-hand `tofu` commands of
+# first-hosting steps 5, 11 and 11a and every later infrastructure change.
+#
+# - `plan` runs in the environment `infra-plan` (main only, no reviewer). It plans with
+#   `-input=false` against the R2 state backend, scans the plan text for the secret values
+#   (ADR 0110 secrets rule 6) before anything is published, writes the readable plan to the job
+#   summary with ids and host names replaced by placeholders (the repository is public), and saves
+#   the encrypted plan file as an artifact kept for one day.
+# - `apply` runs in the environment `infra` (main only, Didi the required reviewer), only when the
+#   plan has changes, and applies the saved plan file. OpenTofu refuses it if the state moved on.
+#
+# Secrets come from the environment's own secrets, each into the one step that needs it. Pull
+# requests never run this workflow: `.github/workflows/infra.yml` validates them with no
+# credential. One run at a time: a newer run waits until the older one's apply is approved,
+# rejected or finished.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/stacks/factory/**"
+      - "infra/modules/**"
+      - ".github/workflows/infra-apply.yml"
+      - ".github/scripts/tofu-init.sh"
+      - ".github/scripts/redact.sh"
+      - ".github/scripts/infra-plan-summary.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: infra-apply
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  STACK: infra/stacks/factory
+  TF_IN_AUTOMATION: "1"
+  TF_INPUT: "0"
+  REDACT_NAMES: CLOUDFLARE_ACCOUNT_ID,CLOUDFLARE_ZONE_ID,RECEIVER_HOSTNAME,STATE_BUCKET
+
+jobs:
+  plan:
+    name: tofu-plan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: infra-plan
+    permissions:
+      contents: read
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
+      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.2
+          # The wrapper prints every command's output and outputs; never use it here.
+          tofu_wrapper: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: tofu init against the R2 state
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          .github/scripts/tofu-init.sh
+      - name: tofu plan, scan for secret values, then publish the plan
+        id: plan
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          : "${DIGITALOCEAN_TOKEN:?is not set in this environment}"
+          : "${CLOUDFLARE_API_TOKEN:?is not set in this environment}"
+          : "${CLOUDFLARE_ZONE_ID:?is not set in this environment}"
+          : "${RECEIVER_HOSTNAME:?is not set in this environment}"
+          # Checked against their patterns by tofu-init.sh, so neither can break out of the value.
+          export TF_VAR_cloudflare_settings="{account_id=\"${CLOUDFLARE_ACCOUNT_ID}\",zone_id=\"${CLOUDFLARE_ZONE_ID}\"}"
+          export TF_VAR_receiver_hostname="$RECEIVER_HOSTNAME"
+          work="$RUNNER_TEMP/plan"
+          mkdir -p "$work"
+
+          # The tunnel token, once a tunnel exists, is one of the values scanned for (runbook step 5).
+          names="DIGITALOCEAN_TOKEN,CLOUDFLARE_API_TOKEN,AWS_SECRET_ACCESS_KEY,TF_VAR_state_encryption_passphrase"
+          if RECEIVER_TUNNEL_TOKEN="$(tofu -chdir="$STACK" output -raw receiver_tunnel_token 2>/dev/null)" &&
+            [ -n "$RECEIVER_TUNNEL_TOKEN" ]; then
+            echo "::add-mask::$RECEIVER_TUNNEL_TOKEN"
+            export RECEIVER_TUNNEL_TOKEN
+            names="$names,RECEIVER_TUNNEL_TOKEN"
+          fi
+
+          set +e
+          tofu -chdir="$STACK" plan -input=false -no-color -lock-timeout=5m -detailed-exitcode \
+            -var-file=production.tfvars -out=plan.out >"$work/plan-run.log" 2>&1
+          code=$?
+          set -e
+          files=("$work/plan-run.log")
+          if [ "$code" -ne 1 ]; then
+            tofu -chdir="$STACK" show -no-color plan.out >"$work/plan.txt"
+            # Addresses, types and actions only, through a pipe: the JSON form is never kept.
+            tofu -chdir="$STACK" show -json plan.out |
+              jq -c '[.resource_changes[]? | {address, type, actions: .change.actions}]' >"$work/changes.json"
+            files+=("$work/plan.txt")
+          fi
+
+          # Nothing is published until the scan passes. It names a secret, never its value.
+          SECRET_ENV_NAMES="$names" node scripts/find-secret-values.mjs "${files[@]}"
+
+          if [ "$code" -eq 1 ]; then
+            echo "::error::tofu plan failed."
+            .github/scripts/redact.sh <"$work/plan-run.log"
+            exit 1
+          fi
+          .github/scripts/redact.sh <"$work/plan.txt" >"$work/plan-redacted.txt"
+          .github/scripts/infra-plan-summary.sh "$work/changes.json" "$work/plan-redacted.txt" >>"$GITHUB_STEP_SUMMARY"
+          grep -E '^(Plan:|No changes\.)' "$work/plan.txt" || true
+          if [ "$code" -eq 2 ]; then
+            echo "changes=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "changes=false" >>"$GITHUB_OUTPUT"
+            rm -f "$STACK/plan.out"
+          fi
+      - name: Save the encrypted plan for the apply
+        if: steps.plan.outputs.changes == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: infra-plan
+          path: infra/stacks/factory/plan.out
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    name: tofu-apply
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changes == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: infra
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
+      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.2
+          tofu_wrapper: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: tofu init against the R2 state
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          .github/scripts/tofu-init.sh
+      - name: Fetch the plan Didi read
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: infra-plan
+          path: infra/stacks/factory
+      - name: tofu apply the saved plan
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/apply"
+          mkdir -p "$work"
+          set +e
+          tofu -chdir="$STACK" apply -input=false -no-color -lock-timeout=5m plan.out >"$work/apply.log" 2>&1
+          code=$?
+          set -e
+          names="DIGITALOCEAN_TOKEN,CLOUDFLARE_API_TOKEN,AWS_SECRET_ACCESS_KEY,TF_VAR_state_encryption_passphrase"
+          if RECEIVER_TUNNEL_TOKEN="$(tofu -chdir="$STACK" output -raw receiver_tunnel_token 2>/dev/null)" &&
+            [ -n "$RECEIVER_TUNNEL_TOKEN" ]; then
+            echo "::add-mask::$RECEIVER_TUNNEL_TOKEN"
+            export RECEIVER_TUNNEL_TOKEN
+            names="$names,RECEIVER_TUNNEL_TOKEN"
+          fi
+          # Nothing of the apply is published until its output passes the scan.
+          SECRET_ENV_NAMES="$names" node scripts/find-secret-values.mjs "$work/apply.log"
+          .github/scripts/redact.sh <"$work/apply.log" >"$work/apply-redacted.log"
+          cat "$work/apply-redacted.log"
+          {
+            echo "## Infrastructure apply"
+            echo
+            echo '````text'
+            cat "$work/apply-redacted.log"
+            echo '````'
+          } >>"$GITHUB_STEP_SUMMARY"
+          # The state holds the tunnel token and the provider's admin credential by design (ADR
+          # 0110 rule 3); scan it for every other secret value, through a pipe, never a file.
+          if [ "$code" -eq 0 ]; then
+            tofu -chdir="$STACK" state pull |
+              SECRET_ENV_NAMES="DIGITALOCEAN_TOKEN,CLOUDFLARE_API_TOKEN,AWS_SECRET_ACCESS_KEY,TF_VAR_state_encryption_passphrase" \
+                node scripts/find-secret-values.mjs /dev/stdin
+          fi
+          exit "$code"
+      - name: Remove the plan file
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$STACK/plan.out"

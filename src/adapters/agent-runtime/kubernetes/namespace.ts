@@ -5,7 +5,7 @@
 // RoleBinding (D-330): get, list and watch on Jobs there, and nothing else. Infrastructure code
 // applies them, never the runner (ADR 0110, D-188); they are written and tested here, next to the
 // code that relies on them. The runner's token is a new-credentials gate at first hosting and is
-// not declared here.
+// not declared here: the Platform workflow's runner-token job makes it (D-352, O-110).
 import { LABEL_MANAGED_BY, LABEL_PROJECT, agentNamespace } from "./names.ts";
 import type {
   Namespace,

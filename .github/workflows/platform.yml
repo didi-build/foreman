@@ -1,0 +1,333 @@
+name: Platform
+
+# The cluster's standing Kubernetes objects and its Secrets, from main (D-339, D-340, O-105). This
+# replaces first-hosting steps 7, 8, 9 and 10 and the cluster Secrets of step 15, and adds a
+# project: a pull request that adds it to the settings file, then this plan and Didi's approval.
+#
+# - `render` (no environment, no secret): renders infra/kubernetes/settings/production.json into
+#   one list of objects, kept as an artifact for one day. Only this job runs the repository's
+#   TypeScript; the jobs that hold a credential check out `.github/` only. The run watcher's
+#   policy gets a placeholder for the API server's address (192.0.2.1, TEST-NET-1, RFC 5737),
+#   so the artifact never holds the real one (D-349).
+# - `plan` (environment `platform-plan`, main only, no reviewer): puts the API server's real
+#   address into its own copy of the objects (api-server-address.sh), then `kubectl diff
+#   --server-side`, published as the kind, namespace and name of each object to create or
+#   change, never content.
+# - `apply` (environment `platform`, main only, Didi the required reviewer): only when the plan
+#   has changes, puts the address in its own copy the same way and applies the rendered objects
+#   the plan read, then runs the runbook's checks: the RBAC `kubectl auth can-i` list, default
+#   deny, and pods on their pools.
+# - `cluster-secrets` (environment `platform`, Didi's approval): only when started by hand with
+#   `cluster_secrets`, creates or updates each Secret the runbook names from the environment's
+#   secrets, through stdin only, then restarts the deployments whose Secret changed.
+# - `runner-token` (environment `platform`, Didi's approval): only when started by hand with
+#   `runner_token`, makes the `foreman-runner` service account's token (a Secret the cluster fills
+#   in) and writes it, with the cluster's endpoint and CA certificate from this job's own
+#   credential, into Windmill's resources with a Windmill token limited to writing exactly those
+#   three resources (D-352, O-110). Nothing it writes is printed.
+#
+# Each job that reaches the cluster fetches its own short-lived admin credential with the
+# DigitalOcean token (D-340), valid for the job's own time limit, and removes it at its end.
+# The repository is public, so the API server's address never shows in a log, a summary or an
+# artifact (D-349, O-107): only the jobs that hold the credential read it, from the cluster,
+# and mask it before anything prints; no job passes it to another.
+# Pull requests never run this workflow. One run at a time.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/kubernetes/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/platform.yml"
+      - ".github/scripts/**"
+  workflow_dispatch:
+    inputs:
+      cluster_secrets:
+        description: "Also create or update the cluster's Secrets from the platform environment's secrets (Didi approves)"
+        type: boolean
+        default: false
+      runner_token:
+        description: "Also write the runner's cluster token into Windmill (Didi approves)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: platform
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # The factory stack's cluster_name (infra/stacks/factory/variables.tf).
+  CLUSTER_NAME: foreman
+  SETTINGS_FILE: infra/kubernetes/settings/production.json
+  FIELD_MANAGER: foreman-platform-workflow
+
+jobs:
+  render:
+    name: render
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+      - name: Render the settings file into the cluster's objects
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/render"
+          # A placeholder that is never routed (TEST-NET-1, RFC 5737): the jobs with the cluster
+          # credential put the API server's real address in their own copy (api-server-address.sh).
+          jq '.platform.kubernetesApi = {"addresses":["192.0.2.1"],"port":443}' "$SETTINGS_FILE" >"$RUNNER_TEMP/render/settings.json"
+          if ! node infra/kubernetes/render.ts "$RUNNER_TEMP/render/settings.json" >"$RUNNER_TEMP/render/manifests.json" 2>"$RUNNER_TEMP/render/error.txt"; then
+            {
+              echo "## The settings file does not render"
+              echo
+              echo "Fix \`$SETTINGS_FILE\` in a pull request. The first setting at fault:"
+              echo
+              echo '```text'
+              cat "$RUNNER_TEMP/render/error.txt"
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if jq -e '[.items[] | select(.kind == "Secret")] | length > 0' "$RUNNER_TEMP/render/manifests.json" >/dev/null; then
+            echo "::error::The render holds a Secret. Secrets are created only by the cluster Secrets job."
+            exit 1
+          fi
+          jq -r '.items | group_by(.kind)[] | "\(.[0].kind): \(length)"' "$RUNNER_TEMP/render/manifests.json"
+      - name: Keep the rendered objects for the plan and the apply
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: platform-manifests
+          path: ${{ runner.temp }}/render/manifests.json
+          if-no-files-found: error
+          retention-days: 1
+
+  plan:
+    name: kubectl-diff
+    needs: render
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: platform-plan
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    env:
+      CREDENTIAL_SECONDS: "600"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Fetch the rendered objects
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: platform-manifests
+          path: ${{ runner.temp }}/render
+      - name: Install kubectl and doctl at pinned versions
+        run: |
+          set -euo pipefail
+          .github/scripts/install-cluster-tools.sh
+      - name: Fetch a short-lived cluster credential
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/cluster-credential.sh
+      - name: Put the API server's address into this runner's copy of the objects
+        run: |
+          set -euo pipefail
+          .github/scripts/api-server-address.sh "$RUNNER_TEMP/render/manifests.json"
+      - name: Diff the rendered objects against the cluster
+        id: diff
+        run: |
+          set -euo pipefail
+          .github/scripts/platform-plan.sh "$RUNNER_TEMP/render/manifests.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Remove the credential
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/kubeconfig"
+
+  apply:
+    name: kubectl-apply
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: platform
+    permissions:
+      contents: read
+    env:
+      CREDENTIAL_SECONDS: "1200"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Fetch the rendered objects the plan read
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: platform-manifests
+          path: ${{ runner.temp }}/render
+      - name: Install kubectl and doctl at pinned versions
+        run: |
+          set -euo pipefail
+          .github/scripts/install-cluster-tools.sh
+      - name: Fetch a short-lived cluster credential
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/cluster-credential.sh
+      - name: Put the API server's address into this runner's copy of the objects
+        run: |
+          set -euo pipefail
+          .github/scripts/api-server-address.sh "$RUNNER_TEMP/render/manifests.json"
+      - name: Apply the rendered objects
+        run: |
+          set -euo pipefail
+          kubectl apply --server-side --field-manager="$FIELD_MANAGER" --filename "$RUNNER_TEMP/render/manifests.json"
+      - name: Run the runbook's checks
+        run: |
+          set -euo pipefail
+          {
+            echo "## Platform checks"
+            .github/scripts/platform-checks.sh "$RUNNER_TEMP/render/manifests.json" all
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Remove the credential
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/kubeconfig"
+
+  cluster-secrets:
+    name: cluster-secrets
+    needs: [plan, apply]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.cluster_secrets && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: platform
+    permissions:
+      contents: read
+    env:
+      CREDENTIAL_SECONDS: "900"
+      STACK: infra/stacks/factory
+      TF_IN_AUTOMATION: "1"
+      TF_INPUT: "0"
+      REDACT_NAMES: CLOUDFLARE_ACCOUNT_ID,STATE_BUCKET
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+    steps:
+      # The whole repository: the tunnel token is read from the factory stack's state.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.2
+          tofu_wrapper: false
+      - name: Install kubectl and doctl at pinned versions
+        run: |
+          set -euo pipefail
+          .github/scripts/install-cluster-tools.sh
+      - name: Fetch a short-lived cluster credential
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/cluster-credential.sh
+      - name: tofu init against the R2 state
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          .github/scripts/tofu-init.sh
+      - name: Create or update the Secrets, then restart what reads them
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+          STATE_API_DATABASE_URL: ${{ secrets.STATE_API_DATABASE_URL }}
+          RECEIVER_DATABASE_URL: ${{ secrets.RECEIVER_DATABASE_URL }}
+          RECEIVER_WEBHOOK_SECRET: ${{ secrets.RECEIVER_WEBHOOK_SECRET }}
+          PLANNING_TOKEN: ${{ secrets.PLANNING_TOKEN }}
+          STATE_API_WINDMILL_TOKEN: ${{ secrets.STATE_API_WINDMILL_TOKEN }}
+          RECEIVER_WINDMILL_TOKEN: ${{ secrets.RECEIVER_WINDMILL_TOKEN }}
+          RUN_WATCHER_WINDMILL_TOKEN: ${{ secrets.RUN_WATCHER_WINDMILL_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The report holds names only; the script's own output, with its masks, stays in the log.
+          export REPORT="$RUNNER_TEMP/cluster-secrets.md"
+          status=0
+          .github/scripts/cluster-secrets.sh || status=$?
+          if [ -f "$REPORT" ]; then
+            tee -a "$GITHUB_STEP_SUMMARY" <"$REPORT"
+          fi
+          exit "$status"
+      - name: Remove the credential
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/kubeconfig"
+
+  runner-token:
+    name: runner-token
+    needs: [plan, apply]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.runner_token && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: platform
+    permissions:
+      contents: read
+    env:
+      CREDENTIAL_SECONDS: "600"
+    steps:
+      # The scripts and the settings file (the Windmill host and workspace), and nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/
+            /infra/kubernetes/settings/production.json
+          sparse-checkout-cone-mode: false
+      - name: Install kubectl and doctl at pinned versions
+        run: |
+          set -euo pipefail
+          .github/scripts/install-cluster-tools.sh
+      - name: Fetch a short-lived cluster credential
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/cluster-credential.sh
+      - name: Make the runner's cluster token and write it into Windmill
+        env:
+          WINDMILL_RUNNER_RESOURCES_TOKEN: ${{ secrets.WINDMILL_RUNNER_RESOURCES_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/runner-token.sh
+      - name: Remove the credential
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/kubeconfig"

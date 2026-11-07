@@ -11,7 +11,11 @@ import type { Logger } from "../service-kit/logger.ts";
 import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
 import type { FlowStarts } from "./flow-starts.ts";
 
-export const WEBHOOK_PATH = "/github/webhook";
+/**
+ * The one webhook path. Every machine-facing path on the cluster's public host name is under
+ * `/api` (D-343); any other path, the old `/github/webhook` included, answers 404.
+ */
+export const WEBHOOK_PATH = "/api/github/webhook";
 
 /** The events ingestion reads are far smaller; anything larger is refused unread. */
 export const MAX_BODY_BYTES = 1024 * 1024;
