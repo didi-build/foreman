@@ -162,10 +162,6 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
           "design/a/b/options/c",
         ),
       ).rejects.toThrow(NotBuiltError);
-      // The visibility check before option capture links CI's run (O-89) waits on it too.
-      await expect(deps.repoVisibility.isPrivate("didi-build/x")).rejects.toThrow(
-        NotBuiltError,
-      );
       await expect(
         unregisteredRunnerAppTokens().mint({
           repository: "didi-build/x",

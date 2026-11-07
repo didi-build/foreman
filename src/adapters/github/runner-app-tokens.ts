@@ -1,14 +1,14 @@
 // The runner App's own read-only installation tokens (D-267, D-127, D-178). Didi registers the
 // runner App at first hosting with two read-only permissions beyond D-127: `contents: read`, so the
 // runner can fetch a project's code at a commit to build the repo map (D-251) and, with the same
-// permission, check a folder's tree id (D-281) and whether the repository is private (O-89), and `actions:
-// read`, so it can download CI's screenshot bundles as workflow artifacts (D-242). Each token the
-// runner mints for these reads names one repository and exactly one of the two permissions, read
-// only (GitHub lets an installation token ask for fewer permissions than the App has), so a token
-// minted for the repo map cannot read artifacts, and neither can write, merge or deploy. GitHub
-// caps a token at one hour; the runner uses it for one read and never keeps or logs it. The repo
-// map's token is the one token that leaves the runner: it goes into the repo map Job's own Secret,
-// deleted when the Job ends (D-275 (2), O-87).
+// permission, check a folder's tree id (D-281), and `actions: read`, so it can download CI's
+// screenshot bundles as workflow artifacts (D-242). Each token the runner mints for these reads
+// names one repository and exactly one of the two permissions, read only (GitHub lets an
+// installation token ask for fewer permissions than the App has), so a token minted for the repo
+// map cannot read artifacts, and neither can write, merge or deploy. GitHub caps a token at one
+// hour; the runner uses it for one read and never keeps or logs it. The repo map's token is the
+// one token that leaves the runner: it goes into the repo map Job's own Secret, deleted when the
+// Job ends (D-275 (2), O-87).
 //
 // The real implementation needs the runner App and its private key, which the runner holds, so
 // until the App is registered through the new-credentials gate (D-178) the runner's port refuses

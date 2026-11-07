@@ -5,8 +5,8 @@
 // counting a failure or starting a fix round, and the option capture flow (the event path) or the
 // reconcile flow's capture pass (the safety net) captures later and asks for the same report's
 // move again, once. A refusal the Designer caused counts one failure once per head and starts the
-// fix round with the refusal's fixed text in its input; a public repository opens nothing and
-// counts nothing (O-89). Synthetic images only.
+// fix round with the refusal's fixed text in its input (O-89); a public repository's request
+// carries the link to CI's run (D-348, O-108). Synthetic images only.
 import { describe, expect, it } from "vitest";
 
 import { run as optionCaptureFlow } from "../../flows/option-capture.ts";
@@ -14,7 +14,11 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
-import { CAPTURE_REFUSAL_TEXT } from "../../src/core/option-capture.ts";
+import { FAKE_WORKFLOW_RUN_ID } from "../../src/adapters/screenshots/fake.ts";
+import {
+  CAPTURE_REFUSAL_TEXT,
+  visualApprovalQuestion,
+} from "../../src/core/option-capture.ts";
 import { REPO } from "../reconcile-fixture.ts";
 import { setupCapture } from "../option-capture-fixture.ts";
 import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
@@ -36,7 +40,6 @@ async function setup(bundle: boolean, names?: string[]) {
   await f.live();
   const c = await setupCapture(f, {
     screenshots: f.screenshots,
-    visibility: f.repoVisibility,
     bundle,
     ...(names ? { names } : {}),
     designerRun: { endedAt: null, outcome: null },
@@ -192,20 +195,28 @@ describe("option capture through the flows (flow: fake adapters, O-88)", () => {
     expect(await failures(f, c.nodeId)).toBe(2);
   });
 
-  it("a public repository opens nothing, counts nothing and starts nothing (O-89)", async () => {
+  it("on a public repository, Didi's request links CI's run and the item moves to Waiting for Didi (D-348, O-108)", async () => {
+    // The fixture's repository is public, as every project repository is (D-348).
     const { f, c } = await setup(true);
-    f.repoVisibility.set(REPO, "public");
     const ended = await finish(f, c.designerRun.id);
     expect(ended).toMatchObject({
-      optionCapture: { step: "refused", reason: "no_private_link" },
+      optionCapture: { step: "opened", options: ["a", "b"] },
+      move: { requested: true, outcome: "applied", toState: "waiting_for_didi" },
       builderRuns: [],
     });
-    expect(ended).not.toHaveProperty("optionCapture.failureCount");
-    expect(await failures(f, c.nodeId)).toBe(0);
+    expect(JSON.stringify(ended)).not.toMatch(/https?:|actions\/runs/);
     expect(
       await f.store.findOpenGateRequest(f.projectId, visualApprovalTopic(c.nodeId)),
-    ).toBe(null);
-    expect((await f.store.getNode(c.nodeId))?.state).toBe("in_design_exploration");
+    ).toMatchObject({
+      kind: "visual_approval",
+      owner: "didi",
+      payload: {
+        question: visualApprovalQuestion(
+          `https://github.com/${REPO}/actions/runs/${FAKE_WORKFLOW_RUN_ID}`,
+        ),
+      },
+    });
+    expect(await failures(f, c.nodeId)).toBe(0);
     expect(f.runtime.started).toEqual([]);
   });
 

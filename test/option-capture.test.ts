@@ -6,7 +6,8 @@
 // visual comparison plan after Didi approves. Then repeats and supersedes, the switches, the
 // D-279 refusal, other features' folders, a bad manifest, and the bounds on the option count.
 // O-89: which refusals count one failure once per head and send the item back with the
-// refusal's fixed text, and the CI run link on the request, only for a private repository.
+// refusal's fixed text, and the CI run link on the request, on a public repository too (D-348,
+// O-108).
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
@@ -61,7 +62,6 @@ async function setup(options: Parameters<typeof setupCapture>[1] = {}) {
   const captures = createOptionCaptures({
     ...f.deps,
     screenshots: c.screenshots,
-    repoVisibility: c.visibility,
   });
   const gates = () =>
     f.store.listGateRequests(f.projectId, visualApprovalTopic(c.nodeId));
@@ -130,8 +130,6 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
         captureCommitSha: HEAD,
       },
     });
-    // The repository was confirmed private before the request linked CI's run (O-89).
-    expect(c.visibility.reads).toEqual([REPO]);
     // The approval form's Options field shows exactly these (D-254).
     expect(approvalFormEnums(gate!)).toEqual({ options: ["a", "b"] });
     // The move into Waiting for Didi now finds its evidence.
@@ -485,7 +483,6 @@ describe("option capture (unit: memory store, fake screenshot port, O-88)", () =
       await createOptionCaptures({
         ...refusing.f.deps,
         screenshots: port,
-        repoVisibility: refusing.c.visibility,
       }).capture(refusing.c.nodeId),
     ).toEqual({
       nodeId: refusing.c.nodeId,
@@ -820,7 +817,6 @@ describe("capture refusals and the failure count (unit: memory store, O-89)", ()
           });
         },
       ],
-      ["no_private_link", async (t) => t.c.visibility.set(REPO, "public")],
       [
         // CI has not rendered the head yet: a wait, not a refusal.
         "bundle_missing",
@@ -849,7 +845,6 @@ describe("capture refusals and the failure count (unit: memory store, O-89)", ()
           throw new Error("not built");
         },
       },
-      repoVisibility: unreadable.c.visibility,
     }).capture(unreadable.c.nodeId);
     expect(step).toEqual({
       nodeId: unreadable.c.nodeId,
@@ -877,7 +872,7 @@ describe("capture refusals and the failure count (unit: memory store, O-89)", ()
 });
 
 describe("the CI run link on the visual-approval request (unit: memory store, O-89)", () => {
-  it("carries the run id from the bundle read into the link, for a private repository", async () => {
+  it("carries the run id from the bundle read into the link", async () => {
     const t = await setup({ bundle: false });
     t.c.putOptions(["a", "b"]);
     const read = await t.c.screenshots.read(REPO, HEAD, "options");
@@ -898,7 +893,7 @@ describe("the CI run link on the visual-approval request (unit: memory store, O-
     );
   });
 
-  it("refuses a run id that is not a positive safe integer, asking nothing and opening nothing", async () => {
+  it("refuses a run id that is not a positive safe integer, recording nothing and opening nothing", async () => {
     for (const id of [0, -3, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
       const t = await setup();
       const read = await t.c.screenshots.read(REPO, HEAD, "options");
@@ -918,7 +913,6 @@ describe("the CI run link on the visual-approval request (unit: memory store, O-
         reason: "bundle_unreadable",
         text: CAPTURE_REFUSAL_TEXT.bundle_unreadable,
       });
-      expect(t.c.visibility.reads).toEqual([]);
       expect(await t.gates()).toEqual([]);
       expect(await t.shots()).toEqual([]);
     }
@@ -934,23 +928,26 @@ describe("the CI run link on the visual-approval request (unit: memory store, O-
     }
   });
 
-  it("fails closed on a public repository or a failed visibility check: refuses, records nothing, opens nothing", async () => {
-    for (const answer of ["public", "fail"] as const) {
-      const t = await setup();
-      t.c.visibility.set(REPO, answer);
-      const step = await t.captures.capture(t.c.nodeId);
-      expect(step).toEqual({
-        nodeId: t.c.nodeId,
-        step: "refused",
-        reason: "no_private_link",
-        text: CAPTURE_REFUSAL_TEXT.no_private_link,
-      });
-      expect(JSON.stringify(step)).not.toMatch(/https?:|actions\/runs/);
-      expect(t.c.visibility.reads).toEqual([REPO]);
-      expect(await t.gates()).toEqual([]);
-      expect(await t.shots()).toEqual([]);
-      expect(await t.f.store.getCounter(t.c.nodeId, "failure")).toBe(0);
-    }
+  it("links CI's run on a public repository: records the screenshots and opens the request with the link (D-348, O-108)", async () => {
+    // The fixture's repository is public, as every project repository is (D-348). Capture asks
+    // nothing about the repository's visibility: the bundle read is its only GitHub read.
+    const t = await setup();
+    const step = await t.captures.capture(t.c.nodeId);
+    expect(step).toMatchObject({ step: "opened", headSha: HEAD, options: ["a", "b"] });
+    const [gate] = await t.gates();
+    expect(gate).toMatchObject({
+      kind: "visual_approval",
+      owner: "didi",
+      status: "open",
+      payload: {
+        question: visualApprovalQuestion(
+          `https://github.com/${REPO}/actions/runs/${FAKE_WORKFLOW_RUN_ID}`,
+        ),
+      },
+    });
+    expect(await t.shots()).toHaveLength(2);
+    expect(t.c.screenshots.reads).toEqual([`${REPO}@${HEAD}:options`]);
+    expect(await t.f.store.getCounter(t.c.nodeId, "failure")).toBe(0);
   });
 
   it("puts the link only on the request: not in the step, the evidence or the Designer's input", async () => {

@@ -3,8 +3,8 @@
 // supersede and list the visual-approval requests, and two captures of the same head that race
 // open one request, since the item's row is locked before the check. A refusal the Designer
 // caused records its `failure_count` row under its once-per-head key and adds one to `failure`,
-// and a repeat on the head adds nothing (O-89). Synthetic images in a fake screenshot port and a
-// fake visibility port; no network.
+// and a repeat on the head adds nothing (O-89). Synthetic images in a fake screenshot port; no
+// network.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -55,7 +55,6 @@ describe.skipIf(!adminUrl)(
       const captures = createOptionCaptures({
         ...f.deps,
         screenshots: c.screenshots,
-        repoVisibility: c.visibility,
       });
       const gates = () =>
         store.listGateRequests(f.projectId, visualApprovalTopic(c.nodeId));
@@ -95,7 +94,6 @@ describe.skipIf(!adminUrl)(
       const captures = createOptionCaptures({
         ...f.deps,
         screenshots: c.screenshots,
-        repoVisibility: c.visibility,
       });
       const steps = await Promise.all([
         captures.capture(c.nodeId),
