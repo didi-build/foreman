@@ -2,6 +2,7 @@
 
 - **Status:** accepted at the review point (D-191, 2026-10-30). Its open questions were settled as D-183 to D-190. Resolves O-03.
 - **Amended by D-193** (2026-10-30): one cluster with two node pools. The state API and the GitHub receiver run on its platform pool, and agents run on its agents pool.
+- **Updated 2026-11-07** (D-352, O-110): a job Didi approves makes the runner's cluster token and writes it into Windmill (section 1).
 - **Date:** 2026-10-30
 - **Related:** O-03, [build plan M3.2](../build-plan.md#m32-dispatch-adapters-and-runs), `docs/architecture/technical-architecture.md` sections 2.8, 2.10, 4, 6 and 7, D-120, D-141, D-142, D-143, D-156, D-158, D-159, D-164, D-165, D-172, D-178, D-180, D-193, N-29, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0107](./0107-agent-dispatch-adapters.md), [ADR 0110](./0110-infrastructure-as-code.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md), [ADR 0113](./0113-github-evidence-ingestion.md), [M0.2 spike record](../spikes/m0.2-agent-dispatch.md)
 
@@ -63,7 +64,7 @@ The platform namespace has its own default-deny NetworkPolicy. Agent namespaces 
 
 - It has no ClusterRole, cannot create namespaces, Roles or RoleBindings, and has no rights outside agent namespaces.
 - **The run watcher** (D-330, O-102) has its own ServiceAccount, `run-watcher`, in the platform namespace, and in each agent namespace a Role with get, list and watch on Jobs and nothing else, beside the runner's. It has no ClusterRole either, and its pod is the only one that mounts a ServiceAccount token. Its Kubernetes calls are in this adapter (`src/adapters/agent-runtime/kubernetes/job-watch.ts`).
-- The token is stored like any other platform secret, at `platform/agent-cluster/runner-token`, read through the secrets interface (Windmill resources now, Vault later). The cluster's address and CA certificate are plain settings. Creating the token is a **new-credentials gate** (approve-once).
+- The token is stored like any other platform secret, at `platform/agent-cluster/runner-token`, read through the secrets interface (Windmill resources now, Vault later). The cluster's address and CA certificate are plain settings. Creating the token is a **new-credentials gate** (approve-once). Since D-352 a job makes it (first-hosting runbook step 8, O-110): the Platform workflow's `runner-token` job, which Didi approves, applies a `kubernetes.io/service-account-token` Secret for `foreman-runner` that the cluster fills in, and writes the token, with the cluster's address and CA certificate from the job's own short-lived credential, into Windmill's resources with a Windmill token that can write only those three resources. The token does not expire; whether to move to expiring tokens is N-93.
 - The cluster admin kubeconfig is not given to the runner or to any agent (open question 6).
 - The cluster, its two node pools and the agents pool's taint, the namespaces, RBAC, default policies, quotas and Pod Security labels are infrastructure code (ADR 0110). Adding a project's namespace is an infrastructure change, not something the runner does.
 

@@ -166,6 +166,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       [`${WORKFLOWS.platform}#plan`]: "platform-plan",
       [`${WORKFLOWS.platform}#apply`]: "platform",
       [`${WORKFLOWS.platform}#cluster-secrets`]: "platform",
+      [`${WORKFLOWS.platform}#runner-token`]: "platform",
     });
   });
 
@@ -308,6 +309,7 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
       "plan",
       "apply",
       "cluster-secrets",
+      "runner-token",
     ]);
     for (const [id, job] of credentialJobs) {
       expect(job.env?.CREDENTIAL_SECONDS, id).toBe(
@@ -342,8 +344,15 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
       } else {
         expect(renders, id).toBe(false);
         // The Secrets job reads the tunnel token from the factory stack, so it needs the stack.
-        if (id !== "cluster-secrets")
+        // The runner token job reads the Windmill host and workspace from the settings file.
+        if (id === "runner-token") {
+          expect(checkout?.with?.["sparse-checkout"], id).toBe(
+            `/.github/\n/${SETTINGS_FILE}\n`,
+          );
+          expect(checkout?.with?.["sparse-checkout-cone-mode"], id).toBe(false);
+        } else if (id !== "cluster-secrets") {
           expect(checkout?.with?.["sparse-checkout"], id).toBe(".github");
+        }
       }
     }
   });
@@ -374,6 +383,7 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
       "plan",
       "apply",
       "cluster-secrets",
+      "runner-token",
     ]);
     // The one job output is whether the plan found a change.
     const outputs = Object.fromEntries(
@@ -651,6 +661,95 @@ describe("the cluster Secrets job (unit: D-339, runbook steps 9, 10 and 15)", ()
     );
     expect(script("cluster-secrets.sh")).toContain('--from-file="$key=/dev/stdin"');
     expect(script("cluster-secrets.sh")).not.toMatch(/--from-literal|--from-env-file/);
+  });
+});
+
+describe("the runner token job (unit: D-352, O-110, runbook step 8)", () => {
+  const wf = workflow(WORKFLOWS.platform);
+  const job = wf.jobs["runner-token"] as Job;
+  const runnerToken = script("runner-token.sh");
+
+  it("runs only when started by hand on main with runner_token, after the plan and the apply, in the environment Didi approves", () => {
+    expect(job.environment).toBe("platform");
+    expect(job.needs).toEqual(["plan", "apply"]);
+    // The same conditions as the cluster Secrets job, with its own box.
+    expect(job.if).toBe(
+      (wf.jobs["cluster-secrets"] as Job).if?.replace(
+        "inputs.cluster_secrets",
+        "inputs.runner_token",
+      ),
+    );
+    expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    expect(job.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(job.if).toContain("inputs.runner_token");
+    expect(job.if).toContain(
+      "needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped')",
+    );
+    expect(wf.on.workflow_dispatch?.inputs).toMatchObject({
+      runner_token: {
+        description:
+          "Also write the runner's cluster token into Windmill (Didi approves)",
+        type: "boolean",
+        default: false,
+      },
+    });
+    expect(Object.keys(wf.on)).not.toContain("pull_request");
+    expect(Object.keys(wf.on)).not.toContain("pull_request_target");
+  });
+
+  it("gives the Windmill token to the one step that writes, and to nothing else", () => {
+    const raw = text(WORKFLOWS.platform);
+    expect(raw.match(/WINDMILL_RUNNER_RESOURCES_TOKEN/g)).toHaveLength(2);
+    const write = job.steps.find((s) => s.run?.includes("runner-token.sh")) as Step;
+    expect(write.env).toEqual({
+      WINDMILL_RUNNER_RESOURCES_TOKEN: "${{ secrets.WINDMILL_RUNNER_RESOURCES_TOKEN }}",
+    });
+    expect(write.run).toBe("set -euo pipefail\n.github/scripts/runner-token.sh\n");
+    // Right after the credential, and the credential removed last, whatever happened.
+    const steps = job.steps;
+    const credential = steps.findIndex((s) => s.run?.includes("cluster-credential.sh"));
+    expect(steps.indexOf(write)).toBe(credential + 1);
+    expect(steps.at(-1)).toEqual({
+      name: "Remove the credential",
+      if: "always()",
+      run: 'set -euo pipefail\nrm -f "$RUNNER_TEMP/kubeconfig"\n',
+    });
+  });
+
+  it("writes exactly the Windmill paths flows/windmill.yaml gives the values the runner reads", () => {
+    const description = parseYaml(text("flows/windmill.yaml")) as {
+      resources: {
+        secrets: { path: string; windmill_path?: string }[];
+        values: { name: string; windmill_path?: string }[];
+      };
+    };
+    const yamlPath = (key: string) =>
+      [...description.resources.secrets, ...description.resources.values].find(
+        (entry) => ("path" in entry ? entry.path : entry.name) === key,
+      )?.windmill_path;
+    const scriptValue = (name: string) =>
+      new RegExp(`^${name}="([^"]+)"$`, "m").exec(runnerToken)?.[1];
+    expect(scriptValue("token_path")).toBe(
+      yamlPath("platform/agent-cluster/runner-token"),
+    );
+    expect(scriptValue("endpoint_path")).toBe(yamlPath("agent_cluster_endpoint"));
+    expect(scriptValue("ca_path")).toBe(yamlPath("agent_cluster_ca_certificate"));
+    expect(text("flows/windmill.yaml")).toContain(
+      `resource type \`${scriptValue("resource_type")}\``,
+    );
+  });
+
+  it("hands nothing to another job or the summary, and sends values only through stdin or a private file", () => {
+    expect(job.outputs).toBeUndefined();
+    expect(runnerToken).not.toMatch(/GITHUB_OUTPUT|GITHUB_ENV|GITHUB_STEP_SUMMARY/);
+    expect(runnerToken).toContain("--data-binary @-");
+    expect(runnerToken).toContain('--header @"$work/headers"');
+    expect(runnerToken).toContain("--output /dev/null");
+    // The one body is stdin, and a redirect is never followed with the token.
+    expect(runnerToken.match(/--data\S* \S+/g)).toEqual(["--data-binary @-"]);
+    expect(runnerToken).not.toMatch(/--location|\s-L\s/);
+    expect(runnerToken).not.toMatch(/-H "Authorization|--header "Authorization/);
+    expect(runnerToken).not.toMatch(/--arg \w+ "\$(token|endpoint|windmill_token)"/);
   });
 });
 

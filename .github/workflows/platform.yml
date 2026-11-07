@@ -1,8 +1,8 @@
 name: Platform
 
 # The cluster's standing Kubernetes objects and its Secrets, from main (D-339, D-340, O-105). This
-# replaces first-hosting steps 7, 9 and 10 and the cluster Secrets of step 15, and adds a project:
-# a pull request that adds it to the settings file, then this plan and Didi's approval.
+# replaces first-hosting steps 7, 8, 9 and 10 and the cluster Secrets of step 15, and adds a
+# project: a pull request that adds it to the settings file, then this plan and Didi's approval.
 #
 # - `render` (no environment, no secret): renders infra/kubernetes/settings/production.json into
 #   one list of objects, kept as an artifact for one day. Only this job runs the repository's
@@ -20,6 +20,11 @@ name: Platform
 # - `cluster-secrets` (environment `platform`, Didi's approval): only when started by hand with
 #   `cluster_secrets`, creates or updates each Secret the runbook names from the environment's
 #   secrets, through stdin only, then restarts the deployments whose Secret changed.
+# - `runner-token` (environment `platform`, Didi's approval): only when started by hand with
+#   `runner_token`, makes the `foreman-runner` service account's token (a Secret the cluster fills
+#   in) and writes it, with the cluster's endpoint and CA certificate from this job's own
+#   credential, into Windmill's resources with a Windmill token limited to writing exactly those
+#   three resources (D-352, O-110). Nothing it writes is printed.
 #
 # Each job that reaches the cluster fetches its own short-lived admin credential with the
 # DigitalOcean token (D-340), valid for the job's own time limit, and removes it at its end.
@@ -42,6 +47,10 @@ on:
     inputs:
       cluster_secrets:
         description: "Also create or update the cluster's Secrets from the platform environment's secrets (Didi approves)"
+        type: boolean
+        default: false
+      runner_token:
+        description: "Also write the runner's cluster token into Windmill (Didi approves)"
         type: boolean
         default: false
 
@@ -275,6 +284,48 @@ jobs:
             tee -a "$GITHUB_STEP_SUMMARY" <"$REPORT"
           fi
           exit "$status"
+      - name: Remove the credential
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/kubeconfig"
+
+  runner-token:
+    name: runner-token
+    needs: [plan, apply]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.runner_token && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: platform
+    permissions:
+      contents: read
+    env:
+      CREDENTIAL_SECONDS: "600"
+    steps:
+      # The scripts and the settings file (the Windmill host and workspace), and nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/
+            /infra/kubernetes/settings/production.json
+          sparse-checkout-cone-mode: false
+      - name: Install kubectl and doctl at pinned versions
+        run: |
+          set -euo pipefail
+          .github/scripts/install-cluster-tools.sh
+      - name: Fetch a short-lived cluster credential
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/cluster-credential.sh
+      - name: Make the runner's cluster token and write it into Windmill
+        env:
+          WINDMILL_RUNNER_RESOURCES_TOKEN: ${{ secrets.WINDMILL_RUNNER_RESOURCES_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/runner-token.sh
       - name: Remove the credential
         if: always()
         run: |

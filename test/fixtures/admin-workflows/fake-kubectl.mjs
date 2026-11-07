@@ -6,8 +6,10 @@
 // State: { namespaces: [names], live: {"<file name>": object}, secrets: {name: {rv, data}},
 //   cluster: [rendered objects, for RBAC], pods: {"<ns>/<name>": {phase, nodeName, log}},
 //   nodes: [node objects], failRollouts: [deployment names], diffExit: number,
-//   kubeconfigToken, kubeconfigServer: the credential's token and server URL,
-//   endpointSlices: the `kubernetes` Service's EndpointSlice list }
+//   kubeconfigToken, kubeconfigServer, kubeconfigCaData: the credential's token, server URL and
+//   certificate-authority-data, endpointSlices: the `kubernetes` Service's EndpointSlice list,
+//   serviceAccounts: ["<ns>/<name>"], tokenSecrets: {name: {object, polls}} as applied,
+//   runnerToken: the token the cluster fills a token Secret with, after tokenFillAfterPolls reads }
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -127,6 +129,36 @@ function main() {
     const path = flag("--output") ?? "";
     if (path.includes(".users[0].user.token")) out(state.kubeconfigToken ?? "");
     if (path.includes(".clusters[0].cluster.server")) out(state.kubeconfigServer ?? "");
+    if (path.includes(".clusters[0].cluster.certificate-authority-data"))
+      out(state.kubeconfigCaData ?? "");
+    return 0;
+  }
+  if (verb === "get" && kind === "serviceaccount") {
+    if ((state.serviceAccounts ?? []).includes(`${namespaceFlag()}/${name}`)) {
+      out(`serviceaccount/${name}\n`);
+      return 0;
+    }
+    process.stderr.write(
+      `Error from server (NotFound): serviceaccounts "${name}" not found\n`,
+    );
+    return 1;
+  }
+  if (
+    verb === "get" &&
+    kind === "secret" &&
+    (flag("--output") ?? "").includes(".data.token")
+  ) {
+    const secret = state.tokenSecrets?.[name];
+    if (!secret) {
+      process.stderr.write(
+        `Error from server (NotFound): secrets "${name}" not found\n`,
+      );
+      return 1;
+    }
+    secret.polls += 1;
+    save();
+    if (state.runnerToken && secret.polls > (state.tokenFillAfterPolls ?? 0))
+      out(Buffer.from(state.runnerToken).toString("base64"));
     return 0;
   }
   if (verb === "get" && kind === "endpointslices") {
@@ -156,7 +188,11 @@ function main() {
   }
   if (verb === "apply") {
     const object = JSON.parse(stdin);
-    if (object.kind === "Secret") {
+    if (object.type === "kubernetes.io/service-account-token") {
+      state.tokenSecrets ??= {};
+      state.tokenSecrets[object.metadata.name] ??= { object, polls: 0 };
+      save();
+    } else if (object.kind === "Secret") {
       state.secrets ??= {};
       const before = state.secrets[object.metadata.name];
       const data = JSON.stringify(object.data);

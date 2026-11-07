@@ -1,6 +1,6 @@
 // Integration: the admin workflows' shell scripts (.github/scripts/, D-336, D-339, D-340, O-105)
-// run with bash against fake kubectl, tofu, doctl, docker and getent on PATH, so no cluster,
-// state, registry, credential or name server is touched. Every value below is made up for the
+// run with bash against fake kubectl, tofu, doctl, docker, getent and curl on PATH, so no
+// cluster, state, registry, credential, name server or Windmill is touched. Every value below is made up for the
 // test; every address is a documentation address (RFC 5737).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -17,10 +18,12 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 import {
   RENDER_PLACEHOLDER,
   RUN_TIME_KUBERNETES_API,
+  filledSettings,
   renderedObjects,
 } from "./admin-workflows-fixture.ts";
 
@@ -57,6 +60,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
     `exec node ${JSON.stringify(join(FIXTURES, "fake-kubectl.mjs"))} "$@"`,
   );
   tool("docker", `exec node ${JSON.stringify(join(FIXTURES, "fake-docker.mjs"))} "$@"`);
+  tool("curl", `exec node ${JSON.stringify(join(FIXTURES, "fake-curl.mjs"))} "$@"`);
   tool(
     "tofu",
     [
@@ -100,6 +104,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
     "tofu.log",
     "doctl.log",
     "getent.log",
+    "curl.log",
   ])
     writeFileSync(join(root, file), "");
   return {
@@ -115,6 +120,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
       FAKE_TOFU_LOG: join(root, "tofu.log"),
       FAKE_DOCTL_LOG: join(root, "doctl.log"),
       FAKE_GETENT_LOG: join(root, "getent.log"),
+      FAKE_CURL_LOG: join(root, "curl.log"),
       RUNNER_TEMP: runnerTemp,
       GITHUB_OUTPUT: join(root, "github-output"),
       GITHUB_ENV: join(root, "github-env"),
@@ -857,6 +863,360 @@ describe.skipIf(process.platform === "win32")(
             "::error::The placeholder for the API server's address is still in the rendered objects after the swap.",
           );
           expect(after, label).toBe(before);
+        }
+      });
+    });
+
+    describe("runner-token.sh", () => {
+      const WINDMILL_TOKEN = "test-only-windmill-resources-token-0001";
+      const RUNNER_TOKEN = "test-only-runner-head.test-only-runner-body.test-only-sig";
+      const ENDPOINT = "https://test-only-cluster.k8s.example.com";
+      const CA_PEM =
+        "-----BEGIN CERTIFICATE-----\nTESTONLYNOTACERT\n-----END CERTIFICATE-----\n";
+      const DESCRIPTION =
+        "Written by the Platform workflow's runner-token job (D-352). Run it again rather than editing this by hand.";
+      const CREATE_URL =
+        "https://windmill.example.com/api/w/example/resources/create?update_if_exists=true";
+
+      /** The three Windmill paths flows/windmill.yaml gives the values the runner reads. */
+      const description = parseYaml(readFileSync("flows/windmill.yaml", "utf8")) as {
+        resources: {
+          secrets: { path: string; windmill_path?: string }[];
+          values: { name: string; windmill_path?: string }[];
+        };
+      };
+      const windmillPath = (key: string) =>
+        [...description.resources.secrets, ...description.resources.values].find(
+          (entry) => ("path" in entry ? entry.path : entry.name) === key,
+        )?.windmill_path as string;
+      const PATHS = {
+        token: windmillPath("platform/agent-cluster/runner-token"),
+        endpoint: windmillPath("agent_cluster_endpoint"),
+        ca: windmillPath("agent_cluster_ca_certificate"),
+      };
+
+      interface CurlCall {
+        args: string[];
+        headerFiles: string[];
+        headers: string[];
+        method: string;
+        url: string;
+        body: string;
+      }
+      const curlCalls = (box: Sandbox): CurlCall[] =>
+        readFileSync(box.env.FAKE_CURL_LOG as string, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as CurlCall);
+
+      const tokenBox = (state: Record<string, unknown> = {}) =>
+        sandbox({
+          kubeconfigServer: ENDPOINT,
+          kubeconfigCaData: Buffer.from(CA_PEM).toString("base64"),
+          serviceAccounts: ["foreman-runner/foreman-runner"],
+          runnerToken: RUNNER_TOKEN,
+          tokenFillAfterPolls: 1,
+          ...state,
+        });
+
+      const tokenRun = (
+        box: Sandbox,
+        env: Record<string, string> = {},
+        settings: unknown = filledSettings(),
+      ) => {
+        const settingsFile = join(box.root, "settings.json");
+        writeFileSync(settingsFile, JSON.stringify(settings));
+        return run(box, "runner-token.sh", [], {
+          SETTINGS_FILE: settingsFile,
+          WINDMILL_RUNNER_RESOURCES_TOKEN: WINDMILL_TOKEN,
+          RUNNER_TOKEN_POLL_SECONDS: "0",
+          ...env,
+        });
+      };
+
+      /** Every file left under RUNNER_TEMP, with its content. */
+      const leftOver = (box: Sandbox): string[] => {
+        const found: string[] = [];
+        const walk = (dir: string) => {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            const path = join(dir, entry.name);
+            if (entry.isDirectory()) walk(path);
+            else found.push(readFileSync(path, "utf8"));
+          }
+        };
+        walk(box.env.RUNNER_TEMP as string);
+        return found;
+      };
+
+      const SECRETS = [WINDMILL_TOKEN, RUNNER_TOKEN, ENDPOINT];
+      const expectNothingShown = (
+        box: Sandbox,
+        result: { stdout: string; stderr: string },
+      ) => {
+        for (const value of [...SECRETS, "TESTONLYNOTACERT"]) {
+          expect(withoutMasks(result.stdout)).not.toContain(value);
+          expect(result.stderr).not.toContain(value);
+          for (const call of box.calls())
+            expect(call.args.join(" ")).not.toContain(value);
+          for (const call of curlCalls(box))
+            expect(call.args.join(" ")).not.toContain(value);
+        }
+        // No file holds the Windmill token once the script has ended.
+        for (const content of leftOver(box))
+          expect(content).not.toContain(WINDMILL_TOKEN);
+      };
+
+      it("makes the token Secret for foreman-runner server-side, then writes the token, endpoint and CA certificate to exactly the three Windmill paths", () => {
+        const box = tokenBox();
+        const result = tokenRun(box);
+        expect(result.status).toBe(0);
+        expect(PATHS).toEqual({
+          token: "f/foreman/platform/agent-cluster/runner-token",
+          endpoint: "f/foreman/agent_cluster_endpoint",
+          ca: "f/foreman/agent_cluster_ca_certificate",
+        });
+        const apply = box.calls().filter((c) => c.args[0] === "apply");
+        expect(apply).toHaveLength(1);
+        expect(apply[0]?.args).toEqual([
+          "apply",
+          "--server-side",
+          "--field-manager=foreman-runner-token",
+          "--filename",
+          "-",
+        ]);
+        expect(JSON.parse(apply[0]?.stdin ?? "{}")).toEqual({
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: {
+            name: "foreman-runner-token",
+            namespace: "foreman-runner",
+            annotations: { "kubernetes.io/service-account.name": "foreman-runner" },
+          },
+          type: "kubernetes.io/service-account-token",
+        });
+        // The cluster filled the token in on the second read; the script waited for it.
+        expect(
+          (box.readState().tokenSecrets as Record<string, { polls: number }>)[
+            "foreman-runner-token"
+          ]?.polls,
+        ).toBe(2);
+        const calls = curlCalls(box);
+        expect(calls.map((c) => [c.method, c.url])).toEqual([
+          ["POST", CREATE_URL],
+          ["POST", CREATE_URL],
+          ["POST", CREATE_URL],
+        ]);
+        for (const call of calls) {
+          expect(call.headers).toEqual([
+            `Authorization: Bearer ${WINDMILL_TOKEN}`,
+            "Content-Type: application/json",
+          ]);
+          expect(call.headerFiles).toHaveLength(1);
+          expect(call.args).toEqual(
+            expect.arrayContaining(["--data-binary", "@-", "--output", "/dev/null"]),
+          );
+          expect(call.args).toContain("=https");
+        }
+        expect(calls.map((c) => JSON.parse(c.body) as unknown)).toEqual([
+          {
+            path: PATHS.token,
+            value: { content: RUNNER_TOKEN },
+            resource_type: "foreman_text",
+            description: DESCRIPTION,
+          },
+          {
+            path: PATHS.endpoint,
+            value: { content: ENDPOINT },
+            resource_type: "foreman_text",
+            description: DESCRIPTION,
+          },
+          {
+            path: PATHS.ca,
+            value: { content: CA_PEM },
+            resource_type: "foreman_text",
+            description: DESCRIPTION,
+          },
+        ]);
+        expect(withoutMasks(result.stdout)).toContain(
+          `Wrote ${PATHS.token} in Windmill (HTTP status 201).`,
+        );
+      });
+
+      it("shows the Windmill token, the endpoint and the runner's token only on ::add-mask:: lines, never in an argument, and leaves no file holding the Windmill token", () => {
+        const box = tokenBox();
+        const result = tokenRun(box);
+        expect(result.status).toBe(0);
+        const masks = result.stdout
+          .split("\n")
+          .filter((l) => l.startsWith("::add-mask::"));
+        expect(masks).toEqual([
+          `::add-mask::${WINDMILL_TOKEN}`,
+          `::add-mask::${ENDPOINT}`,
+          `::add-mask::${RUNNER_TOKEN}`,
+        ]);
+        // Each mask comes before any other line of the log.
+        expect(result.stdout.split("\n").slice(0, 3)).toEqual(masks);
+        expectNothingShown(box, result);
+      });
+
+      it("applies the same Secret and writes the same token again on a second run", () => {
+        const box = tokenBox({ tokenFillAfterPolls: 0 });
+        expect(tokenRun(box).status).toBe(0);
+        expect(tokenRun(box).status).toBe(0);
+        const applies = box.calls().filter((c) => c.args[0] === "apply");
+        expect(applies).toHaveLength(2);
+        expect(applies[1]).toEqual(applies[0]);
+        const tokens = curlCalls(box)
+          .map(
+            (c) => JSON.parse(c.body) as { path: string; value: { content: string } },
+          )
+          .filter((b) => b.path === PATHS.token)
+          .map((b) => b.value.content);
+        expect(tokens).toEqual([RUNNER_TOKEN, RUNNER_TOKEN]);
+      });
+
+      it("refuses any status but 2xx with fixed text, shows none of Windmill's answer, and writes nothing more", () => {
+        for (const status of ["302", "401", "403", "500"]) {
+          const box = tokenBox();
+          const result = tokenRun(box, { FAKE_CURL_STATUSES: `201 ${status}` });
+          expect(result.status, status).toBe(1);
+          expect(result.stderr).toContain(
+            `::error::Windmill refused writing ${PATHS.endpoint} (HTTP status ${status}). Its answer is not shown, since it could repeat what was sent.`,
+          );
+          expect(curlCalls(box)).toHaveLength(2);
+          // The fake's answer repeats the request: none of it reaches the log.
+          expect(`${result.stdout}${result.stderr}`).not.toContain("echo");
+          expectNothingShown(box, result);
+        }
+      });
+
+      it("refuses with fixed text when Windmill cannot be reached, showing no value", () => {
+        const box = tokenBox();
+        const result = tokenRun(box, { FAKE_CURL_EXIT: "7" });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          `::error::Windmill could not be reached to write ${PATHS.token}`,
+        );
+        expect(curlCalls(box)).toHaveLength(1);
+        expectNothingShown(box, result);
+      });
+
+      it("refuses, printing nothing of it, an endpoint, a CA certificate or a token it cannot use, and writes nothing", () => {
+        const cases: [Record<string, unknown>, string][] = [
+          [
+            { kubeconfigServer: `${ENDPOINT}/path` },
+            "The cluster credential's server address is not https://host[:port]",
+          ],
+          [
+            { kubeconfigServer: `${ENDPOINT}\n::warning::injected` },
+            "The cluster credential's server address is not https://host[:port]",
+          ],
+          [
+            { kubeconfigServer: ENDPOINT.replace("https:", "http:") },
+            "The cluster credential's server address is not https://host[:port]",
+          ],
+          [
+            { kubeconfigCaData: Buffer.from("TESTONLYNOTACERT\n").toString("base64") },
+            "The cluster credential holds no CA certificate in PEM.",
+          ],
+          [
+            { runnerToken: `${RUNNER_TOKEN}\n::warning::injected` },
+            "The Secret foreman-runner/foreman-runner-token holds no usable token.",
+          ],
+          [
+            { runnerToken: "test-only-not-a-jwt" },
+            "The Secret foreman-runner/foreman-runner-token holds no usable token.",
+          ],
+        ];
+        for (const [state, message] of cases) {
+          const box = tokenBox(state);
+          const result = tokenRun(box);
+          expect(result.status, message).toBe(1);
+          expect(result.stderr).toContain(`::error::${message}`);
+          expect(curlCalls(box)).toEqual([]);
+          expect(`${result.stdout}${result.stderr}`).not.toContain("::warning::");
+          expect(`${result.stdout}${result.stderr}`).not.toContain(
+            "test-only-not-a-jwt",
+          );
+          expectNothingShown(box, result);
+        }
+      });
+
+      it("refuses when the service account is not there yet, or the cluster never fills in the token", () => {
+        const noAccount = tokenBox({ serviceAccounts: [] });
+        const first = tokenRun(noAccount);
+        expect(first.status).toBe(1);
+        expect(first.stderr).toContain(
+          "::error::The service account foreman-runner/foreman-runner is not there: apply the platform objects first",
+        );
+        expect(noAccount.calls().filter((c) => c.args[0] === "apply")).toEqual([]);
+        expect(curlCalls(noAccount)).toEqual([]);
+
+        const neverFilled = tokenBox({ runnerToken: "" });
+        const second = tokenRun(neverFilled);
+        expect(second.status).toBe(1);
+        expect(second.stderr).toContain(
+          "::error::The cluster did not fill in the Secret foreman-runner/foreman-runner-token with a token in time.",
+        );
+        expect(
+          (neverFilled.readState().tokenSecrets as Record<string, { polls: number }>)[
+            "foreman-runner-token"
+          ]?.polls,
+        ).toBe(30);
+        expect(curlCalls(neverFilled)).toEqual([]);
+      });
+
+      it("refuses a Windmill token that is missing or holds a newline, and a settings file without a usable Windmill host or workspace, before reaching the cluster", () => {
+        const filled = filledSettings() as unknown as {
+          platform: { windmill: { host: string; workspace: string } };
+        };
+        const withWindmill = (host: string, workspace: string) => ({
+          ...filled,
+          platform: { ...filled.platform, windmill: { host, workspace } },
+        });
+        const cases: [Record<string, string>, unknown, string][] = [
+          [
+            { WINDMILL_RUNNER_RESOURCES_TOKEN: "" },
+            filled,
+            "WINDMILL_RUNNER_RESOURCES_TOKEN is not set in the platform environment",
+          ],
+          [
+            {
+              WINDMILL_RUNNER_RESOURCES_TOKEN: `${WINDMILL_TOKEN}\n::warning::injected`,
+            },
+            filled,
+            "WINDMILL_RUNNER_RESOURCES_TOKEN holds a space, a newline or a control character",
+          ],
+          [{}, withWindmill("", "example"), "windmill.host in the settings file"],
+          [
+            {},
+            withWindmill("https://windmill.example.com", "example"),
+            "windmill.host in the settings file",
+          ],
+          [
+            {},
+            withWindmill("192.0.2.1", "example"),
+            "windmill.host in the settings file",
+          ],
+          [
+            {},
+            withWindmill("windmill.example.com", ""),
+            "windmill.workspace in the settings file",
+          ],
+          [
+            {},
+            withWindmill("windmill.example.com", "bad/workspace"),
+            "windmill.workspace in the settings file",
+          ],
+        ];
+        for (const [env, settings, message] of cases) {
+          const box = tokenBox();
+          const result = tokenRun(box, env, settings);
+          expect(result.status, message).toBe(1);
+          expect(result.stderr).toContain(`::error::${message}`);
+          expect(`${result.stdout}${result.stderr}`).not.toContain("::warning::");
+          expect(box.calls()).toEqual([]);
+          expect(curlCalls(box)).toEqual([]);
         }
       });
     });

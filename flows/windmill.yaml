@@ -99,9 +99,9 @@ flows:
     # service in the platform namespace that watches the run Jobs of the agent namespaces and,
     # when a run's agent Job, or QA's fetch Job, stops for any reason (finished, crashed, out of
     # memory, killed or past its deadline), starts this flow once for that run, with
-    # `{"input": {"runId": ...}}`, using its own Windmill token
-    # (platform/run-watcher/windmill-token, below) through the shared Windmill egress proxy
-    # (D-328). On a restart it sends each stopped Job still present, since the end's cleanup
+    # `{"input": {"runId": ...}}`, using its own Windmill token (the `platform` environment
+    # secret `RUN_WATCHER_WINDMILL_TOKEN`, in the cluster Secret `run-watcher-windmill-token`,
+    # first-hosting runbook step 15) through the shared Windmill egress proxy (D-328). On a restart it sends each stopped Job still present, since the end's cleanup
     # deletes the Job. A QA fetch Job's success moves the run to its review here. The cancel-runs
     # flow records the ends it causes itself, and the live reconcile pass (D-329 slice 3) is the
     # backstop. Inside the same run (D-329 slice 4, O-104), with no Windmill run added: once a
@@ -124,7 +124,8 @@ flows:
     # deploy (success, failure or error) to the `staging` environment, and only when an item of
     # that repository is in Verifying on staging and neither switch holds the runner, so a
     # replay, another environment and an unfinished status start nothing. It uses the receiver's
-    # Windmill token (platform/github-receiver/windmill-token, below) through the shared Windmill
+    # Windmill token (the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in the cluster
+    # Secret `github-receiver-windmill-token`, runbook step 15) through the shared Windmill
     # egress proxy (D-328), with `{"input": {"repo": ..., "sha": ...}}`. About one run per staging
     # deploy (D-164). The reconcile flow's staging pass is the backstop.
     trigger: called
@@ -140,8 +141,9 @@ flows:
     # GitHub receiver calls it: after it records CI's end on a PR head (a new final `ci_run`), and
     # only when the shared advance check (src/core/advances.ts) says the move's guards pass now, so
     # a replay, a pending result, an item not due and the switches start nothing. It uses the
-    # receiver's Windmill token (platform/github-receiver/windmill-token, below) through the
-    # shared Windmill egress proxy (D-328), with `{"input": {"nodeId": ...}}`. About one run per
+    # receiver's Windmill token (the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in
+    # the cluster Secret `github-receiver-windmill-token`, runbook step 15) through the shared
+    # Windmill egress proxy (D-328), with `{"input": {"nodeId": ...}}`. About one run per
     # head whose CI ends green with the item's move due (D-164). The reconcile flow's advance step
     # is the backstop.
     trigger: called
@@ -158,7 +160,8 @@ flows:
     entry: flows/plan-approval.ts
     # Called with an idea id by the state API, right after it records the planning chat's
     # submission (D-273 (2), D-274, D-283), with its own Windmill token that can start only this
-    # flow (platform/state-api/windmill-plan-approval-token, below), through the shared Windmill
+    # flow (the `platform` environment secret `STATE_API_WINDMILL_TOKEN`, in the cluster Secret
+    # `state-api-windmill-plan-approval-token`, runbook step 15), through the shared Windmill
     # egress proxy (D-284, D-328). The call is src/adapters/windmill/plan-approval-flow.ts: an
     # async run of this script by path, with `{"input": {"ideaId": ...}}` (O-101). One run per
     # submission, and none under the kill switch or dry run (D-333), as the receiver's starts. It
@@ -176,9 +179,10 @@ flows:
     # request links CI's run only on a private repository (O-89). The GitHub receiver calls it
     # (D-291, D-327, O-101): after it records CI's end on a PR head, and only when capture's own
     # due check says a capture is due, so a replay, a pending result, an item not due and the
-    # switches start nothing. It uses the receiver's Windmill token
-    # (platform/github-receiver/windmill-token, below) through the shared Windmill egress proxy
-    # (D-328), with `{"input": {"nodeId": ...}}`. The run-end flow tries the same capture at a
+    # switches start nothing. It uses the receiver's Windmill token (the `platform` environment
+    # secret `RECEIVER_WINDMILL_TOKEN`, in the cluster Secret `github-receiver-windmill-token`,
+    # runbook step 15) through the shared Windmill egress proxy (D-328), with
+    # `{"input": {"nodeId": ...}}`. The run-end flow tries the same capture at a
     # Designer run's end, and the reconcile flow's capture pass is the backstop.
     trigger: called
 
@@ -267,37 +271,24 @@ flows:
 resources:
   # A run's model key is read at the path its bot file's provider names for the run's project,
   # projects/<slug>/models/<provider> (D-143, contracts/bots/). Each is stored at first hosting.
+  #
+  # The runner's cluster token, endpoint and CA certificate are not stored by hand: the Platform
+  # workflow's `runner-token` job, which Didi approves, writes them (D-352, O-110). Each is a
+  # Windmill resource at its `windmill_path` (the flows' folder, then its path or name), of
+  # resource type `foreman_text`, whose value is `{"content": "<the value as the flows read
+  # it>"}`: the token as it is, the endpoint as `https://host[:port]`, the certificate in PEM. The
+  # Windmill binding (flows/lib/windmill.ts), written at first hosting, reads these three there.
+  #
+  # The services' own secrets (the planning chat's token hash and the three Windmill tokens that
+  # start flows) are not kept in Windmill: each lives only in the `platform` environment's secrets
+  # and the cluster's Secrets (D-351, first-hosting runbook step 15).
   secrets:
     - path: platform/state-store/runner-database-url
       holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
     - path: platform/agent-cluster/runner-token
       holds: The runner's cluster token (ADR 0106 section 1, first-hosting runbook step 8)
-    # Read by the state API, not by a flow (D-266): kept here so the vault holds it like every
-    # other secret, and copied into the state API's Secret `state-api-planning-token` (key
-    # `sha256`) at first hosting. The token itself is kept only in the planning chat's settings.
-    - path: platform/state-api/planning-token-sha256
-      holds: The SHA-256 of the planning chat's state API token (D-266). New credential at first hosting
-      read_by: state API
-    # Read by the state API, not by a flow (D-273 (2)): a Windmill token that can start only the
-    # plan_approval flow above, copied into the state API's Secret
-    # `state-api-windmill-plan-approval-token` (key `token`) at first hosting.
-    - path: platform/state-api/windmill-plan-approval-token
-      holds: A Windmill token that can start only f/foreman/plan_approval (D-273). New credential at first hosting
-      read_by: state API
-    # Read by the GitHub receiver, not by a flow (D-291): a Windmill token that can start only the
-    # flows in RECEIVER_FLOW_PATHS (src/adapters/windmill/receiver-flows.ts), option_capture,
-    # advance_item and verify_staging above (O-101, O-104), copied into the receiver's Secret
-    # `github-receiver-windmill-token` (key `token`) at first hosting.
-    - path: platform/github-receiver/windmill-token
-      holds: A Windmill token that can start only the GitHub receiver's flows, f/foreman/option_capture, f/foreman/advance_item and f/foreman/verify_staging (D-291, O-104). New credential at first hosting
-      read_by: GitHub receiver
-    # Read by the run watcher, not by a flow (D-330): a Windmill token that can start only the
-    # flows in RUN_WATCHER_FLOW_PATHS (src/adapters/windmill/run-watcher-flows.ts), the
-    # record_run_end flow above and nothing else, copied into the watcher's Secret
-    # `run-watcher-windmill-token` (key `token`) at first hosting.
-    - path: platform/run-watcher/windmill-token
-      holds: A Windmill token that can start only f/foreman/record_run_end (D-330). New credential at first hosting
-      read_by: run watcher
+      windmill_path: f/foreman/platform/agent-cluster/runner-token
+      written_by: the Platform workflow's runner-token job (D-352)
   values:
     - name: spec_version
       holds: The git commit of docs/spec.md and contracts/ the bundle was built from
@@ -309,8 +300,12 @@ resources:
       holds: The runner App's slug (D-156)
     - name: agent_cluster_endpoint
       holds: The cluster's API address (first-hosting runbook step 8)
+      windmill_path: f/foreman/agent_cluster_endpoint
+      written_by: the Platform workflow's runner-token job (D-352)
     - name: agent_cluster_ca_certificate
       holds: The cluster's CA certificate (first-hosting runbook step 8)
+      windmill_path: f/foreman/agent_cluster_ca_certificate
+      written_by: the Platform workflow's runner-token job (D-352)
     - name: agent_run_settings
       holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106), the repo map Job's image, resources and deadline included (D-275 (2))
     - name: agent_images
