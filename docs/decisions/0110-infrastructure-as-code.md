@@ -1,8 +1,8 @@
 # 0110. Infrastructure as code: tool, state, secrets and layout
 
-- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174). Updated 2026-11-06: applies run in GitHub Actions jobs Didi approves, not from a terminal (D-339), and reach the cluster with a short-lived credential (D-340); see "Applies run in jobs Didi approves" below (O-105).
+- **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29). Resolves O-08. The scratch-project proof moved to the start of M3.7, on the rehearsal project (D-174). Updated 2026-11-06: applies run in GitHub Actions jobs Didi approves, not from a terminal (D-339), and reach the cluster with a short-lived credential (D-340); see "Applies run in jobs Didi approves" below (O-105). Updated 2026-11-07: the Kubernetes API's address stays out of those jobs' public logs, summaries and downloads (D-349, O-107).
 - **Date:** 2026-10-28
-- **Related:** O-08, D-133, D-134, D-339, D-340, D-341, O-105, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
+- **Related:** O-08, D-133, D-134, D-339, D-340, D-341, D-349, O-105, O-107, [build plan M0.7](../build-plan.md#m07-infrastructure-as-code-baseline-proposed-d-133), `docs/architecture/technical-architecture.md` sections 2.9 and 2.10
 
 ## Context
 
@@ -72,6 +72,7 @@ Changed on 2026-11-06 (D-339, D-340, O-105). Production applies stay Didi's: eac
 - **What Didi reads before approving.** The plan job's summary: what changes by address and action, the gates the change touches, and the full readable plan. The apply job applies that exact plan file, which OpenTofu refuses if the state moved on since.
 - **Secrets.** Each one is an environment secret Didi enters in GitHub's secret form, given only to the step that needs it. The passphrase is also kept in the Bitwarden vault (D-341). Plain ids and host names are environment variables, checked against their own patterns before use. The stack's other non-secret values are in `infra/stacks/factory/production.tfvars`, reviewed like code.
 - **Cluster access.** Each job that reaches the cluster fetches a short-lived admin credential with the DigitalOcean token (`doctl kubernetes cluster kubeconfig show --expiry-seconds`, for the job's own time limit) and removes it at its end. Nothing long-lived is kept for cluster access; this revises D-188.
+- **The API address.** The repository is public, and the Kubernetes API's address never appears in these jobs' logs, summaries or downloads (D-349, O-107). The factory stack's `cluster_endpoint` output is sensitive, the published plan and apply output have every IPv4 address but `0.0.0.0` replaced with `<ip>`, and only the jobs that hold the cluster credential read the address, from the cluster, masked before anything prints it.
 - **One at a time.** Each workflow has one concurrency group that never cancels a run in progress, so two applies of the same workflow never overlap.
 
 ### Windows (Didi's machine)

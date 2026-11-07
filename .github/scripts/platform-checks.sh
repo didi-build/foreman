@@ -190,8 +190,21 @@ network() {
     row "the egress proxy image is in the render" "yes" "no"
     return
   fi
-  targets="$(jq -c --argjson api "${KUBERNETES_API:-null}" -n \
-    '[{ host: "1.1.1.1", port: 443 }] + (if $api == null then [] else [$api.addresses[] | { host: ., port: $api.port }] end)')"
+  # The API server's addresses and port, from the run watcher's policy in the swapped file
+  # (api-server-address.sh, D-349). The rendered file itself holds only the placeholder 192.0.2.1,
+  # which no probe could reach anyway, so the check refuses it.
+  local api
+  api="$(jq -c --arg ns "$platform_ns" '[.items[]
+    | select(.kind == "NetworkPolicy" and .metadata.namespace == $ns and .metadata.name == "run-watcher")
+    | .spec.egress[]
+    | select((.to | length) > 0 and all(.to[]; (.ipBlock.cidr // "") | endswith("/32")))
+    | .ports[0].port as $port
+    | .to[] | { host: (.ipBlock.cidr | rtrimstr("/32")), port: $port }]' "$manifests")"
+  if jq -e 'length == 0 or any(.[]; .host == "192.0.2.1")' <<<"$api" >/dev/null; then
+    row "the API server's address is in the rendered objects" "yes" "no"
+    return
+  fi
+  targets="$(jq -c '[{ host: "1.1.1.1", port: 443 }] + .' <<<"$api")"
   probe "$platform_ns" platform "$image" "$targets"
   for ns in "${agent_namespaces[@]+"${agent_namespaces[@]}"}"; do
     probe "$ns" agents "$image" "$targets"

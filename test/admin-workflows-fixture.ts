@@ -1,14 +1,20 @@
 // Shared by the admin workflow tests (D-339, O-105): the committed settings file, filled in with
 // made-up values where first hosting fills it (digests, app logins, the Windmill host and
-// workspace, a project), plus the API server address the platform workflow reads at run time.
-// Nothing here is a real value: the address is a documentation address (RFC 5737).
+// workspace, a project), plus an API server address. Nothing here is a real value: every address
+// is a documentation address (RFC 5737).
 import { readFileSync } from "node:fs";
 
 import { clusterObjects, type ClusterSettings } from "../infra/kubernetes/render.ts";
 
 export const SETTINGS_FILE = "infra/kubernetes/settings/production.json";
 
+/** An API server address as the jobs with the cluster credential put it in (D-349). */
 export const RUN_TIME_KUBERNETES_API = { addresses: ["192.0.2.10"], port: 443 };
+
+/** The placeholder the platform workflow's render job writes instead (D-349, O-107). */
+export const RENDER_PLACEHOLDER = { addresses: ["192.0.2.1"], port: 443 };
+
+type KubernetesApi = { addresses: string[]; port: number };
 
 export const committedSettings = (): Record<string, unknown> =>
   JSON.parse(readFileSync(SETTINGS_FILE, "utf8")) as Record<string, unknown>;
@@ -48,8 +54,10 @@ export const EXAMPLE_PROJECT = {
   },
 };
 
-/** The committed settings with first hosting's values made up and the run-time address added. */
-export function filledSettings(): ClusterSettings {
+/** The committed settings with first hosting's values made up and an API address added. */
+export function filledSettings(
+  kubernetesApi: KubernetesApi = RUN_TIME_KUBERNETES_API,
+): ClusterSettings {
   const settings = fill(committedSettings(), "") as {
     platform: Record<string, unknown>;
     projects: ClusterSettings["projects"];
@@ -57,10 +65,12 @@ export function filledSettings(): ClusterSettings {
   return {
     platform: {
       ...settings.platform,
-      kubernetesApi: RUN_TIME_KUBERNETES_API,
+      kubernetesApi,
     } as unknown as ClusterSettings["platform"],
     projects: settings.projects.length > 0 ? settings.projects : [EXAMPLE_PROJECT],
   };
 }
 
-export const renderedObjects = () => clusterObjects(filledSettings());
+export const renderedObjects = (
+  kubernetesApi: KubernetesApi = RUN_TIME_KUBERNETES_API,
+) => clusterObjects(filledSettings(kubernetesApi));

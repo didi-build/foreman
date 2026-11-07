@@ -5,7 +5,9 @@
 //
 // State: { namespaces: [names], live: {"<file name>": object}, secrets: {name: {rv, data}},
 //   cluster: [rendered objects, for RBAC], pods: {"<ns>/<name>": {phase, nodeName, log}},
-//   nodes: [node objects], failRollouts: [deployment names], diffExit: number }
+//   nodes: [node objects], failRollouts: [deployment names], diffExit: number,
+//   kubeconfigToken, kubeconfigServer: the credential's token and server URL,
+//   endpointSlices: the `kubernetes` Service's EndpointSlice list }
 import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,7 +124,13 @@ function main() {
   if (verb === "auth" && kind === "can-i") return canI();
   if (verb === "diff") return diff();
   if (verb === "config" && kind === "view") {
-    out(state.kubeconfigToken ?? "");
+    const path = flag("--output") ?? "";
+    if (path.includes(".users[0].user.token")) out(state.kubeconfigToken ?? "");
+    if (path.includes(".clusters[0].cluster.server")) out(state.kubeconfigServer ?? "");
+    return 0;
+  }
+  if (verb === "get" && kind === "endpointslices") {
+    out(JSON.stringify(state.endpointSlices ?? { items: [] }));
     return 0;
   }
   if (verb === "get" && kind === "namespace") {

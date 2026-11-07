@@ -11,6 +11,7 @@ import { PLATFORM_SECRETS } from "../infra/kubernetes/platform.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
 import { DEFAULT_PRIVILEGED_PATHS, globToRegExp } from "../src/core/guards/review.ts";
 import {
+  RENDER_PLACEHOLDER,
   SETTINGS_FILE,
   committedSettings,
   filledSettings,
@@ -161,7 +162,6 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       [`${WORKFLOWS.images}#build`]: null,
       [`${WORKFLOWS.infra}#plan`]: "infra-plan",
       [`${WORKFLOWS.infra}#apply`]: "infra",
-      [`${WORKFLOWS.platform}#cluster-facts`]: "platform-plan",
       [`${WORKFLOWS.platform}#render`]: null,
       [`${WORKFLOWS.platform}#plan`]: "platform-plan",
       [`${WORKFLOWS.platform}#apply`]: "platform",
@@ -305,7 +305,6 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
       job.steps.some((s) => s.run?.includes("cluster-credential.sh")),
     );
     expect(credentialJobs.map(([id]) => id)).toEqual([
-      "cluster-facts",
       "plan",
       "apply",
       "cluster-secrets",
@@ -363,6 +362,87 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
       apply.steps.find((s) => s.uses?.startsWith("actions/download-artifact@"))?.with
         ?.name,
     ).toBe("platform-manifests");
+  });
+
+  it("passes the API server's address from no job to another (D-349)", () => {
+    for (const name of readdirSync(".github/workflows")) {
+      const raw = text(join(".github/workflows", name));
+      expect(raw, name).not.toMatch(/KUBERNETES_API|kubernetes-api|cluster-facts/);
+    }
+    expect(Object.keys(wf.jobs)).toEqual([
+      "render",
+      "plan",
+      "apply",
+      "cluster-secrets",
+    ]);
+    // The one job output is whether the plan found a change.
+    const outputs = Object.fromEntries(
+      Object.entries(wf.jobs)
+        .filter(([, job]) => job.outputs !== undefined)
+        .map(([id, job]) => [id, job.outputs]),
+    );
+    expect(outputs).toEqual({ plan: { changed: "${{ steps.diff.outputs.changed }}" } });
+    expect(wf.jobs.render?.needs).toBeUndefined();
+    expect(wf.jobs.plan?.needs).toBe("render");
+    expect(wf.jobs.apply?.needs).toBe("plan");
+    // The swap writes no output, environment or summary, so the address stays in its own step.
+    expect(script("api-server-address.sh")).not.toMatch(
+      /GITHUB_OUTPUT|GITHUB_ENV|GITHUB_STEP_SUMMARY/,
+    );
+  });
+
+  it("renders with the placeholder only, the same one the swap looks for (D-349)", () => {
+    const render = (wf.jobs.render as Job).steps.find((s) =>
+      s.run?.includes("infra/kubernetes/render.ts"),
+    ) as Step;
+    expect(render.env).toBeUndefined();
+    const set = [
+      ...(render.run ?? "").matchAll(/\.platform\.kubernetesApi = (\{[^}]*\})/g),
+    ];
+    expect(set.map((m) => m[0])).toEqual([
+      '.platform.kubernetesApi = {"addresses":["192.0.2.1"],"port":443}',
+    ]);
+    const placeholder = JSON.parse(set[0]?.[1] ?? "{}") as {
+      addresses: string[];
+      port: number;
+    };
+    expect(placeholder).toEqual(RENDER_PLACEHOLDER);
+    const swapScript = script("api-server-address.sh");
+    expect(swapScript).toContain(`placeholder_address="${placeholder.addresses[0]}"`);
+    expect(swapScript).toContain(`placeholder_port=${placeholder.port}`);
+    expect(script("platform-checks.sh")).toContain(
+      `.host == "${placeholder.addresses[0]}"`,
+    );
+  });
+
+  it("puts the address in right after the credential in each job that diffs or applies, in that job's own copy only", () => {
+    const manifests = '"$RUNNER_TEMP/render/manifests.json"';
+    for (const id of ["plan", "apply"]) {
+      const steps = (wf.jobs[id] as Job).steps;
+      const credential = steps.findIndex((s) =>
+        s.run?.includes("cluster-credential.sh"),
+      );
+      const swap = steps.findIndex((s) => s.run?.includes("api-server-address.sh"));
+      expect(swap, id).toBe(credential + 1);
+      expect(steps[swap]?.env, id).toBeUndefined();
+      expect(steps[swap]?.run, id).toBe(
+        `set -euo pipefail\n.github/scripts/api-server-address.sh ${manifests}\n`,
+      );
+      // Nothing before the credential calls kubectl; everything after reads the swapped file.
+      for (const step of steps.slice(0, credential))
+        expect(step.run ?? "", `${id} ${step.name}`).not.toMatch(/kubectl|platform-/);
+      expect(
+        steps.some((s) => s.uses?.startsWith("actions/upload-artifact@")),
+        id,
+      ).toBe(false);
+    }
+    const plan = (wf.jobs.plan as Job).steps.map((s) => s.run ?? "").join("\n");
+    expect(plan).toContain(`platform-plan.sh ${manifests}`);
+    expect(
+      wf.jobs["cluster-secrets"]?.steps.some((s) =>
+        s.run?.includes("api-server-address.sh"),
+      ),
+    ).toBe(false);
   });
 
   it("sets the cluster's Secrets only when started by hand with cluster_secrets, after the apply", () => {
@@ -489,10 +569,9 @@ describe("the images workflow (unit: D-336)", () => {
 });
 
 describe("the settings file (unit: D-339, infra/kubernetes/settings/production.json)", () => {
-  it("leaves the API server's address to the run (the platform workflow reads it from the cluster)", () => {
+  it("leaves the API server's address out (the jobs with the credential read it from the cluster)", () => {
     const settings = committedSettings() as { platform: Record<string, unknown> };
     expect(settings.platform).not.toHaveProperty("kubernetesApi");
-    expect(text(WORKFLOWS.platform)).toContain(".platform.kubernetesApi = $api");
   });
 
   it("holds no secret: no URL, token, password or key", () => {

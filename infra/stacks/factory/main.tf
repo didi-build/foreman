@@ -43,8 +43,12 @@ output "cluster_id" {
   value = module.cluster.cluster_id
 }
 
+# Not a secret, but the plan and the apply of a public repository never show it (D-349): with the
+# allow-list empty (D-338), the API takes connections from anywhere. `tofu output -raw` still
+# prints it.
 output "cluster_endpoint" {
-  value = module.cluster.endpoint
+  value     = module.cluster.endpoint
+  sensitive = true
 }
 
 output "cluster_ca_certificate" {

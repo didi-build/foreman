@@ -252,8 +252,10 @@ export interface PlatformSettings {
    * Where the run watcher reaches the Kubernetes API server (D-330): the address or addresses and
    * the port the `kubernetes` Service in `default` sends to, as its EndpointSlice lists them.
    * Network policies see that address, not the Service's, so the watcher's policy allows exactly
-   * these and nothing else. The Platform workflow reads them from the cluster at each run, so
-   * the settings file leaves them out (runbook step 7). Plain settings, not secrets.
+   * these and nothing else. The settings file leaves them out (runbook step 7): the Platform
+   * workflow renders the placeholder 192.0.2.1 on port 443, and each of its jobs that holds the
+   * cluster credential reads the real ones from the cluster and puts them into its own copy of
+   * the objects, so no public log, summary or artifact shows them (D-349). Not secrets.
    */
   kubernetesApi: { addresses: string[]; port: number };
 }

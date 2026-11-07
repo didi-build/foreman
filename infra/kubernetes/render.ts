@@ -4,7 +4,8 @@
 //
 // The Platform workflow (.github/workflows/platform.yml, D-339, O-105) renders the reviewed
 // settings file infra/kubernetes/settings/production.json this way, in a job with no secret, with
-// `platform.kubernetesApi` read from the cluster at run time, and applies the result once Didi
+// a placeholder for `platform.kubernetesApi` that the jobs holding the cluster credential replace
+// with the address they read from the cluster (D-349), and applies the result once Didi
 // approves. The settings file holds no secret: images, app logins, ports, quotas and project
 // slugs. Secrets are created separately by name, by the workflow's cluster Secrets job
 // (docs/runbooks/first-hosting.md).

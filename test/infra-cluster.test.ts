@@ -223,6 +223,12 @@ describe("outputs (unit: D-188, D-195)", () => {
     }
   });
 
+  it("marks the factory stack's API address sensitive, so its public plan and apply never show it (D-349)", () => {
+    const endpoint = only(stackCode, /output\s+"cluster_endpoint"/);
+    expect(endpoint).toMatch(/value\s*=\s*module\.cluster\.endpoint\b/);
+    expect(endpoint).toMatch(/sensitive\s*=\s*true/);
+  });
+
   it("gives the cluster CA as the only part of the admin credential", () => {
     const ca = outputs.find(
       (o) => o.name === "cluster_ca_certificate" && /kube_config/.test(o.body),

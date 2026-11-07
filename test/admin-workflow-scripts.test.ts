@@ -1,6 +1,7 @@
 // Integration: the admin workflows' shell scripts (.github/scripts/, D-336, D-339, D-340, O-105)
-// run with bash against fake kubectl, tofu, doctl and docker on PATH, so no cluster, state,
-// registry or credential is touched. Every value below is made up for the test.
+// run with bash against fake kubectl, tofu, doctl, docker and getent on PATH, so no cluster,
+// state, registry, credential or name server is touched. Every value below is made up for the
+// test; every address is a documentation address (RFC 5737).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -17,7 +18,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RUN_TIME_KUBERNETES_API, renderedObjects } from "./admin-workflows-fixture.ts";
+import {
+  RENDER_PLACEHOLDER,
+  RUN_TIME_KUBERNETES_API,
+  renderedObjects,
+} from "./admin-workflows-fixture.ts";
 
 const SCRIPTS = resolve(".github/scripts");
 const FIXTURES = resolve("test/fixtures/admin-workflows");
@@ -70,6 +75,18 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
       'printf "apiVersion: v1\\nkind: Config\\nusers:\\n- name: admin\\n  user:\\n    token: %s\\n" "$FAKE_KUBE_TOKEN"',
     ].join("\n"),
   );
+  // `getent ahostsv4 <host>`: one STREAM, DGRAM and RAW line per address in FAKE_GETENT_ADDRESSES
+  // (space-separated), as glibc prints them, or exit 2 (not found) when there is none.
+  tool(
+    "getent",
+    [
+      'printf "%s\\n" "$*" >>"$FAKE_GETENT_LOG"',
+      '[ -n "${FAKE_GETENT_ADDRESSES:-}" ] || exit 2',
+      "for a in $FAKE_GETENT_ADDRESSES; do",
+      '  printf "%-15s STREAM %s\\n%-15s DGRAM\\n%-15s RAW\\n" "$a" "$2" "$a" "$a"',
+      "done",
+    ].join("\n"),
+  );
   const statePath = join(root, "state.json");
   writeFileSync(statePath, JSON.stringify(state));
   const log = join(root, "calls.jsonl");
@@ -82,6 +99,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
     "github-path",
     "tofu.log",
     "doctl.log",
+    "getent.log",
   ])
     writeFileSync(join(root, file), "");
   return {
@@ -96,6 +114,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
       FAKE_LOG: log,
       FAKE_TOFU_LOG: join(root, "tofu.log"),
       FAKE_DOCTL_LOG: join(root, "doctl.log"),
+      FAKE_GETENT_LOG: join(root, "getent.log"),
       RUNNER_TEMP: runnerTemp,
       GITHUB_OUTPUT: join(root, "github-output"),
       GITHUB_ENV: join(root, "github-env"),
@@ -132,11 +151,18 @@ function run(
   };
 }
 
-const manifestsFile = (box: Sandbox): string => {
+const manifestsFile = (box: Sandbox, objects: unknown = renderedObjects()): string => {
   const path = join(box.root, "manifests.json");
-  writeFileSync(path, JSON.stringify(renderedObjects()));
+  writeFileSync(path, JSON.stringify(objects));
   return path;
 };
+
+/** The log a reader sees: GitHub hides `::add-mask::` lines, and masks their values after. */
+const withoutMasks = (stdout: string): string =>
+  stdout
+    .split("\n")
+    .filter((l) => !l.startsWith("::add-mask::"))
+    .join("\n");
 
 describe.skipIf(process.platform === "win32")(
   "admin workflow scripts (integration: bash with fake tools, D-339, D-340, O-105)",
@@ -178,6 +204,44 @@ describe.skipIf(process.platform === "win32")(
       it("refuses a name that is not a variable name", () => {
         const result = run(sandbox(), "redact.sh", [], { REDACT_NAMES: "A;B" }, "x");
         expect(result.status).toBe(2);
+      });
+
+      it("replaces every IPv4 address but 0.0.0.0, side by side too, and leaves version strings as they are (D-349)", () => {
+        const lines: [string, string][] = [
+          ['ipv4_address = "203.0.113.5"', 'ipv4_address = "<ip>"'],
+          [
+            "Unable to connect to the server: dial tcp 198.51.100.7:443: i/o timeout",
+            "Unable to connect to the server: dial tcp <ip>:443: i/o timeout",
+          ],
+          ['["198.51.100.7/32","198.51.100.8/32"]', '["<ip>/32","<ip>/32"]'],
+          ["203.0.113.5,203.0.113.6 203.0.113.7", "<ip>,<ip> <ip>"],
+          [
+            "https://203.0.113.8:6443/version [203.0.113.9]",
+            "https://<ip>:6443/version [<ip>]",
+          ],
+          ["connect to 203.0.113.5.", "connect to <ip>."],
+          ["::ffff:198.51.100.9 and 0.0.0.1", "::ffff:<ip> and <ip>"],
+          [
+            'destination_addresses = ["0.0.0.0/0", "::/0"]',
+            'destination_addresses = ["0.0.0.0/0", "::/0"]',
+          ],
+          ["--metrics 0.0.0.0:2000", "--metrics 0.0.0.0:2000"],
+          ['except = ["0.0.0.0/8", "10.0.0.0/8"]', 'except = ["0.0.0.0/8", "<ip>/8"]'],
+        ];
+        const versions = [
+          "kubectl v1.37.2 and doctl 1.186.0 installed, checksums verified.",
+          'version = "1.37.2-do.0"',
+          "- Installing digitalocean/digitalocean v2.68.0...",
+          "OpenTofu v1.13.2 on linux_amd64",
+          "a four-part v1.2.3.4, a five-part 1.2.3.4.5 and a long 10.0.19041.1",
+        ];
+        const digest = `ghcr.io/didi-build/foreman-run-watcher@sha256:${"0123456789".repeat(6)}0123`;
+        const input = [...lines.map(([from]) => from), ...versions, digest].join("\n");
+        const result = run(sandbox(), "redact.sh", [], {}, input);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toBe(
+          [...lines.map(([, to]) => to), ...versions, digest].join("\n"),
+        );
       });
     });
 
@@ -245,14 +309,24 @@ describe.skipIf(process.platform === "win32")(
     });
 
     describe("cluster-credential.sh", () => {
-      it("fetches a credential that expires with the job, into a private file, and masks its token", () => {
-        const box = sandbox({ kubeconfigToken: "test-only-kube-token-0001" });
-        const result = run(box, "cluster-credential.sh", [], {
-          DIGITALOCEAN_ACCESS_TOKEN: "test-only-do-token-0001",
-          FAKE_KUBE_TOKEN: "test-only-kube-token-0001",
-          CLUSTER_NAME: "foreman",
-          CREDENTIAL_SECONDS: "600",
+      const SERVER = "https://test-only-cluster.k8s.example.com";
+      const HOST = "test-only-cluster.k8s.example.com";
+      const RESOLVED = ["203.0.113.20", "203.0.113.21"];
+      const credentialEnv = {
+        DIGITALOCEAN_ACCESS_TOKEN: "test-only-do-token-0001",
+        FAKE_KUBE_TOKEN: "test-only-kube-token-0001",
+        CLUSTER_NAME: "foreman",
+        CREDENTIAL_SECONDS: "600",
+      };
+      const credentialBox = (server = SERVER) =>
+        sandbox({
+          kubeconfigToken: "test-only-kube-token-0001",
+          kubeconfigServer: server,
         });
+
+      it("fetches a credential that expires with the job, into a private file, and masks its token", () => {
+        const box = credentialBox();
+        const result = run(box, "cluster-credential.sh", [], credentialEnv);
         expect(result.status).toBe(0);
         expect(readFileSync(box.env.FAKE_DOCTL_LOG as string, "utf8").trim()).toBe(
           "kubernetes cluster kubeconfig show foreman --expiry-seconds 600",
@@ -264,6 +338,62 @@ describe.skipIf(process.platform === "win32")(
         );
         expect(result.stdout).toContain("::add-mask::test-only-kube-token-0001");
         expect(result.stderr).not.toContain("test-only");
+      });
+
+      it("masks the API server's URL, its host name and each address it resolves to, and prints none of them (D-349)", () => {
+        const box = credentialBox(`${SERVER}:6443/`);
+        const result = run(box, "cluster-credential.sh", [], {
+          ...credentialEnv,
+          FAKE_GETENT_ADDRESSES: RESOLVED.join(" "),
+        });
+        expect(result.status).toBe(0);
+        expect(readFileSync(box.env.FAKE_GETENT_LOG as string, "utf8")).toBe(
+          `ahostsv4 ${HOST}\n`,
+        );
+        const masks = result.stdout
+          .split("\n")
+          .filter((l) => l.startsWith("::add-mask::"));
+        expect(masks).toEqual([
+          "::add-mask::test-only-kube-token-0001",
+          `::add-mask::${SERVER}:6443/`,
+          `::add-mask::${HOST}`,
+          ...RESOLVED.map((a) => `::add-mask::${a}`),
+        ]);
+        for (const value of [HOST, ...RESOLVED]) {
+          expect(withoutMasks(result.stdout)).not.toContain(value);
+          expect(result.stderr).not.toContain(value);
+        }
+        expect(withoutMasks(result.stdout)).toContain(
+          "Short-lived cluster credential fetched",
+        );
+      });
+
+      it("carries on with a fixed note when the host name does not resolve, still masking the URL and the name", () => {
+        const box = credentialBox();
+        const result = run(box, "cluster-credential.sh", [], credentialEnv);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(`::add-mask::${SERVER}\n::add-mask::${HOST}\n`);
+        expect(withoutMasks(result.stdout)).toContain(
+          "The cluster's host name does not resolve on this runner, so only the name and the URL are masked.",
+        );
+        expect(withoutMasks(result.stdout)).not.toContain(HOST);
+        expect(result.stderr).not.toContain(HOST);
+      });
+
+      it("stops, printing nothing of it, when the credential holds no usable server address", () => {
+        for (const server of ["", `${SERVER}\n::warning::injected`]) {
+          const result = run(
+            credentialBox(server),
+            "cluster-credential.sh",
+            [],
+            credentialEnv,
+          );
+          expect(result.status, JSON.stringify(server)).toBe(1);
+          expect(result.stderr).toContain(
+            "::error::The cluster credential holds no usable server address.",
+          );
+          expect(`${result.stdout}${result.stderr}`).not.toContain(HOST);
+        }
       });
 
       it("stops when the DigitalOcean token is not set, or the expiry is not a number", () => {
@@ -568,6 +698,169 @@ describe.skipIf(process.platform === "win32")(
       });
     });
 
+    describe("api-server-address.sh", () => {
+      const ADDRESSES = ["198.51.100.7", "198.51.100.8", "203.0.113.9"];
+      const slices = (addresses: unknown[], ports: unknown[]) => ({
+        items: [
+          {
+            addressType: "IPv4",
+            endpoints: addresses.map((a) => ({ addresses: [a] })),
+            ports,
+          },
+        ],
+      });
+      const HTTPS_6443 = [{ name: "https", port: 6443, protocol: "TCP" }];
+      const swap = (
+        endpointSlices: unknown,
+        objects: unknown = renderedObjects(RENDER_PLACEHOLDER),
+      ) => {
+        const box = sandbox({ endpointSlices });
+        const file = manifestsFile(box, objects);
+        const before = readFileSync(file, "utf8");
+        const result = run(box, "api-server-address.sh", [file]);
+        return { box, result, before, after: readFileSync(file, "utf8") };
+      };
+      /** Every address shows only on mask lines, and those come before any other line. */
+      const expectOnlyMasked = (
+        stdout: string,
+        stderr: string,
+        addresses: string[],
+      ) => {
+        const lines = stdout.split("\n").filter(Boolean);
+        const masks = lines.filter((l) => l.startsWith("::add-mask::"));
+        expect(lines.slice(0, masks.length)).toEqual(masks);
+        for (const address of addresses) {
+          expect(masks).toContain(`::add-mask::${address}`);
+          expect(withoutMasks(stdout)).not.toContain(address);
+          expect(stderr).not.toContain(address);
+        }
+      };
+
+      it("reads the kubernetes EndpointSlice and puts its addresses and port where the placeholder was", () => {
+        const { box, result, after } = swap(slices(ADDRESSES, HTTPS_6443));
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        expect(box.calls().map((c) => c.args)).toEqual([
+          [
+            "get",
+            "endpointslices",
+            "-n",
+            "default",
+            "-l",
+            "kubernetes.io/service-name=kubernetes",
+            "--output",
+            "json",
+          ],
+        ]);
+        // Exactly what the render gives with the real address, and nothing else changed.
+        expect(JSON.parse(after)).toEqual(
+          JSON.parse(
+            JSON.stringify(renderedObjects({ addresses: ADDRESSES, port: 6443 })),
+          ),
+        );
+        expect(after).not.toContain("192.0.2.1/");
+        expectOnlyMasked(result.stdout, result.stderr, ADDRESSES);
+        expect(withoutMasks(result.stdout).trim()).toBe(
+          "The API server's address is in this runner's copy of the rendered objects: 3 address(es).",
+        );
+      });
+
+      it("refuses an EndpointSlice with no address, an address that is not plain IPv4, or not exactly one port, and changes nothing", () => {
+        const cases: [string, unknown[], unknown[]][] = [
+          ["no address", [], HTTPS_6443],
+          ["IPv6", ["2001:db8::1"], HTTPS_6443],
+          ["not an address", ["198.51.100.300"], HTTPS_6443],
+          ["0.0.0.0", ["0.0.0.0"], HTTPS_6443],
+          [
+            "two ports",
+            ADDRESSES,
+            [...HTTPS_6443, { name: "https", port: 443, protocol: "TCP" }],
+          ],
+          ["no port", ADDRESSES, []],
+          ["DNS's port", ADDRESSES, [{ name: "https", port: 53, protocol: "TCP" }]],
+        ];
+        for (const [label, addresses, ports] of cases) {
+          const { result, before, after } = swap(slices(addresses, ports));
+          expect(result.status, label).toBe(1);
+          expect(result.stdout, label).toContain(
+            "::error::The kubernetes Service's EndpointSlice has no single port and plain IPv4 addresses.",
+          );
+          expect(after, label).toBe(before);
+          expectOnlyMasked(result.stdout, result.stderr, addresses as string[]);
+        }
+      });
+
+      it("refuses a list it cannot read without quoting any of it", () => {
+        const { result, before, after } = swap({ items: "192.0.2.77" });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(
+          "::error::The kubernetes Service's EndpointSlice list could not be read.",
+        );
+        expect(`${result.stdout}${result.stderr}`).not.toContain("192.0.2.77");
+        expect(after).toBe(before);
+      });
+
+      it("refuses when the objects hold no placeholder rule, or more than one, and changes nothing", () => {
+        const placeholder = renderedObjects(RENDER_PLACEHOLDER);
+        const rule = (
+          placeholder.items.find(
+            (o) => o.kind === "NetworkPolicy" && o.metadata.name === "run-watcher",
+          ) as { spec: { egress: unknown[] } }
+        ).spec.egress[1];
+        const twice = {
+          ...placeholder,
+          items: placeholder.items.map((o) =>
+            o.kind === "NetworkPolicy" && o.metadata.name === "cloudflared"
+              ? { ...o, spec: { ...o.spec, egress: [...o.spec.egress, rule] } }
+              : o,
+          ),
+        };
+        const none = swap(slices(ADDRESSES, HTTPS_6443), renderedObjects());
+        expect(none.result.status).toBe(1);
+        expect(none.result.stdout).toContain(
+          "::error::The rendered objects hold no egress rule to the API server's placeholder, so there is nothing to put the address in.",
+        );
+        expect(none.after).toBe(none.before);
+        expectOnlyMasked(none.result.stdout, none.result.stderr, ADDRESSES);
+        const two = swap(slices(ADDRESSES, HTTPS_6443), twice);
+        expect(two.result.status).toBe(1);
+        expect(two.result.stdout).toContain(
+          "::error::The rendered objects hold more than one egress rule to the API server's placeholder. Only the run watcher's policy may hold one.",
+        );
+        expect(two.after).toBe(two.before);
+        expectOnlyMasked(two.result.stdout, two.result.stderr, ADDRESSES);
+      });
+
+      it("refuses when the placeholder is still in the objects after the swap, and changes nothing", () => {
+        const placeholder = renderedObjects(RENDER_PLACEHOLDER);
+        const annotated = {
+          ...placeholder,
+          items: placeholder.items.map((o) =>
+            o.kind === "Namespace" && o.metadata.name === "foreman-platform"
+              ? {
+                  ...o,
+                  metadata: { ...o.metadata, annotations: { note: "192.0.2.1" } },
+                }
+              : o,
+          ),
+        };
+        for (const [label, objects, addresses] of [
+          ["elsewhere in the file", annotated, ADDRESSES],
+          ["as the address read", placeholder, ["192.0.2.1"]],
+        ] as const) {
+          const { result, before, after } = swap(
+            slices([...addresses], HTTPS_6443),
+            objects,
+          );
+          expect(result.status, label).toBe(1);
+          expect(result.stdout, label).toContain(
+            "::error::The placeholder for the API server's address is still in the rendered objects after the swap.",
+          );
+          expect(after, label).toBe(before);
+        }
+      });
+    });
+
     describe("platform-checks.sh", () => {
       it("passes the runbook's RBAC list on the rendered Roles", () => {
         const box = sandbox({ cluster: renderedObjects().items });
@@ -630,9 +923,7 @@ describe.skipIf(process.platform === "win32")(
             },
           },
         });
-        const result = run(box, "platform-checks.sh", [manifestsFile(box), "network"], {
-          KUBERNETES_API: JSON.stringify(RUN_TIME_KUBERNETES_API),
-        });
+        const result = run(box, "platform-checks.sh", [manifestsFile(box), "network"]);
         expect(result.stdout).not.toContain("FAILED");
         expect(result.status).toBe(0);
         const created = box.readState().created as {
@@ -667,9 +958,13 @@ describe.skipIf(process.platform === "win32")(
               ? proxyImage.spec.template.spec.containers[0]?.image
               : "",
           );
+          // The API server's address and port come from the run watcher's policy (D-349).
           expect(JSON.parse(pod.spec.containers[0]?.env[0]?.value ?? "[]")).toEqual([
             { host: "1.1.1.1", port: 443 },
-            { host: "192.0.2.10", port: 443 },
+            ...RUN_TIME_KUBERNETES_API.addresses.map((host) => ({
+              host,
+              port: RUN_TIME_KUBERNETES_API.port,
+            })),
           ]);
         }
         expect(created[0]?.spec.nodeSelector).toEqual({ "foreman/pool": "platform" });
@@ -701,6 +996,52 @@ describe.skipIf(process.platform === "win32")(
         expect(result.stdout).toContain(
           "| probe in `agents-rehearsal` lands on the agents pool | agents | platform | **FAILED** |",
         );
+      });
+
+      it("probes every API server address on its own port, as the swapped file gives them", () => {
+        const box = sandbox({
+          nodes,
+          pods: {
+            "foreman-platform/default-deny-probe": {
+              phase: "Succeeded",
+              nodeName: "node-platform",
+            },
+            "agents-rehearsal/default-deny-probe": {
+              phase: "Succeeded",
+              nodeName: "node-agents",
+            },
+          },
+        });
+        const api = { addresses: ["198.51.100.7", "198.51.100.8"], port: 6443 };
+        const result = run(box, "platform-checks.sh", [
+          manifestsFile(box, renderedObjects(api)),
+          "network",
+        ]);
+        expect(result.status).toBe(0);
+        const created = box.readState().created as {
+          spec: { containers: { env: { value: string }[] }[] };
+        }[];
+        expect(created).toHaveLength(2);
+        for (const pod of created) {
+          expect(JSON.parse(pod.spec.containers[0]?.env[0]?.value ?? "[]")).toEqual([
+            { host: "1.1.1.1", port: 443 },
+            { host: "198.51.100.7", port: 6443 },
+            { host: "198.51.100.8", port: 6443 },
+          ]);
+        }
+      });
+
+      it("refuses to probe the render's placeholder in place of the API server's address", () => {
+        const box = sandbox({ nodes });
+        const result = run(box, "platform-checks.sh", [
+          manifestsFile(box, renderedObjects(RENDER_PLACEHOLDER)),
+          "network",
+        ]);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(
+          "| the API server's address is in the rendered objects | yes | no | **FAILED** |",
+        );
+        expect(box.readState().created).toBeUndefined();
       });
 
       it("checks the agents pool's taint and that pods run on their own pool", () => {
