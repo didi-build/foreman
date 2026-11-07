@@ -35,7 +35,52 @@ export interface CheckRun {
   conclusion: string | null;
 }
 
-export interface GitHubReader {
+/** A GitHub Actions workflow run, as GitHub reports it now. */
+export interface WorkflowRun {
+  /** GitHub's run id. A rerun keeps the id and starts a new attempt. */
+  id: number;
+  /** The workflow file, for example `.github/workflows/ci.yml`. */
+  path: string;
+  /** The event that started the run, for example `pull_request` or `push`. */
+  event: string;
+  headSha: string;
+  /** The repository the run's commit came from, `owner/name`. A fork's run names the fork. */
+  headRepo: string | null;
+}
+
+/** A job of a workflow run, from the run's latest attempt. */
+export interface WorkflowJob {
+  /** GitHub's job id, new on every attempt. */
+  id: number;
+  runId: number;
+  /** The job's name as the workflow gives it (`name:`), which is also its check run's name. */
+  name: string;
+  headSha: string;
+  /** For example `queued`, `in_progress` or `completed`. */
+  status: string;
+  /** GitHub's conclusion once completed, for example `success`, `failure`, `cancelled`. */
+  conclusion: string | null;
+}
+
+/**
+ * What ingestion reads about CI's workflow runs, to find CI's preview check (D-354, O-111). Read
+ * with the runner App's `actions: read` (D-267).
+ */
+export interface GitHubWorkflowReader {
+  /**
+   * The runs of one workflow file (`ci.yml`) on a commit, as GitHub lists them for that workflow
+   * filtered by `head_sha`: one page, at most 20.
+   */
+  listWorkflowRuns(
+    repo: string,
+    workflowFile: string,
+    sha: string,
+  ): Promise<WorkflowRun[]>;
+  /** The jobs of a run's latest attempt (GitHub's default `filter=latest`). */
+  listWorkflowJobs(repo: string, runId: number): Promise<WorkflowJob[]>;
+}
+
+export interface GitHubReader extends GitHubWorkflowReader {
   getPullRequest(repo: string, number: number): Promise<PullRequest | null>;
   /** Files the PR changes, relative to the repo root. */
   listChangedPaths(repo: string, number: number): Promise<string[]>;

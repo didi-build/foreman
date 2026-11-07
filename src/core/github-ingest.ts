@@ -6,6 +6,11 @@
 // so a `ci_run` is recorded only for the PR's current head as GitHub reports it at that moment.
 // A late event about an older commit records nothing, and the head never moves back.
 //
+// CI's preview check (D-354, O-111): with a final CI result on the head, ingestion also reads the
+// preview check's job (./preview-check.ts) and records its conclusion as `preview_check` for that
+// head, under its own key, so the webhook and the polling backstop record it once and a rerun is
+// recorded again and is the newest. A job still running, or none, records nothing.
+//
 // A `deployment_status` delivery is still recorded as a delivery only, never as evidence (ADR 0113
 // section 5): the runner reads the deploy from GitHub itself. For a delivery recorded now, and
 // never for a duplicate, the result names the deployment it reported (`deployment`: repository,
@@ -13,6 +18,7 @@
 // decide whether the staging flow is due before it starts it (D-329 slice 4, O-104).
 import type { GitHubReader, CheckRun, DeploymentState, PullRequest } from "./github.ts";
 import type { Clock, IdSource } from "./library.ts";
+import { previewCheckKey, readPreviewCheck } from "./preview-check.ts";
 import type {
   Evidence,
   GithubDeliveryOutcome,
@@ -219,7 +225,7 @@ async function link(deps: IngestDeps, pr: PullRequest): Promise<Link> {
 function evidence(
   deps: IngestDeps,
   nodeId: string,
-  kind: "ci_run" | "merge_commit",
+  kind: "ci_run" | "merge_commit" | "preview_check",
   commitSha: string,
   payload: Json,
   key: string,
@@ -248,7 +254,8 @@ function evidence(
  * - `final`: checks finished (a `check_suite` or `workflow_run` event); nothing while any still run.
  * - `current`: whatever the checks say now (the polling backstop).
  * A pending row is skipped when the commit already has a `ci_run`, so a late or repeated
- * pending event never hides a finished result.
+ * pending event never hides a finished result. With a final result, the preview check's job is
+ * read too, and its conclusion is a `preview_check` for `sha` when the job has finished.
  */
 async function ciRunFinding(
   deps: IngestDeps,
@@ -280,20 +287,36 @@ async function ciRunFinding(
     if (existing.length > 0) return ignore(pr.number, "head already has a ci_run");
   }
   const changedPaths = await deps.github.listChangedPaths(pr.repo, pr.number);
-  return {
-    pr: pr.number,
-    reason: null,
-    facts: [
+  const facts = [
+    evidence(
+      deps,
+      linked.nodeId,
+      "ci_run",
+      sha,
+      { conclusion, pr: pr.number, changedPaths },
+      ciRunKey(pr.repo, pr.number, sha, conclusion, result?.attempt),
+    ),
+  ];
+  const preview = result ? await readPreviewCheck(deps.github, pr.repo, sha) : null;
+  if (preview) {
+    facts.push(
       evidence(
         deps,
         linked.nodeId,
-        "ci_run",
+        "preview_check",
         sha,
-        { conclusion, pr: pr.number, changedPaths },
-        ciRunKey(pr.repo, pr.number, sha, conclusion, result?.attempt),
+        {
+          pass: preview.pass,
+          conclusion: preview.conclusion,
+          pr: pr.number,
+          workflowRunId: preview.workflowRunId,
+          jobId: preview.jobId,
+        },
+        previewCheckKey(pr.repo, pr.number, sha, preview),
       ),
-    ],
-  };
+    );
+  }
+  return { pr: pr.number, reason: null, facts };
 }
 
 async function mergeFinding(deps: IngestDeps, pr: PullRequest): Promise<Finding> {
@@ -388,8 +411,8 @@ async function examine(
     }
     return findings;
   }
-  // deployment_status and push: the runner runs its own preview or staging check on these
-  // (ADR 0107); they are not evidence by themselves.
+  // deployment_status and push: not evidence by themselves; the runner checks staging itself
+  // (ADR 0107). The preview check is CI's own job, read with the CI result above (D-354).
   return [ignore(null, "not evidence by itself")];
 }
 

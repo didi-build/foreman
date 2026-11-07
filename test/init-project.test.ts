@@ -91,10 +91,6 @@ function seedLaunchpadDir(root: string) {
     join(root, "wrangler.jsonc"),
     '{"name":"launchpad","compatibility_date":"2026-10-26"}\n',
   );
-  writeFileSync(
-    join(root, "wrangler.preview.jsonc"),
-    '{"name":"launchpad-preview","compatibility_date":"2026-10-26","workers_dev":true,"preview_urls":true}\n',
-  );
 }
 
 describe("init-project (unit)", () => {
@@ -189,13 +185,6 @@ describe("init-project (unit)", () => {
     expect(wranglerRaw).not.toContain('"launchpad"');
     const wrangler = JSON.parse(wranglerRaw) as { name: string };
     expect(wrangler.name).toBe("my-app");
-    const previewWranglerRaw = readFileSync(
-      join(dir, "wrangler.preview.jsonc"),
-      "utf8",
-    );
-    expect(previewWranglerRaw).not.toContain('"launchpad-preview"');
-    const previewWrangler = JSON.parse(previewWranglerRaw) as { name: string };
-    expect(previewWrangler.name).toBe("my-app-preview");
   });
 
   it("does not create nodrift scaffolding with --no-personal-data", () => {

@@ -274,7 +274,15 @@ Against the fake GitHub only (D-178): `test/github-ingest.test.ts` (core functio
 5. The runner App's `QA` check run never counts toward the conclusion; a check named `QA` from any other App does.
 6. Failure, success, failure on one commit records three results and the newest fails `ci_green_on_head`; one attempt seen by a webhook and a poll is recorded once.
 7. A fork PR, a PR from an undispatched branch, and a PR by another author link to no node.
-8. `factory_ingest` writes only deliveries and `ci_run` or `merge_commit` under a key, and cannot update, delete, move a node or write decisions.
+8. `factory_ingest` writes only deliveries and `ci_run`, `merge_commit` or `preview_check` (migration 0021) under a key, and cannot update, delete, move a node or write decisions.
+
+### CI's preview check (D-354, O-111)
+
+- `test/preview-check-workflow.test.ts` (unit, repo guard): the `preview-check` job is in `.github/workflows/ci.yml` under the fixed name `PREVIEW_CHECK_JOB`, runs on same-repository pull requests and pushes to main with `contents: read` and no secret, token or environment, checks out and marks the PR's head commit (never the merge ref's), writes the marker into the site root the host serves, then serves and probes on one port with the action pins CI already uses. The hosted preview is gone.
+- `test/preview-check-scripts.test.ts` (integration: the real scripts on 127.0.0.1 against a fake built site): a pass, a missing bundle marker, the marker only in the HTML, no script, a wrong commit, no marker, no server, and a server that never answers. The server listens on 127.0.0.1 only and never serves a dot file or a path outside the site. Both scripts also run as the workflow runs them, and they import Node's built-in modules only.
+- `test/preview-check-ingest.test.ts` (unit: ingestion with the fake GitHub): `preview_check` is recorded only for the named job of the named workflow, on the head, from the same repository, passing only on `success`; once from the webhook and the poll; again on a rerun, the newest winning; nothing for any other source or a job still running. The polling backstop records it in dry run and nothing under the kill switch. `qa_verdict_independent_on_head` passes on a passing check from this source and refuses a failing or missing one.
+- `src/adapters/github/workflow-runs.test.ts` (unit with fakes): each read mints `actions: read` for the one repository, reads the one workflow file's runs on the commit or a run's jobs, and drops an entry it cannot read.
+- `test/db/github-ingest.test.ts` and `test/db/schema.test.ts` (database integration): `factory_ingest` records it under its key, with its commit and no run (migration 0021), and still no other kind.
 
 ### Reconcile pass in dry run (build plan M2.4)
 
@@ -338,7 +346,7 @@ Unit tests on the memory store with the real contracts and guards: `test/reconci
 
 Run in a throwaway project, with real agents and adapters.
 
-1. Code track, happy path: Ready for dev to Done through preview, merge, staging.
+1. Code track, happy path: Ready for dev to Done through CI's preview check, merge, staging.
 2. Design track, happy path: exploration, visual approval, spec, components, QA, merge, staging, Done, developer item released.
 3. Fail paths: CI guard fails after done, QA fail, staging fail, each reopening the right state and incrementing the counter.
 4. Escalation: three failures to the Council, Council cannot resolve to Didi.

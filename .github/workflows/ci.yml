@@ -153,3 +153,43 @@ jobs:
       - name: Fail job if install or check failed
         if: steps.install.outcome != 'success' || steps.check.outcome != 'success'
         run: exit 1
+
+  # CI's preview check (D-354, O-111): hosted branch previews are dropped. On CI's own machine,
+  # with no secret and only contents read, this job builds the head commit, writes the commit
+  # marker into the build, serves it on 127.0.0.1 and checks that the app loads and serves that
+  # commit. The runner records this job's result as `preview_check`, and only this job's
+  # (`PREVIEW_CHECK_JOB` and `PREVIEW_CHECK_WORKFLOW` in src/core/preview-check.ts). On a pull
+  # request the commit is the PR's head, never the merge ref GitHub would check out by default.
+  # The scripts live in .github/scripts/, a privileged path.
+  preview-check:
+    name: preview-check
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SITE_PORT: "4173"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: Build the app
+        run: npm run build
+      - name: Write the commit marker
+        run: node .github/scripts/preview-check.mjs marker dist/gallery "$COMMIT_SHA"
+      - name: Serve the build on 127.0.0.1 and probe it
+        run: |
+          set -euo pipefail
+          node .github/scripts/serve-site.mjs dist/gallery "$SITE_PORT" &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          node .github/scripts/preview-check.mjs probe "http://127.0.0.1:${SITE_PORT}" "$COMMIT_SHA"

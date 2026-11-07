@@ -2,17 +2,18 @@
 
 **Purpose:** Repeatable steps to ship a version to an environment.
 
-## Component gallery previews (Launchpad default)
+## The preview check in CI (D-354)
 
-Pull requests from the same repository run [.github/workflows/preview.yml](../../.github/workflows/preview.yml):
+Hosted branch previews are dropped (D-354): nothing is deployed for a pull request, and no repository holds a preview token. Instead the `preview-check` job of [.github/workflows/ci.yml](../../.github/workflows/ci.yml) runs on CI's own machine, on pull requests from the same repository and on pushes to main, with `contents: read` and no secret:
 
-1. `npm run build` packages the gallery into `dist/gallery`.
-2. `npx wrangler preview -c wrangler.preview.jsonc --name pr-N` deploys a `pr-N` Preview on the preview Worker (`launchpad-preview` in the template; `<slug>-preview` after `init-project`). Production deploys use `wrangler.jsonc` and stay off pull request workflows. CI captures JSON stdout only; stderr stays in logs without printing secrets.
-3. CI probes `/gallery` (gallery bundle marker in built JS, not SPA fallback HTML alone), comments the preview URL, and posts a `gallery-preview` check.
+1. It checks out the commit it checks: the PR's head on a pull request (`github.event.pull_request.head.sha`, never the merge ref), the pushed commit on main.
+2. `npm ci` and `npm run build` package the gallery into `dist/gallery`, the folder `wrangler.jsonc` serves.
+3. `node .github/scripts/preview-check.mjs marker dist/gallery <commit>` writes the commit marker `foreman-commit.txt` at the site's root: the commit and a newline. The path is fixed; the staging deploy (D-353) writes the same marker.
+4. `node .github/scripts/serve-site.mjs dist/gallery 4173` serves the build on 127.0.0.1 with Node's built-in modules only, and `node .github/scripts/preview-check.mjs probe http://127.0.0.1:4173 <commit>` checks that the app loads (the gallery bundle marker in the built JavaScript, not the single-page HTML alone) and that `/foreman-commit.txt` is the commit. Each failure prints one fixed line and fails the job.
 
-**Repository secrets (names only):** `CLOUDFLARE_API_TOKEN_PREVIEW`, `CLOUDFLARE_ACCOUNT_ID`. The preview token must be **Workers Scripts Edit** only on the preview Worker; do not grant D1 or R2 Edit because pull request branch code can reach this token. Configure once per repo; same-repo PRs only (fork PRs skip preview).
+The runner records this job's conclusion as `preview_check` on the PR's head commit, passing only on `success` (O-111). It reads the job with the runner App's `actions: read` (D-267), and only the job named `preview-check` of `.github/workflows/ci.yml`, in a run that a `pull_request` event started from the same repository on that head. The merge guard `qa_verdict_independent_on_head` needs a passing one (ADR 0112). The scripts live in `.github/scripts/`, a privileged path, so changing what the check does needs Didi's approval.
 
-When secrets are missing, the Preview workflow ends **neutral** (not failed) and updates a single PR comment that previews are not configured.
+To run it locally, run `npm run build`, then the three commands above with any 40-character commit.
 
 Production deploy for your app is still project-specific; see below.
 

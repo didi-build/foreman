@@ -182,7 +182,8 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       }
       expect(text(path), path).not.toMatch(/set -[a-z]*x|set -o xtrace|bash -x/);
     }
-    for (const path of scripts) {
+    // The shell scripts; CI's preview check scripts are Node (test/preview-check-scripts.test.ts).
+    for (const path of scripts.filter((p) => p.endsWith(".sh"))) {
       const lines = text(path).split("\n");
       expect(lines[0], path).toBe("#!/usr/bin/env bash");
       const firstCommand = lines.find(

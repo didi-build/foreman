@@ -156,6 +156,13 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(
         deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
       ).rejects.toThrow(NotBuiltError);
+      // CI's preview check is read with the same actions read token (D-354, O-111).
+      await expect(
+        deps.github.listWorkflowRuns("didi-build/x", "ci.yml", "b".repeat(40)),
+      ).rejects.toThrow(NotBuiltError);
+      await expect(deps.github.listWorkflowJobs("didi-build/x", 1)).rejects.toThrow(
+        NotBuiltError,
+      );
       await expect(
         deps.repoFolders.folderId(
           "didi-build/x",

@@ -1,7 +1,9 @@
 # 0005. Isolate PR gallery previews on a dedicated preview Worker
 
-- **Status:** accepted
+- **Status:** superseded by D-354 ([decision log](../decision-log.md), 2026-11-07)
 - **Date:** 2026-10-27
+
+> **Superseded by D-354** (2026-11-07). Hosted branch previews are dropped: the preview workflow, `wrangler.preview.jsonc`, the preview token and `npm run preview-workflow` are removed. `preview_check` is now met by CI's `preview-check` job, which builds the app on CI's own machine, serves it on 127.0.0.1 and checks that it loads and serves the head commit, and the runner records that job's result (O-111, [deploy runbook](../runbooks/deploy.md)). The text below is kept as the record of the old decision.
 
 ## Context
 

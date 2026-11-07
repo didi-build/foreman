@@ -1,6 +1,6 @@
 # Component gallery
 
-Every Launchpad-derived repo includes a **component gallery**: a `/gallery` route on the Cloudflare Worker preview that renders each registered component with its variants and props. Use it while implementing UI from approved specs and while reviewing PRs.
+Every Launchpad-derived repo includes a **component gallery**: a `/gallery` route that renders each registered component with its variants and props. Use it while implementing UI from approved specs and while reviewing PRs.
 
 ## Who edits what
 
@@ -30,7 +30,7 @@ Gallery metadata may import spec markdown at build time for display; specs remai
 2. Implement the component under `components/<name>/`.
 3. Add `<name>.gallery.ts` exporting a `GalleryEntry` (see `components/example-button/example-button.gallery.ts`).
 4. Register it in `gallery/registry.ts`.
-5. Run `npm run build` and open `/gallery` locally with `npm run dev:gallery` or on a PR preview.
+5. Run `npm run build` and open `/gallery` locally with `npm run dev:gallery`.
 
 ## Local development
 
@@ -40,7 +40,7 @@ npm run dev:gallery   # Vite dev server with /gallery
 npm run build         # Production asset build (also runs in npm run check)
 ```
 
-Same-repo pull requests get a **gallery preview** comment from CI. When repository secrets `CLOUDFLARE_API_TOKEN_PREVIEW` and `CLOUDFLARE_ACCOUNT_ID` are set, the comment links to `/gallery` on the preview Worker (`launchpad-preview` in the template; `<slug>-preview` after `init-project`). The preview token must be **Workers Scripts Edit** only on that preview Worker; do not grant D1 or R2 Edit because PR-branch code can reach this token. Without those secrets, the Preview job is **neutral** and the comment explains that previews are not configured (expected for a fresh template until you opt in). Fork PRs never run preview deploy.
+Pull requests get no hosted preview (D-354). CI's `preview-check` job builds the gallery on CI's own machine, serves it on 127.0.0.1 and checks that it loads and serves the head commit; see the [deploy runbook](./runbooks/deploy.md).
 
 ## Screenshots for the visual comparison (D-242, D-250)
 
@@ -50,4 +50,4 @@ The gallery has a render mode for these screenshots: `/gallery?entry=<id>&varian
 
 After Didi approves an option, the spec step deletes the folders of the options Didi did not pick, and the approved option's folder stays on the item's branch, so it reaches main as the reference for the comparison (D-253). CI renders it again at each head (D-281), and the runner compares only when nothing under that folder changed since Didi approved it.
 
-See [ADR 0004](./decisions/0004-component-gallery.md) for hosting choices and [ADR 0005](./decisions/0005-preview-worker-isolation.md) for preview Worker isolation.
+See [ADR 0004](./decisions/0004-component-gallery.md) for hosting choices. [ADR 0005](./decisions/0005-preview-worker-isolation.md) (preview Worker isolation) is superseded by D-354.

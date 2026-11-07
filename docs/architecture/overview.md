@@ -21,7 +21,7 @@ Deterministic runner and state store for AI-driven software work. Ideas go in, a
 | Environment | Purpose             | Notes                                                                                 |
 | ----------- | ------------------- | ------------------------------------------------------------------------------------- |
 | local       | Developer machines  | `.env` from `.env.example`                                                            |
-| PR preview  | Pull request review | `pr-N` on `<slug>-preview` Worker (`wrangler.preview.jsonc`, `preview.yml`); optional |
+| PR check    | Pull request review | No hosted preview (D-354): CI's `preview-check` job checks its own build on 127.0.0.1 |
 | staging     | Pre-production      | Fill in when you have one                                                             |
 | production  | Live                | Fill in when you have one                                                             |
 

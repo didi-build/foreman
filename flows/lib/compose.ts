@@ -36,11 +36,12 @@ import {
   createGitHubHttp,
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
+import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
-import type { GitHub } from "../../src/core/github.ts";
+import type { GitHub, GitHubWorkflowReader } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type {
@@ -159,7 +160,8 @@ export class NotBuiltError extends Error {
 
 /**
  * The runner's GitHub reads and merge calls. The runner App is registered at M3 (D-178); until
- * then every call refuses, so nothing is merged.
+ * then every call refuses, so nothing is merged. CI's workflow runs and jobs, read for CI's preview
+ * check, are built over the runner App's `actions: read` token (D-354, O-111) and refuse on it.
  */
 function unregisteredGitHub(): GitHub {
   const refuse = async (): Promise<never> => {
@@ -170,6 +172,7 @@ function unregisteredGitHub(): GitHub {
     listChangedPaths: refuse,
     listCheckRuns: refuse,
     listOpenPullRequests: refuse,
+    ...runnerWorkflowReads(),
     getMergeability: refuse,
     squashMerge: refuse,
     listDeployments: refuse,
@@ -207,6 +210,13 @@ export function unregisteredRunnerAppTokens(): RunnerAppTokens {
       );
     },
   };
+}
+
+/** CI's workflow runs and jobs, for its preview check (D-354, D-267); refuses on the token today. */
+export function runnerWorkflowReads(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): GitHubWorkflowReader {
+  return createGitHubWorkflowReads({ tokens, http: createGitHubHttp() });
 }
 
 /** CI's screenshot bundles as workflow artifacts (D-242, D-267); refuses on the token today. */

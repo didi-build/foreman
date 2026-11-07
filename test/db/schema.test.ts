@@ -438,11 +438,54 @@ describe.skipIf(!adminUrl)(
       expectRejected(
         sql(
           `insert into factory.evidence (id, node_id, kind, ref, commit_sha, recorded_by, recorded_at, ingest_key)
-         values (gen_random_uuid(), '${ID.node}', 'preview_check', 's', '${SHA}', 'runner', ${AT}, 'runner:preview_check:1');`,
+         values (gen_random_uuid(), '${ID.node}', 'test_report', 's', '${SHA}', 'runner', ${AT}, 'runner:test_report:1');`,
           "factory_runner",
         ),
         /evidence_ingest_key_kinds/,
       );
+    });
+
+    it("lets ingestion record CI's preview check under a key, with its commit and no run, and nothing more (migration 0021)", () => {
+      const preview = (role: string, key: string, sha = `'${SHA}'`, run = "null") =>
+        sql(
+          `insert into factory.evidence (id, node_id, run_id, kind, ref, commit_sha, payload, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', ${run}, 'preview_check', 'p', ${sha}, '{"pass": true}', 'github', ${AT}, ${key});`,
+          role,
+        );
+      const ok = preview("factory_ingest", "'github:preview_check:0021:1'");
+      expect(ok.ok, ok.err).toBe(true);
+      expectRejected(
+        preview("factory_ingest", "'github:preview_check:0021:1'"),
+        /unique/,
+      );
+      expectRejected(preview("factory_ingest", "null"), /row-level security/);
+      expectRejected(
+        preview(
+          "factory_ingest",
+          "'github:preview_check:0021:2'",
+          `'${SHA}'`,
+          `'${ID.run}'`,
+        ),
+        /row-level security/,
+      );
+      expectRejected(
+        preview("factory_ingest", "'github:preview_check:0021:3'", "null"),
+        /check constraint/,
+      );
+      expectRejected(
+        preview("factory_api", "'github:preview_check:0021:4'"),
+        /row-level security/,
+      );
+      for (const kind of ["staging_check", "test_report", "qa_verdict"]) {
+        expectRejected(
+          sql(
+            `insert into factory.evidence (id, node_id, kind, ref, commit_sha, payload, recorded_by, recorded_at, ingest_key)
+         values (gen_random_uuid(), '${ID.node}', '${kind}', 'p', '${SHA}', '{}', 'github', ${AT}, 'github:${kind}:0021');`,
+            "factory_ingest",
+          ),
+          /row-level security|evidence_ingest_key_kinds|check constraint/,
+        );
+      }
     });
 
     it("allows a failed staging deploy only with its commit, keyed by the runner and never by ingestion (migration 0012)", () => {
