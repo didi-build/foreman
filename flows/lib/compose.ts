@@ -28,19 +28,25 @@ import {
 } from "../../src/adapters/contracts-file/load.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import type { InstallationTokens } from "../../src/adapters/github/installation-tokens.ts";
+import { createGitHubPostHttp } from "../../src/adapters/github/post-http.ts";
+import { createGitHubProjectRepositories } from "../../src/adapters/github/project-repositories.ts";
+import { createGitHubProjectSettings } from "../../src/adapters/github/project-settings.ts";
+import type { RepositoryCreationTokens } from "../../src/adapters/github/repository-creation-tokens.ts";
 import {
   createGitHubHttp,
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
-import { createGitHubRepoVisibility } from "../../src/adapters/screenshots/github-visibility.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
-import type { RepoVisibility } from "../../src/core/option-capture.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
+import type {
+  ProjectRepositories,
+  ProjectSettings,
+} from "../../src/core/register-project.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
@@ -113,12 +119,6 @@ export interface FlowDeps extends ReconcileDeps {
    */
   repoFolders: RepoFolders;
   /**
-   * Whether a project's repository is private, before option capture links Didi's visual-approval
-   * request to CI's run (O-89), read with the runner App's `contents: read` token (D-267).
-   * Refuses until the runner App exists, so capture links nothing and opens nothing.
-   */
-  repoVisibility: RepoVisibility;
-  /**
    * The repo map per commit for Triage (D-251), built in its own short-lived Job in the project's
    * agent namespace, whose only network is GitHub and which holds only the runner App's
    * `contents: read` token (D-267, D-275 (2)). Refuses until the runner App exists (D-178).
@@ -130,6 +130,18 @@ export interface FlowDeps extends ReconcileDeps {
    * runner App exists (D-178).
    */
   repoScans: RepoScans;
+  /**
+   * Didi's register-project form (D-345, O-109): the slugs in the platform settings file on
+   * `didi-build/foreman`'s main, read with the runner App's `contents: read` token for that one
+   * repository (D-267). Refuses until the runner App exists (D-178).
+   */
+  projectSettings: ProjectSettings;
+  /**
+   * The form's repository step (D-345, D-346, D-348): the create from `didi-build/launchpad` with
+   * the creation token, and the read of an existing repository with a `contents: read` token.
+   * Refuses until the runner App exists (D-178), so nothing is created or recorded.
+   */
+  projectRepositories: ProjectRepositories;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
   executionsThisMonth(): Promise<number>;
@@ -211,13 +223,6 @@ export function runnerRepoFolders(
   return createGitHubRepoFolders({ tokens, http: createGitHubHttp() });
 }
 
-/** Whether a repository is private (O-89, D-267); refuses on the token today. */
-export function runnerRepoVisibility(
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
-): RepoVisibility {
-  return createGitHubRepoVisibility({ tokens, http: createGitHubHttp() });
-}
-
 /**
  * The repo map from the code at a commit, built in its own Job (D-251, D-267, D-275 (2)); refuses
  * on the token today, before the cluster is read.
@@ -247,6 +252,42 @@ export function runnerRepoScans(
     http: createGitHubHttp(),
     cluster,
     ids: { next: () => randomUUID() },
+  });
+}
+
+/**
+ * The register-project form's creation token (D-346): `contents: read` and `repository_creation:
+ * write` on `didi-build/launchpad` only. The runner App gains "Repository creation" at first
+ * hosting through the new-permissions gate; until then every request refuses, so no repository is
+ * created and no project is recorded.
+ */
+export function unregisteredRepositoryCreationTokens(): RepositoryCreationTokens {
+  return {
+    mint: async () => {
+      throw new NotBuiltError(
+        "The repository creation token needs the runner App, registered at first hosting through the new-credentials gate with Repository creation write (D-178, D-346)",
+      );
+    },
+  };
+}
+
+/** The settings file's listed slugs on main (D-345, O-109); refuses on the token today. */
+export function runnerProjectSettings(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): ProjectSettings {
+  return createGitHubProjectSettings({ tokens, http: createGitHubHttp() });
+}
+
+/** The create from Launchpad and the read of an existing repository; refuses on the tokens today. */
+export function runnerProjectRepositories(
+  creationTokens: RepositoryCreationTokens = unregisteredRepositoryCreationTokens(),
+  readTokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): ProjectRepositories {
+  return createGitHubProjectRepositories({
+    creationTokens,
+    readTokens,
+    http: createGitHubHttp(),
+    post: createGitHubPostHttp(),
   });
 }
 
@@ -364,9 +405,10 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     stagingChecker: unbuiltStagingChecker(),
     screenshots: runnerScreenshotBundles(),
     repoFolders: runnerRepoFolders(),
-    repoVisibility: runnerRepoVisibility(),
     repoMaps: runnerRepoMaps(clusterParts),
     repoScans: runnerRepoScans(clusterParts),
+    projectSettings: runnerProjectSettings(),
+    projectRepositories: runnerProjectRepositories(),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

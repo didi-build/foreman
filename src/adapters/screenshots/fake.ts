@@ -1,9 +1,6 @@
 // Fakes of the screenshot bundles port and the repo folders port for tests
-// (src/core/visual-comparison.ts), and of the repository visibility port option capture checks
-// before it links Didi to CI's run (src/core/option-capture.ts, O-89). Bundles are kept in memory
-// by repository, commit and kind, folder ids by repository, commit and path, and visibility by
-// repository; nothing is read from CI, GitHub or the network.
-import type { RepoVisibility } from "../../core/option-capture.ts";
+// (src/core/visual-comparison.ts). Bundles are kept in memory by repository, commit and kind,
+// and folder ids by repository, commit and path; nothing is read from CI, GitHub or the network.
 import type {
   BundleKind,
   RepoFolders,
@@ -72,30 +69,6 @@ export function createFakeRepoFolders(): FakeRepoFolders {
     async folderId(repo, commitSha, path) {
       fake.reads.push(key(repo, commitSha, path));
       return ids.get(key(repo, commitSha, path)) ?? null;
-    },
-  };
-  return fake;
-}
-
-export interface FakeRepoVisibility extends RepoVisibility {
-  /** A repository's answer: private, public, or a failed read. Unset repositories are private. */
-  set(repo: string, answer: "private" | "public" | "fail"): void;
-  /** Every repository asked about, in order. */
-  reads: string[];
-}
-
-export function createFakeRepoVisibility(): FakeRepoVisibility {
-  const answers = new Map<string, "private" | "public" | "fail">();
-  const fake: FakeRepoVisibility = {
-    reads: [],
-    set(repo, answer) {
-      answers.set(repo, answer);
-    },
-    async isPrivate(repo) {
-      fake.reads.push(repo);
-      const answer = answers.get(repo) ?? "private";
-      if (answer === "fail") throw new Error("the fake visibility read failed");
-      return answer === "private";
     },
   };
   return fake;

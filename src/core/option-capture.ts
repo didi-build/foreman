@@ -32,15 +32,15 @@
 // request is not asked again until the Designer pushes a new head. Evidence is append-only, and
 // the readers take the latest screenshot per option name.
 //
-// The link (O-89). Until an inline private view exists (with M4.1's approval step), the request's
-// question ends with a link to the GitHub Actions run whose `options` artifact capture read,
-// `https://github.com/<owner>/<repo>/actions/runs/<run id>`, so Didi can sign in to GitHub and
-// download the screenshots. The run id comes from the bundle read itself (D-276) and must be a
-// positive safe integer, and the repository name must match `REPOSITORY`; the link is built from
-// those two parts only. On a public repository any signed-in GitHub user can download artifacts,
-// so before opening the request capture asks the `RepoVisibility` port whether the repository is
-// private; not private, or a failed check, refuses with `no_private_link` and writes nothing. The
-// link goes only into the request: never into a refusal, a result, evidence or a run's input.
+// The link (O-89, O-108). Until an inline private view exists (with M4.1's approval step), the
+// request's question ends with a link to the GitHub Actions run whose `options` artifact capture
+// read, `https://github.com/<owner>/<repo>/actions/runs/<run id>`, so Didi can sign in to GitHub
+// and download the screenshots. The run id comes from the bundle read itself (D-276) and must be
+// a positive safe integer, and the repository name must match `REPOSITORY`; the link is built
+// from those two parts only. The link is added whatever the repository's visibility: every
+// project repository is public, and there the screenshots show nothing its public code does not
+// (D-348). The link goes only into the request: never into a refusal, a result, evidence, a run's
+// input or Linear.
 //
 // Refusals and waits write nothing, except that a refusal the Designer caused counts (O-89): too
 // few or too many options, options of more than one feature, no option folder, or a PR that
@@ -50,8 +50,8 @@
 // refusal's fixed text (src/core/builder-runs.ts). The flows start that round
 // (flows/lib/option-capture.ts). Every other refusal is not the Designer's and counts nothing.
 // Refusals carry fixed text (`CAPTURE_REFUSAL_TEXT`) and never quote a file, a path, a URL or an
-// id. Plain logic over an injected store, contracts, clock, id source, screenshot port and
-// visibility port (D-162).
+// id. Plain logic over an injected store, contracts, clock, id source and screenshot port
+// (D-162).
 import { createHash } from "node:crypto";
 
 import type { Contracts, GuardRegistry } from "./contracts.ts";
@@ -112,15 +112,6 @@ export function ciRunLink(repo: string, workflowRunId: unknown): string | null {
 export const visualApprovalQuestion = (link: string): string =>
   `${VISUAL_APPROVAL_QUESTION} ${SCREENSHOTS_LINK_INTRO} ${link}`;
 
-/**
- * Whether the project's repository is private, read by the adapter with the runner App's
- * `contents: read` token (src/adapters/screenshots/github-visibility.ts, D-267). It throws when it
- * cannot tell; capture treats that as not private. Tests pass a fake.
- */
-export interface RepoVisibility {
-  isPrivate(repo: string): Promise<boolean>;
-}
-
 export type CaptureRefusal =
   /** The PR changes the screenshot pipeline (D-279). */
   | "screenshot_pipeline_changed"
@@ -136,9 +127,7 @@ export type CaptureRefusal =
   | "too_few_options"
   | "too_many_options"
   /** A kept option's file is missing from the bundle or does not match its SHA-256. */
-  | "option_file_changed"
-  /** The repository is not private, or that could not be checked, so nothing is linked (O-89). */
-  | "no_private_link";
+  | "option_file_changed";
 
 /**
  * The refusals the Designer caused, which count one failure once per head and Designer run (D-293) and start a fix round
@@ -164,8 +153,6 @@ export const CAPTURE_REFUSAL_TEXT: Readonly<Record<CaptureRefusal, string>> = {
   too_few_options: `fewer than ${MIN_CAPTURED_OPTIONS} options were rendered for the item's feature`,
   too_many_options: `more than ${MAX_CAPTURED_OPTIONS} options were rendered for the item's feature`,
   option_file_changed: "an option's screenshot does not match CI's manifest",
-  no_private_link:
-    "the repository is not confirmed private, so CI's screenshots are not linked for Didi",
 };
 
 export type CaptureStep =
@@ -219,8 +206,6 @@ export interface OptionCaptureOptions {
   clock: Clock;
   ids: IdSource;
   screenshots: ScreenshotBundles;
-  /** Whether the repository is private, before the request links CI's run (O-89). */
-  repoVisibility: RepoVisibility;
 }
 
 const ACTOR_ID = "option_capture";
@@ -363,7 +348,7 @@ export function createCaptureReads(contracts: Contracts) {
 }
 
 export function createOptionCaptures(options: OptionCaptureOptions) {
-  const { store, contracts, clock, ids, screenshots, repoVisibility } = options;
+  const { store, contracts, clock, ids, screenshots } = options;
   const library = createLibrary(options);
   const failures = createFailures(options);
   const reads = createCaptureReads(contracts);
@@ -410,15 +395,6 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
       text: CAPTURE_REFUSAL_TEXT[reason],
       failureCount,
     };
-  }
-
-  /** Whether the repository is confirmed private; a failed check is not (O-89). */
-  async function confirmedPrivate(repo: string): Promise<boolean> {
-    try {
-      return (await repoVisibility.isPrivate(repo)) === true;
-    } catch {
-      return false;
-    }
   }
 
   async function readBundle(
@@ -516,12 +492,9 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
           return refuse(nodeId, "option_file_changed");
         }
       }
-      // O-89: the run the bundle came from, checked, then the repository confirmed private.
+      // O-89: the run the bundle came from, checked. Linked on any repository (D-348, O-108).
       const link = ciRunLink(project.repo, bundle.workflowRunId);
       if (link === null) return refuse(nodeId, "bundle_unreadable");
-      if (!(await confirmedPrivate(project.repo))) {
-        return refuse(nodeId, "no_private_link");
-      }
 
       return store.transaction(async (tx): Promise<CaptureStep> => {
         const held = await heldBy(tx);

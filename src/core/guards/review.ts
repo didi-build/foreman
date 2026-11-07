@@ -189,7 +189,11 @@ export async function qaVerdictIndependentOnHead(
   return result(name, true, ids, `independent QA pass on head ${head.sha}`);
 }
 
-/** Launchpad's privileged paths: migrations, PII and privacy, deploy workflows, `.github`, secrets. */
+/**
+ * The privileged paths every project shares: Launchpad's (migrations, PII and privacy, deploy
+ * workflows, `.github`, secrets) and the infrastructure code, `infra/**` (D-344, D-345). Every
+ * project starts from Launchpad alike, so the list is shared and a project row adds nothing.
+ */
 export const DEFAULT_PRIVILEGED_PATHS = [
   "**/migrations/**",
   ".github/**",
@@ -197,6 +201,7 @@ export const DEFAULT_PRIVILEGED_PATHS = [
   "**/*secret*",
   "**/*secret*/**",
   "**/.env*",
+  "infra/**",
 ];
 
 /** `**` matches across folders, `*` within one path segment. */

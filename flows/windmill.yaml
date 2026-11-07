@@ -176,7 +176,7 @@ flows:
     # captures the Designer's exploration options from CI's `options` bundle, opens Didi's
     # visual-approval request and asks again for the Designer report's move into Waiting for
     # Didi. A refusal the Designer caused counts once per head and starts the fix round; the
-    # request links CI's run only on a private repository (O-89). The GitHub receiver calls it
+    # request links CI's run on any repository (O-89, D-348). The GitHub receiver calls it
     # (D-291, D-327, O-101): after it records CI's end on a PR head, and only when capture's own
     # due check says a capture is due, so a replay, a pending result, an item not due and the
     # switches start nothing. It uses the receiver's Windmill token (the `platform` environment
@@ -206,6 +206,20 @@ flows:
     # from its page in the Windmill workspace, signed in, as hold_release_request (O-90, D-295).
     # Never a public or signed-token link. No schedule, pass or other flow starts it; the kill
     # switch and dry run write nothing. No new credential.
+    trigger: called
+
+  - name: register_project
+    path: f/foreman/register_project
+    entry: flows/register-project.ts
+    # Didi's register-project form (D-345, D-346, D-348, O-109), with the project's slug and a
+    # one-line description, which becomes the repository's description that Launchpad's Bootstrap
+    # reads. Didi starts it from its page in the Windmill workspace, signed in, as cancel_item
+    # (O-97, D-295). Never a public or signed-token link. No schedule, pass or other flow starts
+    # it. It refuses a slug not listed in infra/kubernetes/settings/production.json on main,
+    # creates didi-build/<slug> from didi-build/launchpad, always public (D-348), and records the
+    # project; a project already recorded is already_registered. The kill switch refuses; dry run
+    # creates and writes nothing. No new Windmill credential: the GitHub tokens are the runner
+    # App's, minted per step, and only this form's carries Repository creation (D-346).
     trigger: called
 
   - name: request_transition

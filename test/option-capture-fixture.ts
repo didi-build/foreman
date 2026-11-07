@@ -2,16 +2,13 @@
 // fixture, its Designer run ended `success`, CI's run at the PR head with the PR's changed paths
 // (the item's option folders, so the screenshot pipeline check of D-279 trusts it), and a helper
 // that puts CI's `options` bundle at a commit in a fake port, with one more option of another
-// feature next to the item's, and a fake visibility port that answers private unless the test
-// says otherwise (O-89). Option `a` is the page the visual comparison fixture uses (a blue
+// feature next to the item's. Option `a` is the page the visual comparison fixture uses (a blue
 // button marked as `example-button`), so a comparison can be planned from what capture records.
 // Synthetic images only.
 import { createHash } from "node:crypto";
 
 import {
-  createFakeRepoVisibility,
   createFakeScreenshotBundles,
-  type FakeRepoVisibility,
   type FakeScreenshotBundles,
 } from "../src/adapters/screenshots/fake.ts";
 import { encodePng } from "../src/adapters/screenshots/png.ts";
@@ -48,8 +45,6 @@ const plainPage = (i: number): Uint8Array =>
 
 export interface CaptureSetup {
   screenshots: FakeScreenshotBundles;
-  /** The repository visibility port: private unless set (O-89). */
-  visibility: FakeRepoVisibility;
   nodeId: string;
   designerRun: Run;
   /** The PNG bytes of each option page of the item's feature, by name. */
@@ -68,7 +63,6 @@ export async function setupCapture(
   options: {
     names?: string[];
     screenshots?: FakeScreenshotBundles;
-    visibility?: FakeRepoVisibility;
     /** Puts the bundle at the head now (true unless given). */
     bundle?: boolean;
     designerRun?: Partial<Run>;
@@ -76,7 +70,6 @@ export async function setupCapture(
 ): Promise<CaptureSetup> {
   const names = options.names ?? ["a", "b"];
   const screenshots = options.screenshots ?? createFakeScreenshotBundles();
-  const visibility = options.visibility ?? createFakeRepoVisibility();
   const node = await f.node("in_design_exploration", {
     track: "design",
     ownerRole: "designer",
@@ -161,7 +154,6 @@ export async function setupCapture(
   if (options.bundle !== false) putOptions(names);
   return {
     screenshots,
-    visibility,
     nodeId: node.id,
     designerRun,
     pages,

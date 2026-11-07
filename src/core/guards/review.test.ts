@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { globToRegExp } from "./review.ts";
+import { DEFAULT_PRIVILEGED_PATHS, globToRegExp } from "./review.ts";
 import { HEAD, OLD, PROJECT, fixture } from "./testing.ts";
 
 describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", () => {
@@ -259,12 +259,15 @@ describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", 
       await f.ci(HEAD, "success", ["src/app.ts", "README.md"]);
       expect((await f.check("privileged_paths_approved")).pass).toBe(true);
     });
-    it("fails on a migration, a workflow, privacy docs, a secret or a project extra path", async () => {
+    it("fails on a migration, a workflow, privacy docs, a secret, infrastructure code or a project extra path", async () => {
       for (const path of [
         "db/migrations/0002_x.sql",
         ".github/workflows/deploy.yml",
         "docs/privacy/data-map.yml",
         "src/config/secrets.ts",
+        // D-344, D-345: the infrastructure code is privileged in every project.
+        "infra/stacks/factory/main.tf",
+        "infra/kubernetes/settings/production.json",
         "config/billing/plan.ts",
       ]) {
         const f = await fixture();
@@ -303,6 +306,14 @@ describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", 
       expect((await f.check("privileged_paths_approved")).detail).toMatch(
         /not recorded/,
       );
+    });
+    it("holds infra/** on the shared list, for the repository's own infra folder only (D-345)", () => {
+      expect(DEFAULT_PRIVILEGED_PATHS).toContain("infra/**");
+      const infra = globToRegExp("infra/**");
+      expect(infra.test("infra/modules/platform/cloudflare/tunnel.tf")).toBe(true);
+      expect(infra.test("infra/README.md")).toBe(true);
+      expect(infra.test("src/infra/a.ts")).toBe(false);
+      expect(infra.test("infrastructure.md")).toBe(false);
     });
     it("matches globs by folder", () => {
       expect(globToRegExp("**/migrations/**").test("migrations/1.sql")).toBe(true);

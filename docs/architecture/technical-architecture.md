@@ -60,6 +60,7 @@ Starting a flow (D-283, D-284, D-328, O-101): after a plan submission is recorde
 - Flows are small. They call the library, call adapters, and write results. They contain no business rules.
 - Every flow is idempotent. A repeated webhook or a retried run produces the same final state.
 - Approval steps suspend a flow until resumed through a URL. They are the primary channel for gate approvals in v1 (To verify on a phone).
+- A project is registered with one form Didi runs signed in to Windmill, `f/foreman/register_project` (D-345, O-109): the slug and a one-line description. It refuses a slug not listed in the platform settings file on main, creates `didi-build/<slug>` from the `didi-build/launchpad` template, always public (D-348), and records the project row. The runner App creates the repository with a token minted for that one step, narrowed to the template and to "Contents: read" and "Repository creation: write" (D-346). Launchpad's Bootstrap workflow then sets up the repository on its first push.
 
 ### 2.5 Reconcile loop
 
@@ -238,7 +239,8 @@ Rules:
 - No secret values in chat, repos, Linear, logs or transcripts. Secrets live in the vault or Windmill resources.
 - Temporary credentials for personal data: Didi approves one request, the runner mints or enables a credential whose expiry (default 60 minutes) is set and enforced by the runner, not chosen by the agent.
 - Every bot and agent has its own identity so no action looks like Didi's.
-- Privileged paths (migrations, PII, privacy, deploy workflows, `.github`, secrets) are listed in Launchpad as a default, and each repo can add to it. The runner decides from the list, never the bot.
+- Privileged paths (migrations, PII, privacy, deploy workflows, `.github`, secrets) are listed in Launchpad as a default, and each repo can add to it. The runner decides from the list, never the bot. The runner's shared list also holds the infrastructure code, `infra/**`, so every project starts with the same list and none adds to it at registration (D-344, D-345).
+- Beyond the table, the runner creates a project's repository from Launchpad, and only in Didi's register-project form, with a token minted for that one step that carries "Repository creation" (D-346). No other runner token carries it.
 - Toolbox: each tool declares a side-effect type (read, write, needs approval, only Didi). The runner refuses to call a needs-approval tool without an approval attached, so gates are enforced by the toolbox itself.
 
 ## 5. Observability

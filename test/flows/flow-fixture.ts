@@ -10,12 +10,15 @@ import type {
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
 import {
+  createFakeProjectRepositories,
+  createFakeProjectSettings,
+} from "../../src/adapters/github/project-registration-fake.ts";
+import {
   createFakeRepoMaps,
   createFakeRepoScans,
 } from "../../src/adapters/repo-map/fake.ts";
 import {
   createFakeRepoFolders,
-  createFakeRepoVisibility,
   createFakeScreenshotBundles,
 } from "../../src/adapters/screenshots/fake.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
@@ -86,9 +89,10 @@ export function flowDepsFor(
   const runtime = createFakeRuntime();
   const screenshots = createFakeScreenshotBundles();
   const repoFolders = createFakeRepoFolders();
-  const repoVisibility = createFakeRepoVisibility();
   const repoMaps = createFakeRepoMaps();
   const repoScans = createFakeRepoScans();
+  const projectSettings = createFakeProjectSettings();
+  const projectRepositories = createFakeProjectRepositories();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
@@ -98,9 +102,10 @@ export function flowDepsFor(
     stagingChecker,
     screenshots,
     repoFolders,
-    repoVisibility,
     repoMaps,
     repoScans,
+    projectSettings,
+    projectRepositories,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -130,9 +135,10 @@ export function flowDepsFor(
     runtime,
     screenshots,
     repoFolders,
-    repoVisibility,
     repoMaps,
     repoScans,
+    projectSettings,
+    projectRepositories,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {
@@ -149,9 +155,10 @@ export async function createFlowFixture() {
     runtime,
     screenshots,
     repoFolders,
-    repoVisibility,
     repoMaps,
     repoScans,
+    projectSettings,
+    projectRepositories,
     tasksFor,
     tokens,
     setExecutions,
@@ -177,9 +184,10 @@ export async function createFlowFixture() {
     stagingChecker,
     screenshots,
     repoFolders,
-    repoVisibility,
     repoMaps,
     repoScans,
+    projectSettings,
+    projectRepositories,
     tasksFor,
     tokens,
     setExecutions,
