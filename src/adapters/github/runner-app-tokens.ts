@@ -1,14 +1,15 @@
 // The runner App's own read-only installation tokens (D-267, D-127, D-178). Didi registers the
 // runner App at first hosting with two read-only permissions beyond D-127: `contents: read`, so the
 // runner can fetch a project's code at a commit to build the repo map (D-251) and, with the same
-// permission, check a folder's tree id (D-281), and `actions: read`, so it can download CI's
-// screenshot bundles as workflow artifacts (D-242). Each token the runner mints for these reads
-// names one repository and exactly one of the two permissions, read only (GitHub lets an
-// installation token ask for fewer permissions than the App has), so a token minted for the repo
-// map cannot read artifacts, and neither can write, merge or deploy. GitHub caps a token at one
-// hour; the runner uses it for one read and never keeps or logs it. The repo map's token is the
-// one token that leaves the runner: it goes into the repo map Job's own Secret, deleted when the
-// Job ends (D-275 (2), O-87).
+// permission, check a folder's tree id (D-281) and, for Didi's register-project form, read the
+// platform settings file on `didi-build/foreman`'s main and an existing project repository (D-345,
+// O-109), and `actions: read`, so it can download CI's screenshot bundles as workflow artifacts
+// (D-242). Each token the runner mints for these reads names one repository and exactly one of the
+// two permissions, read only (GitHub lets an installation token ask for fewer permissions than the
+// App has), so a token minted for the repo map cannot read artifacts, and neither can write, merge
+// or deploy. GitHub caps a token at one hour; the runner uses it for one read and never keeps or
+// logs it. The repo map's token is the one token that leaves the runner: it goes into the repo map
+// Job's own Secret, deleted when the Job ends (D-275 (2), O-87).
 //
 // The real implementation needs the runner App and its private key, which the runner holds, so
 // until the App is registered through the new-credentials gate (D-178) the runner's port refuses
@@ -97,31 +98,42 @@ export function createGitHubHttp(): GitHubHttp {
         redirect: "follow",
         signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       });
-      const declared = Number(response.headers.get("content-length") ?? "0");
-      if (declared > maxBytes) {
-        await response.body?.cancel();
-        throw new GitHubReadError(`GitHub's answer is larger than ${maxBytes} bytes`);
-      }
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      const reader = response.body?.getReader();
-      for (;;) {
-        const next = await reader?.read();
-        if (!next || next.done) break;
-        size += next.value.length;
-        if (size > maxBytes) {
-          await reader?.cancel();
-          throw new GitHubReadError(`GitHub's answer is larger than ${maxBytes} bytes`);
-        }
-        chunks.push(next.value);
-      }
-      const body = new Uint8Array(size);
-      let at = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, at);
-        at += chunk.length;
-      }
-      return { status: response.status, body };
+      return {
+        status: response.status,
+        body: await readBoundedBody(response, maxBytes),
+      };
     },
   };
+}
+
+/** Reads an answer's body, refusing one longer than `maxBytes` before or while it arrives. */
+export async function readBoundedBody(
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > maxBytes) {
+    await response.body?.cancel();
+    throw new GitHubReadError(`GitHub's answer is larger than ${maxBytes} bytes`);
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = response.body?.getReader();
+  for (;;) {
+    const next = await reader?.read();
+    if (!next || next.done) break;
+    size += next.value.length;
+    if (size > maxBytes) {
+      await reader?.cancel();
+      throw new GitHubReadError(`GitHub's answer is larger than ${maxBytes} bytes`);
+    }
+    chunks.push(next.value);
+  }
+  const body = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, at);
+    at += chunk.length;
+  }
+  return body;
 }

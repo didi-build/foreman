@@ -208,6 +208,20 @@ flows:
     # switch and dry run write nothing. No new credential.
     trigger: called
 
+  - name: register_project
+    path: f/foreman/register_project
+    entry: flows/register-project.ts
+    # Didi's register-project form (D-345, D-346, D-348, O-109), with the project's slug and a
+    # one-line description, which becomes the repository's description that Launchpad's Bootstrap
+    # reads. Didi starts it from its page in the Windmill workspace, signed in, as cancel_item
+    # (O-97, D-295). Never a public or signed-token link. No schedule, pass or other flow starts
+    # it. It refuses a slug not listed in infra/kubernetes/settings/production.json on main,
+    # creates didi-build/<slug> from didi-build/launchpad, always public (D-348), and records the
+    # project; a project already recorded is already_registered. The kill switch refuses; dry run
+    # creates and writes nothing. No new Windmill credential: the GitHub tokens are the runner
+    # App's, minted per step, and only this form's carries Repository creation (D-346).
+    trigger: called
+
   - name: request_transition
     path: f/foreman/request_transition
     entry: flows/request-transition.ts

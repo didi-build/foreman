@@ -10,6 +10,7 @@ import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
 import {
   compose,
   NotBuiltError,
+  unregisteredRepositoryCreationTokens,
   unregisteredRunnerAppTokens,
   unregisteredInstallationTokens,
   type RunToStart,
@@ -168,6 +169,28 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
           permission: "contents",
         }),
       ).rejects.toThrow(/contents read and actions read/);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("refuses the register-project form's GitHub parts until the runner App exists (D-345, D-346)", async () => {
+    const { env } = fakeEnvironment();
+    const deps = await compose(env);
+    try {
+      // The settings file on main is read with the runner App's contents read token (O-109).
+      await expect(deps.projectSettings.listedSlugs()).rejects.toThrow(NotBuiltError);
+      // The create mints the creation token first; refused, nothing is sent and nothing retried.
+      expect(
+        await deps.projectRepositories.generate({
+          name: "x",
+          description: "A project.",
+        }),
+      ).toEqual({ kind: "refused", step: "creation_token" });
+      await expect(deps.projectRepositories.read("x")).rejects.toThrow(NotBuiltError);
+      await expect(unregisteredRepositoryCreationTokens().mint()).rejects.toThrow(
+        /Repository creation write/,
+      );
     } finally {
       await deps.close();
     }

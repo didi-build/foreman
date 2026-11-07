@@ -20,6 +20,7 @@ import {
 } from "../core/library.ts";
 import { createPlanSubmissions, readPlanSubmission } from "../core/plans.ts";
 import { createPlanningReads, PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
+import { PROJECT_SLUG } from "../core/register-project.ts";
 import { startErrorFields } from "../adapters/windmill/client.ts";
 import type { PlanApprovalFlow } from "../adapters/windmill/plan-approval-flow.ts";
 import type { Logger } from "../service-kit/logger.ts";
@@ -249,8 +250,6 @@ export const PLANS_PATH = /^\/plans$/;
 export const PLANNING_READ_PATH =
   /^\/planning\/projects\/([^/]+)\/(submissions|feedback|accepted)$/;
 
-const SLUG = /^[a-z0-9][a-z0-9-]{0,99}$/;
-
 const SUBMIT_REFUSALS = {
   no_project: { status: 404, error: "project not found" },
   no_idea: { status: 404, error: "idea not found" },
@@ -334,7 +333,7 @@ export function createApiHandler({
   }
 
   async function readPlanning(slug: string, read: string) {
-    if (!SLUG.test(slug)) throw new HttpError(404, "project not found");
+    if (!PROJECT_SLUG.test(slug)) throw new HttpError(404, "project not found");
     const project = await store.getProjectBySlug(slug);
     if (!project) throw new HttpError(404, "project not found");
     const data =
