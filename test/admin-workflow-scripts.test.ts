@@ -1,7 +1,7 @@
 // Integration: the admin workflows' shell scripts (.github/scripts/, D-336, D-339, D-340, O-105)
-// run with bash against fake kubectl, tofu, doctl, docker, getent and curl on PATH, so no
-// cluster, state, registry, credential, name server or Windmill is touched. Every value below is made up for the
-// test; every address is a documentation address (RFC 5737).
+// run with bash against fake kubectl, tofu, doctl, docker, getent, curl and psql on PATH, so no
+// cluster, state, registry, credential, name server, Windmill or database is touched. Every
+// value below is made up for the test; every address is a documentation address (RFC 5737).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -20,6 +20,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
+import { readMigrations } from "../src/adapters/store-postgres/migrate.ts";
 import {
   RENDER_PLACEHOLDER,
   RUN_TIME_KUBERNETES_API,
@@ -61,6 +62,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
   );
   tool("docker", `exec node ${JSON.stringify(join(FIXTURES, "fake-docker.mjs"))} "$@"`);
   tool("curl", `exec node ${JSON.stringify(join(FIXTURES, "fake-curl.mjs"))} "$@"`);
+  tool("psql", `exec node ${JSON.stringify(join(FIXTURES, "fake-psql.mjs"))} "$@"`);
   tool(
     "tofu",
     [
@@ -105,6 +107,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
     "doctl.log",
     "getent.log",
     "curl.log",
+    "psql.log",
   ])
     writeFileSync(join(root, file), "");
   return {
@@ -121,6 +124,7 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
       FAKE_DOCTL_LOG: join(root, "doctl.log"),
       FAKE_GETENT_LOG: join(root, "getent.log"),
       FAKE_CURL_LOG: join(root, "curl.log"),
+      FAKE_PSQL_LOG: join(root, "psql.log"),
       RUNNER_TEMP: runnerTemp,
       GITHUB_OUTPUT: join(root, "github-output"),
       GITHUB_ENV: join(root, "github-env"),
@@ -1628,6 +1632,488 @@ describe.skipIf(process.platform === "win32")(
         });
         expect(result.status).toBe(1);
         expect(box.calls()).toEqual([]);
+      });
+    });
+
+    describe("db-migrate.sh", () => {
+      // Made up for the test: a user shaped like the session pooler's (`postgres.<project ref>`),
+      // a password that needs percent-encoding, and a documentation host name.
+      const user = "postgres.abcdefghijklmnopqrst";
+      const password = "p@ss%w0rd:9/x";
+      const encoded = encodeURIComponent(password);
+      const host = "db.example.com";
+      const url = [
+        "postgresql://",
+        user,
+        ":",
+        encoded,
+        "@",
+        host,
+        ":6543/postgres",
+      ].join("");
+      /** What must never show outside an `::add-mask::` line. */
+      const values = [url, encoded, password, user, host];
+
+      const FILES: Record<string, string> = {
+        "0001_first.sql": "create table one (id int);\n",
+        // psql would read these as a backslash command and a variable; the server must get them
+        // as they are, as migrate.ts sends them.
+        "0002_second.sql":
+          "-- \\gexec and :name stay text.\ncreate table two (note text default ':name \\o');\n",
+        "0003_Upper.sql": "-- not a migration name, so never applied\n",
+        "README.md": "not a migration\n",
+      };
+      const MIGRATION_NAMES = ["0001_first.sql", "0002_second.sql"];
+
+      function folder(box: Sandbox, files: Record<string, string> = FILES): string {
+        const dir = join(box.root, "migrations");
+        mkdirSync(dir, { recursive: true });
+        for (const [name, content] of Object.entries(files)) {
+          writeFileSync(join(dir, name), content);
+        }
+        return dir;
+      }
+
+      const reportPath = (box: Sandbox) => join(box.root, "report.md");
+      const report = (box: Sandbox) =>
+        existsSync(reportPath(box)) ? readFileSync(reportPath(box), "utf8") : "";
+
+      function migrate(box: Sandbox, env: Record<string, string> = {}, dir?: string) {
+        return run(box, "db-migrate.sh", [dir ?? folder(box)], {
+          MIGRATION_DATABASE_URL: url,
+          REPORT: reportPath(box),
+          ...env,
+        });
+      }
+
+      interface PsqlCall {
+        args: string[];
+        env: Record<string, string>;
+        script: string;
+      }
+      const psqlCalls = (box: Sandbox): PsqlCall[] =>
+        readFileSync(join(box.root, "psql.log"), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as PsqlCall);
+
+      function expectNoValueShown(
+        result: { stdout: string; stderr: string },
+        shown: string[] = values,
+      ) {
+        for (const out of [withoutMasks(result.stdout), result.stderr]) {
+          for (const value of shown) expect(out).not.toContain(value);
+        }
+      }
+
+      const escapeRegExp = (text: string) =>
+        text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      /** GitHub reads `%0D`, `%0A` and `%25` in a command's value as CR, LF and `%`. */
+      const asGitHubReadsIt = (mask: string) =>
+        mask
+          .slice("::add-mask::".length)
+          .replaceAll("%0D", "\r")
+          .replaceAll("%0A", "\n")
+          .replaceAll("%25", "%");
+
+      it("masks the connection string, its password, user and host before anything else, so GitHub masks each value itself", () => {
+        const box = sandbox();
+        const result = migrate(box, { FAKE_PSQL_MODE: "fresh" });
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        const lines = result.stdout.split("\n");
+        const masks = lines.filter((l) => l.startsWith("::add-mask::"));
+        expect(lines.slice(0, masks.length)).toEqual(masks);
+        expect(masks.map(asGitHubReadsIt)).toEqual([
+          url,
+          encoded,
+          user,
+          host,
+          password,
+        ]);
+        // Each % goes as %25, so the mask is not read as another value.
+        expect(masks[1]).toBe(`::add-mask::${encoded.replaceAll("%", "%25")}`);
+        expectNoValueShown(result);
+        expect(withoutMasks(result.stdout)).toBe(
+          "Applied: 0001_first.sql, 0002_second.sql\n",
+        );
+      });
+
+      it("gives psql the connection only in its environment, with SSL required and no PG setting inherited", () => {
+        const box = sandbox();
+        const result = migrate(box, {
+          PGOPTIONS: "-c search_path=elsewhere",
+          PGSERVICE: "elsewhere",
+          PGSSLMODE: "disable",
+          PGHOST: "elsewhere.example.com",
+          PGPASSFILE: "/dev/null",
+        });
+        expect(result.status).toBe(0);
+        const calls = psqlCalls(box);
+        expect(calls).toHaveLength(1);
+        const [call] = calls as [PsqlCall];
+        expect(call.env).toEqual({
+          PGHOST: host,
+          PGPORT: "6543",
+          PGUSER: user,
+          PGPASSWORD: password,
+          PGDATABASE: "postgres",
+          PGSSLMODE: "require",
+          PGCLIENTENCODING: "UTF8",
+          PGCONNECT_TIMEOUT: "30",
+          PGAPPNAME: "foreman-db-migrate",
+        });
+        expect(call.args).toEqual([
+          "-X",
+          "-q",
+          "-w",
+          "--set=ON_ERROR_STOP=1",
+          "-f",
+          expect.stringMatching(
+            /\/runner-temp\/db-migrate\.[A-Za-z0-9]+\/migrate\.psql$/,
+          ),
+        ]);
+        for (const value of values) {
+          expect(call.args.join(" ")).not.toContain(value);
+          expect(call.script).not.toContain(value);
+        }
+        // The generated script is removed with its folder.
+        expect(readdirSync(box.env.RUNNER_TEMP as string)).toEqual([]);
+      });
+
+      it("takes Postgres's port when the connection string names none", () => {
+        const box = sandbox();
+        const result = migrate(box, {
+          MIGRATION_DATABASE_URL: url.replace(":6543/", "/"),
+        });
+        expect(result.status).toBe(0);
+        expect(psqlCalls(box)[0]?.env.PGPORT).toBe("5432");
+      });
+
+      it("runs one script in one session: the lock, migrate.ts's setup, the recorded rows read once, then each file with its record in its own transaction, then the unlock", () => {
+        const box = sandbox();
+        const dir = folder(box);
+        expect(migrate(box, {}, dir).status).toBe(0);
+        const lines = (psqlCalls(box)[0] as PsqlCall).script.split("\n");
+        const gexec =
+          /^select convert_from\(decode\('([A-Za-z0-9+/=]*)', 'base64'\), 'UTF8'\) \\gexec$/;
+        const decoded = (line: string | undefined) =>
+          Buffer.from(gexec.exec(line ?? "")?.[1] ?? "", "base64").toString("utf8");
+
+        expect(lines.slice(0, 5)).toEqual([
+          "\\set ON_ERROR_STOP on",
+          "\\set AUTOCOMMIT on",
+          "\\set ON_ERROR_ROLLBACK off",
+          "\\o /dev/null",
+          "select pg_advisory_lock(7104001);",
+        ]);
+        expect(lines[5]).toMatch(gexec);
+        expect(decoded(lines[5])).toContain(
+          "create schema if not exists factory_meta;",
+        );
+        expect(lines.filter((l) => l.includes("pg_advisory_lock("))).toHaveLength(1);
+        expect(lines.some((l) => /^\\(c|connect)\b/.test(l))).toBe(false);
+        // The recorded rows are read in one statement, before the first file.
+        const read = lines.indexOf("\\gset");
+        expect(lines.filter((l) => l === "\\gset")).toHaveLength(1);
+        expect(read).toBeLessThan(lines.indexOf("begin;"));
+
+        // Each file the rule picks, in name order: refuse if changed, else apply if pending, its
+        // text decoded byte for byte, with its record in the same transaction.
+        const sha = (name: string) =>
+          createHash("sha256")
+            .update(readFileSync(join(dir, name)))
+            .digest("hex");
+        let at = read + 1;
+        expect(lines.slice(at, at + 5)).toEqual([
+          "\\if :missing",
+          "select pg_advisory_unlock(7104001);",
+          "\\echo missing :missing_name",
+          "\\q",
+          "\\endif",
+        ]);
+        at += 5;
+        MIGRATION_NAMES.forEach((name, i) => {
+          expect(lines.slice(at, at + 5), name).toEqual([
+            `\\if :changed_${i}`,
+            "select pg_advisory_unlock(7104001);",
+            `\\echo changed ${name}`,
+            "\\q",
+            "\\endif",
+          ]);
+          at += 5;
+          expect(lines.slice(at, at + 4), name).toEqual([
+            `\\if :pending_${i}`,
+            `\\echo applying ${name}`,
+            "begin;",
+            expect.stringMatching(gexec),
+          ]);
+          expect(decoded(lines[at + 3]), name).toBe(FILES[name]);
+          at += 4;
+          expect(lines.slice(at, at + 4), name).toEqual([
+            `insert into factory_meta.schema_migrations (name, sha256) values ('${name}', '${sha(name)}');`,
+            "commit;",
+            `\\echo applied ${name}`,
+            "\\endif",
+          ]);
+          at += 4;
+          const snapshot = lines.slice(0, read).join("\n");
+          expect(snapshot, name).toContain(
+            `not exists (select from factory_meta.schema_migrations where name = '${name}') as pending_${i}`,
+          );
+          expect(snapshot, name).toContain(
+            `exists (select from factory_meta.schema_migrations where name = '${name}' and sha256 <> '${sha(name)}') as changed_${i}`,
+          );
+        });
+        expect(lines.slice(at)).toEqual([
+          "select pg_advisory_unlock(7104001);",
+          "\\echo done",
+          "",
+        ]);
+        expect(lines.join("\n")).toContain(
+          "where not (name = any (array['0001_first.sql', '0002_second.sql']::text[]))",
+        );
+      });
+
+      it("says Nothing to apply when every file is recorded, in the log and the summary", () => {
+        const box = sandbox();
+        const result = migrate(box, { FAKE_PSQL_STDOUT: "done\n" });
+        expect(result.status).toBe(0);
+        expect(withoutMasks(result.stdout)).toBe("Nothing to apply.\n");
+        expect(report(box)).toBe(
+          "## Database migrations\n\nNothing to apply: every migration is recorded.\n",
+        );
+      });
+
+      it("lists the migrations applied in the summary, names only", () => {
+        const box = sandbox();
+        expect(migrate(box, { FAKE_PSQL_MODE: "fresh" }).status).toBe(0);
+        expect(report(box)).toBe(
+          [
+            "## Database migrations",
+            "",
+            "Applied, in order:",
+            "",
+            "- `0001_first.sql`",
+            "- `0002_second.sql`",
+            "",
+            "Every migration is recorded.",
+            "",
+          ].join("\n"),
+        );
+      });
+
+      it("names the migration that failed as rolled back, after those applied before it, with psql's error shown", () => {
+        const box = sandbox();
+        const result = migrate(box, {
+          FAKE_PSQL_STDOUT:
+            "applying 0001_first.sql\napplied 0001_first.sql\napplying 0002_second.sql\n",
+          FAKE_PSQL_STDERR:
+            'psql:/tmp/migrate.psql:20: ERROR:  relation "two" already exists\n',
+          FAKE_PSQL_STATUS: "3",
+        });
+        expect(result.status).toBe(1);
+        expect(withoutMasks(result.stdout)).toBe("Applied: 0001_first.sql\n");
+        expect(result.stderr).toBe(
+          [
+            'psql:/tmp/migrate.psql:20: ERROR:  relation "two" already exists',
+            "::error::0002_second.sql failed and was rolled back; nothing after it was applied. psql's error, redacted, is above.",
+            "",
+          ].join("\n"),
+        );
+        expect(report(box)).toContain("- `0001_first.sql`\n");
+        expect(report(box)).toContain(
+          "Stopped: 0002_second.sql failed and was rolled back; nothing after it was applied.",
+        );
+      });
+
+      it("shows psql's own errors only redacted, since a connection error can quote the host and the user", () => {
+        const box = sandbox();
+        const result = migrate(box, {
+          FAKE_PSQL_STDOUT: "",
+          FAKE_PSQL_STDERR: [
+            `psql: error: connection to server at "${host}" (192.0.2.7), port 6543 failed: FATAL:  password authentication failed for user "${user}"`,
+            `and once more: ${url} ${encoded} ${password}`,
+            "",
+          ].join("\n"),
+          FAKE_PSQL_STATUS: "2",
+        });
+        expect(result.status).toBe(1);
+        expectNoValueShown(result);
+        expect(result.stderr).toBe(
+          [
+            'psql: error: connection to server at "<DATABASE_HOST>" (<ip>), port 6543 failed: FATAL:  password authentication failed for user "<DATABASE_USER>"',
+            "and once more: <MIGRATION_DATABASE_URL> <DATABASE_PASSWORD_ENCODED> <DATABASE_PASSWORD>",
+            "::error::psql stopped (exit status 2) before the end, with nothing more applied. psql's error, redacted, is above.",
+            "",
+          ].join("\n"),
+        );
+      });
+
+      it("refuses as migrate.ts does when a recorded file changed or is missing, after what was applied before", () => {
+        const cases: [string, string][] = [
+          [
+            "changed 0001_first.sql\n",
+            "::error::0001_first.sql changed after it was applied. Add a new migration instead of editing it.",
+          ],
+          [
+            "applying 0001_first.sql\napplied 0001_first.sql\nchanged 0002_second.sql\n",
+            "::error::0002_second.sql changed after it was applied. Add a new migration instead of editing it.",
+          ],
+          [
+            "missing 0005_gone.sql\n",
+            "::error::0005_gone.sql is recorded as applied but its file is missing.",
+          ],
+          [
+            "missing -\n",
+            "::error::A row whose name is not a migration file name is recorded as applied, and no file has that name.",
+          ],
+        ];
+        for (const [stdout, error] of cases) {
+          const box = sandbox();
+          const result = migrate(box, { FAKE_PSQL_STDOUT: stdout });
+          expect(result.status, stdout).toBe(1);
+          expect(result.stderr, stdout).toBe(`${error}\n`);
+          expect(withoutMasks(result.stdout), stdout).toBe(
+            stdout.startsWith("applying") ? "Applied: 0001_first.sql\n" : "",
+          );
+          expect(report(box), stdout).toContain(
+            `Stopped: ${error.slice("::error::".length)}`,
+          );
+        }
+      });
+
+      it("stops, showing none of it, on a line psql is not expected to print, and when psql ends before the end", () => {
+        const unexpected = [
+          `applying 0001_first.sql\n${user} says hello\n`,
+          "applied 0001_first.sql\n",
+          "applying 0001_first.sql\napplying 0002_second.sql\n",
+          "applying 0001_first.sql\ndone\n",
+          "applying ../0001_first.sql\n",
+        ];
+        for (const stdout of unexpected) {
+          const box = sandbox();
+          const result = migrate(box, { FAKE_PSQL_STDOUT: stdout });
+          expect(result.status, stdout).toBe(1);
+          expect(result.stderr, stdout).toBe(
+            "::error::psql printed a line this script does not expect, so the run stopped. The line is not shown, since it could hold a value.\n",
+          );
+          expectNoValueShown(result);
+          expect(withoutMasks(result.stdout), stdout).not.toContain("says hello");
+        }
+        const box = sandbox();
+        const result = migrate(box, {
+          FAKE_PSQL_STDOUT: "applying 0001_first.sql\napplied 0001_first.sql\n",
+        });
+        expect(result.status).toBe(1);
+        expect(withoutMasks(result.stdout)).toBe("Applied: 0001_first.sql\n");
+        expect(result.stderr).toBe(
+          "::error::psql stopped (exit status 0) before the end, with nothing more applied. psql's error, redacted, is above.\n",
+        );
+      });
+
+      it("refuses with fixed text, before psql runs, a connection string it cannot use", () => {
+        const shape =
+          "::error::MIGRATION_DATABASE_URL is not postgresql://user:password@host:port/database";
+        const characters =
+          "::error::MIGRATION_DATABASE_URL holds a space, a newline or a control character";
+        const cases: [string, string][] = [
+          [
+            "",
+            "::error::MIGRATION_DATABASE_URL is not set in the database environment",
+          ],
+          [url.replace("postgres.", "postgres "), characters],
+          [`${url}\n`, characters],
+          [url.replace("@", "\t@"), characters],
+          [url.replace("@", "\u0001@"), characters],
+          [url.replace("@", "\u007f@"), characters],
+          [url.replace("postgresql://", "mysql://"), shape],
+          [url.replace(`:${encoded}@`, "@"), shape],
+          [url.replace(`:${encoded}@`, ":@"), shape],
+          [`${url}?sslmode=disable`, shape],
+          [`${url}#fragment`, shape],
+          [url.replace(encoded, "p@ss"), shape],
+          [url.replace(encoded, "p/ss"), shape],
+          [url.replace("/postgres", ""), shape],
+          [url.replace(host, "[2001:db8::1]"), shape],
+          [url.replace(":6543", ":0"), "::error::The port in MIGRATION_DATABASE_URL"],
+          [
+            url.replace(":6543", ":65536"),
+            "::error::The port in MIGRATION_DATABASE_URL",
+          ],
+          [
+            url.replace(encoded, "p%0Ass"),
+            "::error::The password in MIGRATION_DATABASE_URL",
+          ],
+          [
+            url.replace(encoded, "p%7Fss"),
+            "::error::The password in MIGRATION_DATABASE_URL",
+          ],
+          [
+            url.replace(encoded, "p%zzss"),
+            "::error::The password in MIGRATION_DATABASE_URL",
+          ],
+          [
+            url.replace(encoded, "pass%4"),
+            "::error::The password in MIGRATION_DATABASE_URL",
+          ],
+          [
+            url.replace(user, "postgres%00"),
+            "::error::The user in MIGRATION_DATABASE_URL",
+          ],
+        ];
+        for (const [value, error] of cases) {
+          const box = sandbox();
+          const result = migrate(box, { MIGRATION_DATABASE_URL: value });
+          const label = JSON.stringify(value);
+          expect(result.status, label).toBe(1);
+          expect(result.stderr, label).toMatch(
+            new RegExp(`^${escapeRegExp(error)}[^\\n]*\\n$`),
+          );
+          expect(psqlCalls(box), label).toEqual([]);
+          if (value !== "")
+            expectNoValueShown(result, [value, "p%0Ass", "p@ss", "postgres%00"]);
+          // A value it cannot check is never even masked, so no half of it reaches a mask line.
+          if (error === characters || value === "")
+            expect(result.stdout, label).toBe("");
+          expect(report(box), label).toContain(
+            `Stopped: ${error.slice("::error::".length)}`,
+          );
+        }
+      });
+
+      it("refuses a migrations folder that is missing, or a migration name that is not a file", () => {
+        const box = sandbox();
+        const missing = migrate(box, {}, join(box.root, "nowhere"));
+        expect(missing.status).toBe(1);
+        expect(missing.stderr).toMatch(
+          /^::error::The migrations folder \S+ is missing\.\n$/,
+        );
+        const dir = folder(box);
+        mkdirSync(join(dir, "0003_a_folder.sql"));
+        const notAFile = migrate(box, {}, dir);
+        expect(notAFile.status).toBe(1);
+        expect(notAFile.stderr).toMatch(
+          /^::error::0003_a_folder\.sql in \S+ is not a file\.\n$/,
+        );
+        expect(psqlCalls(box)).toEqual([]);
+      });
+
+      it("hashes each file's bytes, which for every migration in db/migrations is migrate.ts's hash of its UTF-8 text", () => {
+        const files = readMigrations();
+        expect(files.length).toBeGreaterThan(20);
+        for (const file of files) {
+          const path = join("db/migrations", file.name);
+          const bytes = readFileSync(path);
+          // Valid UTF-8, so reading it as text and encoding it again gives the same bytes.
+          expect(
+            () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+            file.name,
+          ).not.toThrow();
+          const sum = spawnSync("sha256sum", { input: bytes, encoding: "utf8" });
+          expect(sum.stdout.split(/\s+/)[0], file.name).toBe(file.sha256);
+        }
       });
     });
   },

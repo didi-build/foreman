@@ -1,0 +1,66 @@
+name: Database migrations
+
+# Applies every migration in db/migrations/ not yet recorded in the state store, in name order,
+# once Didi approves (D-362, O-115). This replaces `npm run db:migrate` from a terminal for the
+# real database; migrate.ts stays for local development and the tests.
+#
+# - `migrate` runs in the environment `database` (main only, Didi the required reviewer), which
+#   holds MIGRATION_DATABASE_URL, the Supabase session pooler's connection string for the
+#   database owner (first-hosting runbook step 9a). It checks out `.github/` and `db/migrations/`
+#   only and runs `.github/scripts/db-migrate.sh`, which uses bash and psql (on GitHub's Ubuntu
+#   24.04 runner image) and nothing else: no npm, no Node and none of the repository's
+#   TypeScript, which a bot can change without Didi's approval. Only protected code touches the
+#   credential (the pattern of D-358 lock 1).
+# - The summary lists the migrations applied, or says there was nothing to apply.
+#
+# It starts on a push to main that changes a migration or this job's own files, or by hand. A run
+# waiting for Didi blocks no merge and no other workflow. One run at a time: a newer run waits
+# until the older one is approved, rejected or finished, and each run applies every migration
+# still pending in its commit. Pull requests never run this workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "db/migrations/**"
+      - ".github/workflows/db-migrate.yml"
+      - ".github/scripts/db-migrate.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: db-migrate
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  migrate:
+    name: db-migrate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: database
+    permissions:
+      contents: read
+    steps:
+      # The scripts and the migrations, and nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/
+            /db/migrations/
+          sparse-checkout-cone-mode: false
+      - name: Apply the migrations not yet recorded
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # The report holds migration names only; the script's own output, with its masks, stays in the log.
+          export REPORT="$RUNNER_TEMP/db-migrate.md"
+          status=0
+          .github/scripts/db-migrate.sh || status=$?
+          if [ -f "$REPORT" ]; then
+            tee -a "$GITHUB_STEP_SUMMARY" <"$REPORT"
+          fi
+          exit "$status"

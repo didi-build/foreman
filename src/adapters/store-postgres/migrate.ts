@@ -1,5 +1,10 @@
 // Applies db/migrations/*.sql in name order and records each one (ADR 0104). Each file runs in
 // its own transaction together with its record, so a file is applied fully or not at all.
+// For local development and the tests. The real database is migrated by the Database migrations
+// workflow (.github/workflows/db-migrate.yml, D-362, O-115) once Didi approves, never from a
+// terminal: its script, .github/scripts/db-migrate.sh, keeps exactly these semantics with bash
+// and psql, so no repository TypeScript runs beside the credential. Change both together;
+// test/db/db-migrate-script.test.ts runs both and test/admin-workflows.test.ts compares them.
 // Usage: MIGRATION_DATABASE_URL=... node src/adapters/store-postgres/migrate.ts
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
