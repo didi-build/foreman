@@ -124,7 +124,7 @@ The encrypted plan file is kept for one day: approve within a day, or start the 
 
 **The managed worker firewall (D-331).** Once the cluster exists, read the firewall DOKS made for the worker nodes in the DigitalOcean control panel's Networking page, and its outbound rules. Read it only: never edit it, and add no deny rule, because DigitalOcean's reconciler owns that firewall by name. If it allows all outbound traffic, our cloud firewall's outbound rules take no effect and the network policies and egress proxies are the only outbound control; if its outbound rules are narrower, ours stay as a second layer. Record which, with the date, here:
 
-- Result: not checked yet.
+- Result, read by Didi on 2026-11-08: DOKS made two firewalls next to ours (`foreman-workers`), both on the cluster's two nodes. `k8s-<cluster id>-worker` allows inbound ICMP, all TCP and all UDP only from the private ranges (10.0.0.0/8, 172.16.0.0/12 and one more), and allows **all outbound** traffic (ICMP, all TCP, all UDP, to all IPv4 and IPv6). `k8s-public-access-<cluster id>` has **no inbound rule** and also allows all outbound. Cloud firewalls add up, so our firewall's outbound rules take no effect: the network policies and the egress proxies are the only outbound control, as D-331 foresaw. Nothing on the internet can open a connection to a node.
 
 ## 6. No admin kubeconfig is kept (D-340, revising D-188)
 
