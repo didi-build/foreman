@@ -270,7 +270,17 @@ SSL enforcement is on since step 9a (D-364, O-117, O-118), and every service che
 
 The certificate expires on 2031-04-26 and must be replaced before then: download the new one from the same panel, commit it at the same path by a pull request (during a switch the file may hold the old and the new certificate one after the other), update its fingerprint in `src/adapters/store-postgres/tls.test.ts` and O-117, then build the images again (Images workflow, then the settings file of step 7) and deploy the flows again (step 15). The file is a privileged path (`**/*.crt`, O-118), so the pull request needs Didi's approval. Its merge starts a Database migrations run (step 9a), which reads the new file from its checkout: approve it, and it checks the new certificate against the pooler and applies only what is pending.
 
-Then create the login users for the `factory_api` and `factory_ingest` roles (the migrations make the roles, step 9a) if they do not exist yet, then paste each connection string into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
+Then create the login users for the `factory_api` and `factory_ingest` roles (the migrations make the roles, step 9a) if they do not exist yet, in Supabase's SQL editor, so that no password reaches a log, the statistics or the editor's saved queries (Supabase's "Provisioning Postgres role credentials without exposing them in logs", read 2026-11-08: its log hides a single-quoted password, but not when the statement fails, and `pg_stat_statements` keeps the text):
+
+1. In Bitwarden, generate one password per login: 32 characters, letters and digits only, so it needs no encoding in the connection string and cannot end the quoted value.
+2. Create the logins without a password, in one query: `create role foreman_state_api login in role factory_api;` and `create role foreman_receiver login in role factory_ingest;`.
+3. Run a test with no password in it: `begin;`, then `set local log_statement = 'none';`, `set local log_min_error_statement = 'panic';`, `set local log_min_messages = 'fatal';` and `set local pg_stat_statements.track = 'none';`, then `commit;`. If it fails, stop: the next query would not be kept out of the log.
+4. In a new query, run the same transaction with `alter role foreman_state_api password '<first password>';` and `alter role foreman_receiver password '<second password>';` before the `commit;`, single-quoted, never dollar-quoted.
+5. Delete that query from the editor's list, since the editor saves queries.
+
+Done 2026-11-08, every query succeeding. The runner's login at step 15 (`foreman_runner`, in `factory_runner`) is made the same way.
+
+Each connection string is the session pooler's (session mode, port 5432), as in step 9a, with the login's name in place of `postgres` before the dot: `postgresql://foreman_state_api.<project ref>:<password>@<pooler host>:5432/postgres`, and the same with `foreman_receiver`. Paste each into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
 
 | Environment secret        | Secret in `foreman-platform`     | Key     |
 | ------------------------- | -------------------------------- | ------- |
