@@ -2,3 +2,6 @@
 *.tf text eol=lf
 *.tfvars text eol=lf
 .terraform.lock.hcl text eol=lf
+# Keep migrations on LF too: their recorded fingerprint is the file's sha256, so a Windows
+# checkout with CRLF would read as an edited migration (first hosting, 2026-11-08, O-115).
+db/migrations/*.sql text eol=lf
