@@ -18,6 +18,7 @@ import pg from "pg";
 
 import { createLibrary } from "../core/library.ts";
 import { createPostgresStore } from "../adapters/store-postgres/store.ts";
+import { databaseSetting } from "../adapters/store-postgres/tls.ts";
 import { windmillSettings, windmillTargetOf } from "../adapters/windmill/client.ts";
 import {
   WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
@@ -28,7 +29,6 @@ import {
   port,
   readConfig,
   secretEnvName,
-  text,
   type Setting,
 } from "../service-kit/config.ts";
 import { createLogger } from "../service-kit/logger.ts";
@@ -57,7 +57,7 @@ try {
   config = readConfig({
     port: port("PORT", "8080"),
     publicPort: port("PUBLIC_PORT", "8081"),
-    databaseUrl: text("DATABASE_URL"),
+    database: databaseSetting("DATABASE_URL", 10),
     planningTokenSha256,
     // The Windmill credential is optional until Didi creates it (D-273 (2), D-283).
     ...windmillSettings(WINDMILL_PLAN_APPROVAL_TOKEN_PATH),
@@ -71,8 +71,9 @@ try {
 }
 
 // The pool connects on first use, so the service starts (and answers /health) before the
-// database is reachable.
-const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 });
+// database is reachable. Its config comes from the TLS builder, so every connection is encrypted
+// and verified against Supabase's CA and the host name (D-364, O-117).
+const pool = new pg.Pool(config.database);
 pool.on("error", (error) =>
   logger.error("database connection error", { errorType: error.name }),
 );

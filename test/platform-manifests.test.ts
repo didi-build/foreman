@@ -43,6 +43,7 @@ import {
   type PlatformSettings,
 } from "../infra/kubernetes/platform.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
+import { LOCAL_WITHOUT_TLS_ENV } from "../src/adapters/store-postgres/tls.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../src/api/auth.ts";
 import { windmillSettings, windmillTargetOf } from "../src/adapters/windmill/client.ts";
 import { WINDMILL_PLAN_APPROVAL_TOKEN_PATH } from "../src/adapters/windmill/plan-approval-flow.ts";
@@ -350,6 +351,14 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
         .map((s) => `${s.name}/${s.key}`)
         .sort(),
     );
+  });
+
+  it("never gives a pod the local database opt-out, so every connection keeps verified TLS (O-117)", () => {
+    const names = deployments.flatMap((d) =>
+      d.spec.template.spec.containers.flatMap((c) => c.env.map((e) => e.name)),
+    );
+    expect(names).toContain("DATABASE_URL");
+    expect(names).not.toContain(LOCAL_WITHOUT_TLS_ENV);
   });
 
   it("gives the state API the planning chat's token hash at its secret path, optional until first hosting (D-266)", () => {

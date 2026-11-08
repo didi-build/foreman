@@ -6,13 +6,16 @@
 // and psql, so no repository TypeScript runs beside the credential. Change both together;
 // test/db/db-migrate-script.test.ts runs both and test/admin-workflows.test.ts compares them.
 // Usage: MIGRATION_DATABASE_URL=... node src/adapters/store-postgres/migrate.ts
+// It connects over TLS verified against Supabase's CA (D-364, O-117); a local Postgres needs the
+// local opt-out, FOREMAN_LOCAL_DATABASE_WITHOUT_TLS=1.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
 
-import { readConfig, text } from "../../service-kit/config.ts";
+import { readConfig } from "../../service-kit/config.ts";
+import { databaseSetting } from "./tls.ts";
 
 export const MIGRATIONS_DIR = "db/migrations";
 
@@ -112,8 +115,8 @@ export async function applyMigrations(
 }
 
 async function main(): Promise<void> {
-  const config = readConfig({ url: text("MIGRATION_DATABASE_URL") });
-  const pool = new pg.Pool({ connectionString: config.url, max: 1 });
+  const config = readConfig({ database: databaseSetting("MIGRATION_DATABASE_URL", 1) });
+  const pool = new pg.Pool(config.database);
   try {
     const applied = await applyMigrations(pool, readMigrations());
     console.log(

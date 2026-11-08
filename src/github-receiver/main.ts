@@ -14,6 +14,7 @@ import pg from "pg";
 import { loadAllContractFiles } from "../adapters/contracts-file/load.ts";
 import { createGitHubClient } from "../adapters/github/client.ts";
 import { createPostgresStore } from "../adapters/store-postgres/store.ts";
+import { databaseSetting } from "../adapters/store-postgres/tls.ts";
 import { windmillSettings, windmillTargetOf } from "../adapters/windmill/client.ts";
 import {
   RECEIVER_WINDMILL_TOKEN_PATH,
@@ -38,7 +39,7 @@ let config;
 try {
   config = readConfig({
     port: port("PORT", "8080"),
-    databaseUrl: text("DATABASE_URL"),
+    database: databaseSetting("DATABASE_URL", 5),
     webhookSecret: secret(WEBHOOK_SECRET_PATH),
     developerApp: text("GITHUB_DEVELOPER_APP_LOGIN"),
     designerApp: text("GITHUB_DESIGNER_APP_LOGIN"),
@@ -63,8 +64,9 @@ if (!contracts) {
 }
 
 // The pool connects on first use, so the service starts (and answers /health) before the
-// database is reachable.
-const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 5 });
+// database is reachable. Its config comes from the TLS builder, so every connection is encrypted
+// and verified against Supabase's CA and the host name (D-364, O-117).
+const pool = new pg.Pool(config.database);
 pool.on("error", (error) =>
   logger.error("database connection error", { errorType: error.name }),
 );

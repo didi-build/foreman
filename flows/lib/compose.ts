@@ -46,6 +46,7 @@ import { createGitHubWriteHttp } from "../../src/adapters/github/write-http.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { databasePoolConfig } from "../../src/adapters/store-postgres/tls.ts";
 import type {
   BootstrapAccess,
   BootstrapRuns,
@@ -434,11 +435,11 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     await env.value(VALUE_NAMES.designerAppLogin),
   ];
   const runnerAppSlug = await env.value(VALUE_NAMES.runnerAppSlug);
-  // The pool connects on first use. A connection error is thrown by the call that needs it.
-  const pool = new pg.Pool({
-    connectionString: await env.secret(SECRET_PATHS.database),
-    max: 2,
-  });
+  // The pool connects on first use, over TLS verified against Supabase's CA (D-364, O-117). A
+  // refused config throws here; a connection error is thrown by the call that needs it.
+  const pool = new pg.Pool(
+    databasePoolConfig(await env.secret(SECRET_PATHS.database), { max: 2 }),
+  );
   pool.on("error", () => undefined);
   const store = createPostgresStore(pool);
   // Read on the first task built, so a flow that starts no agent never needs it.

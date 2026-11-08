@@ -22,7 +22,7 @@ Since D-339, the admin work runs as GitHub Actions jobs that wait for Didi's app
 
 Settle these before the apply in step 5.
 
-Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Both questions are decided (D-331, D-332):
+Decided on 2026-10-31 by the coordinator: the database is Supabase's session pooler on 5432 (session mode, because the store uses transactions and advisory locks; the pooler is reachable over IPv4, the direct host is IPv6 only; every connection to it is encrypted and verified, D-364, step 10), and `cloudflared` reaches Cloudflare's edge on 7844 tcp and udp. Both are in the firewall and the network policies already. Both questions are decided (D-331, D-332):
 
 1. **Whether the cloud firewall limits outbound at all.** Decided by D-331 (Didi, 2026-11-05). DOKS manages its own firewall for the worker nodes, and DigitalOcean combines the allow rules of every firewall on a droplet, so if the managed one allows all outbound traffic, the outbound rules here change nothing. Inside the cluster, network policies and the egress proxies are the real outbound control. At step 5, check what the managed worker firewall allows outbound, keep our cloud firewall as a second layer if its outbound rules take effect, and record the result there. No deny rules are added, and DigitalOcean's managed firewalls are never edited: its reconciler owns them by name.
 2. **The admin credential in state.** Decided by D-332 (Didi, 2026-11-05): accepted under ADR 0110 secrets rule 3, as listed in `infra/README.md`. The DigitalOcean provider fetches an admin credential for the cluster and keeps it in state. State is encrypted, the credential expires after 1 hour (`kubeconfig_expire_seconds`) and it is never an output, but it is still an admin key outside the password manager (D-188).
@@ -262,7 +262,11 @@ What the job does (`.github/workflows/db-migrate.yml`, `.github/scripts/db-migra
 
 ## 10. Supabase role passwords as Secrets (new-credentials gate)
 
-Create the login users for the `factory_api` and `factory_ingest` roles (the migrations make the roles, step 9a) if they do not exist yet, then paste each connection string into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
+First, turn on SSL enforcement (D-364, O-117). In Supabase, open Project Settings, Database, SSL Configuration, and turn on "Enforce SSL on incoming connections". Supabase restarts the database to apply it, which takes a few seconds on a small project. From then on the database and the session pooler refuse every connection without TLS, on both legs (client to pooler, and pooler to Postgres). The same panel offers the server root certificate for download. Didi downloaded it on 2026-11-08 and it is committed at `src/adapters/store-postgres/supabase-ca.crt`: "Supabase Root 2021 CA", SHA-256 fingerprint `80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA`, valid until 2031-04-26. Every service reads it from there and checks the server's certificate against it and against the pooler's host name. If the panel offers a different certificate (its text differs from the committed file, or `openssl x509 -noout -fingerprint -sha256 -in <the downloaded file>` prints another fingerprint), stop and tell the coordinator: the new one is committed by a pull request first, or the services refuse to connect.
+
+The certificate expires on 2031-04-26 and must be replaced before then: download the new one from the same panel, commit it at the same path by a pull request (during a switch the file may hold the old and the new certificate one after the other), update its fingerprint in `src/adapters/store-postgres/tls.test.ts` and O-117, then build the images again (Images workflow, then the settings file of step 7) and deploy the flows again (step 15).
+
+Then create the login users for the `factory_api` and `factory_ingest` roles (the migrations make the roles, step 9a) if they do not exist yet, then paste each connection string into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
 
 | Environment secret        | Secret in `foreman-platform`     | Key     |
 | ------------------------- | -------------------------------- | ------- |
@@ -324,7 +328,7 @@ The repo map's Job (D-275 (2), O-87) is not a run and this setting does not coun
 
 The flows (build plan M3.1) are written but not deployed. Each item is its own approval:
 
-- The runner's database login, a user in the `factory_runner` role (ADR 0104), stored at `platform/state-store/runner-database-url` in Windmill resources.
+- The runner's database login, a user in the `factory_runner` role (ADR 0104), stored at `platform/state-store/runner-database-url` in Windmill resources. Its connection string is the session pooler's, pasted as step 10 says. The runner verifies the server against the same committed certificate, which each flow's bundle carries (`bundle_files` in `flows/windmill.yaml`, O-117).
 - A Windmill token that can list the workspace's jobs, for the monthly execution count (D-167). Until it exists, the reconcile flow skips the alert check and says so.
 - The planning chat's state API token (D-266). It lets the Council's planning chat submit a plan with `POST /api/plans` and read its submissions' status, Didi's feedback and the accepted plans with `GET /api/planning/projects/<slug>/{submissions,feedback,accepted}`, and nothing else (ADR 0102, D-282, D-343). Generate a long random value (at least 32 characters of letters, digits, `-` and `_`) in Bitwarden and keep it there (D-341). Put the value itself into the planning chat's own settings and into the `platform` environment secret `PLANNING_TOKEN`, and nowhere else. The state API holds only its SHA-256: the cluster Secrets job (step 9) makes it exactly as this step did by hand, the token with no trailing newline (a newline changes the hash and the API then refuses the token), through `sha256sum`, the hex only with no newline, piped straight into the Secret:
 
@@ -346,7 +350,7 @@ The flows (build plan M3.1) are written but not deployed. Each item is its own a
 
   None of the three services reaches Windmill directly: all go through the Windmill proxy of step 7, which allows only `windmill.host`, and no pod's network policy allows them public 443 (D-284, D-328, D-330). Until a token exists its service refuses every start (`NotBuiltError`), logs `plan approval flow not started`, `option capture flow not started`, `advance flow not started`, `staging flow not started` or `run end flow not started` with the error's type, and the reconcile pass opens the request, captures the options, advances the item, verifies staging or records the end. The run watcher's restart above then sends the run-end flow for every stopped run Job still present, once each. If the proxy is down, the services' starts fail the same way and the reconcile pass catches up. When usage grows, the proxy can run as several replicas behind its one Service (a change to `infra/kubernetes/platform.ts`, D-328).
 
-Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`.
+Then write the Windmill binding in `flows/lib/windmill.ts` against Windmill's own client, and deploy the flows, schedule and values listed in `flows/windmill.yaml`, each bundle with the files in its `bundle_files`. Without the database CA certificate in the bundle, every flow refuses to connect to the store, naming the missing file (O-117).
 
 The `agent_run_settings` value names the repo map Job's image (D-275 (2), O-87): the Images workflow builds `src/agent-images/repo-map/Dockerfile` from the repo root and pushes it to GitHub Container Registry as `foreman-repo-map`, public (D-336). Put its reference pinned by digest (the artifact `foreman-images`, `windmill.agent_run_settings.repoMapImage`) in `repoMapImage`, with `resources.repoMap` (it unpacks an archive of up to 200 MiB in memory, so give it at least 1 GiB of memory) and `repoMapMaxMinutes` (5 to start). The same artifact gives `agent_images` (`opencode` and `claude-api`) and `proxyImage`. No new credential: the Job's only token is the runner App's `contents: read` token of step 13, minted per read. The same image serves the Scanner's stage 1 in scan mode (O-92), which also installs the YAML parser from the image's lockfile; nothing else changes. Deploying the flows creates the `f/foreman/scan` schedule (05:00 Toronto time). Migration 0017 (the `scans` table) is applied with the others, after Didi's review.
 
@@ -487,6 +491,28 @@ The three workflows (D-336, D-339, D-340, O-105) are built and tested with fake 
 ## Verification
 
 Run the remaining checks in ADR 0106 "How success is judged" on the real cluster, and record their output and date in the M3.2 PR. Never paste a secret value, `plan.json` or `state.json`.
+
+### Database connections are encrypted and verified (D-364, O-117)
+
+At the first real run, record each result with the date in O-117. Never record a password, a connection string, the project ref or the pooler's host name.
+
+- Enforcement is on: the SSL Configuration panel shows "Enforce SSL on incoming connections" turned on.
+- A connection without TLS is refused: from Didi's own computer, with psql and no password, `psql "host=<session pooler host> port=5432 dbname=postgres user=<login user>.<project ref> sslmode=disable"` is refused with an error that names SSL (Supabase documents `no pg_hba.conf entry for host "...", user "...", database "postgres", SSL off`). Type no password: if psql asks for one, press Ctrl+C, record that it asked, and tell the coordinator.
+- Every service connects with verification: the code connects only over TLS verified against the committed certificate and the host name, so a service that reaches the store at all was verified. The receiver records GitHub's ping delivery (the runner App's Recent deliveries shows a 2xx answer), the state API answers a planning read (`GET /api/planning/projects/<slug>/submissions` with the planning token, 200), and the runner's first reconcile pass succeeds in Windmill. Then, in Supabase's SQL editor, this query shows `ssl` true on every row, for the pooler's leg to Postgres (record only that, not the names):
+
+  ```sql
+  select a.usename, s.ssl, count(*)
+  from pg_stat_ssl s
+  join pg_stat_activity a on a.pid = s.pid
+  join pg_roles r on r.rolname = a.usename
+  where not r.rolsuper
+    and (pg_has_role(a.usename, 'factory_api', 'member')
+      or pg_has_role(a.usename, 'factory_ingest', 'member')
+      or pg_has_role(a.usename, 'factory_runner', 'member'))
+  group by 1, 2;
+  ```
+
+- A failure to verify is never worked around: if a service logs `database connection error` and the store stays out of reach, or a Windmill run fails with a certificate error (`unable to verify the first certificate`, `self-signed certificate in certificate chain` or `Hostname/IP does not match certificate's altnames`), stop and tell the coordinator. Do not change the connection string, add a parameter or turn enforcement off: Supabase's docs say the session pooler supports full verification with this certificate (O-117), so a failure means the certificate or the pooler differs from what they describe.
 
 ### The live reconcile pass and first runs on the move
 

@@ -1,7 +1,7 @@
 # The runner's Windmill flows, schedules and resources, as data (build plan M3.1). Nothing here is
 # deployed. Deploying is mechanical once the Windmill workspace and token exist (first-hosting
-# runbook, step 15): bundle each entry with its imports and contracts/, push it as a
-# script at its path, create the schedule and the approval flow, and store each resource and
+# runbook, step 15): bundle each entry with its imports and the files in `bundle_files`, push it
+# as a script at its path, create the schedule and the approval flow, and store each resource and
 # variable at the path below. test/flows/windmill-description.test.ts keeps this file in step
 # with the code.
 #
@@ -13,6 +13,14 @@
 # guards already say which moves exist and what each needs.
 
 workspace_folder: f/foreman
+
+# The repository files every bundle carries besides its imports, at the same paths from the
+# bundle's root, because the code reads them from there when it runs: the contracts, task types
+# and bot files, and Supabase's CA certificate, which the runner's database connection verifies
+# the server against (D-364, O-117). Without the certificate the runner refuses to connect.
+bundle_files:
+  - contracts/
+  - src/adapters/store-postgres/supabase-ca.crt
 
 flows:
   - name: reconcile

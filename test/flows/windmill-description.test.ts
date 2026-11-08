@@ -4,7 +4,7 @@
 // trigger kind's move, since those live in the contracts and the core (essentials 3 and 7). The
 // import side of "no rule" is the lint rule in eslint/layer-boundary.mjs
 // (test/import-boundaries.test.ts).
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,13 @@ import { PLATFORM_SECRETS } from "../../infra/kubernetes/platform.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
+import {
+  MACHINE_1_DIR,
+  MACHINE_2_DIR,
+  TASK_TYPES_FILE,
+} from "../../src/adapters/contracts-file/load.ts";
+import { BOT_FILES_DIR } from "../../src/adapters/contracts-file/bot-files.ts";
+import { SUPABASE_CA_PATH } from "../../src/adapters/store-postgres/tls.ts";
 import { runScope } from "../../src/adapters/windmill/client.ts";
 import {
   PLAN_APPROVAL_FLOW_PATH,
@@ -38,6 +45,7 @@ import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
 
 interface Description {
+  bundle_files: string[];
   flows: {
     name: string;
     path: string;
@@ -83,6 +91,19 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       expect(typeof module.run, flow.entry).toBe("function");
       expect(typeof module.main, flow.entry).toBe("function");
     }
+  });
+
+  it("bundles every repository file the flows read when they run, the database CA certificate included (O-117)", () => {
+    const carried = (path: string) =>
+      description.bundle_files.some((entry) =>
+        entry.endsWith("/") ? path.startsWith(entry) : path === entry,
+      );
+    for (const path of [MACHINE_1_DIR, MACHINE_2_DIR, TASK_TYPES_FILE, BOT_FILES_DIR]) {
+      expect(carried(path), path).toBe(true);
+    }
+    expect(carried(SUPABASE_CA_PATH)).toBe(true);
+    for (const entry of description.bundle_files)
+      expect(existsSync(entry), entry).toBe(true);
   });
 
   it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes, the scan and the daily check", () => {

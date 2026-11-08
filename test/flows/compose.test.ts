@@ -2,11 +2,19 @@
 // ADR 0111 section 4). With a fake environment: which secrets and values are read and when, and
 // that every part not built yet refuses with a reason. No database is reached: the pool connects
 // on first use and the test never uses it.
-import { describe, expect, it } from "vitest";
+import { checkServerIdentity } from "node:tls";
+
+import pg from "pg";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import { readApprovalReply } from "../../flows/lib/approval.ts";
 import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
+import {
+  DatabaseTlsError,
+  LOCAL_WITHOUT_TLS_ENV,
+  readDatabaseCa,
+} from "../../src/adapters/store-postgres/tls.ts";
 import {
   compose,
   NotBuiltError,
@@ -85,6 +93,48 @@ function fakeEnvironment(values: Record<string, string> = {}) {
 }
 
 describe("flow composition (unit: flow layer, build plan M3.1)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("builds the runner's pool through the TLS builder, verified against Supabase's CA (O-117)", async () => {
+    const configs: pg.PoolConfig[] = [];
+    const RealPool = pg.Pool;
+    vi.spyOn(pg, "Pool").mockImplementation(function (config?: pg.PoolConfig) {
+      configs.push(config ?? {});
+      return new RealPool(config);
+    } as unknown as () => pg.Pool);
+    const env: FlowEnvironment = {
+      ...fakeEnvironment().env,
+      secret: async () =>
+        "postgresql://runner:not-a-real-password@pooler.example.test:5432/postgres?sslmode=disable",
+    };
+    const deps = await compose(env);
+    try {
+      expect(configs).toEqual([
+        {
+          connectionString:
+            "postgresql://runner:not-a-real-password@pooler.example.test:5432/postgres",
+          max: 2,
+          ssl: { ca: readDatabaseCa(), rejectUnauthorized: true, checkServerIdentity },
+        },
+      ]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("refuses the local opt-out for the runner's remote database", async () => {
+    vi.stubEnv(LOCAL_WITHOUT_TLS_ENV, "1");
+    const env: FlowEnvironment = {
+      ...fakeEnvironment().env,
+      secret: async () =>
+        "postgresql://runner:not-a-real-password@pooler.example.test/postgres",
+    };
+    await expect(compose(env)).rejects.toThrow(DatabaseTlsError);
+  });
+
   it("builds the deps from the environment, reading only the database secret up front", async () => {
     const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
