@@ -1,28 +1,7 @@
-/** Env vars that must not be passed to init or `npm ci --ignore-scripts`. */
-export const BOOTSTRAP_TOKEN_ENV_KEYS = ["GH_TOKEN", "BOOTSTRAP_TOKEN", "GITHUB_TOKEN"];
-
-/**
- * @param {NodeJS.ProcessEnv} env
- * @returns {NodeJS.ProcessEnv}
- */
-export function envWithoutBootstrapTokens(env) {
-  const out = { ...env };
-  for (const key of BOOTSTRAP_TOKEN_ENV_KEYS) {
-    delete out[key];
-  }
-  return out;
-}
-
-/**
- * @param {NodeJS.ProcessEnv} env
- * @returns {boolean}
- */
-export function envExposesBootstrapToken(env) {
-  for (const key of BOOTSTRAP_TOKEN_ENV_KEYS) {
-    const value = env[key];
-    if (value !== undefined && value !== null && String(value).trim() !== "") {
-      return true;
-    }
-  }
-  return false;
-}
+// The token-stripping helpers live with Bootstrap's protected scripts (D-358 lock 1, O-113);
+// init-project strips the same variables before it starts nodrift init.
+export {
+  BOOTSTRAP_TOKEN_ENV_KEYS,
+  envExposesBootstrapToken,
+  envWithoutBootstrapTokens,
+} from "../../.github/scripts/bootstrap-common.mjs";

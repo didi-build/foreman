@@ -1,3 +1,9 @@
+import { parseCollectsPersonalDataEnv } from "../../.github/scripts/bootstrap-plan.mjs";
+
+// Bootstrap reads the same variable in its protected decide step (D-358 lock 1, O-113), so the
+// parser lives there and init-project uses it from there.
+export { parseCollectsPersonalDataEnv };
+
 export const NON_INTERACTIVE_COLLECTS_PERSONAL_DATA_MESSAGE =
   "Personal data collection must be specified non-interactively: use --personal-data or --no-personal-data, or set LAUNCHPAD_COLLECTS_PERSONAL_DATA.";
 
@@ -70,56 +76,6 @@ export function parsePersonalDataFlags(argv) {
     },
     positional,
   };
-}
-
-/**
- * @param {string | undefined} raw
- * @returns {boolean | undefined}
- */
-export function parseCollectsPersonalDataEnv(raw) {
-  if (raw === undefined || raw === null) {
-    return undefined;
-  }
-  const value = String(raw).trim().toLowerCase();
-  if (value === "") {
-    return undefined;
-  }
-  if (["1", "true", "yes", "y"].includes(value)) {
-    return true;
-  }
-  if (["0", "false", "no", "n"].includes(value)) {
-    return false;
-  }
-  throw new Error(
-    "Invalid LAUNCHPAD_COLLECTS_PERSONAL_DATA: use true/false, yes/no, or 1/0.",
-  );
-}
-
-/**
- * @param {string | undefined} raw
- * @returns {{ ok: true } | { ok: false; message: string }}
- */
-export function validateCollectsPersonalDataEnv(raw) {
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return { ok: true };
-  }
-  try {
-    parseCollectsPersonalDataEnv(raw);
-    return { ok: true };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
-  }
-}
-
-/**
- * Bootstrap default when the variable is unset: personal data collection enabled.
- *
- * @param {string | undefined} raw
- * @returns {boolean}
- */
-export function bootstrapCollectsPersonalData(raw) {
-  return parseCollectsPersonalDataEnv(raw) ?? true;
 }
 
 /**

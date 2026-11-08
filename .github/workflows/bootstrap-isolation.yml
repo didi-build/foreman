@@ -1,0 +1,26 @@
+name: Bootstrap isolation
+
+# Only protected .github code may receive the Bootstrap token (D-358 lock 1, O-113). The check is
+# kept in .github/ and called directly, not through npm, so both are protected paths.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  bootstrap-isolation:
+    name: bootstrap-isolation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check the Bootstrap token's isolation
+        run: node .github/scripts/check-bootstrap-isolation.mjs

@@ -1,5 +1,14 @@
 name: Bootstrap
 
+# Only protected code under .github/ ever receives BOOTSTRAP_TOKEN (D-358 lock 1, O-113).
+# - decide: a protected script decides whether the repository still needs setting up. When it
+#   says no, nothing else runs.
+# - prepare: the template's own setup (npm ci, init-project, nodrift init) runs without the token
+#   and hands its changes over as a patch.
+# - apply: a fresh runner applies the patch as data, pushes it with the token and applies the
+#   repository settings, running nothing but .github/scripts/.
+# .github/scripts/check-bootstrap-isolation.mjs (run by bootstrap-isolation.yml) enforces this.
+
 on:
   push:
     branches: [main]
@@ -13,13 +22,51 @@ permissions:
   contents: read
 
 jobs:
-  bootstrap:
+  decide:
+    name: decide
     if: github.repository != 'didi-build/launchpad'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      execute: ${{ steps.plan.outputs.execute }}
+      init: ${{ steps.plan.outputs.init }}
+      settings: ${{ steps.plan.outputs.settings }}
+      sha: ${{ steps.plan.outputs.sha }}
+      slug: ${{ steps.plan.outputs.slug }}
+      display_name: ${{ steps.plan.outputs.display_name }}
+      purpose: ${{ steps.plan.outputs.purpose }}
+      owner: ${{ steps.plan.outputs.owner }}
+      personal_data: ${{ steps.plan.outputs.personal_data }}
     steps:
-      - name: Checkout (read-only)
+      - name: Checkout the default branch (read-only)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Decide whether the repository still needs setting up
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HAS_BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN != '' }}
+          LAUNCHPAD_REPO_DESCRIPTION: ${{ github.event.repository.description }}
+          LAUNCHPAD_COLLECTS_PERSONAL_DATA: ${{ vars.LAUNCHPAD_COLLECTS_PERSONAL_DATA || 'true' }}
+        run: node .github/scripts/bootstrap-plan.mjs
+
+  prepare:
+    name: prepare
+    needs: decide
+    if: needs.decide.outputs.execute == 'true' && needs.decide.outputs.init == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the commit the decision read (read-only)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.decide.outputs.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -27,27 +74,70 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Compute bootstrap plan
-        id: plan
-        env:
-          HAS_BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN != '' }}
-          LAUNCHPAD_REPO_DESCRIPTION: ${{ github.event.repository.description }}
-          LAUNCHPAD_COLLECTS_PERSONAL_DATA: ${{ vars.LAUNCHPAD_COLLECTS_PERSONAL_DATA || 'true' }}
-        run: node scripts/bootstrap.mjs plan
+      - name: Install nodrift without lifecycle scripts
+        if: needs.decide.outputs.personal_data == 'true'
+        run: npm ci --ignore-scripts
 
-      - name: Checkout with bootstrap token
-        if: steps.plan.outputs.execute == 'true'
+      - name: Replace the template placeholders (init-project, and nodrift init when personal data is on)
+        env:
+          PROJECT_SLUG: ${{ needs.decide.outputs.slug }}
+          PROJECT_NAME: ${{ needs.decide.outputs.display_name }}
+          PROJECT_PURPOSE: ${{ needs.decide.outputs.purpose }}
+          PROJECT_OWNER: ${{ needs.decide.outputs.owner }}
+          LAUNCHPAD_COLLECTS_PERSONAL_DATA: ${{ needs.decide.outputs.personal_data }}
+        run: node scripts/init-project.mjs "$PROJECT_SLUG" "$PROJECT_NAME" "$PROJECT_PURPOSE" "$PROJECT_OWNER"
+
+      - name: Hand the changes over as a patch
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --binary --no-renames --no-ext-diff --no-textconv > "$RUNNER_TEMP/bootstrap.patch"
+
+      - name: Upload the patch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bootstrap-patch
+          path: ${{ runner.temp }}/bootstrap.patch
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  apply:
+    name: apply
+    needs: [decide, prepare]
+    if: ${{ !cancelled() && needs.decide.result == 'success' && needs.decide.outputs.execute == 'true' && (needs.prepare.result == 'success' || (needs.prepare.result == 'skipped' && needs.decide.outputs.init != 'true')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the commit the decision read (read-only)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.repository.default_branch }}
-          token: ${{ secrets.BOOTSTRAP_TOKEN }}
+          ref: ${{ needs.decide.outputs.sha }}
           persist-credentials: false
 
-      - name: Run bootstrap
-        if: steps.plan.outputs.execute == 'true'
+      - name: Fetch the patch
+        if: needs.decide.outputs.init == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bootstrap-patch
+          path: ${{ runner.temp }}/bootstrap-patch
+
+      - name: Apply the patch as data and commit it as github-actions[bot]
+        id: commit
+        if: needs.decide.outputs.init == 'true'
+        run: node .github/scripts/bootstrap-commit.mjs "$RUNNER_TEMP/bootstrap-patch/bootstrap.patch"
+
+      - name: Push the setup commit
+        if: steps.commit.outputs.committed == 'true'
         env:
-          HAS_BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN != '' }}
-          LAUNCHPAD_REPO_DESCRIPTION: ${{ github.event.repository.description }}
-          LAUNCHPAD_COLLECTS_PERSONAL_DATA: ${{ vars.LAUNCHPAD_COLLECTS_PERSONAL_DATA || 'true' }}
-          BOOTSTRAP_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN }}
-        run: node scripts/bootstrap.mjs run
+          GH_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node .github/scripts/bootstrap-push.mjs
+
+      - name: Apply and verify the repository settings
+        if: needs.decide.outputs.settings == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: node .github/scripts/bootstrap-settings.mjs --apply --verify "$DEFAULT_BRANCH"

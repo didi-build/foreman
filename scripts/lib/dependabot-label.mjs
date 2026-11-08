@@ -1,6 +1,11 @@
 import { execFileSync } from "node:child_process";
+import {
+  dependabotAutomergeLabel,
+  dependabotAutomergeLabelColor,
+  dependabotAutomergeLabelDescription,
+} from "../../.github/scripts/bootstrap-settings.mjs";
 
-export const dependabotAutomergeLabel = "launchpad-dependabot-automerge";
+export { dependabotAutomergeLabel };
 
 export function ensureDependabotAutomergeLabel(repo) {
   const names = JSON.parse(
@@ -22,9 +27,9 @@ export function ensureDependabotAutomergeLabel(repo) {
       "--repo",
       repo,
       "--color",
-      "1D76DB",
+      dependabotAutomergeLabelColor,
       "--description",
-      "Dependabot minor/patch PR eligible for auto-merge when CI is green",
+      dependabotAutomergeLabelDescription,
     ],
     { stdio: "inherit" },
   );

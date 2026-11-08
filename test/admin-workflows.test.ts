@@ -59,7 +59,10 @@ const workflow = (path: string) => parseYaml(text(path)) as Workflow;
 const all = Object.values(WORKFLOWS).map((path) => ({ path, wf: workflow(path) }));
 
 const SCRIPTS_DIR = ".github/scripts";
-const scripts = readdirSync(SCRIPTS_DIR).map((name) => join(SCRIPTS_DIR, name));
+// The shell scripts; Bootstrap's Node scripts (.mjs) are held by test/check-bootstrap-isolation.test.ts.
+const scripts = readdirSync(SCRIPTS_DIR)
+  .filter((name) => name.endsWith(".sh"))
+  .map((name) => join(SCRIPTS_DIR, name));
 const script = (name: string) => text(join(SCRIPTS_DIR, name));
 
 /** A `${{ ... }}` expression that reads a secret. */

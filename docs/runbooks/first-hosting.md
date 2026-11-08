@@ -399,6 +399,8 @@ The register-project form (D-345, D-346, D-348, O-109) is built and tested with 
 - Bootstrap: its first run starts on the new repository's initial commit and reads the organization secret.
 - The settings read: `GET /repos/didi-build/foreman/contents/infra/kubernetes/settings/production.json?ref=main`, with the `contents: read` token minted for `didi-build/foreman` only, answers the file in base64, and the form lists the slugs from it.
 - Nothing shows a token: the run's logs and result in Windmill hold no token and no GitHub answer body.
+- Bootstrap's token job sees no repository code (D-358 lock 1, O-113): in the new repository's Bootstrap run, the `apply` job runs only `actions/checkout`, `actions/download-artifact` and `node .github/scripts/...`, with no `npm`, `npx` or `setup-node` step, and only its push and settings steps receive the token. Record the result with the date in O-113, with the other checks in `docs/runbooks/bootstrap.md` ("To verify at the first real run").
+- Foreman's pushes stay no-ops: Bootstrap's run on Foreman's next push to `main` ends in the `decide` job (_Already initialized_), with `prepare` and `apply` skipped. Record it in O-113.
 
 ### A project's staging name and route
 

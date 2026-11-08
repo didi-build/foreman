@@ -54,3 +54,7 @@ This is the documented exception to the bootstrap runbook table row that forbids
 - Derived repos need Node `>=22.13.0` when nodrift check runs.
 - Opt-out repos set `LAUNCHPAD_COLLECTS_PERSONAL_DATA=false` or `--no-personal-data`; they can add scaffolding later with `npx nodrift init`.
 - Bootstrap runbook token-job table keeps the historical no unrestricted-`npm-ci` rule; nodrift uses `npm ci --ignore-scripts` without token in the child env, as in section 1.
+
+## Amendment (2026-11-07): the token job runs no install (D-358 lock 1, O-113)
+
+Section 1 describes the single Bootstrap job of 2026-10-23. Now `npm ci --ignore-scripts`, `init-project` and `nodrift init` run in their own job with no token at all, and hand their changes over as a patch; the job with the token runs no npm, applies the patch with `git apply` and commits with hooks off. The personal-data default (section 2) and the gating of `npm run nodrift` (section 3) are unchanged. See [ADR 0001's amendment](./0001-template-bootstrap.md) and [the runbook](../runbooks/bootstrap.md).

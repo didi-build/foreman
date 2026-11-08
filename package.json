@@ -28,7 +28,7 @@
     "infra-boundaries": "node scripts/check-infra-boundaries.mjs",
     "db:migrate": "node src/adapters/store-postgres/migrate.ts",
     "init-project": "node scripts/init-project.mjs",
-    "repo-settings": "node scripts/repo-settings.mjs",
+    "repo-settings": "node .github/scripts/bootstrap-settings.mjs",
     "verify-action-pins": "node scripts/verify-action-pins.mjs",
     "prepare": "husky"
   },
