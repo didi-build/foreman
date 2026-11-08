@@ -1,9 +1,10 @@
 // The webhook endpoint (ADR 0113 sections 2 and 8). Order matters: cap the raw body, check the
 // signature over those exact bytes, and only then parse. A request that fails the signature is
 // answered 401 with nothing parsed or stored. Once a delivery is recorded, the flows its new
-// evidence or its staging deploy makes due are started (./flow-starts.ts, O-101, O-104), then,
-// apart from CI's path, the removal of `BOOTSTRAP_TOKEN`'s access when Bootstrap's restarted run
-// ended (./bootstrap-starts.ts, O-114), before the answer, which a failed start never changes.
+// evidence makes due are started (./flow-starts.ts, O-101, O-104), then, apart from CI's path on a
+// PR head, the removal of `BOOTSTRAP_TOKEN`'s access when Bootstrap's restarted run ended
+// (./bootstrap-starts.ts, O-114) and the staging deploy of CI's build on main
+// (./staging-starts.ts, O-116), before the answer, which a failed start never changes.
 import type { IncomingMessage } from "node:http";
 
 import type { GitHubAdapter } from "../adapters/github/adapter.ts";
@@ -12,6 +13,7 @@ import type { Logger } from "../service-kit/logger.ts";
 import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
 import type { BootstrapStarts } from "./bootstrap-starts.ts";
 import type { FlowStarts } from "./flow-starts.ts";
+import type { StagingStarts } from "./staging-starts.ts";
 
 /**
  * The one webhook path. Every machine-facing path on the cluster's public host name is under
@@ -33,6 +35,8 @@ export interface ReceiverOptions {
   flowStarts: FlowStarts;
   /** Starts the removal of `BOOTSTRAP_TOKEN`'s access after Bootstrap's restart (O-114). Never throws. */
   bootstrapStarts?: BootstrapStarts;
+  /** Starts the staging deploy of CI's build on main (O-116). Never throws. */
+  stagingStarts?: StagingStarts;
   logger: Logger;
 }
 
@@ -104,7 +108,9 @@ export function createReceiverHandler(options: ReceiverOptions): RequestHandler 
       outcome: result.outcome,
     });
     await options.flowStarts(deliveryId, result);
-    await options.bootstrapStarts?.(deliveryId, { event, payload: parse(raw) }, result);
+    const delivery = { event, payload: parse(raw) };
+    await options.bootstrapStarts?.(deliveryId, delivery, result);
+    await options.stagingStarts?.(deliveryId, delivery, result);
     sendJson(response, result.outcome === "rejected" ? 400 : 202, {
       outcome: result.outcome,
     });

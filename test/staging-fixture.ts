@@ -1,16 +1,24 @@
 // Test support for staging verification (build plan M3.4): a fake staging check, and one item in
 // Verifying on staging on the merge fixture, merged by the runner's own merge, with builders for
-// GitHub's staging deploy of a commit and for the commits on main after the merge commit (D-225).
-// Fake data only; nothing reaches staging or GitHub.
-import type { Deployment } from "../src/core/github.ts";
+// the runner's own staging deploy of a commit (D-356, O-116: recorded as the deploy flow records
+// it, through the core's `record`, with no check) and for the commits on main after the merge
+// commit (D-225). Fake data only; nothing reaches staging, Cloudflare or GitHub.
+import {
+  createFakeStagingBuilds,
+  createFakeStagingTarget,
+  mainBuild,
+} from "../src/adapters/deploy/fake.ts";
 import type { Node, Store, Track } from "../src/core/store.ts";
 import {
   createStaging,
-  STAGING_ENVIRONMENT,
   type StagingCheckRequest,
   type StagingCheckResult,
   type StagingChecker,
 } from "../src/core/staging.ts";
+import {
+  createStagingDeploys,
+  type StagingUpload,
+} from "../src/core/staging-deploy.ts";
 import { PR, setupMerge } from "./merge-fixture.ts";
 import { HEAD, REPO } from "./reconcile-fixture.ts";
 
@@ -75,19 +83,41 @@ export async function setupStaging(
   const mergeSha = merged.mergeCommitSha;
   if (options.dryRun) await t.setting("dry_run", true);
   const checker = createFakeStagingChecker();
-  // GitHub's deployment ids are unique per repository; the PR number keeps them apart here.
-  let deploymentId = (options.pr ?? PR) * 100;
+  const builds = createFakeStagingBuilds();
+  const target = createFakeStagingTarget();
+  // GitHub's run ids are unique per repository; the PR number keeps them apart here.
+  let runId = (options.pr ?? PR) * 100;
 
-  /** GitHub reports a deployment of `sha` to staging, `success` unless given. */
-  function deploy(sha = mergeSha, state: Deployment["state"] = "success"): Deployment {
-    const deployment: Deployment = {
-      id: ++deploymentId,
-      sha,
-      environment: STAGING_ENVIRONMENT,
-      state,
-    };
-    t.github.putDeployment(REPO, deployment);
-    return deployment;
+  const deploys = (store: Store = t.store) =>
+    createStagingDeploys({ ...t.deps, store, checker, builds, target });
+
+  /**
+   * The runner deployed CI's build of `sha` on main and recorded it, as the deploy flow does
+   * before its check: `success` a deploy, `failure` a refused file set (D-225 rule 2), `error` a
+   * refusal by infrastructure (counted as no failure, N-103). Returns the CI run's id.
+   */
+  async function deploy(
+    sha = mergeSha,
+    state: "success" | "failure" | "error" = "success",
+    store: Store = t.store,
+  ): Promise<number> {
+    const run = mainBuild(REPO, ++runId, sha);
+    await deploys(store).record(REPO, run, outcomeOf(state));
+    return run.id;
+  }
+
+  /**
+   * CI built `sha` on main and kept its site, for the deploy flow to deploy: the fake target then
+   * answers as `state` says. Returns the CI run's id; nothing is deployed or recorded yet.
+   */
+  function built(
+    sha = mergeSha,
+    state: "success" | "failure" | "error" = "success",
+  ): number {
+    const run = mainBuild(REPO, ++runId, sha);
+    builds.putRun(REPO, run);
+    if (state !== "success") target.answers.push(outcomeOf(state));
+    return run.id;
   }
 
   const staging = (store: Store = t.store) =>
@@ -126,11 +156,33 @@ export async function setupStaging(
     ...t,
     mergeSha,
     checker,
+    builds,
+    target,
+    deploys,
     deploy,
+    built,
     commitOnMain,
     commitOnBranch,
     staging,
     counter,
     kind,
   };
+}
+
+/** A deploy's outcome as the fixture's `deploy` names it. */
+export function outcomeOf(state: "success" | "failure" | "error"): StagingUpload {
+  if (state === "success") return { outcome: "deployed", files: 3 };
+  return state === "failure"
+    ? {
+        outcome: "refused",
+        cause: "file_set",
+        reason: "worker_code",
+        text: "the staging-site build holds _worker.js, which would run code",
+      }
+    : {
+        outcome: "refused",
+        cause: "infrastructure",
+        reason: "cloudflare_unavailable",
+        text: "Cloudflare failed or limited the staging upload; it is tried again",
+      };
 }

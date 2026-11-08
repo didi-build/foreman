@@ -4,10 +4,11 @@
 // (D-156). For its flow starts (D-291, D-327, O-101, O-104): WINDMILL_HOST, WINDMILL_WORKSPACE,
 // HTTPS_PROXY (the shared Windmill egress proxy, D-328) and its Windmill token at
 // `platform/github-receiver/windmill-token`; until Didi creates the token at first hosting every
-// start is refused and the reconcile pass captures, advances and verifies. It reads the contracts
-// in its image and the guards in its code only to decide whether option capture, an advance from
-// evidence or the staging flow is due, never to record a move. Apart from CI's path, it starts the
-// removal of `BOOTSTRAP_TOKEN`'s access once Bootstrap's restarted run ends (O-114).
+// start is refused and the reconcile pass captures, advances and deploys. It reads the contracts
+// in its image and the guards in its code only to decide whether option capture or an advance from
+// evidence is due, never to record a move. Apart from CI's path on a PR head, it starts the
+// removal of `BOOTSTRAP_TOKEN`'s access once Bootstrap's restarted run ends (O-114) and the staging
+// deploy once CI's build on main has finished (O-116).
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -28,6 +29,7 @@ import { exitOnSignals, startService } from "../service-kit/server.ts";
 import { createBootstrapStarts } from "./bootstrap-starts.ts";
 import { createFlowStarts } from "./flow-starts.ts";
 import { createReceiverHandler } from "./handler.ts";
+import { createStagingStarts } from "./staging-starts.ts";
 
 const NAME = "github-receiver";
 const WEBHOOK_SECRET_PATH = "platform/github/runner-webhook-secret";
@@ -100,6 +102,11 @@ const service = await startService({
     bootstrapStarts: createBootstrapStarts({
       store,
       removeBootstrapAccess: flows.removeBootstrapAccess,
+      logger,
+    }),
+    stagingStarts: createStagingStarts({
+      store,
+      deployStaging: flows.deployStaging,
       logger,
     }),
     logger,

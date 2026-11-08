@@ -21,6 +21,16 @@ export const SECRET_PATHS = {
   database: "platform/state-store/runner-database-url",
   /** The runner's cluster token (ADR 0106 section 1, first-hosting runbook step 8). */
   clusterToken: "platform/agent-cluster/runner-token",
+  /**
+   * The staging deploy token: one Cloudflare API token with Workers Scripts: Edit on the account
+   * only (D-353, O-116, first-hosting runbook step 16). Didi creates it; new at first hosting.
+   */
+  stagingDeployToken: "platform/cloudflare/staging-deploy-token",
+  /**
+   * The Cloudflare account the staging Workers live in, 32 hex characters: an id, kept as a
+   * secret as D-361 keeps it in GitHub, never logged (O-116, runbook step 16).
+   */
+  cloudflareAccountId: "platform/cloudflare/account-id",
 } as const;
 
 /** Every plain value the flows read. `flows/windmill.yaml` lists the same names. */

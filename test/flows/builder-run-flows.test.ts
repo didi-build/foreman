@@ -15,7 +15,7 @@ import {
 } from "../../flows/lib/builder-runs.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
-import { run as verifyStaging } from "../../flows/verify-staging.ts";
+import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import { runReport } from "../../flows/lib/runs.ts";
 import { reconcile } from "../../src/core/reconcile.ts";
 import { createRunReports } from "../../src/core/run-reports.ts";
@@ -314,7 +314,7 @@ async function stagingFlow(track: "code" | "design" = "code") {
   for (const run of await t.store.listRuns({ nodeId: t.node.id })) {
     if (run.endedAt === null) await t.store.endRun(run.id, ended(t.clock.now()));
   }
-  const parts = flowDepsFor(t.deps, t.checker);
+  const parts = flowDepsFor(t.deps, t.checker, { builds: t.builds, target: t.target });
   return { t, ...parts };
 }
 
@@ -338,12 +338,15 @@ const ended = (at: Date): Parameters<FlowFixture["store"]["endRun"]>[1] => ({
 describe("a staging fail starts the builder's fix round (flow: fake adapters, O-41)", () => {
   it("starts one Developer run with the failed check in its input, once", async () => {
     const { t, deps, tasksFor } = await stagingFlow();
-    t.deploy();
+    const runId = t.built();
     t.checker.answers.push({ result: "fail", servedCommitSha: t.mergeSha });
-    const result = await verifyStaging(deps, { repo: REPO, sha: t.mergeSha });
+    const result = await deployStaging(deps, { repo: REPO, runId });
     expect(result).toMatchObject({
-      outcome: "verified",
-      results: [{ move: { toState: "in_development", outcome: "applied" } }],
+      outcome: "done",
+      deploy: {
+        step: "deployed",
+        verified: [{ move: { toState: "in_development", outcome: "applied" } }],
+      },
       builderRuns: [
         { nodeId: t.node.id, role: "developer", result: { outcome: "started" } },
       ],
@@ -353,7 +356,7 @@ describe("a staging fail starts the builder's fix round (flow: fake adapters, O-
       `The runner's staging check failed for merge commit ${t.mergeSha}, with staging serving commit ${t.mergeSha}.`,
     );
     expect(tasksFor.at(-1)?.branch).toBe(`foreman/${t.node.id}`);
-    expect(await verifyStaging(deps, { repo: REPO, sha: t.mergeSha })).toMatchObject({
+    expect(await deployStaging(deps, { repo: REPO, runId })).toMatchObject({
       builderRuns: [],
     });
     expect((await reconcileFlow(deps)).builderRuns).toEqual([]);
@@ -365,14 +368,14 @@ describe("a staging fail starts the builder's fix round (flow: fake adapters, O-
 
   it("starts a Designer run back in Building components on the design track, after a failed deploy", async () => {
     const { t, deps, tasksFor } = await stagingFlow("design");
-    t.deploy(t.mergeSha, "failure");
-    const result = await verifyStaging(deps, { repo: REPO, sha: t.mergeSha });
+    const runId = t.built(t.mergeSha, "failure");
+    const result = await deployStaging(deps, { repo: REPO, runId });
     expect(await t.state()).toBe("building_components");
     expect(result).toMatchObject({
       builderRuns: [{ role: "designer", result: { outcome: "started" } }],
     });
     expect(tasksFor.at(-1)?.input).toContain(
-      `The staging deploy of commit ${t.mergeSha} failed (GitHub state failure), and it covers merge commit ${t.mergeSha}.`,
+      `The staging deploy of commit ${t.mergeSha} failed: the staging-site build holds _worker.js, which would run code, and it covers merge commit ${t.mergeSha}.`,
     );
     // The Designer is told its step from the item's state, by the contracts' name (D-238).
     expect(tasksFor.at(-1)?.input).toContain(
@@ -383,9 +386,9 @@ describe("a staging fail starts the builder's fix round (flow: fake adapters, O-
   it("at the failure threshold escalates the item and starts nothing", async () => {
     const { t, deps, runtime } = await stagingFlow();
     await t.store.setCounter(t.node.id, "failure", 2, t.clock.now());
-    t.deploy();
+    const runId = t.built();
     t.checker.answers.push({ result: "fail", servedCommitSha: t.mergeSha });
-    const result = await verifyStaging(deps, { repo: REPO, sha: t.mergeSha });
+    const result = await deployStaging(deps, { repo: REPO, runId });
     expect(await t.state()).toBe("escalated_to_council");
     expect(result).toMatchObject({ builderRuns: [] });
     // The live pass starts the Council for the item's question (D-228), and no builder run.

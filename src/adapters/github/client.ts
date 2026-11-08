@@ -31,8 +31,6 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
     listWorkflowJobs: refuse,
     getMergeability: refuse,
     squashMerge: refuse,
-    listDeployments: refuse,
-    listRecentDeployments: refuse,
     compareCommits: refuse,
     getBranchHead: refuse,
   };

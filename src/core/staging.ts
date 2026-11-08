@@ -10,13 +10,14 @@
 // The order, for one item:
 // 1. The merge commit: the node's latest `merge_commit`. Only that commit counts; the PR's head
 //    and any other commit on main do nothing (docs/guards.md, "The merge commit").
-// 2. The deploy (O-34, D-225, O-38): GitHub's `staging` deployments of that commit and the latest
-//    ones of any commit. The newest finished one (latest status `success`, `failure` or `error`)
-//    whose commit counts decides: the merge commit itself, or a commit on main that contains it,
-//    by GitHub's compare against the merge commit and main's head (`CoverProof`).
-//    A success is recorded as `staging_deploy` evidence, a failure as `staging_deploy_failed`; both
-//    are facts the runner read itself, also in dry run (like the polling backstop and
-//    `merge_check`). A failed deploy takes the fail path of step 4, once per deployment.
+// 2. The deploy (D-356, O-116): read from Foreman's own records only. The runner deploys staging
+//    itself (./staging-deploy.ts) and, once a deploy is done or refused, records it on each item
+//    in Verifying on staging whose merge commit the deployed commit counts for: the merge commit
+//    itself, or a commit on main that contains it, by GitHub's compare against the merge commit
+//    and main's head (`CoverProof`, D-225 rule 1, as O-38 does). A deploy is `staging_deploy`, a
+//    refused one `staging_deploy_failed`. A refused one counts and takes the fail path of step 4
+//    once per deploy (D-225 rule 2), except a refusal by infrastructure, which counts no failure
+//    and leaves the item waiting for a deploy (N-103). GitHub's deployments are no longer read.
 // 3. The check (O-35, O-39): in live mode only. A check that finds staging serving the merge
 //    commit, or a commit on main that contains it, gives `staging_check {pass, servedCommitSha}`
 //    with that proof, once per merge commit under its key. A check that ends without a result, or
@@ -30,20 +31,15 @@
 //    (`staging_deploy_failed:<evidence id>`), so a repeated call writes one row.
 // An item that waits in Verifying on staging with no deploy recorded for longer than
 // `staging_deploy_attention_after_minutes` is reported for the attention list (D-225, O-40).
-// The GitHub receiver asks `createStagingReads(...).due` before it starts the staging flow on a
-// `deployment_status` event (D-329 slice 4, O-104), with the same staging moves as here.
+// The deploy flow (flows/deploy-staging.ts) asks for the check right after it records a deploy
+// (D-356); the reconcile flow's staging pass is the backstop.
 // A failure part way is recovered by the next call: the facts are keyed, the moves are taken once
 // per trigger, and the live pass (`verifyReady`) asks again for an escalation or a release that a
 // failure left behind.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { CANCEL_GUARD } from "./cancel.ts";
-import type {
-  CommitRelation,
-  Deployment,
-  GitHubCommitReader,
-  GitHubDeploymentReader,
-} from "./github.ts";
-import { latest, readCoverProof } from "./guards/evidence.ts";
+import type { CommitRelation, GitHubCommitReader } from "./github.ts";
+import { countsAsFailedDeploy, latest, readCoverProof } from "./guards/evidence.ts";
 import { STAGING_CHECK_ATTEMPTS } from "./guards/staging.ts";
 import {
   createLibrary,
@@ -53,35 +49,21 @@ import {
   type TransitionOutcome,
   type Trigger,
 } from "./library.ts";
-import type { Evidence, Json, Node, Project, Store, StoreOps } from "./store.ts";
+import type { Evidence, Json, Node, Project, Store } from "./store.ts";
 
 export { STAGING_CHECK_ATTEMPTS };
 
-/** The GitHub environment a project's deploy on push to main reports to (O-34). */
-export const STAGING_ENVIRONMENT = "staging";
 /** The guard that marks the move a passed staging check takes (to Done). */
 export const STAGING_PASS_GUARD = "staging_check_on_merge_commit";
 /** The guard that marks the fallback move a failed staging check takes. */
 export const STAGING_FAIL_GUARD = "staging_check_failed";
 /** The guard of the escalation into the Council (escalation.yaml). */
 export const ESCALATION_GUARD = "escalation_trigger_met";
-/**
- * How many of the latest `staging` deployments of any commit the runner reads for one item (one
- * GitHub page, O-38). The newest finished deploy of main contains every earlier merge commit, so
- * a short window is enough; a deploy older than it is either covered by a newer one or replaced.
- */
-export const STAGING_DEPLOY_SCAN_LIMIT = 20;
 /** The setting: minutes in Verifying on staging with no deploy before the attention list (D-225). */
 export const STAGING_DEPLOY_WAIT_SETTING = "staging_deploy_attention_after_minutes";
 
-/** Deployment states that end a deployment: a success, or a failure (D-225). */
-const FINISHED: ReadonlySet<Deployment["state"]> = new Set([
-  "success",
-  "failure",
-  "error",
-]);
 /**
- * The branch a project's deploy on push reports to `staging` from (O-34). Projects carry no
+ * The branch whose CI build the runner deploys to staging (D-353, O-116). Projects carry no
  * default branch setting yet, so it is `main` for every project; a later commit counts only when
  * it is on this branch (D-225, O-38).
  */
@@ -113,17 +95,19 @@ export interface StagingCheckRequest {
 
 /**
  * What a staging check found. `servedCommitSha` is the commit staging reports it runs; a result
- * counts only when that is the merge commit. `no_result`: the check could not reach staging or
- * ran out of time, so it says nothing about the change.
+ * counts only when that is the merge commit or a commit on main that contains it (O-39).
+ * `no_result`: the check could not reach staging, ran out of time, or staging answered without a
+ * commit marker (`no_marker`), so it says nothing about the change.
  */
 export type StagingCheckResult =
   | { result: "pass" | "fail"; servedCommitSha: string }
-  | { result: "no_result"; reason: "unreachable" | "timed_out" };
+  | { result: "no_result"; reason: "unreachable" | "timed_out" | "no_marker" };
 
 /**
  * The runner's staging smoke check (ADR 0107), implemented by the deploy adapter, which owns
- * what staging is and where it answers (ADR 0111, build plan M3.7). It maps every failure to
- * reach staging to `no_result`; a thrown error records nothing.
+ * what staging is and where it answers (ADR 0111, src/adapters/deploy/staging-checker.ts: the
+ * commit marker the site serves, O-116). It maps every failure to reach staging to `no_result`;
+ * a thrown error records nothing.
  */
 export interface StagingChecker {
   check(request: StagingCheckRequest): Promise<StagingCheckResult>;
@@ -135,7 +119,8 @@ export interface StagingDeps {
   guards: GuardRegistry;
   clock: Clock;
   ids: IdSource;
-  github: GitHubDeploymentReader & GitHubCommitReader;
+  /** GitHub's compare and main's head, for the proof that a commit counts (D-225, O-38). */
+  github: GitHubCommitReader;
   /** Null where no check is run: the reconcile pass in dry run. */
   checker: StagingChecker | null;
 }
@@ -156,10 +141,11 @@ export type StagingStep =
   | "not_verifying"
   | "no_merge_commit"
   | "no_dispatch"
-  /** GitHub has not reported a finished staging deploy of a commit that contains the merge commit. */
+  /** No deploy covering the merge commit is recorded yet, or only refusals by infrastructure. */
   | "waiting_for_deploy"
   /** A staging deploy covering the merge commit failed, and led to the fail move (D-225). */
   | "deploy_failed"
+  /** GitHub's compare for a served commit could not be read. Nothing was recorded. */
   | "github_read_failed"
   /** Dry run: the deploy is there, and the live pass would run the check. */
   | "would_check"
@@ -197,27 +183,6 @@ export interface StagingDeployWait {
   waitedMinutes: number;
   limitMinutes: number;
 }
-
-/**
- * The key of a staging deploy: one per GitHub deployment of the merge commit itself, and one per
- * deployment and merge commit it covers for a deployment of a later commit (`coveredSha`), which
- * may cover several items (D-225).
- */
-export const stagingDeployKey = (
-  repo: string,
-  deploymentId: number,
-  coveredSha?: string,
-): string =>
-  `github:staging_deploy:${repo}:deployment-${deploymentId}` +
-  (coveredSha ? `:covers-${coveredSha}` : "");
-
-/** The key of a failed staging deploy: one per GitHub deployment and merge commit it covers. */
-export const stagingDeployFailedKey = (
-  repo: string,
-  deploymentId: number,
-  coveredSha: string,
-): string =>
-  `github:staging_deploy_failed:${repo}:deployment-${deploymentId}:covers-${coveredSha}`;
 
 /** The key of a staging check result: one per merge commit. */
 export const stagingCheckKey = (repo: string, sha: string): string =>
@@ -272,52 +237,46 @@ const field = (value: Json | undefined, key: string): Json | undefined =>
 const failedNames = (report: { name: string; pass: boolean }[]): string[] =>
   report.filter((c) => !c.pass).map((c) => c.name);
 
-/** What the GitHub receiver's staging check reads: two settings, nodes and dispatch records. */
-export type StagingReadOps = Pick<
-  StoreOps,
-  "getSetting" | "getNode" | "listDispatches"
->;
-
-/** A deploy as a `deployment_status` delivery reported it (src/core/github-ingest.ts). */
-export interface ReportedDeploy {
-  repo: string;
-  sha: string;
-  environment: string;
-  state: Deployment["state"];
+/**
+ * Whether `commit` counts for the merge commit `sha` (D-225, O-38): the merge commit itself, or
+ * a commit that contains it (compare `sha...commit` is `ahead`) and is on main (compare
+ * `commit...main head` is `identical` or `ahead`). Main's head is read once per reader; each
+ * compare is made once. GitHub's errors are thrown. The staging check and the deploy flow
+ * (./staging-deploy.ts) use the same reader, so a deploy and a check count the same commits.
+ */
+export function createCoverReader(
+  github: GitHubCommitReader,
+  repo: string,
+  sha: string,
+) {
+  const relations = new Map<string, CommitRelation>();
+  let mainHead: Promise<string | null> | undefined;
+  const compare = async (base: string, head: string): Promise<CommitRelation> => {
+    const key = `${base}...${head}`;
+    let relation = relations.get(key);
+    if (relation === undefined) {
+      relation = await github.compareCommits(repo, base, head);
+      relations.set(key, relation);
+    }
+    return relation;
+  };
+  return async (commit: string): Promise<CoverProof | null> => {
+    if (commit === sha) return { containment: "identical" };
+    if ((await compare(sha, commit)) !== "ahead") return null;
+    mainHead ??= github.getBranchHead(repo, STAGING_MAIN_BRANCH);
+    const head = await mainHead;
+    if (!head || !containmentOf(await compare(commit, head))) return null;
+    return { containment: "ahead", onMain: true, mainHeadSha: head };
+  };
 }
 
-/** Whether the staging flow is due for a reported deploy, and if not, why. */
-export type StagingDue =
-  | { due: true; repo: string; sha: string }
-  | {
-      due: false;
-      reason:
-        | "kill_switch"
-        | "dry_run"
-        /** A deploy to another environment than `staging`. */
-        | "not_staging"
-        /** A status that does not end the deployment: pending, queued, in progress, inactive. */
-        | "not_finished"
-        /** No item of the repository is in Verifying on staging. */
-        | "none_verifying";
-    };
-
-/**
- * The staging moves and the GitHub receiver's check before it starts `f/foreman/verify_staging`
- * on a `deployment_status` event (D-329 slice 4, O-104). `createStaging` below takes its moves
- * from here, so the check and the flow cannot drift. `due` reads the kill switch and dry run as
- * every flow reads them, and finds the repository's items through their dispatch records, which
- * name the repository (ADR 0113 section 9), so the receiver's role reads nothing new. It writes
- * nothing; the flow reads the deploy from GitHub again and never from the event.
- */
-export function createStagingReads(contracts: Contracts) {
+/** The moves a staging check result takes out of the node's state, for its track. */
+function stagingMovesOf(contracts: Contracts) {
   const trackMatches = (move: TransitionContract, node: Node): boolean =>
     !move.tracks || (node.track !== null && move.tracks.includes(node.track));
-
-  /** The moves a staging check result takes out of the node's state, for its track. */
-  function stagingMovesFor(
+  return (
     node: Node,
-  ): { pass: TransitionContract; fail: TransitionContract | undefined } | null {
+  ): { pass: TransitionContract; fail: TransitionContract | undefined } | null => {
     const out = contracts.transitions.filter(
       (m) => !m.escalation && m.from === node.state && trackMatches(m, node),
     );
@@ -326,35 +285,6 @@ export function createStagingReads(contracts: Contracts) {
     );
     if (!pass) return null;
     return { pass, fail: out.find((m) => m.guards.includes(STAGING_FAIL_GUARD)) };
-  }
-
-  return {
-    stagingMovesFor,
-
-    /**
-     * Whether a reported deploy calls for the staging flow: a finished deploy to `staging`, no
-     * switch holding the runner, and some item of the repository in Verifying on staging.
-     */
-    async due(ops: StagingReadOps, deploy: ReportedDeploy): Promise<StagingDue> {
-      if (deploy.environment !== STAGING_ENVIRONMENT) {
-        return { due: false, reason: "not_staging" };
-      }
-      if (!FINISHED.has(deploy.state)) return { due: false, reason: "not_finished" };
-      if ((await ops.getSetting("kill_switch"))?.value === true) {
-        return { due: false, reason: "kill_switch" };
-      }
-      // A missing setting means dry run, as in the library.
-      if ((await ops.getSetting("dry_run"))?.value !== false) {
-        return { due: false, reason: "dry_run" };
-      }
-      for (const dispatch of await ops.listDispatches({ repo: deploy.repo })) {
-        const node = await ops.getNode(dispatch.nodeId);
-        if (node && stagingMovesFor(node)) {
-          return { due: true, repo: deploy.repo, sha: deploy.sha };
-        }
-      }
-      return { due: false, reason: "none_verifying" };
-    },
   };
 }
 
@@ -366,7 +296,7 @@ export function createStaging(deps: StagingDeps) {
     Object.hasOwn(contracts.states, name) ? contracts.states[name] : undefined;
   const trackMatches = (move: TransitionContract, node: Node): boolean =>
     !move.tracks || (node.track !== null && move.tracks.includes(node.track));
-  const { stagingMovesFor } = createStagingReads(contracts);
+  const stagingMovesFor = stagingMovesOf(contracts);
 
   /** States a passed staging check leads to (Done). */
   const doneStates = new Set(
@@ -569,66 +499,6 @@ export function createStaging(deps: StagingDeps) {
     return escalation ? { ...checked, escalation } : checked;
   }
 
-  /**
-   * Whether `commit` counts for the merge commit `sha` (D-225, O-38): the merge commit itself, or
-   * a commit that contains it (compare `sha...commit` is `ahead`) and is on main (compare
-   * `commit...main head` is `identical` or `ahead`). Main's head is read once per call to
-   * `verify`; each compare is made once. GitHub's errors are thrown.
-   */
-  function coverReader(repo: string, sha: string) {
-    const relations = new Map<string, CommitRelation>();
-    let mainHead: Promise<string | null> | undefined;
-    const compare = async (base: string, head: string): Promise<CommitRelation> => {
-      const key = `${base}...${head}`;
-      let relation = relations.get(key);
-      if (relation === undefined) {
-        relation = await github.compareCommits(repo, base, head);
-        relations.set(key, relation);
-      }
-      return relation;
-    };
-    return async (commit: string): Promise<CoverProof | null> => {
-      if (commit === sha) return { containment: "identical" };
-      if ((await compare(sha, commit)) !== "ahead") return null;
-      mainHead ??= github.getBranchHead(repo, STAGING_MAIN_BRANCH);
-      const head = await mainHead;
-      if (!head || !containmentOf(await compare(commit, head))) return null;
-      return { containment: "ahead", onMain: true, mainHeadSha: head };
-    };
-  }
-
-  /**
-   * Step 2's read (D-225, O-38): the newest finished `staging` deployment whose commit counts for
-   * the merge commit, from GitHub's deployments of the merge commit and its latest deployments of
-   * any commit, by deployment id (GitHub's ids grow with time). A deployment of a commit that is
-   * `behind`, `diverged`, or not on main is skipped.
-   */
-  async function coveringDeploy(
-    repo: string,
-    sha: string,
-    cover: (commit: string) => Promise<CoverProof | null>,
-  ): Promise<{ deployment: Deployment; proof: CoverProof } | null> {
-    const byId = new Map<number, Deployment>();
-    for (const d of [
-      ...(await github.listDeployments(repo, STAGING_ENVIRONMENT, sha)).filter(
-        (d) => d.sha === sha,
-      ),
-      ...(await github.listRecentDeployments(
-        repo,
-        STAGING_ENVIRONMENT,
-        STAGING_DEPLOY_SCAN_LIMIT,
-      )),
-    ]) {
-      if (d.environment === STAGING_ENVIRONMENT && FINISHED.has(d.state))
-        byId.set(d.id, d);
-    }
-    for (const deployment of [...byId.values()].sort((a, b) => b.id - a.id)) {
-      const proof = await cover(deployment.sha);
-      if (proof) return { deployment, proof };
-    }
-    return null;
-  }
-
   /** Steps 1 to 4 for one node. `null` checker: no check is run, as in dry run. */
   async function verify(nodeId: string): Promise<StagingResult> {
     if ((await store.getSetting("kill_switch"))?.value === true) {
@@ -647,13 +517,16 @@ export function createStaging(deps: StagingDeps) {
     if (!sha) return { nodeId, step: "no_merge_commit", ...waiting };
     const base: StagingResult = { nodeId, step: "checked", mergeCommitSha: sha };
 
-    // A result already recorded: a failed deploy covering the merge commit, else a check.
+    // A result already recorded: a failed deploy covering the merge commit, else a check. A
+    // deploy infrastructure refused is not a failed deploy (O-116, N-103).
     const failed = latest(
-      await store.listEvidence({
-        nodeId,
-        kind: "staging_deploy_failed",
-        commitSha: sha,
-      }),
+      (
+        await store.listEvidence({
+          nodeId,
+          kind: "staging_deploy_failed",
+          commitSha: sha,
+        })
+      ).filter((e) => countsAsFailedDeploy(e.payload)),
     );
     if (failed) {
       return decide(node, moves, deployFailedOutcome(failed), {
@@ -679,51 +552,13 @@ export function createStaging(deps: StagingDeps) {
     const repo = field(dispatch?.payload, "repo");
     if (typeof repo !== "string" || repo === "")
       return { ...base, step: "no_dispatch", ...waiting };
-    const cover = coverReader(repo, sha);
-    let deploy = latest(
+    const cover = createCoverReader(github, repo, sha);
+    // The deploy as the runner recorded it when it made it (D-356, O-116); nothing is read from
+    // GitHub's deployments.
+    const deploy = latest(
       await store.listEvidence({ nodeId, kind: "staging_deploy", commitSha: sha }),
     );
-    if (!deploy) {
-      let found;
-      try {
-        found = await coveringDeploy(repo, sha, cover);
-      } catch {
-        return { ...base, step: "github_read_failed", ...waiting };
-      }
-      if (!found) return { ...base, step: "waiting_for_deploy", ...waiting };
-      const { deployment, proof } = found;
-      const covered = deployment.sha === sha ? undefined : sha;
-      const facts = {
-        environment: STAGING_ENVIRONMENT,
-        deploymentId: deployment.id,
-        deployedSha: deployment.sha,
-        ...proof,
-      };
-      if (deployment.state !== "success") {
-        const key = stagingDeployFailedKey(repo, deployment.id, sha);
-        const recorded = await recordOnce(
-          fact(
-            node,
-            "staging_deploy_failed",
-            sha,
-            { ...facts, state: deployment.state },
-            key,
-          ),
-          key,
-        );
-        if (!recorded) return { ...base, step: "waiting_for_deploy", ...waiting };
-        return decide(node, moves, deployFailedOutcome(recorded), {
-          ...base,
-          step: "deploy_failed",
-          deployFailedEvidenceId: recorded.id,
-        });
-      }
-      const key = stagingDeployKey(repo, deployment.id, covered);
-      deploy =
-        (await recordOnce(fact(node, "staging_deploy", sha, facts, key), key)) ??
-        undefined;
-      if (!deploy) return { ...base, step: "waiting_for_deploy", ...waiting };
-    }
+    if (!deploy) return { ...base, step: "waiting_for_deploy", ...waiting };
     const withDeploy = { ...base, deployEvidenceId: deploy.id };
 
     // Step 3. Two checks without a result already: the Council (the guard counts them).
@@ -822,27 +657,6 @@ export function createStaging(deps: StagingDeps) {
     stagingMovesFor,
     verify,
     releaseDependents,
-
-    /**
-     * The event path: GitHub reported a deploy of `sha` in `repo` (a `deployment_status`
-     * event). Every item of the repository in Verifying on staging is verified, since a deploy of
-     * a later commit may cover its merge commit (D-225), and so is the item whose latest merge
-     * commit is exactly `sha`. Each reads the deploy from GitHub again, never from the event.
-     */
-    async verifyCommit(repo: string, sha: string): Promise<StagingResult[]> {
-      const results: StagingResult[] = [];
-      for (const dispatch of await store.listDispatches({ repo })) {
-        const node = await store.getNode(dispatch.nodeId);
-        if (!node) continue;
-        const merge = latest(
-          await store.listEvidence({ nodeId: node.id, kind: "merge_commit" }),
-        );
-        if (merge?.commitSha === sha || stagingMovesFor(node)) {
-          results.push(await verify(node.id));
-        }
-      }
-      return results;
-    },
 
     /**
      * The items among `results` that have waited in Verifying on staging with no deploy recorded

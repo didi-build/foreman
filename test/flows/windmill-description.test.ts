@@ -29,11 +29,11 @@ import {
 } from "../../src/adapters/windmill/plan-approval-flow.ts";
 import {
   ADVANCE_ITEM_FLOW_PATH,
+  DEPLOY_STAGING_FLOW_PATH,
   OPTION_CAPTURE_FLOW_PATH,
   RECEIVER_FLOW_PATHS,
   RECEIVER_WINDMILL_TOKEN_PATH,
   REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
-  VERIFY_STAGING_FLOW_PATH,
 } from "../../src/adapters/windmill/receiver-flows.ts";
 import {
   RECORD_RUN_END_FLOW_PATH,
@@ -173,7 +173,7 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     }
   });
 
-  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes (D-352, O-110)", () => {
+  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes and the two Didi stores for the staging deploy (D-352, O-110, O-116)", () => {
     const withPath = [
       ...description.resources.secrets.map((s) => [s.path, s.windmill_path]),
       ...description.resources.values.map((v) => [v.name, v.windmill_path]),
@@ -182,7 +182,21 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       [SECRET_PATHS.clusterToken]: `f/foreman/${SECRET_PATHS.clusterToken}`,
       [VALUE_NAMES.clusterEndpoint]: `f/foreman/${VALUE_NAMES.clusterEndpoint}`,
       [VALUE_NAMES.clusterCaCertificate]: `f/foreman/${VALUE_NAMES.clusterCaCertificate}`,
+      [SECRET_PATHS.stagingDeployToken]: `f/foreman/${SECRET_PATHS.stagingDeployToken}`,
+      [SECRET_PATHS.cloudflareAccountId]: `f/foreman/${SECRET_PATHS.cloudflareAccountId}`,
     });
+  });
+
+  it("names the staging deploy token's one permission and where Didi puts it (D-353, O-116)", () => {
+    const token = description.resources.secrets.find(
+      (s) => s.path === SECRET_PATHS.stagingDeployToken,
+    ) as { holds?: string; written_by?: string } | undefined;
+    expect(token?.holds).toMatch(/Workers Scripts Edit on the account only/);
+    expect(token?.written_by).toMatch(/runbook step 16/);
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    expect(runbook).toContain("## 16. The staging deploy token (new-credentials gate)");
+    expect(runbook).toContain(`\`f/foreman/${SECRET_PATHS.stagingDeployToken}\``);
+    expect(runbook).toContain(`\`f/foreman/${SECRET_PATHS.cloudflareAccountId}\``);
   });
 });
 
@@ -205,14 +219,16 @@ describe("the flow the run watcher starts (unit: repo guard, D-330, O-102)", () 
   });
 });
 
-describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, O-104, O-114)", () => {
-  it("are the called option capture, advance, staging and access removal flows, at the paths the receiver's ports start, and nothing else", () => {
+describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, O-104, O-114, O-116)", () => {
+  it("are the called option capture, advance, staging deploy and access removal flows, at the paths the receiver's ports start, and nothing else", () => {
     expect(RECEIVER_FLOW_PATHS).toEqual([
       OPTION_CAPTURE_FLOW_PATH,
       ADVANCE_ITEM_FLOW_PATH,
-      VERIFY_STAGING_FLOW_PATH,
+      DEPLOY_STAGING_FLOW_PATH,
       REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
     ]);
+    // The staging flow `deployment_status` started is gone with its start (D-356).
+    expect(description.flows.map((f) => f.name)).not.toContain("verify_staging");
     for (const path of RECEIVER_FLOW_PATHS) {
       const flow = description.flows.find((f) => f.path === path);
       expect(flow?.trigger, path).toBe("called");
@@ -224,7 +240,7 @@ describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, 
     ).toEqual([
       "flows/option-capture.ts",
       "flows/advance-item.ts",
-      "flows/verify-staging.ts",
+      "flows/deploy-staging.ts",
       "flows/remove-bootstrap-access.ts",
     ]);
   });

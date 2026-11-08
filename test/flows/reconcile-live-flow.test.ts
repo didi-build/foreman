@@ -11,7 +11,7 @@ import { run as resume } from "../../flows/approval-resume.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { run as requestTransition } from "../../flows/request-transition.ts";
-import { run as verifyStaging } from "../../flows/verify-staging.ts";
+import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import { startReadyRuns } from "../../flows/lib/ready-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
@@ -276,9 +276,12 @@ describe("a move that makes an item ready starts its first run in the same flow 
     expect(f.runtime.started).toHaveLength(1);
   });
 
-  it("the staging flow's Done frees a Blocked item and a design item waiting on it, once each", async () => {
+  it("the staging deploy flow's Done frees a Blocked item and a design item waiting on it, once each", async () => {
     const t = await setupStaging();
-    const { deps, runtime } = flowDepsFor(t.deps, t.checker);
+    const { deps, runtime } = flowDepsFor(t.deps, t.checker, {
+      builds: t.builds,
+      target: t.target,
+    });
     const code = await t.addNode("blocked");
     await t.blocks(t.node.id, code.id);
     // A design item waits in Ready for design exploration on its blocker (D-268), plan attached.
@@ -301,13 +304,13 @@ describe("a move that makes an item ready starts its first run in the same flow 
         [design.id],
       );
     }
-    t.deploy();
+    const runId = t.built();
 
-    const verified = await verifyStaging(deps, { repo: REPO, sha: t.mergeSha });
+    const verified = await deployStaging(deps, { repo: REPO, runId });
 
     expect(verified).toMatchObject({
-      outcome: "verified",
-      results: [{ move: { toState: "done", outcome: "applied" } }],
+      outcome: "done",
+      deploy: { verified: [{ move: { toState: "done", outcome: "applied" } }] },
       firstRuns: [
         { nodeId: code.id, role: "developer", result: { outcome: "started" } },
         { nodeId: design.id, role: "designer", result: { outcome: "started" } },
@@ -319,7 +322,7 @@ describe("a move that makes an item ready starts its first run in the same flow 
     expect(runtime.started).toHaveLength(2);
 
     // The same event again starts nothing more.
-    expect(await verifyStaging(deps, { repo: REPO, sha: t.mergeSha })).toMatchObject({
+    expect(await deployStaging(deps, { repo: REPO, runId })).toMatchObject({
       firstRuns: [],
     });
     expect(runtime.started).toHaveLength(2);

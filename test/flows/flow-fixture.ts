@@ -9,6 +9,12 @@ import type {
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
+import {
+  createFakeStagingBuilds,
+  createFakeStagingTarget,
+  type FakeStagingBuilds,
+  type FakeStagingTarget,
+} from "../../src/adapters/deploy/fake.ts";
 import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import {
   createFakeProjectRepositories,
@@ -86,8 +92,11 @@ export type FlowFixture = Awaited<ReturnType<typeof createFlowFixture>>;
 export function flowDepsFor(
   base: ReconcileDeps,
   stagingChecker: StagingChecker = createFakeStagingChecker(),
+  staging: { builds?: FakeStagingBuilds; target?: FakeStagingTarget } = {},
 ) {
   const runtime = createFakeRuntime();
+  const stagingBuilds = staging.builds ?? createFakeStagingBuilds();
+  const stagingTarget = staging.target ?? createFakeStagingTarget();
   const screenshots = createFakeScreenshotBundles();
   const repoFolders = createFakeRepoFolders();
   const repoMaps = createFakeRepoMaps();
@@ -103,6 +112,8 @@ export function flowDepsFor(
     ...base,
     runtime,
     stagingChecker,
+    stagingBuilds,
+    stagingTarget,
     screenshots,
     repoFolders,
     repoMaps,
@@ -138,6 +149,8 @@ export function flowDepsFor(
   return {
     deps,
     runtime,
+    stagingBuilds,
+    stagingTarget,
     screenshots,
     repoFolders,
     repoMaps,
@@ -159,6 +172,8 @@ export async function createFlowFixture() {
   const {
     deps,
     runtime,
+    stagingBuilds,
+    stagingTarget,
     screenshots,
     repoFolders,
     repoMaps,
@@ -189,6 +204,8 @@ export async function createFlowFixture() {
     deps,
     runtime,
     stagingChecker,
+    stagingBuilds,
+    stagingTarget,
     screenshots,
     repoFolders,
     repoMaps,

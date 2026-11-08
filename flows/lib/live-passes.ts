@@ -12,7 +12,10 @@
 // 3. The merged-change pass asks the Council whether each open item that touches the same design
 //    feature folder as a merged item is still needed (D-308 (3), src/core/still-needed.ts), once
 //    per pair, before the Council pass starts the runs.
-// 4. The staging pass checks each merged item on staging and recovers its moves, its escalation
+// 4. The staging deploy backstop (D-353, O-116, src/core/staging-deploy.ts): for each project
+//    with an item in Verifying on staging and no deploy recorded for its merge commit, the newest
+//    successful CI build on main is deployed when its commit covers one, recorded and checked. Then
+//    the staging pass checks each merged item on staging and recovers its moves, its escalation
 //    and its dependents' release (M3.4, O-37): the staging part of step 4. It reports the items
 //    that have waited past `staging_deploy_attention_after_minutes` with no deploy recorded
 //    (D-225, O-40), and each item a node's Done frees gets its first run at once (D-329).
@@ -52,6 +55,8 @@
 // 16. In both modes, unless the kill switch stopped the pass, the backstop of `BOOTSTRAP_TOKEN`'s
 //    access (D-358 lock (2), O-114, src/core/bootstrap-access.ts): each repository on the secret's
 //    list outside its setup window is removed, and in dry run reported as one it would remove.
+// In dry run the staging deploy backstop of step 4 reports what it would deploy, and does nothing
+// else; under the kill switch it does not run.
 // The stall check and the clean-up candidates (steps 5 and 6) are the pass's own reports, in both
 // modes. In dry run none of steps 1 to 15 runs: the result carries the cancel step's report of
 // what it would do instead. Everything here runs inside the reconcile flow's one Windmill run
@@ -77,6 +82,8 @@ import {
   type StagingDeployWait,
   type StagingResult,
 } from "../../src/core/staging.ts";
+import type { StagingBackstopStep } from "../../src/core/staging-deploy.ts";
+import { stagingDeploysOf } from "./staging-deploys.ts";
 import { startBuilderRuns, type BuilderRunStart } from "./builder-runs.ts";
 import {
   firstRunsAfterStaging,
@@ -119,6 +126,11 @@ export interface LivePasses {
    */
   firstRuns: ReadyRunStart[] | null;
   merged: { nodeId: string; result: MergeResult }[] | null;
+  /**
+   * Step 4's staging deploy backstop (O-116): what it deployed for each project with an item
+   * waiting for a deploy, or in dry run what it would deploy. Null under the kill switch.
+   */
+  stagingDeploys: StagingBackstopStep[] | null;
   verified: StagingResult[] | null;
   /** Items in Verifying on staging past the wait setting with no deploy, for the attention list. */
   stagingWaits: StagingDeployWait[] | null;
@@ -179,6 +191,9 @@ export async function runLivePasses(
 ): Promise<LivePasses> {
   const { stopped, cancels: wouldStop } = report;
   if (stopped !== null || report.mode !== "live") {
+    // In dry run the deploy backstop only says what it would deploy.
+    const stagingDeploys =
+      stopped === null ? await stagingDeploysOf(deps).backstop() : null;
     const access = await accessBackstop(deps, stopped);
     return {
       released: null,
@@ -186,6 +201,7 @@ export async function runLivePasses(
       advanced: null,
       firstRuns: null,
       merged: null,
+      stagingDeploys,
       verified: null,
       stagingWaits: null,
       escalations: null,
@@ -207,10 +223,12 @@ export async function runLivePasses(
   const steps = await runReconcileSteps(deps, report);
   const merged = await createMerges(deps).mergeReady();
   const stillNeeded = await createStillNeeded(deps).mergedChangePass();
+  const stagingDeploys = await stagingDeploysOf(deps).backstop();
+  const deployChecks = stagingDeploys.flatMap((s) => s.deploy?.verified ?? []);
   const staging = createStaging({ ...deps, checker: deps.stagingChecker });
   const verified = await staging.verifyReady();
   const { waits, problem } = await staging.deployWaits(verified);
-  const firstRuns = await firstRunsAfterStaging(deps, verified);
+  const firstRuns = await firstRunsAfterStaging(deps, [...deployChecks, ...verified]);
   const escalations = await createEscalations(deps).resolveAll();
   firstRuns.push(
     ...(await startReadyRuns(
@@ -249,6 +267,7 @@ export async function runLivePasses(
     advanced: steps.advances,
     firstRuns,
     merged,
+    stagingDeploys,
     verified,
     stagingWaits: waits,
     escalations,

@@ -333,6 +333,34 @@ describe("the Council run's input (unit, D-213 style)", () => {
     expect(input).toContain("> No header row.");
   });
 
+  it("lists the staging deploys that failed, and never one infrastructure refused (O-116, N-103)", async () => {
+    const t = await setup();
+    const node = await t.escalated();
+    const merge = "1".repeat(40);
+    const refused = (cause: string) => ({
+      deployedSha: merge,
+      workflowRunId: 3,
+      containment: "identical",
+      state: cause === "file_set" ? "failure" : "error",
+      cause,
+      reason: "x",
+      text: "x",
+    });
+    await t.evidence(node.id, "staging_deploy_failed", refused("infrastructure"), {
+      commitSha: merge,
+    });
+    const quiet = (await t.council.taskFor(escalationTopic(node.id)))?.input ?? "";
+    expect(quiet).not.toContain("## Staging fails");
+    await t.evidence(node.id, "staging_deploy_failed", refused("file_set"), {
+      commitSha: merge,
+    });
+    const input = (await t.council.taskFor(escalationTopic(node.id)))?.input ?? "";
+    expect(input).toContain(
+      `## Staging fails\n\n- a staging deploy failed, covering merge commit ${merge}`,
+    );
+    expect(input.match(/a staging deploy failed/g)).toHaveLength(1);
+  });
+
   it("gives a reversal the reversed decision, the reason and every stale item by id, with the reversal schema", async () => {
     const t = await setup();
     const { stale, topic, decision } = await t.reversed();

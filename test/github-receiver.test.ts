@@ -54,7 +54,6 @@ beforeAll(async () => {
         ids,
         optionCapture: flows,
         advanceItem: flows,
-        verifyStaging: flows,
         logger,
       }),
       logger,

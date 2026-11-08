@@ -3,7 +3,9 @@
 // pull requests and on pushes to main with only contents read and no secret, builds and marks the
 // PR's head commit (never the merge ref's), and serves and probes the build with the scripts in
 // `.github/scripts/`. The hosted preview is gone. The scripts' behaviour is in
-// test/preview-check-scripts.test.ts.
+// test/preview-check-scripts.test.ts. On a push to main only, the same job keeps the build it
+// probed as the artifact the runner's staging deploy fetches (D-353, O-116), with the
+// upload-artifact pin the repository already uses, a short retention and still no secret.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,17 +13,24 @@ import { parse as parseYaml } from "yaml";
 
 import { DEFAULT_PRIVILEGED_PATHS, globToRegExp } from "../src/core/guards/review.ts";
 import {
+  COMMIT_MARKER_FILE,
   PREVIEW_CHECK_JOB,
   PREVIEW_CHECK_WORKFLOW,
   PREVIEW_CHECK_WORKFLOW_FILE,
 } from "../src/core/preview-check.ts";
+import {
+  STAGING_BUILD_WORKFLOW,
+  STAGING_SITE_ARTIFACT,
+} from "../src/core/staging-deploy.ts";
 
 interface Step {
   name?: string;
+  if?: string;
   uses?: string;
   run?: string;
   env?: Record<string, string>;
   with?: Record<string, unknown>;
+  "continue-on-error"?: unknown;
 }
 interface Job {
   name?: string;
@@ -123,11 +132,12 @@ describe("the preview check's workflow (unit: repo guard, D-354, O-111)", () => 
     expect(job.env?.SITE_PORT).toMatch(/^\d{4,5}$/);
   });
 
-  it("uses only actions pinned as the rest of CI pins them", () => {
+  it("uses only actions pinned as the rest of CI pins them, and the repository's upload pin", () => {
     const pins = workflow.jobs.check!.steps.flatMap((s) => (s.uses ? [s.uses] : []));
     const used = job.steps.flatMap((s) => (s.uses ? [s.uses] : []));
-    expect(used).toHaveLength(2);
-    for (const uses of used) expect(pins, uses).toContain(uses);
+    expect(used).toHaveLength(3);
+    for (const uses of used.slice(0, 2)) expect(pins, uses).toContain(uses);
+    expect(used[2]).toBe(UPLOAD_PIN);
   });
 
   it("keeps the workflow and the scripts on privileged paths", () => {
@@ -142,6 +152,70 @@ describe("the preview check's workflow (unit: repo guard, D-354, O-111)", () => 
         path,
       ).toBe(true);
     }
+  });
+});
+
+/** The one upload-artifact pin the repository's other workflows already use. */
+const UPLOAD_PIN = (() => {
+  const found = new Set<string>();
+  for (const file of readdirSync(".github/workflows")) {
+    if (file === PREVIEW_CHECK_WORKFLOW_FILE) continue;
+    const raw = readFileSync(join(".github/workflows", file), "utf8");
+    for (const m of raw.matchAll(
+      /uses: (actions\/upload-artifact@[0-9a-f]{40}) # v[\d.]+/g,
+    ))
+      found.add(m[1]!);
+  }
+  if (found.size !== 1)
+    throw new Error("expected one upload-artifact pin in the repository");
+  return [...found][0]!;
+})();
+
+describe("the staging site artifact (unit: repo guard, D-353, O-116)", () => {
+  const index = job.steps.findIndex((s) =>
+    s.uses?.startsWith("actions/upload-artifact@"),
+  );
+  const upload = job.steps[index]!;
+
+  it("keeps the probed build as staging-site, after the probe, with the repository's pin", () => {
+    expect(STAGING_BUILD_WORKFLOW).toBe(PREVIEW_CHECK_WORKFLOW);
+    expect(STAGING_SITE_ARTIFACT).toBe("staging-site");
+    expect(upload.uses).toBe(UPLOAD_PIN);
+    expect(text).toContain(`uses: ${UPLOAD_PIN} # v4.6.2`);
+    expect(upload.with?.name).toBe(STAGING_SITE_ARTIFACT);
+    expect(upload.with?.path).toBe(`${SITE}/`);
+    expect(upload.with?.["if-no-files-found"]).toBe("error");
+    // The last step: what is kept is exactly the site the probe served, marker included.
+    expect(index).toBe(job.steps.length - 1);
+    const probe = job.steps.findIndex((s) =>
+      /preview-check\.mjs probe /.test(s.run ?? ""),
+    );
+    expect(probe).toBeGreaterThan(0);
+    expect(probe).toBeLessThan(index);
+    expect(COMMIT_MARKER_FILE).toBe("foreman-commit.txt");
+  });
+
+  it("runs on a push to main only, never on a pull request", () => {
+    expect(upload.if).toBe("github.event_name == 'push'");
+    // The workflow's only push is to main, and the job's own condition lets a push through.
+    expect(workflow.on.push?.branches).toEqual(["main"]);
+    expect(upload["continue-on-error"]).toBeUndefined();
+  });
+
+  it("keeps it for a short time, with no secret, token or environment", () => {
+    expect(upload.with?.["retention-days"]).toBe(7);
+    expect(Object.keys(upload.with ?? {}).sort()).toEqual([
+      "if-no-files-found",
+      "name",
+      "path",
+      "retention-days",
+    ]);
+    expect(JSON.stringify(upload)).not.toMatch(
+      /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN/,
+    );
+    expect(upload.env).toBeUndefined();
+    expect(job.permissions).toEqual({ contents: "read" });
+    expect(job.environment).toBeUndefined();
   });
 });
 

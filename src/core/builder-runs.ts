@@ -23,7 +23,11 @@
 // switch, the limits and the usage-exhausted wait.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
-import { readQaVerdict, readVisualComparison } from "./guards/evidence.ts";
+import {
+  readDeployRefusal,
+  readQaVerdict,
+  readVisualComparison,
+} from "./guards/evidence.ts";
 import { optionFoldersAt } from "./guards/options.ts";
 import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
 import { captureRefusalKey, failureCountKey } from "./failures.ts";
@@ -374,7 +378,7 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
       kind: "staging_deploy_failed",
       mergeCommitSha: evidence.commitSha,
       deployedSha: text(field(evidence.payload, "deployedSha")),
-      deployState: text(field(evidence.payload, "state")),
+      refusal: readDeployRefusal(evidence.payload)?.text ?? null,
     };
   }
 

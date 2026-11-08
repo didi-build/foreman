@@ -138,7 +138,7 @@ import {
   type Verdict,
 } from "./guards/council.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
-import { readQaVerdict } from "./guards/evidence.ts";
+import { countsAsFailedDeploy, readQaVerdict } from "./guards/evidence.ts";
 import { outputProblem, type OutputSchema } from "./output-schema.ts";
 import type { BotProfile } from "./reconcile.ts";
 import { quoted } from "./task-input.ts";
@@ -1026,6 +1026,9 @@ export function createCouncil(options: CouncilOptions) {
     for (const kind of ["staging_check", "staging_deploy_failed"] as const) {
       for (const e of await store.listEvidence({ nodeId: node.id, kind })) {
         if (kind === "staging_check" && field(e.payload, "pass") !== false) continue;
+        // A deploy infrastructure refused says nothing about the change (O-116, N-103).
+        if (kind === "staging_deploy_failed" && !countsAsFailedDeploy(e.payload))
+          continue;
         stagingFails.push({ kind, commitSha: e.commitSha, at: e.recordedAt });
       }
     }

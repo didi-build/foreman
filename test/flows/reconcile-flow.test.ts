@@ -1,12 +1,17 @@
 // Seam: the reconcile flow (build plan M3.1, architecture section 2.5) with fake adapters on the
 // memory store. The pass itself is tested in test/reconcile.test.ts; this covers what the flow
-// adds: the execution count from the composition layer and one result per run, and the live
-// staging pass's deploy waits on the attention count (D-225).
+// adds: the execution count from the composition layer and one result per run, the live
+// staging pass's deploy waits on the attention count (D-225), and the staging deploy backstop
+// before it (O-116).
 import { describe, expect, it } from "vitest";
 
 import { run } from "../../flows/reconcile.ts";
-import { run as verifyStaging } from "../../flows/verify-staging.ts";
+import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import type { FlowDeps } from "../../flows/lib/compose.ts";
+import {
+  createFakeStagingBuilds,
+  createFakeStagingTarget,
+} from "../../src/adapters/deploy/fake.ts";
 import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import { setupMerge } from "../merge-fixture.ts";
 import { stalledItems, stalledRuns } from "../../src/core/stalls.ts";
@@ -85,6 +90,8 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
       ...t.deps,
       runtime: { start: notUsed, poll: notUsed, cancel: notUsed },
       stagingChecker: createFakeStagingChecker(),
+      stagingBuilds: createFakeStagingBuilds(),
+      stagingTarget: createFakeStagingTarget(),
       screenshots: { read: notUsed },
       repoFolders: { folderId: notUsed },
       repoMaps: { read: notUsed },
@@ -123,6 +130,8 @@ function stagingFlowDeps(t: Awaited<ReturnType<typeof setupStaging>>): FlowDeps 
     ...t.deps,
     runtime: { start: notUsed, poll: notUsed, cancel: notUsed },
     stagingChecker: t.checker,
+    stagingBuilds: t.builds,
+    stagingTarget: t.target,
     screenshots: { read: notUsed },
     repoFolders: { folderId: notUsed },
     repoMaps: { read: notUsed },
@@ -141,7 +150,7 @@ function stagingFlowDeps(t: Awaited<ReturnType<typeof setupStaging>>): FlowDeps 
 describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
   it("the reconcile flow in live mode runs the staging pass after the merge pass, once", async () => {
     const t = await setupStaging();
-    t.deploy();
+    await t.deploy();
     const deps = stagingFlowDeps(t);
     const first = await run(deps);
     expect(first.verified).toMatchObject([
@@ -168,9 +177,9 @@ describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
     });
   });
 
-  it("the reconcile flow runs no staging check in dry run, and the pass records the deploy", async () => {
+  it("the reconcile flow runs no staging check in dry run, and the pass reads the recorded deploy", async () => {
     const t = await setupStaging({ dryRun: true });
-    t.deploy();
+    await t.deploy();
     const result = await run(stagingFlowDeps(t));
     expect(result.verified).toBeNull();
     expect(result.planned.staging).toBe(1);
@@ -178,38 +187,96 @@ describe("staging in the flows (flow: fake adapters, build plan M3.4)", () => {
     expect(await t.kind("staging_deploy")).toHaveLength(1);
   });
 
-  it("the staging flow verifies the item a deploy event names, once for a repeated event", async () => {
+  it("the reconcile flow's deploy backstop deploys main's newest build for an item with no deploy, once (O-116)", async () => {
     const t = await setupStaging();
-    t.deploy();
+    const runId = t.built();
     const deps = stagingFlowDeps(t);
-    const input = { repo: REPO, sha: t.mergeSha };
-    expect(await verifyStaging(deps, input)).toMatchObject({
-      outcome: "verified",
-      results: [{ move: { toState: "done", outcome: "applied" } }],
+    const first = await run(deps);
+    expect(first.stagingDeploys).toMatchObject([
+      {
+        repo: REPO,
+        step: "deploy",
+        deploy: { runId, step: "deployed", covers: [t.node.id] },
+      },
+    ]);
+    expect(await t.state()).toBe("done");
+    expect(t.target.deploys).toHaveLength(1);
+    // Nothing waits any more: no read of GitHub's runs and no second deploy.
+    expect((await run(deps)).stagingDeploys).toEqual([]);
+    expect(t.target.deploys).toHaveLength(1);
+  });
+
+  it("the reconcile flow's deploy backstop only reports in dry run, and does not run under the kill switch", async () => {
+    const t = await setupStaging({ dryRun: true });
+    const runId = t.built();
+    const deps = stagingFlowDeps(t);
+    expect((await run(deps)).stagingDeploys).toMatchObject([
+      {
+        step: "deploy",
+        deploy: {
+          runId,
+          step: "would_deploy",
+          commitSha: t.mergeSha,
+          covers: [t.node.id],
+        },
+      },
+    ]);
+    expect(t.target.deploys).toEqual([]);
+    expect(t.builds.reads.filter((r) => r.startsWith("siteArchive"))).toEqual([]);
+    await t.setting("kill_switch", true);
+    const reads = t.builds.reads.length;
+    expect((await run(deps)).stagingDeploys).toBeNull();
+    expect(t.builds.reads).toHaveLength(reads);
+    expect(await t.kind("staging_deploy")).toEqual([]);
+  });
+
+  it("the deploy flow deploys a CI run, records it and checks the item it covers, once for a repeated start", async () => {
+    const t = await setupStaging();
+    const runId = t.built();
+    const deps = stagingFlowDeps(t);
+    const input = { repo: REPO, runId };
+    expect(await deployStaging(deps, input)).toMatchObject({
+      outcome: "done",
+      deploy: {
+        step: "deployed",
+        verified: [{ move: { toState: "done", outcome: "applied" } }],
+      },
     });
-    await verifyStaging(deps, input);
+    await deployStaging(deps, input);
     expect(t.checker.calls).toHaveLength(1);
-    expect(await verifyStaging(deps, { ...input, sha: "a".repeat(40) })).toEqual({
-      outcome: "verified",
-      results: [],
+    expect(await t.kind("staging_deploy")).toHaveLength(1);
+    // A run GitHub does not have deploys nothing.
+    expect(await deployStaging(deps, { repo: REPO, runId: runId + 50 })).toEqual({
+      outcome: "done",
+      deploy: { repo: REPO, runId: runId + 50, step: "not_a_main_build" },
       builderRuns: [],
       firstRuns: [],
     });
   });
 
-  it("the staging flow refuses under the kill switch and writes nothing", async () => {
+  it("the deploy flow refuses under the kill switch, and a malformed input, and writes nothing", async () => {
     const t = await setupStaging();
-    t.deploy();
+    const runId = t.built();
     await t.setting("kill_switch", true);
     const before = await t.transitions(t.node.id);
-    expect(
-      await verifyStaging(stagingFlowDeps(t), {
-        repo: REPO,
-        sha: t.mergeSha,
-      }),
-    ).toEqual({ outcome: "refused", reason: "kill_switch" });
+    expect(await deployStaging(stagingFlowDeps(t), { repo: REPO, runId })).toEqual({
+      outcome: "refused",
+      reason: "kill_switch",
+    });
+    await t.setting("kill_switch", false);
+    for (const input of [
+      { repo: "not a repository", runId },
+      { repo: REPO, runId: 0 },
+      { repo: REPO, runId: "7" as unknown as number },
+    ]) {
+      expect(await deployStaging(stagingFlowDeps(t), input)).toEqual({
+        outcome: "refused",
+        reason: "invalid_input",
+      });
+    }
     expect(await t.transitions(t.node.id)).toEqual(before);
     expect(t.checker.calls).toEqual([]);
+    expect(t.target.deploys).toEqual([]);
   });
 });
 

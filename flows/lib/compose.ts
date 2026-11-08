@@ -1,8 +1,10 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
-// the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task, the staging check and the ports for `BOOTSTRAP_TOKEN`'s access. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
-// 2.4); tests build `FlowDeps` from fakes.
+// the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task,
+// the staging check, the staging deploy (CI's builds and the deploy adapter's target, O-116) and
+// the ports for `BOOTSTRAP_TOKEN`'s access. Flows take these as `FlowDeps` and hold no rule of
+// their own (architecture section 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -27,6 +29,13 @@ import {
   loadTaskTypesFile,
 } from "../../src/adapters/contracts-file/load.ts";
 import {
+  createCloudflareHttp,
+  createCloudflareStagingTarget,
+  type CloudflareCredentials,
+  type StagingDeployCredentials,
+} from "../../src/adapters/deploy/cloudflare-staging.ts";
+import { createMarkerStagingChecker } from "../../src/adapters/deploy/staging-checker.ts";
+import {
   createGitHubBootstrapAccess,
   createGitHubBootstrapRuns,
 } from "../../src/adapters/github/bootstrap-access.ts";
@@ -41,6 +50,7 @@ import {
   createGitHubHttp,
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
+import { createGitHubStagingBuilds } from "../../src/adapters/github/staging-builds.ts";
 import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
 import { createGitHubWriteHttp } from "../../src/adapters/github/write-http.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
@@ -62,6 +72,7 @@ import type {
 import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
+import type { StagingBuilds, StagingTarget } from "../../src/core/staging-deploy.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { Node, Project, Run } from "../../src/core/store.ts";
@@ -117,8 +128,23 @@ export interface TaskSource {
 
 export interface FlowDeps extends ReconcileDeps {
   runtime: FlowRuntime;
-  /** The runner's staging smoke check (ADR 0107), from the deploy adapter (M3.7). */
+  /**
+   * The runner's staging check (ADR 0107), from the deploy adapter: the commit marker the
+   * project's staging site serves (O-116). Public, so it needs no credential.
+   */
   stagingChecker: StagingChecker;
+  /**
+   * CI's builds on main and their `staging-site` artifact (D-353, O-116), read with the runner
+   * App's `actions: read` token for one repository (D-267). Refuses until the runner App exists
+   * (D-178).
+   */
+  stagingBuilds: StagingBuilds;
+  /**
+   * The deploy adapter's staging target (ADR 0111): the file set's check and Cloudflare's direct
+   * upload to `<slug>-staging` (O-116). Refuses on its credential until Didi creates the staging
+   * deploy token (D-353, runbook step 16), so nothing is uploaded.
+   */
+  stagingTarget: StagingTarget;
   tasks: TaskSource;
   /**
    * CI's screenshot bundles for the visual comparison (D-242), read as workflow artifacts with the
@@ -198,25 +224,54 @@ function unregisteredGitHub(): GitHub {
     ...runnerWorkflowReads(),
     getMergeability: refuse,
     squashMerge: refuse,
-    listDeployments: refuse,
-    listRecentDeployments: refuse,
     compareCommits: refuse,
     getBranchHead: refuse,
   };
 }
 
 /**
- * The staging check needs the deploy adapter, which knows each project's staging target (ADR
- * 0111, build plan M3.7, N-29). Until it exists every check refuses, so nothing is recorded.
+ * The staging deploy token (D-353, O-116): a new credential, Didi's gate. Until Didi has created it
+ * and stored it in Windmill (runbook step 16), every read refuses, so nothing is uploaded and each
+ * deploy is refused as infrastructure. Once it exists, the composition reads it with
+ * `windmillStagingDeployCredentials`.
  */
-function unbuiltStagingChecker(): StagingChecker {
+export function unbuiltStagingDeployCredentials(): StagingDeployCredentials {
   return {
-    check: async () => {
+    read: async () => {
       throw new NotBuiltError(
-        "The staging check needs the deploy adapter's staging target (build plan M3.7, N-29)",
+        "The staging deploy needs its Cloudflare token, created by Didi at first hosting through the new-credentials gate with Workers Scripts Edit only (D-353, runbook step 16)",
       );
     },
   };
+}
+
+/**
+ * The staging deploy token and the account id, read by path from the flow's environment (Windmill
+ * resources, ADR 0111 section 4) each time a deploy needs them, and never kept or logged.
+ */
+export function windmillStagingDeployCredentials(
+  env: Pick<FlowEnvironment, "secret">,
+): StagingDeployCredentials {
+  return {
+    read: async (): Promise<CloudflareCredentials> => ({
+      accountId: (await env.secret(SECRET_PATHS.cloudflareAccountId)).trim(),
+      token: (await env.secret(SECRET_PATHS.stagingDeployToken)).trim(),
+    }),
+  };
+}
+
+/** The deploy adapter's Cloudflare target (O-116); refuses on its credential today. */
+export function runnerStagingTarget(
+  credentials: StagingDeployCredentials = unbuiltStagingDeployCredentials(),
+): StagingTarget {
+  return createCloudflareStagingTarget({ credentials, http: createCloudflareHttp() });
+}
+
+/** CI's builds on main and their `staging-site` artifact (O-116); refuses on the token today. */
+export function runnerStagingBuilds(
+  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): StagingBuilds {
+  return createGitHubStagingBuilds({ tokens, http: createGitHubHttp() });
 }
 
 /**
@@ -474,7 +529,9 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     bots: botProfiles(botFiles),
     taskTypes: checked.taskTypes,
     runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),
-    stagingChecker: unbuiltStagingChecker(),
+    stagingChecker: createMarkerStagingChecker(),
+    stagingBuilds: runnerStagingBuilds(),
+    stagingTarget: runnerStagingTarget(),
     screenshots: runnerScreenshotBundles(),
     repoFolders: runnerRepoFolders(),
     repoMaps: runnerRepoMaps(clusterParts),

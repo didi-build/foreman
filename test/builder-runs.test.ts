@@ -96,12 +96,12 @@ async function stagingFailed(answer: "check" | "deploy" = "check") {
   }
   t.advanceMinutes(5);
   if (answer === "check") {
-    t.deploy();
+    await t.deploy();
     t.checker.answers.push({ result: "fail", servedCommitSha: t.mergeSha });
   } else {
-    t.deploy(t.mergeSha, "failure");
+    await t.deploy(t.mergeSha, "failure");
   }
-  await t.staging().verifyCommit(REPO, t.mergeSha);
+  await t.staging().verify(t.node.id);
   return { t, builderRuns: createBuilderRuns(t.deps) };
 }
 
@@ -339,7 +339,7 @@ describe("a builder run due after a staging fail (unit, O-41)", () => {
       kind: "staging_deploy_failed",
       mergeCommitSha: t.mergeSha,
       deployedSha: t.mergeSha,
-      deployState: "failure",
+      refusal: "the staging-site build holds _worker.js, which would run code",
     });
   });
 
@@ -349,9 +349,9 @@ describe("a builder run due after a staging fail (unit, O-41)", () => {
       if (run.endedAt === null) await end(t, run);
     }
     await t.store.setCounter(t.node.id, "failure", 2, t.clock.now());
-    t.deploy();
+    await t.deploy();
     t.checker.answers.push({ result: "fail", servedCommitSha: t.mergeSha });
-    await t.staging().verifyCommit(REPO, t.mergeSha);
+    await t.staging().verify(t.node.id);
     expect(await t.counter("failure")).toBe(3);
     expect(await t.state()).toBe("escalated_to_council");
     expect(await createBuilderRuns(t.deps).check(t.node.id)).toMatchObject({

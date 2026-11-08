@@ -2,9 +2,9 @@
 // O-104). Signed fake deliveries against the memory store with the real contracts and guards, the
 // fake GitHub and fake flow starts. After a delivery records CI's end on a PR head, the receiver
 // starts `f/foreman/option_capture` once for a design item due a capture, and
-// `f/foreman/advance_item` once for an item due an advance from evidence; after a finished
-// `deployment_status` to `staging`, it starts `f/foreman/verify_staging` once when an item of the
-// repository is in Verifying on staging. Each only when its own check says it is due: never for a
+// `f/foreman/advance_item` once for an item due an advance from evidence. A `deployment_status`
+// starts nothing any more, not even while an item verifies on staging (D-356, O-116): the runner
+// records its own staging deploys. Each only when its own check says it is due: never for a
 // pending result, a replay, a fact already recorded, an item not due or under the switches. A
 // failed start, or a check that cannot be read, leaves the webhook's answer and the evidence as
 // they were. Fake data only; no Windmill and no network.
@@ -28,10 +28,9 @@ import {
   ADVANCE_STARTED,
   OPTION_CAPTURE_NOT_STARTED,
   OPTION_CAPTURE_STARTED,
-  STAGING_NOT_STARTED,
-  STAGING_STARTED,
   createFlowStarts,
 } from "../src/github-receiver/flow-starts.ts";
+import { createStagingStarts } from "../src/github-receiver/staging-starts.ts";
 import { WEBHOOK_PATH, createReceiverHandler } from "../src/github-receiver/handler.ts";
 import { createLogger } from "../src/service-kit/logger.ts";
 import { startService, type RunningService } from "../src/service-kit/server.ts";
@@ -168,7 +167,11 @@ async function setup(
         ids: f.deps.ids,
         optionCapture: flow,
         advanceItem: advance,
-        verifyStaging: staging,
+        logger,
+      }),
+      stagingStarts: createStagingStarts({
+        store: f.store,
+        deployStaging: staging,
         logger,
       }),
       logger,
@@ -520,80 +523,19 @@ async function verifying(h: Harness) {
   return item;
 }
 
-describe("the receiver starts the staging flow on a staging deploy (in-process end to end, O-104)", () => {
-  it("starts the staging flow once with the repository and commit while an item verifies on staging", async () => {
+describe("a staging deploy reported to GitHub starts nothing (in-process end to end, D-356, O-116)", () => {
+  it("records the deployment_status delivery and starts no flow, also while an item verifies on staging", async () => {
     const h = await setup();
     await verifying(h);
-    const answer = await h.send("deployment_status", "d-1", deployed());
-    // Still a delivery only: the flow reads the deploy from GitHub itself.
-    expect(answer).toEqual({ status: 202, body: { outcome: "ignored" } });
-    expect((await h.f.store.getGithubDelivery("d-1"))?.outcome).toBe("ignored");
-    expect(h.staging.started).toEqual([`${REPO}@${MERGE_SHA}`]);
+    for (const [i, state] of ["success", "failure", "error", "in_progress"].entries()) {
+      expect(
+        await h.send("deployment_status", `d-${i}`, deployed("staging", state)),
+      ).toEqual({ status: 202, body: { outcome: "ignored" } });
+      expect((await h.f.store.getGithubDelivery(`d-${i}`))?.outcome).toBe("ignored");
+    }
+    expect(h.staging.started).toEqual([]);
     expect(h.advance.started).toEqual([]);
     expect(h.flow.started).toEqual([]);
-    expect(h.logs).toContainEqual(
-      expect.objectContaining({ message: STAGING_STARTED, deliveryId: "d-1" }),
-    );
-    // A failed deploy to staging calls for the flow too: it records the failure (D-225).
-    await h.send("deployment_status", "d-2", deployed("staging", "failure"));
-    expect(h.staging.started).toHaveLength(2);
-  });
-
-  it("starts nothing for another environment, an unfinished status, a replay, or with no item verifying", async () => {
-    const h = await setup();
-    await h.send("deployment_status", "d-1", deployed());
-    expect(h.staging.started).toEqual([]);
-    await verifying(h);
-    await h.send("deployment_status", "d-2", deployed("production"));
-    await h.send("deployment_status", "d-3", deployed("preview"));
-    for (const [i, state] of ["pending", "queued", "in_progress", "inactive"].entries())
-      await h.send("deployment_status", `d-4${i}`, deployed("staging", state));
-    expect(h.staging.started).toEqual([]);
-    await h.send("deployment_status", "d-5", deployed());
-    expect(await h.send("deployment_status", "d-5", deployed())).toEqual({
-      status: 202,
-      body: { outcome: "duplicate" },
-    });
-    expect(h.staging.started).toEqual([`${REPO}@${MERGE_SHA}`]);
-  });
-
-  it("starts nothing under the kill switch or in dry run", async () => {
-    for (const [key, value] of [
-      ["kill_switch", true],
-      ["dry_run", true],
-    ] as const) {
-      const h = await setup();
-      await verifying(h);
-      await h.f.setting(key, value);
-      expect(await h.send("deployment_status", "d-1", deployed())).toEqual({
-        status: 202,
-        body: { outcome: "ignored" },
-      });
-      expect(h.staging.started, key).toEqual([]);
-      await running?.stop();
-      running = undefined;
-    }
-  });
-
-  it("keeps the webhook's answer and the delivery when the start fails, and logs only the error's type", async () => {
-    const h = await setup();
-    await verifying(h);
-    h.staging.failWith = new TypeError("refused with windmill-text-0123456789");
-    expect(await h.send("deployment_status", "d-1", deployed())).toEqual({
-      status: 202,
-      body: { outcome: "ignored" },
-    });
-    expect((await h.f.store.getGithubDelivery("d-1"))?.outcome).toBe("ignored");
-    expect(h.logs.find((line) => line.message === STAGING_NOT_STARTED)).toEqual({
-      time: expect.any(String),
-      level: "warn",
-      service: "github-receiver",
-      message: STAGING_NOT_STARTED,
-      deliveryId: "d-1",
-      errorType: "TypeError",
-    });
-    const text = JSON.stringify(h.logs);
-    expect(text).not.toContain("windmill-text-0123456789");
-    expect(text).not.toContain(MERGE_SHA);
+    expect(JSON.stringify(h.logs)).not.toMatch(/staging (deploy )?flow/);
   });
 });
