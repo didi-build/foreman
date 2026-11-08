@@ -93,14 +93,14 @@ The later steps add the Windmill token that writes the runner's cluster token in
 | `platform`               | `RECEIVER_WINDMILL_TOKEN`         | The Windmill token that runs only the receiver's three flows                                   | 15   |
 | `platform`               | `RUN_WATCHER_WINDMILL_TOKEN`      | The Windmill token that runs only `f/foreman/record_run_end`                                   | 15   |
 
-The plain settings are environment variables, not secrets (Settings, Environments, the environment, Environment variables). They are checked against their own pattern before any job uses them, and masked in the logs.
+The account id, the zone id and the bucket name are identifiers, not keys, so they live outside the environments as secrets, and GitHub masks them in every log (D-361). The two Cloudflare ids are organization secrets shared with `foreman` only (the organization's Settings, Secrets and variables, Actions, New organization secret, Repository access: Selected repositories). The bucket name is a repository secret (the repository's Settings, Secrets and variables, Actions, New repository secret). A job reads an environment secret first, then a repository secret, then an organization secret, so none of the three needs wiring per environment. The R2 key pair stays in the environments, behind their protection rules. `RECEIVER_HOSTNAME` is public and stays an environment variable (Settings, Environments, the environment, Environment variables). Each is checked against its own pattern before any job uses it.
 
-| Environment                          | Variable                | Value                                                                                             |
-| ------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------- |
-| `infra-plan`, `infra` and `platform` | `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account id of the `didi.build` zone and of the R2 state bucket (32 hex characters) |
-| `infra-plan`, `infra` and `platform` | `STATE_BUCKET`          | The R2 state bucket's name                                                                        |
-| `infra-plan` and `infra`             | `CLOUDFLARE_ZONE_ID`    | The `didi.build` zone id (32 hex characters)                                                      |
-| `infra-plan` and `infra`             | `RECEIVER_HOSTNAME`     | `foreman.didi.build`, the cluster's one public host name (D-343)                                  |
+| Where                                            | Name                    | Value                                                                                             |
+| ------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------- |
+| Organization secret, shared with `foreman` only  | `CLOUDFLARE_ACCOUNT_ID` | The Cloudflare account id of the `didi.build` zone and of the R2 state bucket (32 hex characters) |
+| Organization secret, shared with `foreman` only  | `CLOUDFLARE_ZONE_ID`    | The `didi.build` zone id (32 hex characters)                                                      |
+| Repository secret                                | `STATE_BUCKET`          | The R2 state bucket's name                                                                        |
+| Environment variable in `infra-plan` and `infra` | `RECEIVER_HOSTNAME`     | `foreman.didi.build`, the cluster's one public host name (D-343)                                  |
 
 A secret only the cluster Secrets job reads (the rows of steps 10 and 15) can be removed from the environment once its run has put it in the cluster: the job then leaves that Secret as it is and names it as skipped (step 9).
 

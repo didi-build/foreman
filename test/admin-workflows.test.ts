@@ -69,6 +69,12 @@ const script = (name: string) => text(join(SCRIPTS_DIR, name));
 const SECRET_REFERENCE = /\$\{\{[^}]*\bsecrets\./;
 
 /** The four environments of D-339: two plan environments with no reviewer, two Didi approves. */
+/** D-361: the account id, the zone id and the bucket name are organization and repository secrets. */
+const JOB_LEVEL_IDENTIFIERS = [
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_ZONE_ID",
+  "STATE_BUCKET",
+];
 const PLAN_ENVIRONMENTS = ["infra-plan", "platform-plan"];
 const APPROVED_ENVIRONMENTS = ["infra", "platform"];
 
@@ -136,7 +142,14 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
             job.environment,
           );
         }
-        expect(JSON.stringify(job.env ?? {}), label).not.toMatch(SECRET_REFERENCE);
+        // Only the identifiers of D-361 may sit in a job's env: they are not keys, and every
+        // step that redacts or runs `tofu init` needs them. A key stays in a step's env.
+        for (const [name, value] of Object.entries(job.env ?? {})) {
+          if (SECRET_REFERENCE.test(value)) {
+            expect(JOB_LEVEL_IDENTIFIERS, `${label} ${name}`).toContain(name);
+            expect(value, `${label} ${name}`).toBe(`\${{ secrets.${name} }}`);
+          }
+        }
         for (const step of job.steps) {
           expect(step.run ?? "", `${label} ${step.name}`).not.toMatch(SECRET_REFERENCE);
           expect(JSON.stringify(step.with ?? {}), `${label} ${step.name}`).not.toMatch(
@@ -220,6 +233,21 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
 });
 
 describe("the infra apply workflow (unit: D-339, ADR 0110)", () => {
+  it("reads the account id, the zone id and the bucket name as secrets, and the host name as a variable (D-361)", () => {
+    for (const path of [WORKFLOWS.infra, WORKFLOWS.platform]) {
+      const raw = text(path);
+      expect(raw, path).not.toMatch(
+        /vars\.(CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STATE_BUCKET)\b/,
+      );
+      expect(raw, path).toMatch(/\$\{\{ secrets\.STATE_BUCKET \}\}/);
+      expect(raw, path).toMatch(/\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
+    }
+    const infra = text(WORKFLOWS.infra);
+    expect(infra).toMatch(/\$\{\{ secrets\.CLOUDFLARE_ZONE_ID \}\}/);
+    expect(infra).toMatch(/\$\{\{ vars\.RECEIVER_HOSTNAME \}\}/);
+    expect(infra).not.toMatch(/secrets\.RECEIVER_HOSTNAME/);
+  });
+
   const wf = workflow(WORKFLOWS.infra);
   const plan = wf.jobs.plan as Job;
   const apply = wf.jobs.apply as Job;

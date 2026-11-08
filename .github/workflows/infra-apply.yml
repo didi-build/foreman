@@ -59,10 +59,10 @@ jobs:
     outputs:
       changes: ${{ steps.plan.outputs.changes }}
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
-      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+      STATE_BUCKET: ${{ secrets.STATE_BUCKET }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -162,10 +162,10 @@ jobs:
     permissions:
       contents: read
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
-      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+      STATE_BUCKET: ${{ secrets.STATE_BUCKET }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
