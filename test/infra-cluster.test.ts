@@ -600,7 +600,7 @@ describe("each project's staging name and Workers route (unit: D-345, D-357, O-1
       .split("\n")
       .find((line) => line.startsWith("- A Cloudflare API token"));
     for (const permission of [
-      "Cloudflare Tunnel: Edit",
+      "Cloudflare One Connector: cloudflared: Edit",
       "DNS: Edit",
       "Workers Routes: Edit",
     ]) {
