@@ -6,8 +6,9 @@
 //
 // A call without `-f` is the check that a connection without TLS is refused (O-118). It prints
 // FAKE_PSQL_CHECK_STDERR and exits with FAKE_PSQL_CHECK_STATUS; when they are missing it answers
-// as Supabase's docs show a refusal with SSL enforcement on: status 2 and "no pg_hba.conf entry
-// for host ..., SSL off", quoting the host and the user it was given.
+// as Supabase's session pooler (Supavisor) refuses a connection without TLS when SSL enforcement
+// is on: status 2 and "(ESSLREQUIRED) SSL connection is required for user: <user>", quoting the
+// host it was given and the user before the project ref, as Supavisor does.
 //
 // A call with `-f` runs the migrations. FAKE_PSQL_MODE=fresh answers as a fresh database would:
 // `applying` and `applied` for each file the script would apply, then `done`. Otherwise it prints
@@ -28,10 +29,10 @@ appendFileSync(
 );
 
 if (!args.includes("-f")) {
-  const { PGHOST, PGPORT, PGUSER, PGDATABASE } = process.env;
+  const { PGHOST, PGPORT, PGUSER } = process.env;
   process.stderr.write(
     process.env.FAKE_PSQL_CHECK_STDERR ??
-      `psql: error: connection to server at "${PGHOST}" (192.0.2.7), port ${PGPORT} failed: FATAL:  no pg_hba.conf entry for host "192.0.2.8", user "${PGUSER}", database "${PGDATABASE}", SSL off\n`,
+      `psql: error: connection to server at "${PGHOST}" (192.0.2.7), port ${PGPORT} failed: FATAL:  (ESSLREQUIRED) SSL connection is required for user: ${(PGUSER ?? "").split(".")[0]}\n`,
   );
   process.exitCode = Number(process.env.FAKE_PSQL_CHECK_STATUS ?? "2");
   if (process.exitCode === 0) process.stdout.write("1\n");

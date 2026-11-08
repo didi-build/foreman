@@ -285,16 +285,19 @@ done < <(compgen -e PG || true)
 # First, the database must refuse a connection without TLS (D-364, O-118). This connection has
 # TLS and GSSAPI encryption off, no password in its environment, a password file that does not
 # exist, and -w, so psql never sends a password, whatever the server asks. It passes only when
-# psql fails to connect (status 2) because the server's pg_hba.conf check refuses a connection
-# with no encryption, which Supabase's docs show as "SSL off" and PostgreSQL 16 words "no
-# encryption", and no other server error comes with it. If the server asks for a password or
-# lets it in, enforcement is off. Any other answer stops the run too.
+# psql fails to connect (status 2) because the server refuses a connection with no encryption,
+# and no other server error comes with it. Supabase's session pooler (Supavisor) words that
+# refusal "(ESSLREQUIRED) SSL connection is required for user: <user>" (its
+# lib/supavisor/errors/ssl_required_error.ex, read 2026-11-08); Postgres's own pg_hba.conf
+# check, met on a direct connection, words it "SSL off" (Supabase's docs) or "no encryption"
+# (PostgreSQL 16). If the server asks for a password or lets it in, enforcement is off. Any other
+# answer stops the run too.
 check_status=0
 PGHOST="$host" PGPORT="$port" PGUSER="$user" PGDATABASE="$database" \
   PGPASSFILE="$work/no-password-file" PGSSLMODE=disable PGGSSENCMODE=disable \
   PGCONNECT_TIMEOUT=30 PGAPPNAME=foreman-db-migrate-tls-check \
   psql -X -q -w -c "select 1" >/dev/null 2>"$work/check-err" </dev/null || check_status=$?
-refused_rule='FATAL:  no pg_hba\.conf entry for host "[^"]*", user "[^"]*", database "[^"]*", (SSL off|no encryption)$'
+refused_rule='FATAL:  (\(ESSLREQUIRED\) SSL connection is required for user: [^[:space:]]+|no pg_hba\.conf entry for host "[^"]*", user "[^"]*", database "[^"]*", (SSL off|no encryption))$'
 refused=false
 asked_for_password=false
 other_server_error=false

@@ -1848,20 +1848,25 @@ describe.skipIf(process.platform === "win32")(
         expectNoValueShown(result);
       });
 
-      it("passes the check on PostgreSQL's own wording of the refusal, no encryption, beside an address that does not answer", () => {
-        const box = sandbox();
-        const result = migrate(box, {
-          FAKE_PSQL_CHECK_STDERR: [
-            `psql: error: connection to server at "${host}" (192.0.2.7), port 6543 failed: Connection refused`,
-            "\tIs the server running on that host and accepting TCP/IP connections?",
-            `connection to server at "${host}" (192.0.2.9), port 6543 failed: FATAL:  no pg_hba.conf entry for host "192.0.2.8", user "${user}", database "postgres", no encryption`,
-            "",
-          ].join("\n"),
-        });
-        expect(result.stderr).toBe("");
-        expect(result.status).toBe(0);
-        expect(withoutMasks(result.stdout)).toBe(`${CHECKED}Nothing to apply.\n`);
-        expect(migrateCalls(box)).toHaveLength(1);
+      it("passes the check on Postgres's own wordings of the refusal, met on a direct connection, beside an address that does not answer", () => {
+        // Supabase's docs show "SSL off"; PostgreSQL 16 prints "no encryption".
+        for (const wording of ["SSL off", "no encryption"]) {
+          const box = sandbox();
+          const result = migrate(box, {
+            FAKE_PSQL_CHECK_STDERR: [
+              `psql: error: connection to server at "${host}" (192.0.2.7), port 6543 failed: Connection refused`,
+              "\tIs the server running on that host and accepting TCP/IP connections?",
+              `connection to server at "${host}" (192.0.2.9), port 6543 failed: FATAL:  no pg_hba.conf entry for host "192.0.2.8", user "${user}", database "postgres", ${wording}`,
+              "",
+            ].join("\n"),
+          });
+          expect(result.stderr, wording).toBe("");
+          expect(result.status, wording).toBe(0);
+          expect(withoutMasks(result.stdout), wording).toBe(
+            `${CHECKED}Nothing to apply.\n`,
+          );
+          expect(migrateCalls(box), wording).toHaveLength(1);
+        }
       });
 
       it("stops before any migration when the database asks a connection without TLS for a password, or lets it in: enforcement is off", () => {
@@ -1936,6 +1941,21 @@ describe.skipIf(process.platform === "win32")(
           [
             "a refusal of a connection with SSL",
             `psql: error: ${refusal.replace("SSL off", "SSL encryption")}\n`,
+            "2",
+          ],
+          [
+            "the pooler's refusal with more after it",
+            `psql: error: ${at}FATAL:  (ESSLREQUIRED) SSL connection is required for user: postgres, or not\n`,
+            "2",
+          ],
+          [
+            "the pooler's wording without its code",
+            `psql: error: ${at}FATAL:  SSL connection is required for user: postgres\n`,
+            "2",
+          ],
+          [
+            "the pooler's refusal beside another of its errors",
+            `psql: error: ${at}FATAL:  (ESSLREQUIRED) SSL connection is required for user: postgres\n${at}FATAL:  (ETENANTNOTFOUND) Tenant or user not found\n`,
             "2",
           ],
         ];
