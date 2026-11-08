@@ -233,8 +233,8 @@ jobs:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
       REDACT_NAMES: CLOUDFLARE_ACCOUNT_ID,STATE_BUCKET
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      STATE_BUCKET: ${{ secrets.STATE_BUCKET }}
     steps:
       # The whole repository: the tunnel token is read from the factory stack's state.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

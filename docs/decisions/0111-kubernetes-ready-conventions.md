@@ -2,6 +2,7 @@
 
 - **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29), confirming P-10.
 - **Amended by D-193** (2026-10-30): the first-release Kubernetes exception also covers the state API and receiver deployments.
+- **Amended by D-354** (2026-11-07): hosted branch previews are dropped, so the deploy adapter has no `preview` operation and `teardown` removes a deployment only (section 2). The preview check is a CI job (O-111).
 - **Date:** 2026-10-28
 - **Related:** D-134, P-10, [build plan M0.8](../build-plan.md#m08-conventions-that-make-kubernetes-easy-proposed-d-134), `docs/architecture/technical-architecture.md` section 2.10, ADRs [0101](./0101-repo-layout-and-tooling.md), [0102](./0102-state-api-hosting-and-agent-auth.md), [0110](./0110-infrastructure-as-code.md)
 
@@ -33,12 +34,11 @@ The deploy adapter (`src/adapters/deploy/`, built in M3.7) exposes operations, n
 | Operation  | Means                                                  |
 | ---------- | ------------------------------------------------------ |
 | `deploy`   | Run a given image or build in an environment (staging) |
-| `preview`  | Create or update the preview for a PR                  |
 | `health`   | Report whether a deployment answers its health check   |
 | `logs`     | Read recent log lines for a deployment                 |
-| `teardown` | Remove a preview or a deployment                       |
+| `teardown` | Remove a deployment                                    |
 
-Previews and staging are concepts of the adapter. Code outside it never builds a Cloudflare or DigitalOcean URL itself. Cloudflare is the first implementation. A fake second target runs the same contract test, so a Kubernetes implementation is a third one, not a change to callers. Production deploys stay out of the adapter (only Didi deploys to production).
+Staging is a concept of the adapter. Code outside it never builds a Cloudflare or DigitalOcean URL itself. Cloudflare is the first implementation. A fake second target runs the same contract test, so a Kubernetes implementation is a third one, not a change to callers. Production deploys stay out of the adapter (only Didi deploys to production).
 
 ### 3. Each project has an explicit boundary
 

@@ -14,8 +14,8 @@ GitHub template repos copy **files only**. Complete these steps after creating a
 
 - [ ] Set the **repository description** when creating the repo from the template (Bootstrap uses it for `package.json` and docs; init fails if it is missing)
 - [ ] Mark the repo **private** (or public) per your org policy
-- [ ] If Bootstrap did not run (no token), run **`npm run repo-settings`** (dry-run), then **`npm run repo-settings -- --apply`**. Branch protection: **PR required**, status check **`check`**, **zero approvals**; creates Dependabot auto-merge label; enables **auto-merge**, **delete head branch on merge**, and **squash-only** merges
-- [ ] If Bootstrap did not run, run **`npm run repo-settings -- --verify`** and fix anything reported
+- [ ] If Bootstrap did not run (no token), set **`GITHUB_REPOSITORY=<owner>/<repo>`** and **`GH_TOKEN`** (a token of a repository admin, for example `gh auth token`), run **`npm run repo-settings`** (dry-run), then **`npm run repo-settings -- --apply`**. Branch protection: **PR required**, status check **`check`**, **zero approvals**; creates Dependabot auto-merge label; enables **auto-merge**, **delete head branch on merge**, and **squash-only** merges. The script is `.github/scripts/bootstrap-settings.mjs`, the one Bootstrap's settings step runs ([runbook](./runbooks/bootstrap.md#manual-fallback))
+- [ ] If Bootstrap did not run, run **`npm run repo-settings -- --verify`** and fix anything reported. Bootstrap does nothing once the default branch is protected, so later settings changes also go through `npm run repo-settings`
 - [ ] Add collaborators / teams and optional [CODEOWNERS](../.github/CODEOWNERS)
 
 ## Linear

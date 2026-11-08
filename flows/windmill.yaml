@@ -219,7 +219,26 @@ flows:
     # creates didi-build/<slug> from didi-build/launchpad, always public (D-348), and records the
     # project; a project already recorded is already_registered. The kill switch refuses; dry run
     # creates and writes nothing. No new Windmill credential: the GitHub tokens are the runner
-    # App's, minted per step, and only this form's carries Repository creation (D-346).
+    # App's, minted per step, and only this form's carries Repository creation (D-346). Then
+    # (D-358, O-114) it adds the repository to BOOTSTRAP_TOKEN's selected repositories and starts
+    # Bootstrap again on main, each with a token narrowed to the new repository. Run again on a
+    # project whose setup has not finished, it grants and restarts again.
+    trigger: called
+
+  - name: remove_bootstrap_access
+    path: f/foreman/remove_bootstrap_access
+    entry: flows/remove-bootstrap-access.ts
+    # Called with `{"input": {"repo": ...}}` once Bootstrap's restarted run on a repository of
+    # didi-build ends, whatever its conclusion (D-358, O-114). It removes the repository from
+    # BOOTSTRAP_TOKEN's selected repositories with a token minted for that one call. The GitHub
+    # receiver calls it after it records a `workflow_run` `completed` for
+    # .github/workflows/bootstrap.yml started by `workflow_dispatch`, only when neither switch
+    # holds the runner, so a replay and a run started by a push start nothing. It uses the
+    # receiver's Windmill token (the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in
+    # the cluster Secret `github-receiver-windmill-token`, runbook step 15) through the shared
+    # Windmill egress proxy (D-328). About one run per registered project (D-164). Under the kill
+    # switch it does nothing (N-100); in dry run it reports. The reconcile pass's backstop removes
+    # any access it missed.
     trigger: called
 
   - name: request_transition

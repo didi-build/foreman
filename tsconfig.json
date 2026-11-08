@@ -30,10 +30,7 @@
     "test/**/*.ts",
     "vite.config.ts",
     "scripts/**/*.ts",
-    "scripts/lib/repo-settings-target.mjs",
     "scripts/lib/launchpad-attribution.mjs",
-    "scripts/lib/gh-api-errors.mjs",
-    "scripts/lib/bootstrap.mjs",
     "vitest.config.ts",
     "eslint.config.js"
   ]

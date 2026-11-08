@@ -25,6 +25,7 @@ import {
   OPTION_CAPTURE_FLOW_PATH,
   RECEIVER_FLOW_PATHS,
   RECEIVER_WINDMILL_TOKEN_PATH,
+  REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
   VERIFY_STAGING_FLOW_PATH,
 } from "../../src/adapters/windmill/receiver-flows.ts";
 import {
@@ -183,12 +184,13 @@ describe("the flow the run watcher starts (unit: repo guard, D-330, O-102)", () 
   });
 });
 
-describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, O-104)", () => {
-  it("are the called option capture, advance and staging flows, at the paths the receiver's ports start, and nothing else", () => {
+describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, O-104, O-114)", () => {
+  it("are the called option capture, advance, staging and access removal flows, at the paths the receiver's ports start, and nothing else", () => {
     expect(RECEIVER_FLOW_PATHS).toEqual([
       OPTION_CAPTURE_FLOW_PATH,
       ADVANCE_ITEM_FLOW_PATH,
       VERIFY_STAGING_FLOW_PATH,
+      REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
     ]);
     for (const path of RECEIVER_FLOW_PATHS) {
       const flow = description.flows.find((f) => f.path === path);
@@ -202,6 +204,7 @@ describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, 
       "flows/option-capture.ts",
       "flows/advance-item.ts",
       "flows/verify-staging.ts",
+      "flows/remove-bootstrap-access.ts",
     ]);
   });
 

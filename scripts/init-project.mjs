@@ -102,28 +102,11 @@ if (resolved.collects) {
 }
 
 const wranglerPath = "wrangler.jsonc";
-const wranglerPreviewPath = "wrangler.preview.jsonc";
 let wranglerRenamed = null;
-let wranglerPreviewRenamed = null;
 if (statSync(wranglerPath, { throwIfNoEntry: false })?.isFile()) {
   const wranglerText = readFileSync(wranglerPath, "utf8");
   try {
     wranglerRenamed = replaceWranglerWorkerName(wranglerText, "launchpad", slug);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(message);
-    process.exit(1);
-  }
-}
-if (statSync(wranglerPreviewPath, { throwIfNoEntry: false })?.isFile()) {
-  const wranglerPreviewText = readFileSync(wranglerPreviewPath, "utf8");
-  try {
-    wranglerPreviewRenamed = replaceWranglerWorkerName(
-      wranglerPreviewText,
-      "launchpad-preview",
-      `${slug}-preview`,
-      { configLabel: "wrangler.preview.jsonc" },
-    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(message);
@@ -193,9 +176,6 @@ writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
 if (wranglerRenamed !== null) {
   writeFileSync(wranglerPath, wranglerRenamed);
-}
-if (wranglerPreviewRenamed !== null) {
-  writeFileSync(wranglerPreviewPath, wranglerPreviewRenamed);
 }
 
 const exampleFiles = ["src/greet.ts", "test/greet.test.ts"];

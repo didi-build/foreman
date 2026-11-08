@@ -160,7 +160,7 @@ Goal: the runner can say what it would do, and be right.
 
 ### M2.3 Evidence ingestion from GitHub
 
-- What: record CI results, PR state, head commit, preview and staging deployments, merge state, as evidence.
+- What: record CI results, PR state, head commit, CI's preview check (D-354, O-111), staging deployments, merge state, as evidence.
 - Why: proof must come from outside the agents.
 - How: a webhook receiver with idempotency by delivery id, plus a polling backstop in the reconcile pass. Design in ADR 0113.
 - Constraints: GitHub App identity for the runner. No secrets in logs. Built and tested against a fake GitHub first; the real Apps are registered at M3 (D-178). A `ci_run` is recorded only for the PR's current head commit.
@@ -330,7 +330,7 @@ This is its own project, run through the factory starting with the Interview. It
 
 - A cluster on DigitalOcean (D-165; managed or self-run, decided then; following [ADR 0106](./decisions/0106-agent-execution-environment.md), a small managed cluster with a platform pool and an agents pool already runs from the first release, D-193, and this release grows it or adds a larger one), GitOps, Vault for secrets, and replicas. Self-host Windmill on it (D-163), and move infrastructure state off Cloudflare R2 (D-144, D-165).
 - Per-project namespaces with network policies and resource quotas, so each project is isolated.
-- A Kubernetes deploy adapter next to the Cloudflare one, with previews and staging per project.
+- A Kubernetes deploy adapter next to the Cloudflare one, with staging per project (hosted branch previews are dropped, D-354).
 - Monitoring: metrics, logs, dashboards, and alerts wired into the existing alert and call tiers.
 - The state API, the GitHub receiver and agent runs are already on the cluster from the first release ([ADR 0106](./decisions/0106-agent-execution-environment.md), D-193). Move projects off Cloudflare one at a time.
 - First, import the existing Cloudflare resources of current projects into infrastructure as code, and add the proven `infra/` module to Launchpad (outside this repo; Launchpad is public, so no account ids or secrets), with a Kubernetes variant.

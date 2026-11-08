@@ -65,22 +65,6 @@ if (wrangler.name === "launchpad") {
   process.exit(1);
 }
 
-const previewConfigPath = "wrangler.preview.jsonc";
-if (existsSync(previewConfigPath)) {
-  const previewWrangler = parseWranglerJsonc(readFileSync(previewConfigPath, "utf8"));
-  const expectedPreview = `${slug}-preview`;
-  if (previewWrangler.name !== expectedPreview) {
-    console.error("wrangler.preview.jsonc name mismatch:", previewWrangler.name);
-    process.exit(1);
-  }
-  if (previewWrangler.name === "launchpad-preview") {
-    console.error(
-      "wrangler.preview.jsonc still uses template preview worker name launchpad-preview",
-    );
-    process.exit(1);
-  }
-}
-
 const hasNodrift = existsSync(".nodrift/manifest.json");
 if (expectNodrift === "yes" && !hasNodrift) {
   console.error("expected nodrift manifest after --personal-data");

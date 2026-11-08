@@ -9,6 +9,7 @@ import type {
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
 import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
+import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import {
   createFakeProjectRepositories,
   createFakeProjectSettings,
@@ -93,6 +94,8 @@ export function flowDepsFor(
   const repoScans = createFakeRepoScans();
   const projectSettings = createFakeProjectSettings();
   const projectRepositories = createFakeProjectRepositories();
+  // One fake for both ports, so a grant, a restart and a removal see the same state (O-114).
+  const bootstrap = createFakeBootstrap();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
@@ -106,6 +109,8 @@ export function flowDepsFor(
     repoScans,
     projectSettings,
     projectRepositories,
+    bootstrapAccess: bootstrap,
+    bootstrapRuns: bootstrap,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -139,6 +144,7 @@ export function flowDepsFor(
     repoScans,
     projectSettings,
     projectRepositories,
+    bootstrap,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {
@@ -159,6 +165,7 @@ export async function createFlowFixture() {
     repoScans,
     projectSettings,
     projectRepositories,
+    bootstrap,
     tasksFor,
     tokens,
     setExecutions,
@@ -188,6 +195,7 @@ export async function createFlowFixture() {
     repoScans,
     projectSettings,
     projectRepositories,
+    bootstrap,
     tasksFor,
     tokens,
     setExecutions,

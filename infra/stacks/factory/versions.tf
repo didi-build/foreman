@@ -1,7 +1,7 @@
 # The factory's own platform (ADR 0110 layout: stacks/factory, state at factory/<env>.tfstate): the
-# DOKS cluster with its two node pools and firewall (ADR 0106, D-193, D-194), and the receiver's
-# Cloudflare Tunnel (D-195). Never applied by the runner or an agent. Didi applies it at first
-# hosting (docs/runbooks/first-hosting.md).
+# DOKS cluster with its two node pools and firewall (ADR 0106, D-193, D-194), the receiver's
+# Cloudflare Tunnel (D-195), and each project's staging name and Workers route (D-357). Never
+# applied by the runner or an agent. Didi approves each apply (docs/runbooks/first-hosting.md).
 terraform {
   required_version = "~> 1.13.0"
 

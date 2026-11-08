@@ -52,6 +52,8 @@ interface Section {
 
 interface CheckDocument {
   intro: Line[];
+  /** Projects whose setup failed, and those whose setup could not be read (O-114). */
+  setup: Line[];
   /** Said when no project has anything to show. */
   nothing: Line | null;
   projects: { heading: Line; sections: Section[] }[];
@@ -360,6 +362,14 @@ function documentOf(check: DailyCheck): CheckDocument {
   if (check.quietProjects.length > 0) {
     footer.push([`Nothing to show for: ${check.quietProjects.join(", ")}.`]);
   }
+  const setup: Line[] = (check.projectSetup?.failed ?? []).map((f) => [
+    `${f.message}.`,
+  ]);
+  if (check.projectSetup && check.projectSetup.unreadable.length > 0) {
+    setup.push([
+      `Bootstrap's runs could not be read for: ${check.projectSetup.unreadable.join(", ")}. Whether their setup finished is not shown.`,
+    ]);
+  }
   return {
     intro: [
       [
@@ -370,6 +380,7 @@ function documentOf(check: DailyCheck): CheckDocument {
       ],
       [check.dataNotice],
     ],
+    setup,
     nothing:
       check.projects.length === 0 ? ["Nothing moved and nothing is waiting."] : null,
     projects: check.projects.map((p) => ({
@@ -398,6 +409,7 @@ const lineText = (l: Line): string => l.map(pieceText).join("");
 export function renderDailyCheck(check: DailyCheck): string {
   const doc = documentOf(check);
   const lines = doc.intro.map(lineText);
+  if (doc.setup.length > 0) lines.push("", ...doc.setup.map(lineText));
   if (doc.nothing) lines.push("", lineText(doc.nothing));
   for (const project of doc.projects) {
     lines.push("", `== ${lineText(project.heading)} ==`);
@@ -504,6 +516,15 @@ export function renderDailyCheckHtml(
       el("p", i === rest.length - 1 ? STYLE.notice : STYLE.p, html(l)),
     ),
   ];
+  if (doc.setup.length > 0) {
+    out.push(
+      el(
+        "section",
+        STYLE.project,
+        doc.setup.map((l) => el("p", STYLE.p, html(l))).join(""),
+      ),
+    );
+  }
   if (doc.nothing) out.push(el("p", STYLE.p, html(doc.nothing)));
   for (const project of doc.projects) {
     const parts = [el("h3", STYLE.heading, html(project.heading))];

@@ -68,11 +68,23 @@
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
+// Project setup (D-358, O-114), before the projects: "Bootstrap failed for <slug>; run the
+// register form again" for each registered project whose newest restarted Bootstrap run failed
+// (./bootstrap-access.ts, `failedSetups`), whether or not the project has items yet. GitHub keeps
+// the runs, so this is read from GitHub with the runner App's `actions: read` token, not from the
+// store; a project whose runs cannot be read is named as such. With no `bootstrapRuns` port given
+// it is not read (`projectSetup` null).
+//
 // Text recorded by agents (titles, reasons, questions) and Didi's own words are returned
 // verbatim as data; the renderings (./daily-check-render.ts) quote each one, and the page also
 // escapes it as HTML text, so nothing in them reads as part of the check. No approval link,
 // topic key, decision, run or evidence id is shown: only item ids and gate request ids, which the
 // attention list already shows.
+import {
+  failedSetups,
+  type BootstrapRuns,
+  type SetupReport,
+} from "./bootstrap-access.ts";
 import { isTerminalState, type Contracts } from "./contracts.ts";
 import {
   CANCEL_TRIGGER_PREFIX,
@@ -140,6 +152,7 @@ export const SPEND_THRESHOLDS_NOT_BUILT =
 export type DailyCheckStore = Pick<
   StoreOps,
   | "getProject"
+  | "listProjects"
   | "getNode"
   | "listNodes"
   | "listEdges"
@@ -164,6 +177,8 @@ export interface DailyCheckDeps extends StalledItemsDeps {
   store: Store;
   contracts: Contracts;
   clock: Clock;
+  /** Bootstrap's newest restarted run per project (O-114). Without it, setup is not read. */
+  bootstrapRuns?: Pick<BootstrapRuns, "latestRestart">;
 }
 
 export interface DailyCheckOptions {
@@ -375,6 +390,8 @@ export interface DailyCheck {
   stalledAfterMinutes: number | null;
   /** Said when stalled items could not be listed. */
   stalledNote: string | null;
+  /** Projects whose setup failed, read from GitHub (O-114); null when not read. */
+  projectSetup: SetupReport | null;
 }
 
 const MINUTE_MS = 60_000;
@@ -856,5 +873,11 @@ export async function generateDailyCheck(
     spendNote: SPEND_THRESHOLDS_NOT_BUILT,
     stalledAfterMinutes: stalled.cycleMinutes,
     stalledNote: stalled.problem,
+    projectSetup: deps.bootstrapRuns
+      ? await failedSetups(
+          { bootstrapRuns: deps.bootstrapRuns },
+          await store.listProjects(),
+        )
+      : null,
   };
 }

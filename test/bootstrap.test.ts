@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { sanitizeToken } from "../.github/scripts/bootstrap-common.mjs";
 import {
+  bootstrapCollectsPersonalData,
   deriveBootstrapPlan,
   deriveInitArgs,
   deriveProjectOwner,
@@ -20,10 +22,9 @@ import {
   planNeedsToken,
   resolveBootstrapRepositoryDescription,
   resolveTokenPolicy,
-  sanitizeToken,
-  shouldBootstrapRunNpmCiBeforeInit,
   shouldExecuteBootstrap,
-} from "../scripts/lib/bootstrap.mjs";
+  validateCollectsPersonalDataEnv,
+} from "../.github/scripts/bootstrap-plan.mjs";
 
 const initScript = join(
   fileURLToPath(new URL("..", import.meta.url)),
@@ -116,18 +117,17 @@ describe("bootstrap lib (unit)", () => {
     expect(deriveProjectOwner("acme-corp")).toBe("acme-corp");
   });
 
-  it("deriveInitArgs builds display name, manual purpose fallback, and owner from login", () => {
+  it("deriveInitArgs builds the display name, the purpose from the description, and the owner from the login", () => {
     expect(
       deriveInitArgs({
         repoName: "my_cool_app",
-        description: "",
+        description: "  Purpose line  ",
         repositoryOwnerLogin: "didi-build",
       }),
     ).toEqual({
       slug: "my-cool-app",
       displayName: "My Cool App",
-      purpose:
-        "Short description of what this project does — edit README and docs/architecture/overview.md.",
+      purpose: "Purpose line",
       owner: "Didi Build",
     });
     expect(
@@ -139,21 +139,12 @@ describe("bootstrap lib (unit)", () => {
     ).toBe("my-github-user");
   });
 
-  it("deriveInitArgs rejects missing description when default purpose is disabled", () => {
-    expect(() =>
-      deriveInitArgs({
-        repoName: "app",
-        description: "",
-        allowDefaultPurpose: false,
-      }),
-    ).toThrow(MISSING_REPOSITORY_DESCRIPTION_MESSAGE);
-    expect(() =>
-      deriveInitArgs({
-        repoName: "app",
-        description: "   ",
-        allowDefaultPurpose: false,
-      }),
-    ).toThrow(MISSING_REPOSITORY_DESCRIPTION_MESSAGE);
+  it("deriveInitArgs rejects a missing description: init needs it as the purpose", () => {
+    for (const description of ["", "   ", null, undefined]) {
+      expect(() => deriveInitArgs({ repoName: "app", description })).toThrow(
+        MISSING_REPOSITORY_DESCRIPTION_MESSAGE,
+      );
+    }
   });
 
   it("resolveBootstrapRepositoryDescription requires a non-empty description", () => {
@@ -202,11 +193,17 @@ describe("bootstrap lib (unit)", () => {
     });
   });
 
-  it("shouldBootstrapRunNpmCiBeforeInit follows personal data env", () => {
-    const initPlan = { init: true, settings: true };
-    expect(shouldBootstrapRunNpmCiBeforeInit(initPlan, "false")).toBe(false);
-    expect(shouldBootstrapRunNpmCiBeforeInit(initPlan, undefined)).toBe(true);
-    expect(shouldBootstrapRunNpmCiBeforeInit({ init: false }, "true")).toBe(false);
+  it("personal data is on unless the variable turns it off (D-359), and a bad value is refused", () => {
+    expect(bootstrapCollectsPersonalData(undefined)).toBe(true);
+    expect(bootstrapCollectsPersonalData("")).toBe(true);
+    expect(bootstrapCollectsPersonalData("false")).toBe(false);
+    expect(bootstrapCollectsPersonalData("no")).toBe(false);
+    expect(validateCollectsPersonalDataEnv("maybe")).toEqual({
+      ok: false,
+      message:
+        "Invalid LAUNCHPAD_COLLECTS_PERSONAL_DATA: use true/false, yes/no, or 1/0.",
+    });
+    expect(validateCollectsPersonalDataEnv(undefined)).toEqual({ ok: true });
   });
 
   it("shouldExecuteBootstrap respects token policy", () => {

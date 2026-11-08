@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AGENTS_POOL } from "../src/adapters/agent-runtime/kubernetes/manifests.ts";
@@ -11,6 +11,12 @@ import {
   TUNNEL_EDGE_PORT,
   serviceUrl,
 } from "../infra/kubernetes/platform.ts";
+import {
+  PLATFORM_SETTINGS,
+  PROJECT_SLUG,
+  projectStagingUrl,
+} from "../src/core/register-project.ts";
+import { committedSettings } from "./admin-workflows-fixture.ts";
 
 // Unit: static checks on the cluster's infrastructure code (ADR 0106, ADR 0110, D-188, D-193 to
 // D-195). OpenTofu is not run here; these read the .tf files as text, so they hold without
@@ -316,10 +322,13 @@ describe("receiver tunnel (unit: D-195)", () => {
     expect(only(stackCode, /variable\s+"planning_service_url"/)).toContain(
       `default     = "${serviceUrl(STATE_API_PUBLIC)}"`,
     );
-    // No new DNS record: the path rides on the receiver's host name.
-    expect(blocks(cfCode, /resource\s+"cloudflare_dns_record"\s+"\w+"/)).toHaveLength(
-      2,
-    );
+    // No new DNS record: the path rides on the receiver's host name. The module's other records
+    // are the scratch stack's TXT records and each project's staging name (D-357).
+    expect(
+      [...cfCode.matchAll(/resource\s+"cloudflare_dns_record"\s+"(\w+)"/g)]
+        .map((m) => m[1])
+        .sort(),
+    ).toEqual(["project", "receiver", "txt"]);
   });
 
   it("matches the planning chat's four paths under /api and nothing else (D-282, D-343)", () => {
@@ -410,5 +419,199 @@ describe("factory stack (unit: ADR 0110)", () => {
     expect(stackCode).toMatch(
       /source\s*=\s*"\.\.\/\.\.\/modules\/platform\/cloudflare"/,
     );
+  });
+});
+
+/** An HCL quoted template such as `"${each.key}/*"`, filled in from the values given by name. */
+function fill(template: string, values: Record<string, string>): string {
+  const body = /^"([^"]*)"$/.exec(template.trim())?.[1];
+  if (body === undefined) throw new Error(`not a quoted template: ${template}`);
+  return body.replace(/\$\{([\w.]+)\}/g, (_, name: string) => {
+    const value = values[name];
+    if (value === undefined) throw new Error(`no value for ${name} in ${template}`);
+    return value;
+  });
+}
+
+/** The value of an HCL quoted string as OpenTofu reads it: `\\` is one backslash. */
+const hclString = (literal: string): string => literal.replace(/\\\\/g, "\\");
+
+describe("each project's staging name and Workers route (unit: D-345, D-357, O-112)", () => {
+  // The receiver's host name, RECEIVER_HOSTNAME in the infra environments (D-343, runbook step 3).
+  const RECEIVER_HOST = "foreman.didi.build";
+  const stackLocals = only(stackCode, /\blocals/);
+  const edge = only(stackCode, /module\s+"edge"/);
+  const variable = only(cfCode, /variable\s+"project_staging"/);
+  const moduleLocals = only(cfCode, /\blocals/);
+  const record = only(cfCode, /resource\s+"cloudflare_dns_record"\s+"project"/);
+  const route = only(cfCode, /resource\s+"cloudflare_workers_route"\s+"project"/);
+
+  const domain = /project_domain\s*=\s*"([^"]+)"/.exec(stackLocals)?.[1] ?? "";
+
+  // The module's map of host names: `for <slug> in <slugs> : <key> => <slug> if <key> != <receiver>`.
+  const hosts =
+    /project_hosts\s*=\s*\{\s*for\s+(\w+)\s+in\s+try\(var\.project_staging\.slugs, \[\]\)\s*:\s*("[^"]*")\s*=>\s*(\w+)\s+if\s+("[^"]*")\s*!=\s*local\.receiver_hostname\s*\}/.exec(
+      moduleLocals,
+    );
+  const [, each = "", keyTemplate = "", value = "", kept = ""] = hosts ?? [];
+
+  /** What the module makes for these slugs, read from its own expressions. */
+  function planned(slugs: string[], receiver: string | null) {
+    const projectHosts = slugs
+      .map((slug) => ({
+        slug,
+        host: fill(keyTemplate, { [each]: slug, "var.project_staging.domain": domain }),
+        kept: fill(kept, { [each]: slug, "var.project_staging.domain": domain }),
+      }))
+      .filter((p) => p.kept !== receiver);
+    const pattern = /pattern\s*=\s*("[^"]*")/.exec(route)?.[1] ?? "";
+    const script = /script\s*=\s*("[^"]*")/.exec(route)?.[1] ?? "";
+    return {
+      records: projectHosts.map((p) => p.host),
+      routes: projectHosts.map((p) => ({
+        pattern: fill(pattern, { "each.key": p.host }),
+        script: fill(script, { "each.value": p.slug }),
+      })),
+    };
+  }
+
+  it("reads the project list from the platform settings file, the one list the form reads too (D-345)", () => {
+    const path =
+      /settings\s*=\s*jsondecode\(file\("\$\{path\.module\}\/([^"]+)"\)\)/.exec(
+        stackLocals,
+      )?.[1];
+    expect(path).toBeDefined();
+    expect(resolve(STACK, path ?? "")).toBe(resolve(PLATFORM_SETTINGS.path));
+    expect(stackLocals).toMatch(
+      /project_slugs\s*=\s*\[for project in local\.settings\.projects : project\.slug\]/,
+    );
+    expect(edge).toMatch(
+      /project_staging\s*=\s*\{\s*domain\s*=\s*local\.project_domain\s+slugs\s*=\s*local\.project_slugs\s*\}/,
+    );
+    // The receiver's host name the module compares with is the one the stack gives the tunnel.
+    expect(edge).toMatch(/hostname\s*=\s*var\.receiver_hostname/);
+  });
+
+  it("names each project <slug>.didi.build, the staging address the store records (D-345)", () => {
+    expect(domain).toBe("didi.build");
+    expect(projectStagingUrl("rehearsal")).toBe(`https://rehearsal.${domain}`);
+    const dnsName = /can\(regex\("([^"]+)", var\.project_staging\.domain\)\)/.exec(
+      variable,
+    )?.[1];
+    expect(dnsName).toBeDefined();
+    const rule = new RegExp(hclString(dnsName ?? ""));
+    expect(rule.test(domain)).toBe(true);
+    for (const bad of [
+      "",
+      "didi",
+      "didi.build.",
+      "*.didi.build",
+      "Didi.build",
+      "didi..build",
+    ]) {
+      expect(rule.test(bad), bad).toBe(false);
+    }
+  });
+
+  it("makes one proxied record and one Workers route per project, with the exact name, pattern and Worker", () => {
+    expect(hosts, "the project_hosts expression").not.toBeNull();
+    expect(value).toBe(each);
+    expect(record).toMatch(/for_each\s*=\s*local\.project_hosts\b/);
+    expect(record).toMatch(/zone_id\s*=\s*var\.settings\["zone_id"\]/);
+    expect(record).toMatch(/name\s*=\s*each\.key\b/);
+    expect(record).toMatch(/proxied\s*=\s*true\b/);
+    // The originless placeholder Cloudflare documents for a proxied record (O-112).
+    expect(attrs(record)).toMatchObject({ type: "AAAA", content: "100::" });
+    expect(route).toMatch(/for_each\s*=\s*local\.project_hosts\b/);
+    expect(route).toMatch(/zone_id\s*=\s*var\.settings\["zone_id"\]/);
+    expect(route).toMatch(/depends_on\s*=\s*\[cloudflare_dns_record\.project\]/);
+    expect(
+      blocks(allInfra, /resource\s+"cloudflare_workers_route"\s+"\w+"/),
+    ).toHaveLength(1);
+
+    expect(planned(["rehearsal", "shop-2"], RECEIVER_HOST)).toEqual({
+      records: ["rehearsal.didi.build", "shop-2.didi.build"],
+      routes: [
+        { pattern: "rehearsal.didi.build/*", script: "rehearsal-staging" },
+        { pattern: "shop-2.didi.build/*", script: "shop-2-staging" },
+      ],
+    });
+    expect(planned([], RECEIVER_HOST)).toEqual({ records: [], routes: [] });
+  });
+
+  it("skips a project whose host name is the receiver's, so foreman.didi.build gets no second record and no route (D-343)", () => {
+    expect(kept, "the kept host is the record's own name").toBe(keyTemplate);
+    expect(moduleLocals).toMatch(
+      /receiver_hostname\s*=\s*var\.receiver_tunnel == null \? null : lower\(var\.receiver_tunnel\.hostname\)/,
+    );
+    expect(planned(["foreman", "rehearsal"], RECEIVER_HOST)).toEqual({
+      records: ["rehearsal.didi.build"],
+      routes: [{ pattern: "rehearsal.didi.build/*", script: "rehearsal-staging" }],
+    });
+    expect(planned(["foreman"], RECEIVER_HOST)).toEqual({ records: [], routes: [] });
+  });
+
+  it("refuses a slug outside the project-slug rule, and a slug listed twice", () => {
+    const pattern =
+      /condition\s*=\s*alltrue\(\[for slug in try\(var\.project_staging\.slugs, \[\]\) : can\(regex\("([^"]+)", slug\)\)\]\)/.exec(
+        variable,
+      )?.[1];
+    expect(pattern).toBe(PROJECT_SLUG.source);
+    const rule = new RegExp(hclString(pattern ?? ""));
+    for (const good of ["rehearsal", "shop-2", "a", "0x", "a".repeat(100)]) {
+      expect(rule.test(good), good).toBe(true);
+    }
+    for (const bad of [
+      "",
+      "Rehearsal",
+      "-x",
+      "a_b",
+      "a.b",
+      "a/b",
+      "*",
+      "a*",
+      "a b",
+      "a\n",
+      "é",
+      "rehearsal.didi.build",
+      "a".repeat(101),
+    ]) {
+      expect(rule.test(bad), JSON.stringify(bad)).toBe(false);
+    }
+    expect(variable).toMatch(
+      /condition\s*=\s*length\(distinct\(try\(var\.project_staging\.slugs, \[\]\)\)\) == length\(try\(var\.project_staging\.slugs, \[\]\)\)/,
+    );
+  });
+
+  it("holds every slug in the committed settings file to those rules, so a bad one fails CI before any plan", () => {
+    const settings = committedSettings() as { projects: { slug: unknown }[] };
+    const slugs = settings.projects.map((p) => p.slug);
+    for (const slug of slugs) {
+      expect(typeof slug === "string" && PROJECT_SLUG.test(slug), String(slug)).toBe(
+        true,
+      );
+    }
+    expect(new Set(slugs).size).toBe(slugs.length);
+  });
+
+  it("asks for a Cloudflare token that can edit what the stack makes: tunnels, DNS records and Workers routes (D-357, runbook step 3)", () => {
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    const token = runbook
+      .split("\n")
+      .find((line) => line.startsWith("- A Cloudflare API token"));
+    for (const permission of [
+      "Cloudflare Tunnel: Edit",
+      "DNS: Edit",
+      "Workers Routes: Edit",
+    ]) {
+      expect(token, permission).toContain(permission);
+    }
+    for (const type of [
+      "cloudflare_zero_trust_tunnel_cloudflared",
+      "cloudflare_dns_record",
+      "cloudflare_workers_route",
+    ]) {
+      expect(cfCode).toMatch(new RegExp(`resource\\s+"${type}"`));
+    }
   });
 });

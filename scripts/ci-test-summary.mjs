@@ -31,7 +31,7 @@ if (installOutcome !== "success") {
 
   const checkIcon = checkOutcome === "success" ? "✅" : "❌";
   lines.push(
-    `${checkIcon} **check** - \`${checkOutcome}\` (format, lint, typecheck, test, secrets, secret-usage, preview-workflow, placeholders, attribution)`,
+    `${checkIcon} **check** - \`${checkOutcome}\` (format, lint, typecheck, test, secrets, secret-usage, placeholders, attribution)`,
   );
 }
 

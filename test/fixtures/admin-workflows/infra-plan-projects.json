@@ -1,0 +1,150 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.2",
+  "resource_changes": [
+    {
+      "address": "module.edge.cloudflare_dns_record.project[\"old-project.example.com\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_dns_record",
+      "name": "project",
+      "index": "old-project.example.com",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "comment": "A project's staging name, served by its Worker route (D-357)",
+          "content": "100::",
+          "name": "old-project.example.com",
+          "proxied": true,
+          "ttl": 1,
+          "type": "AAAA",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        },
+        "after": null
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_dns_record.project[\"rehearsal.example.com\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_dns_record",
+      "name": "project",
+      "index": "rehearsal.example.com",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "comment": "A project's staging name, served by its Worker route (D-357)",
+          "content": "100::",
+          "name": "rehearsal.example.com",
+          "proxied": true,
+          "ttl": 1,
+          "type": "AAAA",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_dns_record.project[\"shop-2.example.com\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_dns_record",
+      "name": "project",
+      "index": "shop-2.example.com",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "comment": "A project's staging name, served by its Worker route (D-357)",
+          "content": "100::",
+          "name": "shop-2.example.com",
+          "proxied": true,
+          "ttl": 1,
+          "type": "AAAA",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_dns_record.receiver[0]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_dns_record",
+      "name": "receiver",
+      "index": 0,
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "name": "hooks.example.com",
+          "type": "CNAME",
+          "proxied": true,
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        },
+        "after": {
+          "name": "hooks.example.com",
+          "type": "CNAME",
+          "proxied": true,
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_workers_route.project[\"old-project.example.com\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_workers_route",
+      "name": "project",
+      "index": "old-project.example.com",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "pattern": "old-project.example.com/*",
+          "script": "old-project-staging",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        },
+        "after": null
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_workers_route.project[\"rehearsal.example.com\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_workers_route",
+      "name": "project",
+      "index": "rehearsal.example.com",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "pattern": "rehearsal.example.com/*",
+          "script": "rehearsal-staging",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_workers_route.project[\"shop-2.example.com\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_workers_route",
+      "name": "project",
+      "index": "shop-2.example.com",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "pattern": "shop-2.example.com/*",
+          "script": "shop-2-staging",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    }
+  ]
+}

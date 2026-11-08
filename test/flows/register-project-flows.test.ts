@@ -19,7 +19,7 @@ const INPUT = {
 };
 
 describe("Didi's register-project flow (flow, D-345, O-109)", () => {
-  it("creates the repository and records the project once, then answers already_registered", async () => {
+  it("creates the repository and records the project once, then answers already_registered once setup finished", async () => {
     const f = await createFlowFixture();
     await f.live();
     f.projectSettings.listed = ["rehearsal", INPUT.slug];
@@ -39,6 +39,7 @@ describe("Didi's register-project flow (flow, D-345, O-109)", () => {
     expect(await f.store.getProjectBySlug(INPUT.slug)).toEqual(
       first.outcome === "registered" ? first.project : null,
     );
+    f.bootstrap.finish(INPUT.slug, "success");
     expect(await registerProject(f.deps, INPUT)).toMatchObject({
       outcome: "already_registered",
     });

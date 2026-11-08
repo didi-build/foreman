@@ -9,7 +9,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "check": "npm run conflict-markers && npm run workflow-yaml && npm run infra-boundaries && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run secrets && npm run secret-usage && npm run preview-workflow && npm run placeholders && npm run attribution && npm run nodrift",
+    "check": "npm run conflict-markers && npm run workflow-yaml && npm run infra-boundaries && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run secrets && npm run secret-usage && npm run placeholders && npm run attribution && npm run nodrift",
     "build": "vite build",
     "dev:gallery": "vite",
     "format": "prettier --write .",
@@ -22,14 +22,13 @@
     "conflict-markers": "node scripts/check-conflict-markers.mjs",
     "workflow-yaml": "node scripts/check-workflow-yaml.mjs",
     "secret-usage": "node scripts/check-secret-usage.mjs",
-    "preview-workflow": "node scripts/check-preview-workflow.mjs",
     "placeholders": "node scripts/check-placeholders.mjs",
     "attribution": "node scripts/check-attribution.mjs",
     "nodrift": "node scripts/run-nodrift-check.mjs",
     "infra-boundaries": "node scripts/check-infra-boundaries.mjs",
     "db:migrate": "node src/adapters/store-postgres/migrate.ts",
     "init-project": "node scripts/init-project.mjs",
-    "repo-settings": "node scripts/repo-settings.mjs",
+    "repo-settings": "node .github/scripts/bootstrap-settings.mjs",
     "verify-action-pins": "node scripts/verify-action-pins.mjs",
     "prepare": "husky"
   },

@@ -59,13 +59,22 @@ const workflow = (path: string) => parseYaml(text(path)) as Workflow;
 const all = Object.values(WORKFLOWS).map((path) => ({ path, wf: workflow(path) }));
 
 const SCRIPTS_DIR = ".github/scripts";
-const scripts = readdirSync(SCRIPTS_DIR).map((name) => join(SCRIPTS_DIR, name));
+// The shell scripts; Bootstrap's Node scripts (.mjs) are held by test/check-bootstrap-isolation.test.ts.
+const scripts = readdirSync(SCRIPTS_DIR)
+  .filter((name) => name.endsWith(".sh"))
+  .map((name) => join(SCRIPTS_DIR, name));
 const script = (name: string) => text(join(SCRIPTS_DIR, name));
 
 /** A `${{ ... }}` expression that reads a secret. */
 const SECRET_REFERENCE = /\$\{\{[^}]*\bsecrets\./;
 
 /** The four environments of D-339: two plan environments with no reviewer, two Didi approves. */
+/** D-361: the account id, the zone id and the bucket name are organization and repository secrets. */
+const JOB_LEVEL_IDENTIFIERS = [
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_ZONE_ID",
+  "STATE_BUCKET",
+];
 const PLAN_ENVIRONMENTS = ["infra-plan", "platform-plan"];
 const APPROVED_ENVIRONMENTS = ["infra", "platform"];
 
@@ -133,7 +142,14 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
             job.environment,
           );
         }
-        expect(JSON.stringify(job.env ?? {}), label).not.toMatch(SECRET_REFERENCE);
+        // Only the identifiers of D-361 may sit in a job's env: they are not keys, and every
+        // step that redacts or runs `tofu init` needs them. A key stays in a step's env.
+        for (const [name, value] of Object.entries(job.env ?? {})) {
+          if (SECRET_REFERENCE.test(value)) {
+            expect(JOB_LEVEL_IDENTIFIERS, `${label} ${name}`).toContain(name);
+            expect(value, `${label} ${name}`).toBe(`\${{ secrets.${name} }}`);
+          }
+        }
         for (const step of job.steps) {
           expect(step.run ?? "", `${label} ${step.name}`).not.toMatch(SECRET_REFERENCE);
           expect(JSON.stringify(step.with ?? {}), `${label} ${step.name}`).not.toMatch(
@@ -182,7 +198,8 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       }
       expect(text(path), path).not.toMatch(/set -[a-z]*x|set -o xtrace|bash -x/);
     }
-    for (const path of scripts) {
+    // The shell scripts; CI's preview check scripts are Node (test/preview-check-scripts.test.ts).
+    for (const path of scripts.filter((p) => p.endsWith(".sh"))) {
       const lines = text(path).split("\n");
       expect(lines[0], path).toBe("#!/usr/bin/env bash");
       const firstCommand = lines.find(
@@ -216,6 +233,21 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
 });
 
 describe("the infra apply workflow (unit: D-339, ADR 0110)", () => {
+  it("reads the account id, the zone id and the bucket name as secrets, and the host name as a variable (D-361)", () => {
+    for (const path of [WORKFLOWS.infra, WORKFLOWS.platform]) {
+      const raw = text(path);
+      expect(raw, path).not.toMatch(
+        /vars\.(CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STATE_BUCKET)\b/,
+      );
+      expect(raw, path).toMatch(/\$\{\{ secrets\.STATE_BUCKET \}\}/);
+      expect(raw, path).toMatch(/\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
+    }
+    const infra = text(WORKFLOWS.infra);
+    expect(infra).toMatch(/\$\{\{ secrets\.CLOUDFLARE_ZONE_ID \}\}/);
+    expect(infra).toMatch(/\$\{\{ vars\.RECEIVER_HOSTNAME \}\}/);
+    expect(infra).not.toMatch(/secrets\.RECEIVER_HOSTNAME/);
+  });
+
   const wf = workflow(WORKFLOWS.infra);
   const plan = wf.jobs.plan as Job;
   const apply = wf.jobs.apply as Job;
@@ -260,6 +292,13 @@ describe("the infra apply workflow (unit: D-339, ADR 0110)", () => {
     expect(run).toContain("RECEIVER_TUNNEL_TOKEN");
     expect(run).toMatch(/show -json plan\.out \|\s*\n\s*jq -c/);
     expect(run).not.toMatch(/show -json plan\.out\s*>/);
+  });
+
+  it("plans again when the settings file changes, since the stack reads its project list there (D-357)", () => {
+    expect(wf.on.push?.paths).toContain(SETTINGS_FILE);
+    expect(text("infra/stacks/factory/main.tf")).toContain(
+      'file("${path.module}/../../kubernetes/settings/production.json")',
+    );
   });
 
   it("plans with the reviewed variables file and saves the encrypted plan for one day", () => {

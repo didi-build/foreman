@@ -1458,7 +1458,7 @@ describe.skipIf(process.platform === "win32")(
         expect(result.status).toBe(0);
         expect(result.stdout).toContain("| create | 1 |");
         expect(result.stdout).toContain("| replace | 1 |");
-        expect(result.stdout).toContain("**DNS change** (DNS gate, D-195)");
+        expect(result.stdout).toContain("**DNS change** (DNS gate, D-195, D-357)");
         expect(result.stdout).toContain("**Deletes or replaces**");
         expect(result.stdout).toContain("**Spending**");
         expect(result.stdout).not.toContain("**Network rules**");
@@ -1467,6 +1467,75 @@ describe.skipIf(process.platform === "win32")(
         );
         expect(result.stdout).not.toContain("digitalocean_firewall.workers");
         expect(result.stdout).toContain('resource "cloudflare_dns_record" "receiver"');
+      });
+
+      /** The bullet lines under the gates, each record or route that changes by name. */
+      const named = (stdout: string): string[] =>
+        (
+          /### Gates this plan touches\n([\s\S]*?)\n### Resources that change/.exec(
+            stdout,
+          )?.[1] ?? ""
+        )
+          .split("\n")
+          .filter((line) => line.startsWith("  - "));
+
+      it("lists each project's record and route that changes by name under its gate, from the workflow's own reading of the plan (D-357, O-112)", () => {
+        // The plan job's filter over the plan's JSON form: addresses, types and actions only.
+        const infraApply = parseYaml(
+          readFileSync(".github/workflows/infra-apply.yml", "utf8"),
+        ) as { jobs: { plan: { steps: { id?: string; run?: string }[] } } };
+        const planRun =
+          infraApply.jobs.plan.steps.find((s) => s.id === "plan")?.run ?? "";
+        const filter = /show -json plan\.out \|\s*jq -c '([^']+)'/.exec(planRun)?.[1];
+        expect(filter).toBeDefined();
+        const jq = spawnSync(
+          "jq",
+          ["-c", filter ?? "", join(FIXTURES, "infra-plan-projects.json")],
+          { encoding: "utf8" },
+        );
+        expect(jq.status).toBe(0);
+        const result = summarize(JSON.parse(jq.stdout) as unknown[]);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("- **DNS change** (DNS gate, D-195, D-357)");
+        expect(result.stdout).toContain("- **Workers route change** (DNS gate, D-357)");
+        expect(result.stdout).toContain("`<slug>-staging`");
+        expect(result.stdout).toContain("- **Deletes or replaces**");
+        expect(named(result.stdout)).toEqual([
+          "  - delete `old-project.example.com`",
+          "  - create `rehearsal.example.com`",
+          "  - create `shop-2.example.com`",
+          "  - delete `old-project.example.com/*`",
+          "  - create `rehearsal.example.com/*`",
+          "  - create `shop-2.example.com/*`",
+        ]);
+        expect(result.stdout).toContain(
+          '| create | `module.edge.cloudflare_workers_route.project["rehearsal.example.com"]` |',
+        );
+        // The receiver's record does not change here, and nothing but addresses was read.
+        expect(result.stdout).not.toContain("cloudflare_dns_record.receiver");
+        expect(result.stdout).not.toContain("hooks.example.com");
+        expect(result.stdout).not.toContain("fedcba9876543210fedcba9876543210");
+      });
+
+      it("names the receiver's record by its address and any other change by its address", () => {
+        const result = summarize([
+          {
+            address: "module.edge.cloudflare_dns_record.receiver[0]",
+            type: "cloudflare_dns_record",
+            actions: ["create"],
+          },
+          {
+            address: 'module.edge.cloudflare_dns_record.project["Not A Host"]',
+            type: "cloudflare_dns_record",
+            actions: ["update"],
+          },
+        ]);
+        expect(result.status).toBe(0);
+        expect(named(result.stdout)).toEqual([
+          "  - create the receiver's record `module.edge.cloudflare_dns_record.receiver[0]` (its host name is a placeholder in the plan below)",
+          '  - update `module.edge.cloudflare_dns_record.project["Not A Host"]`',
+        ]);
+        expect(result.stdout).not.toContain("**Workers route change**");
       });
 
       it("says so when nothing changes", () => {

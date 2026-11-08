@@ -1,5 +1,6 @@
 // A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs, changed
-// files, mergeability, deployments and a commit history held in memory, a squash merge that behaves like
+// files, workflow runs and their jobs (D-354), mergeability, deployments and a commit history held
+// in memory, a squash merge that behaves like
 // GitHub's (it refuses a head that moved, a PR GitHub cannot merge and a PR that is not open), a
 // compare that walks the history it was given (D-225), plus builders for webhook
 // payloads in GitHub's shape (only the fields ingestion reads). Signatures use the real HMAC
@@ -9,6 +10,8 @@ import type {
   CommitRelation,
   Deployment,
   PullRequest,
+  WorkflowJob,
+  WorkflowRun,
 } from "../../core/github.ts";
 import type { GitHubAdapter } from "./adapter.ts";
 import { signWebhook, verifyWebhookSignature } from "./signature.ts";
@@ -21,6 +24,18 @@ export interface FakeGitHub extends GitHubAdapter {
   merge(repo: string, number: number, mergeCommitSha: string): void;
   setCheckRuns(repo: string, sha: string, runs: CheckRun[]): void;
   setChangedPaths(repo: string, number: number, paths: string[]): void;
+  /**
+   * What GitHub lists for a workflow file's runs on a commit, exactly as given, so a test can make
+   * GitHub answer with a run the core must refuse (another workflow, a fork, another commit).
+   */
+  setWorkflowRuns(
+    repo: string,
+    workflowFile: string,
+    sha: string,
+    runs: WorkflowRun[],
+  ): void;
+  /** The jobs of a workflow run's latest attempt. */
+  setWorkflowJobs(repo: string, runId: number, jobs: WorkflowJob[]): void;
   /** What GitHub reports as the PR's mergeable state. A PR starts as `true` (no conflict). */
   setMergeable(repo: string, number: number, mergeable: boolean | null): void;
   /** Adds a deployment, or replaces the one with the same id (a new deployment status). */
@@ -46,6 +61,8 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const pulls = new Map<string, PullRequest>();
   const checks = new Map<string, CheckRun[]>();
   const paths = new Map<string, string[]>();
+  const workflowRuns = new Map<string, WorkflowRun[]>();
+  const workflowJobs = new Map<string, WorkflowJob[]>();
   const mergeable = new Map<string, boolean | null>();
   const merges: { repo: string; number: number; headSha: string }[] = [];
   const deployments = new Map<string, Deployment[]>();
@@ -96,6 +113,14 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     async listCheckRuns(repo, sha) {
       reads++;
       return structuredClone(checks.get(`${repo}@${sha}`) ?? []);
+    },
+    async listWorkflowRuns(repo, workflowFile, sha) {
+      reads++;
+      return structuredClone(workflowRuns.get(`${repo}:${workflowFile}@${sha}`) ?? []);
+    },
+    async listWorkflowJobs(repo, runId) {
+      reads++;
+      return structuredClone(workflowJobs.get(`${repo}:${runId}`) ?? []);
     },
     async listOpenPullRequests(repo) {
       reads++;
@@ -176,6 +201,12 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     setChangedPaths(repo, number, list) {
       paths.set(prKey(repo, number), [...list]);
+    },
+    setWorkflowRuns(repo, workflowFile, sha, runs) {
+      workflowRuns.set(`${repo}:${workflowFile}@${sha}`, structuredClone(runs));
+    },
+    setWorkflowJobs(repo, runId, jobs) {
+      workflowJobs.set(`${repo}:${runId}`, structuredClone(jobs));
     },
     setMergeable(repo, number, value) {
       mergeable.set(prKey(repo, number), value);

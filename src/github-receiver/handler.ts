@@ -1,14 +1,16 @@
 // The webhook endpoint (ADR 0113 sections 2 and 8). Order matters: cap the raw body, check the
 // signature over those exact bytes, and only then parse. A request that fails the signature is
 // answered 401 with nothing parsed or stored. Once a delivery is recorded, the flows its new
-// evidence or its staging deploy makes due are started (./flow-starts.ts, O-101, O-104), before
-// the answer, which a failed start never changes.
+// evidence or its staging deploy makes due are started (./flow-starts.ts, O-101, O-104), then,
+// apart from CI's path, the removal of `BOOTSTRAP_TOKEN`'s access when Bootstrap's restarted run
+// ended (./bootstrap-starts.ts, O-114), before the answer, which a failed start never changes.
 import type { IncomingMessage } from "node:http";
 
 import type { GitHubAdapter } from "../adapters/github/adapter.ts";
 import { ingestDelivery, type IngestDeps } from "../core/github-ingest.ts";
 import type { Logger } from "../service-kit/logger.ts";
 import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
+import type { BootstrapStarts } from "./bootstrap-starts.ts";
 import type { FlowStarts } from "./flow-starts.ts";
 
 /**
@@ -29,6 +31,8 @@ export interface ReceiverOptions {
   ingest: Omit<IngestDeps, "github">;
   /** Starts the flows a recorded delivery makes due. Never throws. */
   flowStarts: FlowStarts;
+  /** Starts the removal of `BOOTSTRAP_TOKEN`'s access after Bootstrap's restart (O-114). Never throws. */
+  bootstrapStarts?: BootstrapStarts;
   logger: Logger;
 }
 
@@ -100,6 +104,7 @@ export function createReceiverHandler(options: ReceiverOptions): RequestHandler 
       outcome: result.outcome,
     });
     await options.flowStarts(deliveryId, result);
+    await options.bootstrapStarts?.(deliveryId, { event, payload: parse(raw) }, result);
     sendJson(response, result.outcome === "rejected" ? 400 : 202, {
       outcome: result.outcome,
     });

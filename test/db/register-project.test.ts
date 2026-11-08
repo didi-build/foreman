@@ -1,13 +1,14 @@
-// Seam: database integration (docs/test-plan.md, D-345, O-109). Didi's register-project form on
-// the real Postgres store as the factory_runner role, with fakes of the settings file and of
-// GitHub's repository calls: the project row round-trips exactly, two runs at once give one row
-// and one `already_registered`, and an insert the slug's unique constraint refuses (a run whose
+// Seam: database integration (docs/test-plan.md, D-345, O-109, O-114). Didi's register-project
+// form on the real Postgres store as the factory_runner role, with fakes of the settings file, of
+// GitHub's repository calls and of BOOTSTRAP_TOKEN's access and Bootstrap's runs: the project row round-trips exactly, two runs at once give one row
+// and one `registered`, and an insert the slug's unique constraint refuses (a run whose
 // row was not visible yet) is read as `already_registered`, which holds the constraint's name
 // `projects_slug_key` to the one the core expects. No migration: the store already reads a
 // project by slug, and the runner role already inserts projects. Synthetic data only.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import {
   createFakeProjectRepositories,
   createFakeProjectSettings,
@@ -27,6 +28,12 @@ import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 const DB = `foreman_register_project_test_${process.pid}`;
 const T0 = new Date("2026-11-07T12:00:00Z");
 const DESCRIPTION = "A small notes app for the garden club.";
+
+/** The fake of BOOTSTRAP_TOKEN's access and Bootstrap's runs, one object for both ports (O-114). */
+function bootstrapPorts() {
+  const bootstrap = createFakeBootstrap();
+  return { bootstrapAccess: bootstrap, bootstrapRuns: bootstrap };
+}
 
 describe.skipIf(!adminUrl)(
   "the register-project form on Postgres (database integration, D-345)",
@@ -69,6 +76,7 @@ describe.skipIf(!adminUrl)(
         ids,
         projectSettings: createFakeProjectSettings(slugs),
         projectRepositories: createFakeProjectRepositories(),
+        ...bootstrapPorts(),
       });
 
     it("records the project row exactly, and reads it back by slug", async () => {
@@ -86,14 +94,19 @@ describe.skipIf(!adminUrl)(
       expect(result.outcome === "registered" && result.project).toEqual(stored);
     });
 
-    it("gives one row and one already_registered for two runs at once", async () => {
+    it("gives one row and one registered for two runs at once", async () => {
       const form = registration(["seed-swap"]);
       const input = { slug: "seed-swap", description: DESCRIPTION };
       const results = await Promise.all([form.register(input), form.register(input)]);
-      expect(results.map((r) => r.outcome).sort()).toEqual([
-        "already_registered",
-        "registered",
-      ]);
+      const outcomes = results.map((r) =>
+        r.outcome === "refused" ? r.reason : r.outcome,
+      );
+      expect(outcomes.filter((o) => o === "registered")).toHaveLength(1);
+      // The other run, by timing (O-114): its insert refused by the unique slug, or it finds the
+      // first run's row and so its setup, running already or not started yet.
+      expect(["already_registered", "bootstrap_running", "setup_restarted"]).toContain(
+        outcomes.find((o) => o !== "registered"),
+      );
       const rows = await pool.query(
         "select count(*)::int as n from factory.projects where slug = 'seed-swap'",
       );

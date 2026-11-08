@@ -159,6 +159,8 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
       spendNote: expect.stringContaining("M4.5"),
       stalledAfterMinutes: 120,
       stalledNote: null,
+      // No Bootstrap port given: project setup is not read (O-114).
+      projectSetup: null,
     });
     const text = renderDailyCheck(check);
     expect(text).toContain("Nothing moved and nothing is waiting.");

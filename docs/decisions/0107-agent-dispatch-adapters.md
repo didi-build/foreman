@@ -1,6 +1,7 @@
 # 0107. Agent dispatch adapters per runtime
 
 - **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29) for the adapter interface and the QA rules. The runtime results are desk research until the M0.2 runs happen, and the ADR is finished in M3.2.
+- **Note from D-354** (2026-11-07, O-111): hosted branch previews are dropped, so the preview check below is no longer a smoke test against a preview URL. CI's `preview-check` job builds the app on CI's own machine, serves it on 127.0.0.1 and checks that it loads and serves the head commit, and GitHub ingestion records that job's result as `preview_check`. It is still plain code, never the QA model.
 - **Date:** 2026-10-28
 - **Related:** [M0.2 spike record](../spikes/m0.2-agent-dispatch.md), V-01 and V-04, D-119 (model assignments), D-139 (open-source models), [ADR 0101](./0101-repo-layout-and-tooling.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md) (QA runtime, D-155 to D-159)
 

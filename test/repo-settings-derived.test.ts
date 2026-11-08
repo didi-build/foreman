@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const initScript = join(root, "scripts/init-project.mjs");
-const repoSettingsScript = join(root, "scripts/repo-settings.mjs");
+const repoSettingsScript = join(root, ".github/scripts/bootstrap-settings.mjs");
 
 describe("repo-settings on derived project (unit)", () => {
   it("dry-runs after init-project without calling GitHub", () => {

@@ -4,7 +4,7 @@ import {
   repositorySettingsMatch,
   targetBranchProtection,
   targetRepositorySettings,
-} from "../scripts/lib/repo-settings-target.mjs";
+} from "../.github/scripts/bootstrap-settings.mjs";
 
 describe("repo-settings-target (unit)", () => {
   it("requires PR and check with zero approvals", () => {

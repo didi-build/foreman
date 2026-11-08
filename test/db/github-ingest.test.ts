@@ -6,6 +6,7 @@
 // as this role before the receiver starts the option capture flow. The advance and staging checks
 // run as this role too (O-104), with no new grant: the one read they could need beyond it, a
 // decision on a design head QA already reported on, is refused, so the check fails closed.
+// Migration 0021 (O-111): it also records CI's preview check, under its key.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -31,6 +32,12 @@ import {
   createCaptureReads,
   optionScreenshotRef,
 } from "../../src/core/option-capture.ts";
+import {
+  PREVIEW_CHECK_JOB,
+  PREVIEW_CHECK_WORKFLOW,
+  PREVIEW_CHECK_WORKFLOW_FILE,
+  previewCheckKey,
+} from "../../src/core/preview-check.ts";
 import { createStagingReads } from "../../src/core/staging.ts";
 import { testRouteColumns } from "../../src/core/routing-testing.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
@@ -565,6 +572,78 @@ describe.skipIf(!adminUrl)(
         `insert into factory.evidence (id, node_id, kind, ref, payload, recorded_by, recorded_at, ingest_key)
          values ('${deps.ids.next()}', '${f.nodeId}', 'agent_report', 'x', '{}', 'runner', now(), 'k')`,
         /evidence_ingest_key_kinds/,
+      );
+    });
+
+    it("records CI's preview check as factory_ingest, once from the webhook and the poll (migration 0021, O-111)", async () => {
+      const branch = "foreman/preview-check";
+      const sha = "f".repeat(40);
+      const number = 41;
+      const nodeId = await f.dispatchNode(branch);
+      f.github.putPullRequest({
+        repo: REPO,
+        number,
+        state: "open",
+        merged: false,
+        mergeCommitSha: null,
+        headSha: sha,
+        headBranch: branch,
+        headRepo: REPO,
+        author: (await f.pr()).author,
+      });
+      f.github.setChangedPaths(REPO, number, []);
+      f.github.setCheckRuns(REPO, sha, passing("check", PREVIEW_CHECK_JOB));
+      f.github.setWorkflowRuns(REPO, PREVIEW_CHECK_WORKFLOW_FILE, sha, [
+        {
+          id: 701,
+          path: PREVIEW_CHECK_WORKFLOW,
+          event: "pull_request",
+          headSha: sha,
+          headRepo: REPO,
+        },
+      ]);
+      f.github.setWorkflowJobs(REPO, 701, [
+        {
+          id: 7001,
+          runId: 701,
+          name: PREVIEW_CHECK_JOB,
+          headSha: sha,
+          status: "completed",
+          conclusion: "success",
+        },
+      ]);
+      const delivery = {
+        id: "db-delivery-preview",
+        event: "check_suite",
+        payload: checkCompletedEvent("check_suite", REPO, sha, [number]),
+      };
+      expect((await ingestDelivery(deps, delivery)).outcome).toBe("recorded");
+      await pollRepository(deps, REPO);
+      const rows = await runner.listEvidence({ nodeId, kind: "preview_check" });
+      expect(rows.map((e) => [e.commitSha, e.payload, e.recordedBy])).toEqual([
+        [
+          sha,
+          {
+            pass: true,
+            conclusion: "success",
+            pr: number,
+            workflowRunId: 701,
+            jobId: 7001,
+          },
+          "github",
+        ],
+      ]);
+      const keys = await runnerPool.query(
+        "select ingest_key from factory.evidence where id = $1",
+        [rows[0]!.id],
+      );
+      expect(keys.rows[0].ingest_key).toBe(
+        previewCheckKey(REPO, number, sha, {
+          pass: true,
+          conclusion: "success",
+          workflowRunId: 701,
+          jobId: 7001,
+        }),
       );
     });
   },

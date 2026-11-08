@@ -25,6 +25,10 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
     listChangedPaths: refuse,
     listCheckRuns: refuse,
     listOpenPullRequests: refuse,
+    // CI's preview check (D-354, O-111): read with the runner App's `actions: read` token, which
+    // only the runner can mint (no App key is on the cluster, ADR 0106), so it refuses here too.
+    listWorkflowRuns: refuse,
+    listWorkflowJobs: refuse,
     getMergeability: refuse,
     squashMerge: refuse,
     listDeployments: refuse,

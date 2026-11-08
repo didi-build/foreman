@@ -7,10 +7,15 @@ name: Infra apply
 # - `plan` runs in the environment `infra-plan` (main only, no reviewer). It plans with
 #   `-input=false` against the R2 state backend, scans the plan text for the secret values
 #   (ADR 0110 secrets rule 6) before anything is published, writes the readable plan to the job
-#   summary with ids and host names replaced by placeholders (the repository is public), and saves
-#   the encrypted plan file as an artifact kept for one day.
+#   summary with ids and the receiver's host name replaced by placeholders (the repository is
+#   public), and saves the encrypted plan file as an artifact kept for one day. The summary names
+#   each project's DNS record and Workers route that changes; a project's host name is public.
 # - `apply` runs in the environment `infra` (main only, Didi the required reviewer), only when the
 #   plan has changes, and applies the saved plan file. OpenTofu refuses it if the state moved on.
+#
+# The stack reads its project list from the platform settings file, so a push that changes that
+# file plans again: adding a project is one pull request, then this plan for its name and route
+# and the Platform workflow's for its namespace, each approved by Didi (D-357, O-112).
 #
 # Secrets come from the environment's own secrets, each into the one step that needs it. Pull
 # requests never run this workflow: `.github/workflows/infra.yml` validates them with no
@@ -23,6 +28,7 @@ on:
     paths:
       - "infra/stacks/factory/**"
       - "infra/modules/**"
+      - "infra/kubernetes/settings/production.json"
       - ".github/workflows/infra-apply.yml"
       - ".github/scripts/tofu-init.sh"
       - ".github/scripts/redact.sh"
@@ -53,10 +59,10 @@ jobs:
     outputs:
       changes: ${{ steps.plan.outputs.changes }}
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
-      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+      STATE_BUCKET: ${{ secrets.STATE_BUCKET }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -156,10 +162,10 @@ jobs:
     permissions:
       contents: read
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
-      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+      STATE_BUCKET: ${{ secrets.STATE_BUCKET }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
