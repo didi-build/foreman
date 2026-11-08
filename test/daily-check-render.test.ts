@@ -92,6 +92,7 @@ function check(projects: ProjectCheck[], extra: Partial<DailyCheck> = {}): Daily
     spendNote: SPEND_THRESHOLDS_NOT_BUILT,
     stalledAfterMinutes: 120,
     stalledNote: null,
+    projectSetup: null,
     ...extra,
   };
 }
@@ -417,5 +418,44 @@ describe("the daily check's page (unit: D-319, D-320, O-100)", () => {
     expect(words(html)[1]).toBe(
       "Kill switch: on (the runner acts on nothing). Dry run: on (the runner plans moves and makes none).",
     );
+  });
+});
+
+describe("the daily check's project setup lines (unit, D-358, O-114)", () => {
+  const setup = {
+    failed: [
+      {
+        slug: "garden-notes",
+        message: "Bootstrap failed for garden-notes; run the register form again",
+      },
+    ],
+    unreadable: ["seed-swap", "tool-library"],
+  };
+
+  it("says each failed setup, and the ones it could not read, before the projects, in the text and on the page", () => {
+    const c = check([project("p")], { projectSetup: setup });
+    const text = renderDailyCheck(c).split("\n");
+    const failed = text.indexOf(
+      "Bootstrap failed for garden-notes; run the register form again.",
+    );
+    expect(failed).toBeGreaterThan(0);
+    expect(text[failed + 1]).toBe(
+      "Bootstrap's runs could not be read for: seed-swap, tool-library. Whether their setup finished is not shown.",
+    );
+    expect(failed).toBeLessThan(text.findIndex((l) => l.startsWith("== p")));
+    const html = renderDailyCheckHtml(c, PAGES);
+    expect(html).toContain(
+      "Bootstrap failed for garden-notes; run the register form again.",
+    );
+    expect(html.indexOf("<h3")).toBeGreaterThan(0);
+    expect(html.indexOf("Bootstrap failed")).toBeLessThan(html.indexOf("<h3"));
+  });
+
+  it("says nothing about setup when none failed or it was not read", () => {
+    for (const projectSetup of [null, { failed: [], unreadable: [] }]) {
+      const c = check([], { projectSetup });
+      expect(renderDailyCheck(c)).not.toContain("Bootstrap");
+      expect(renderDailyCheckHtml(c, PAGES)).not.toContain("Bootstrap");
+    }
   });
 });

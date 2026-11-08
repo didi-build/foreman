@@ -6,7 +6,8 @@
 // `platform/github-receiver/windmill-token`; until Didi creates the token at first hosting every
 // start is refused and the reconcile pass captures, advances and verifies. It reads the contracts
 // in its image and the guards in its code only to decide whether option capture, an advance from
-// evidence or the staging flow is due, never to record a move.
+// evidence or the staging flow is due, never to record a move. Apart from CI's path, it starts the
+// removal of `BOOTSTRAP_TOKEN`'s access once Bootstrap's restarted run ends (O-114).
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -23,6 +24,7 @@ import { GUARD_NAMES, GUARDS } from "../core/guards/index.ts";
 import { ConfigError, port, readConfig, secret, text } from "../service-kit/config.ts";
 import { createLogger } from "../service-kit/logger.ts";
 import { exitOnSignals, startService } from "../service-kit/server.ts";
+import { createBootstrapStarts } from "./bootstrap-starts.ts";
 import { createFlowStarts } from "./flow-starts.ts";
 import { createReceiverHandler } from "./handler.ts";
 
@@ -91,6 +93,11 @@ const service = await startService({
       clock,
       ids,
       ...flows,
+      logger,
+    }),
+    bootstrapStarts: createBootstrapStarts({
+      store,
+      removeBootstrapAccess: flows.removeBootstrapAccess,
       logger,
     }),
     logger,

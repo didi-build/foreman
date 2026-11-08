@@ -51,6 +51,8 @@ For **didi-build** derived **public** repositories:
 2. In the **didi-build** org, add an Actions secret named `BOOTSTRAP_TOKEN` with the PAT value.
 3. Share the secret with **all repositories** (or the repos that are created from Launchpad).
 
+**In didi-build, access only during setup (D-358, O-114).** Step 3 does not apply there: set the secret's repository access to **Selected repositories**, with no repository selected, and never add a repository by hand. A repository reaches the secret only during its own setup. Foreman's register-project form adds the new repository to the secret's selected repositories, then starts Bootstrap again with `workflow_dispatch` on `main`, since the first run, at creation, has no token and fails. When that restarted run ends, whatever its conclusion, Foreman removes the repository again, and its reconcile pass removes any repository that is not a project registered less than an hour ago whose setup is still going. To retry a failed setup there, run the register form again (it grants and restarts again) rather than **Run workflow** or **Re-run jobs**: outside a setup the repository has no access, so such a run has no token, and the end of a run started by `workflow_dispatch` removes the access. The first-hosting runbook (step 13 and "Adding a project") has the details.
+
 Derived repos created outside **didi-build** do not receive this org secret. They either:
 
 - Add a **repository** secret also named `BOOTSTRAP_TOKEN`, or

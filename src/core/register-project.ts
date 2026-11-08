@@ -1,4 +1,4 @@
-// Didi's register-project form (D-345, D-346, D-348, O-109). The called flow
+// Didi's register-project form (D-345, D-346, D-348, D-358, O-109, O-114). The called flow
 // `f/foreman/register_project` (flows/register-project.ts) takes a slug and a one-line description
 // and does these steps, in order:
 //
@@ -23,9 +23,30 @@
 //    turned on while the repository was being created stops the write. A project with the slug
 //    found there, or a concurrent insert the slug's uniqueness rule refuses, is
 //    `already_registered`.
+// 7. Setup (D-358 lock (2), O-114, ./bootstrap-access.ts): the repository is added to the
+//    organization secret `BOOTSTRAP_TOKEN`'s selected repositories, then Bootstrap is started
+//    again on main, since its first run, at creation, had no token. Each step mints its own token,
+//    once, narrowed to the new repository; a refusal stops the form, nothing is tried again, and
+//    the text says that running the form again picks up where it stopped.
+//
+// Run again on a project already recorded, the form reads the newest restarted Bootstrap run on
+// its repository: setup finished well is `already_registered`; a run still going changes
+// nothing; otherwise (no restarted run yet, or one that failed) the form checks the repository as
+// it checks one to reuse, then grants and restarts again (`setup_restarted`).
 //
 // Every refusal is fixed text from `REGISTER_REFUSALS`: it quotes no input, no token and no
 // answer from GitHub. Nothing here logs.
+import {
+  BOOTSTRAP_REF,
+  BOOTSTRAP_SECRET,
+  BOOTSTRAP_WORKFLOW_PATH,
+  GITHUB_ORGANIZATION,
+  setupStateOf,
+  startSetup,
+  type BootstrapAccess,
+  type BootstrapRuns,
+  type SetupState,
+} from "./bootstrap-access.ts";
 import type { Clock, IdSource } from "./library.ts";
 import { StoreConflictError, type Project, type Store } from "./store.ts";
 
@@ -36,7 +57,7 @@ import { StoreConflictError, type Project, type Store } from "./store.ts";
 export const PROJECT_SLUG = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
 /** The GitHub organization that owns every project repository (D-345). */
-export const PROJECT_OWNER = "didi-build";
+export const PROJECT_OWNER = GITHUB_ORGANIZATION;
 
 /** The template every project repository is created from (D-345). */
 export const PROJECT_TEMPLATE = "didi-build/launchpad";
@@ -105,6 +126,10 @@ export interface RegisterProjectDeps {
   ids: IdSource;
   projectSettings: ProjectSettings;
   projectRepositories: ProjectRepositories;
+  /** `BOOTSTRAP_TOKEN`'s selected repositories (D-358, O-114). */
+  bootstrapAccess: BootstrapAccess;
+  /** Bootstrap's restart and its newest restarted run (D-358, O-114). */
+  bootstrapRuns: BootstrapRuns;
 }
 
 export interface RegisterProjectInput {
@@ -147,6 +172,22 @@ export const REGISTER_REFUSALS = {
     "GitHub answered that it created the repository, but its answer does not show a public repository named didi-build/<slug>: nothing was recorded. Check the repository on GitHub before running the form again.",
   switch_turned_on:
     "The kill switch or dry run was turned on while the repository was being created: the project was not recorded. Run the form again once both are off; it reuses the repository.",
+  grant_token_refused:
+    "The project is recorded, but the token to give its repository access to BOOTSTRAP_TOKEN was not minted (GitHub refused it, or the runner App is not registered yet): nothing was granted and Bootstrap was not started. Run the form again: it picks up where it stopped.",
+  secret_not_selected:
+    "The project is recorded, but GitHub answered that BOOTSTRAP_TOKEN is not shared with selected repositories only, so nothing was granted and Bootstrap was not started. Set the secret's repository access to selected repositories (first-hosting runbook, step 13), then run the form again: it picks up where it stopped.",
+  grant_refused:
+    "The project is recorded, but GitHub refused or failed adding its repository to BOOTSTRAP_TOKEN's selected repositories: Bootstrap was not started. Run the form again: it picks up where it stopped.",
+  restart_token_refused:
+    "The project is recorded and its repository has access to BOOTSTRAP_TOKEN, but the token to start Bootstrap was not minted (GitHub refused it, or the runner App is not registered yet): Bootstrap was not started. Run the form again: it picks up where it stopped. The reconcile pass removes the access once the project is an hour old.",
+  restart_refused:
+    "The project is recorded and its repository has access to BOOTSTRAP_TOKEN, but GitHub refused or failed starting Bootstrap on main. Run the form again: it picks up where it stopped. The reconcile pass removes the access once the project is an hour old.",
+  setup_unreadable:
+    "The project is already recorded, but Bootstrap's runs on its repository could not be read (the runner App's read token was refused or is not available yet): nothing was granted or started. Run the form again: it picks up where it stopped.",
+  bootstrap_running:
+    "The project is already recorded and Bootstrap is running on its repository now: nothing was granted or started. When the run ends Foreman removes the access; if it failed, the daily check says so, and running the form again picks up where it stopped.",
+  registered_repository_unchecked:
+    "The project is already recorded, but GitHub does not show its repository as public and generated from didi-build/launchpad under exactly didi-build/<slug>, or it could not be read: nothing was granted or started.",
 } as const;
 
 export type RegisterRefusal = keyof typeof REGISTER_REFUSALS;
@@ -157,18 +198,30 @@ export type RegisterProjectResult =
       /** Whether this run created the repository or reused one an earlier run created. */
       repository: "created" | "reused";
       project: Project;
+      /** The repository was given access to `BOOTSTRAP_TOKEN` and Bootstrap was started again. */
+      setup: "started";
     }
+  /**
+   * The project was recorded already and its setup had not finished: the repository was given
+   * access again and Bootstrap was started again.
+   */
+  | { outcome: "setup_restarted"; slug: string; repo: string }
+  /** The project's setup finished well, or another run of the form recorded it at the same time. */
   | { outcome: "already_registered"; slug: string; repo: string }
   | {
       outcome: "dry_run";
       message: string;
+      /** Null for a project already recorded: nothing would be created. */
       wouldCreate: {
         repository: string;
         template: string;
         description: string;
         private: false;
-      };
-      wouldRecord: PlannedProject;
+      } | null;
+      /** Null for a project already recorded: nothing would be recorded. */
+      wouldRecord: PlannedProject | null;
+      wouldGrant: { secret: string; repository: string };
+      wouldRestart: { repository: string; workflow: string; ref: string };
     }
   | { outcome: "refused"; reason: RegisterRefusal; message: string };
 
@@ -230,8 +283,61 @@ const createdAsAsked = (slug: string, facts: RepositoryFacts | null): boolean =>
   !facts.private &&
   (facts.visibility === null || facts.visibility === "public");
 
+/** What dry run says the setup step would do for `didi-build/<slug>`. */
+const wouldSetUp = (slug: string) => ({
+  wouldGrant: { secret: BOOTSTRAP_SECRET, repository: projectRepository(slug) },
+  wouldRestart: {
+    repository: projectRepository(slug),
+    workflow: BOOTSTRAP_WORKFLOW_PATH,
+    ref: BOOTSTRAP_REF,
+  },
+});
+
 export function createProjectRegistration(deps: RegisterProjectDeps) {
   const { store, clock, ids, projectSettings, projectRepositories } = deps;
+
+  /** Step 7: the grant, then the restart. Null once both are done. */
+  async function setUp(slug: string): Promise<RegisterProjectResult | null> {
+    const setup = await startSetup(deps, slug);
+    return setup.started ? null : refused(setup.reason);
+  }
+
+  /** The form run again on a project already recorded: setup again unless it finished well. */
+  async function resume(
+    project: Project,
+    dryRun: boolean,
+  ): Promise<RegisterProjectResult> {
+    const { slug } = project;
+    const repo = projectRepository(slug);
+    let state: SetupState;
+    try {
+      state = setupStateOf(await deps.bootstrapRuns.latestRestart(slug));
+    } catch {
+      return refused("setup_unreadable");
+    }
+    if (state === "succeeded") return { outcome: "already_registered", slug, repo };
+    if (state === "running") return refused("bootstrap_running");
+    if (dryRun) {
+      return {
+        outcome: "dry_run",
+        message:
+          "Dry run is on: nothing was granted or started. The project is recorded and its setup has not finished, so with dry run off the form would add the repository to BOOTSTRAP_TOKEN's selected repositories and start Bootstrap again on main.",
+        wouldCreate: null,
+        wouldRecord: null,
+        ...wouldSetUp(slug),
+      };
+    }
+    // The access goes only to a repository the form would reuse (step 5's checks).
+    let facts: RepositoryFacts | null = null;
+    try {
+      facts = project.repo === repo ? await projectRepositories.read(slug) : null;
+    } catch {
+      facts = null;
+    }
+    if (facts === null || reuseRefusal(slug, facts) !== null)
+      return refused("registered_repository_unchecked");
+    return (await setUp(slug)) ?? { outcome: "setup_restarted", slug, repo };
+  }
 
   /** Step 5: the repository, created now or reused from an earlier run. */
   async function repository(
@@ -291,7 +397,7 @@ export function createProjectRegistration(deps: RegisterProjectDeps) {
           createdAt: clock.now(),
         };
         await tx.insertProject(project);
-        return { outcome: "registered", repository: how, project };
+        return { outcome: "registered", repository: how, project, setup: "started" };
       })
       .catch((error: unknown): RegisterProjectResult => {
         // Another run inserted the same slug first (the slug is unique, migration 0001).
@@ -329,16 +435,15 @@ export function createProjectRegistration(deps: RegisterProjectDeps) {
       }
       if (!listed.includes(slug)) return refused("not_in_settings");
 
-      // 4. Registered already.
-      if (await store.getProjectBySlug(slug)) {
-        return { outcome: "already_registered", slug, repo: projectRepository(slug) };
-      }
+      // 4. Registered already: setup again unless it finished well.
+      const existing = await store.getProjectBySlug(slug);
+      if (existing) return resume(existing, dryRun);
 
       if (dryRun) {
         return {
           outcome: "dry_run",
           message:
-            "Dry run is on: nothing was created or recorded. With dry run off, the form would create the repository from didi-build/launchpad, public, with this description (or reuse it if an earlier run created it), then record the project.",
+            "Dry run is on: nothing was created, recorded, granted or started. With dry run off, the form would create the repository from didi-build/launchpad, public, with this description (or reuse it if an earlier run created it), record the project, add the repository to BOOTSTRAP_TOKEN's selected repositories and start Bootstrap again on main.",
           wouldCreate: {
             repository: projectRepository(slug),
             template: PROJECT_TEMPLATE,
@@ -346,13 +451,16 @@ export function createProjectRegistration(deps: RegisterProjectDeps) {
             private: false,
           },
           wouldRecord: plannedProject(slug),
+          ...wouldSetUp(slug),
         };
       }
 
-      // 5. The repository, then 6. the row.
+      // 5. The repository, 6. the row, then 7. the setup.
       const made = await repository(slug, description.text);
       if ("refusal" in made) return refused(made.refusal);
-      return record(slug, made.how);
+      const recorded = await record(slug, made.how);
+      if (recorded.outcome !== "registered") return recorded;
+      return (await setUp(slug)) ?? recorded;
     },
   };
 }

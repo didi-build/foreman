@@ -10,6 +10,7 @@ import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
 import {
   compose,
   NotBuiltError,
+  unregisteredBootstrapTokens,
   unregisteredRepositoryCreationTokens,
   unregisteredRunnerAppTokens,
   unregisteredInstallationTokens,
@@ -198,6 +199,38 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(unregisteredRepositoryCreationTokens().mint()).rejects.toThrow(
         /Repository creation write/,
       );
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("refuses BOOTSTRAP_TOKEN's access parts until the runner App exists, sending nothing (D-358, O-114)", async () => {
+    const { env } = fakeEnvironment();
+    const deps = await compose(env);
+    try {
+      // Each change mints its own narrow token first; refused, nothing is sent and nothing retried.
+      for (const change of [
+        await deps.bootstrapAccess.grant("x"),
+        await deps.bootstrapAccess.remove("x"),
+        await deps.bootstrapRuns.restart("x"),
+      ]) {
+        expect(change).toEqual({ kind: "refused", step: "token" });
+      }
+      await expect(deps.bootstrapAccess.list()).rejects.toThrow(NotBuiltError);
+      // Bootstrap's runs are read with the runner App's actions read token (D-267).
+      await expect(deps.bootstrapRuns.latestRestart("x")).rejects.toThrow(
+        NotBuiltError,
+      );
+      const tokens = unregisteredBootstrapTokens();
+      for (const mint of [
+        () => tokens.secretsChange("x"),
+        () => tokens.secretsList(),
+        () => tokens.restart("x"),
+      ]) {
+        await expect(mint()).rejects.toThrow(
+          /Organization secrets write and Actions write/,
+        );
+      }
     } finally {
       await deps.close();
     }

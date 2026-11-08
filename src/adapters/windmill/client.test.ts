@@ -459,11 +459,12 @@ describe("the Windmill start's settings and endpoint (unit, O-101)", () => {
     expect(runScope(PLAN_APPROVAL_FLOW_PATH)).toBe(
       "jobs:run:scripts:f/foreman/plan_approval",
     );
-    // The receiver's token starts its three flows and nothing else (D-291, O-104).
+    // The receiver's token starts its four flows and nothing else (D-291, O-104, O-114).
     expect(RECEIVER_FLOW_PATHS.map(runScope)).toEqual([
       "jobs:run:scripts:f/foreman/option_capture",
       "jobs:run:scripts:f/foreman/advance_item",
       "jobs:run:scripts:f/foreman/verify_staging",
+      "jobs:run:scripts:f/foreman/remove_bootstrap_access",
     ]);
     // The run watcher's token starts the run-end flow and nothing else (D-330).
     expect(RUN_WATCHER_FLOW_PATHS.map(runScope)).toEqual([

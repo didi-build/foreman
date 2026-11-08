@@ -2,11 +2,15 @@
 // memory store with a fixed clock and id source, and fakes of the settings file and of GitHub's
 // repository calls (src/adapters/github/project-registration-fake.ts). The input checks, the
 // switches, the settings check, a project already recorded, reuse against refusal of an existing
-// repository, the fail-closed creation token, and the exact project row. Synthetic data only; no
-// real repository, token or GitHub call.
+// repository, the fail-closed creation token, and the exact project row. Then the setup step of
+// D-358 lock (2) (O-114), with the fake of BOOTSTRAP_TOKEN's access and Bootstrap's runs
+// (src/adapters/github/bootstrap-fake.ts): the grant, then the restart, a refusal at each step,
+// and the form run again picking up where it stopped. Synthetic data only; no real repository,
+// token or GitHub call.
 import { describe, expect, it } from "vitest";
 
 import { STATE_API_PUBLIC } from "../infra/kubernetes/platform.ts";
+import { createFakeBootstrap } from "../src/adapters/github/bootstrap-fake.ts";
 import {
   createFakeProjectRepositories,
   createFakeProjectSettings,
@@ -43,18 +47,21 @@ async function setup(
   await setting("dry_run", !(options.live ?? true));
   const projectSettings = createFakeProjectSettings(options.listed ?? [SLUG]);
   const repositories = createFakeProjectRepositories();
+  const bootstrap = createFakeBootstrap();
   const deps = {
     store,
     clock,
     ids,
     projectSettings,
     projectRepositories: repositories,
+    bootstrapAccess: bootstrap,
+    bootstrapRuns: bootstrap,
   };
   const register = (
     input: RegisterProjectInput = { slug: SLUG, description: DESCRIPTION },
     projectRepositories: ProjectRepositories = repositories,
   ) => createProjectRegistration({ ...deps, projectRepositories }).register(input);
-  return { store, setting, projectSettings, repositories, register };
+  return { store, setting, projectSettings, repositories, bootstrap, register };
 }
 
 /** Nothing was asked of GitHub and nothing was recorded. */
@@ -62,6 +69,7 @@ async function nothingDone(f: Awaited<ReturnType<typeof setup>>, settingsReads =
   expect(f.projectSettings.reads).toBe(settingsReads);
   expect(f.repositories.generated).toEqual([]);
   expect(f.repositories.reads).toEqual([]);
+  expect(f.bootstrap.calls).toEqual([]);
   expect(await f.store.listProjects()).toEqual([]);
 }
 
@@ -178,7 +186,9 @@ describe("the register-project form's switches (unit, D-345, O-109)", () => {
       const result = await f.register();
       expect(result).toEqual({
         outcome: "dry_run",
-        message: expect.stringContaining("nothing was created or recorded") as string,
+        message: expect.stringContaining(
+          "nothing was created, recorded, granted or started",
+        ) as string,
         wouldCreate: {
           repository: `didi-build/${SLUG}`,
           template: "didi-build/launchpad",
@@ -186,6 +196,12 @@ describe("the register-project form's switches (unit, D-345, O-109)", () => {
           private: false,
         },
         wouldRecord: plannedProject(SLUG),
+        wouldGrant: { secret: "BOOTSTRAP_TOKEN", repository: `didi-build/${SLUG}` },
+        wouldRestart: {
+          repository: `didi-build/${SLUG}`,
+          workflow: ".github/workflows/bootstrap.yml",
+          ref: "main",
+        },
       });
       await nothingDone(f, 1);
     }
@@ -234,6 +250,7 @@ describe("registering a project (unit, D-345, D-346, D-348, O-109)", () => {
       outcome: "registered",
       repository: "created",
       project: row,
+      setup: "started",
     });
     expect(f.repositories.generated).toEqual([
       { name: SLUG, description: DESCRIPTION },
@@ -242,9 +259,10 @@ describe("registering a project (unit, D-345, D-346, D-348, O-109)", () => {
     expect(await f.store.listProjects()).toEqual([row]);
   });
 
-  it("is already_registered when the store has the slug, and creates nothing", async () => {
+  it("is already_registered when the store has the slug and its setup finished, and creates nothing", async () => {
     const f = await setup();
     await f.register();
+    f.bootstrap.finish(SLUG, "success");
     const again = await f.register();
     expect(again).toEqual({
       outcome: "already_registered",
@@ -253,6 +271,12 @@ describe("registering a project (unit, D-345, D-346, D-348, O-109)", () => {
     });
     expect(f.repositories.generated).toHaveLength(1);
     expect(await f.store.listProjects()).toHaveLength(1);
+    // The second run only read Bootstrap's newest restarted run.
+    expect(f.bootstrap.calls).toEqual([
+      `grant ${SLUG}`,
+      `restart ${SLUG}`,
+      `latestRestart ${SLUG}`,
+    ]);
   });
 
   it("reuses the repository an earlier run created and failed to record", async () => {
@@ -359,6 +383,8 @@ describe("registering a project (unit, D-345, D-346, D-348, O-109)", () => {
         message: REGISTER_REFUSALS.switch_turned_on,
       });
       expect(await f.store.listProjects()).toEqual([]);
+      // Nothing recorded, so no access is granted and Bootstrap is not started (O-114).
+      expect(f.bootstrap.calls).toEqual([]);
       // Once the switch is off again, the next run reuses the repository and records the project.
       await f.setting(key, !value);
       expect(await f.register()).toMatchObject({ repository: "reused" });
@@ -416,6 +442,267 @@ describe("registering a project (unit, D-345, D-346, D-348, O-109)", () => {
         prodRequiresApproval: true,
         stagingUrl: `https://${slug}.didi.build`,
       });
+    }
+  });
+});
+
+describe("the register form's setup step (unit, D-358 lock (2), O-114)", () => {
+  const REPO = `didi-build/${SLUG}`;
+
+  it("once the project is recorded, grants the repository access, then restarts Bootstrap", async () => {
+    const f = await setup();
+    const result = await f.register();
+    expect(result).toMatchObject({ outcome: "registered", setup: "started" });
+    expect(f.bootstrap.calls).toEqual([`grant ${SLUG}`, `restart ${SLUG}`]);
+    expect([...f.bootstrap.selected]).toEqual([SLUG]);
+    expect(f.bootstrap.runs.get(SLUG)).toEqual([
+      { event: "workflow_dispatch", status: "queued", conclusion: null },
+    ]);
+  });
+
+  it("grants and restarts for a reused repository too", async () => {
+    const f = await setup();
+    f.repositories.existing.set(SLUG, launchpadRepository(SLUG));
+    expect(await f.register()).toMatchObject({
+      repository: "reused",
+      setup: "started",
+    });
+    expect(f.bootstrap.calls).toEqual([`grant ${SLUG}`, `restart ${SLUG}`]);
+  });
+
+  it("grants nothing when nothing is recorded", async () => {
+    const f = await setup();
+    f.repositories.nextGenerate = { kind: "refused", step: "creation_token" };
+    await f.register();
+    expect(f.bootstrap.calls).toEqual([]);
+  });
+
+  it("stops at a refused grant with fixed text: the project stays recorded, Bootstrap is not started, and nothing is tried again", async () => {
+    const cases = [
+      ["token", "grant_token_refused"],
+      ["not_selected", "secret_not_selected"],
+      ["call", "grant_refused"],
+    ] as const;
+    for (const [step, reason] of cases) {
+      const f = await setup();
+      f.bootstrap.refuse.grant = step;
+      expect(await f.register(), step).toEqual({
+        outcome: "refused",
+        reason,
+        message: REGISTER_REFUSALS[reason],
+      });
+      expect(REGISTER_REFUSALS[reason]).toContain("picks up where it stopped");
+      expect(f.bootstrap.calls).toEqual([`grant ${SLUG}`]);
+      expect(await f.store.listProjects()).toHaveLength(1);
+    }
+  });
+
+  it("stops at a refused restart with fixed text, leaving the access for the window", async () => {
+    const cases = [
+      ["token", "restart_token_refused"],
+      ["call", "restart_refused"],
+      ["not_selected", "restart_refused"],
+    ] as const;
+    for (const [step, reason] of cases) {
+      const f = await setup();
+      f.bootstrap.refuse.restart = step;
+      expect(await f.register(), step).toEqual({
+        outcome: "refused",
+        reason,
+        message: REGISTER_REFUSALS[reason],
+      });
+      expect(f.bootstrap.calls).toEqual([`grant ${SLUG}`, `restart ${SLUG}`]);
+      expect([...f.bootstrap.selected]).toEqual([SLUG]);
+    }
+  });
+
+  it("treats a port that throws as a refused call, and tries nothing again", async () => {
+    const f = await setup();
+    const throwing = {
+      ...f.bootstrap,
+      grant: async () => {
+        f.bootstrap.calls.push(`grant ${SLUG}`);
+        throw new Error("the connection dropped");
+      },
+    };
+    const result = await createProjectRegistration({
+      store: f.store,
+      clock: { now: () => new Date(T0) },
+      ids: { next: () => "73000000-0000-4000-8000-000000000001" },
+      projectSettings: f.projectSettings,
+      projectRepositories: f.repositories,
+      bootstrapAccess: throwing,
+      bootstrapRuns: f.bootstrap,
+    }).register({ slug: SLUG, description: DESCRIPTION });
+    expect(result).toMatchObject({ outcome: "refused", reason: "grant_refused" });
+    expect(f.bootstrap.calls).toEqual([`grant ${SLUG}`]);
+  });
+
+  it("run again after a refused grant or restart, picks up where it stopped: one row, a new grant and a restart", async () => {
+    for (const refused of ["grant", "restart"] as const) {
+      const f = await setup();
+      f.bootstrap.refuse[refused] = "call";
+      await f.register();
+      f.bootstrap.refuse = {};
+      f.bootstrap.calls = [];
+      expect(await f.register(), refused).toEqual({
+        outcome: "setup_restarted",
+        slug: SLUG,
+        repo: REPO,
+      });
+      // The repository is checked as one to reuse before it is given access again.
+      expect(f.repositories.reads).toEqual([SLUG]);
+      expect(f.bootstrap.calls).toEqual([
+        `latestRestart ${SLUG}`,
+        `grant ${SLUG}`,
+        `restart ${SLUG}`,
+      ]);
+      expect(f.repositories.generated).toHaveLength(1);
+      expect(await f.store.listProjects()).toHaveLength(1);
+    }
+  });
+
+  it("run again after Bootstrap failed, grants and restarts again; after it succeeded, does nothing", async () => {
+    const f = await setup();
+    await f.register();
+    f.bootstrap.finish(SLUG, "failure");
+    expect(await f.register()).toMatchObject({ outcome: "setup_restarted" });
+    expect(f.bootstrap.runs.get(SLUG)).toHaveLength(2);
+    f.bootstrap.finish(SLUG, "success");
+    f.bootstrap.calls = [];
+    expect(await f.register()).toMatchObject({ outcome: "already_registered" });
+    expect(f.bootstrap.calls).toEqual([`latestRestart ${SLUG}`]);
+  });
+
+  it("treats every conclusion but success as a failed setup to restart", async () => {
+    for (const conclusion of ["cancelled", "timed_out", "startup_failure", "skipped"]) {
+      const f = await setup();
+      await f.register();
+      f.bootstrap.finish(SLUG, conclusion);
+      expect(await f.register(), conclusion).toMatchObject({
+        outcome: "setup_restarted",
+      });
+    }
+  });
+
+  it("while Bootstrap's restarted run is going, grants and starts nothing", async () => {
+    const f = await setup();
+    await f.register();
+    for (const status of ["queued", "in_progress", "waiting"]) {
+      const run = f.bootstrap.runs.get(SLUG)?.at(-1);
+      if (run) run.status = status;
+      f.bootstrap.calls = [];
+      expect(await f.register(), status).toEqual({
+        outcome: "refused",
+        reason: "bootstrap_running",
+        message: REGISTER_REFUSALS.bootstrap_running,
+      });
+      expect(f.bootstrap.calls).toEqual([`latestRestart ${SLUG}`]);
+    }
+  });
+
+  it("refuses, granting nothing, when Bootstrap's runs cannot be read", async () => {
+    const f = await setup();
+    f.bootstrap.refuse.restart = "call";
+    await f.register();
+    f.bootstrap.refuse = {};
+    f.bootstrap.failRunReads = true;
+    f.bootstrap.calls = [];
+    expect(await f.register()).toEqual({
+      outcome: "refused",
+      reason: "setup_unreadable",
+      message: REGISTER_REFUSALS.setup_unreadable,
+    });
+    expect(f.bootstrap.calls).toEqual([`latestRestart ${SLUG}`]);
+  });
+
+  it("gives access again only to a repository it would reuse", async () => {
+    const changes: Partial<ReturnType<typeof launchpadRepository>>[] = [
+      { templateFullName: null },
+      { private: true },
+      { fullName: "didi-build/Garden-notes" },
+    ];
+    for (const change of [...changes, "missing", "unreadable"] as const) {
+      const f = await setup();
+      f.bootstrap.refuse.restart = "call";
+      await f.register();
+      f.bootstrap.refuse = {};
+      if (change === "missing") f.repositories.existing.delete(SLUG);
+      else if (change === "unreadable") f.repositories.failReads = true;
+      else
+        f.repositories.existing.set(SLUG, { ...launchpadRepository(SLUG), ...change });
+      f.bootstrap.calls = [];
+      expect(await f.register(), JSON.stringify(change)).toEqual({
+        outcome: "refused",
+        reason: "registered_repository_unchecked",
+        message: REGISTER_REFUSALS.registered_repository_unchecked,
+      });
+      expect(f.bootstrap.calls).toEqual([`latestRestart ${SLUG}`]);
+    }
+  });
+
+  it("gives no access to a recorded project whose repository is not didi-build/<slug>", async () => {
+    const f = await setup();
+    await f.store.insertProject({
+      ...plannedProject(SLUG),
+      repo: "didi-build/other-name",
+      id: "74000000-0000-4000-8000-000000000001",
+      createdAt: T0,
+    });
+    f.repositories.existing.set(SLUG, launchpadRepository(SLUG));
+    expect(await f.register()).toMatchObject({
+      reason: "registered_repository_unchecked",
+    });
+    expect(f.repositories.reads).toEqual([]);
+    expect(f.bootstrap.calls).toEqual([`latestRestart ${SLUG}`]);
+  });
+
+  it("in dry run, on a recorded project whose setup has not finished, says what it would grant and restart, and does neither", async () => {
+    const f = await setup();
+    f.bootstrap.refuse.grant = "call";
+    await f.register();
+    f.bootstrap.refuse = {};
+    await f.setting("dry_run", true);
+    f.bootstrap.calls = [];
+    expect(await f.register()).toEqual({
+      outcome: "dry_run",
+      message: expect.stringContaining("nothing was granted or started") as string,
+      wouldCreate: null,
+      wouldRecord: null,
+      wouldGrant: { secret: "BOOTSTRAP_TOKEN", repository: REPO },
+      wouldRestart: {
+        repository: REPO,
+        workflow: ".github/workflows/bootstrap.yml",
+        ref: "main",
+      },
+    });
+    expect(f.bootstrap.calls).toEqual([`latestRestart ${SLUG}`]);
+    expect(f.repositories.reads).toEqual([]);
+  });
+
+  it("under the kill switch, on a recorded project, reads and grants nothing", async () => {
+    const f = await setup();
+    f.bootstrap.refuse.grant = "call";
+    await f.register();
+    f.bootstrap.refuse = {};
+    await f.setting("kill_switch", true);
+    f.bootstrap.calls = [];
+    expect(await f.register()).toMatchObject({ reason: "kill_switch" });
+    expect(f.bootstrap.calls).toEqual([]);
+  });
+
+  it("quotes no token or input in the setup refusals", () => {
+    for (const reason of [
+      "grant_token_refused",
+      "secret_not_selected",
+      "grant_refused",
+      "restart_token_refused",
+      "restart_refused",
+      "setup_unreadable",
+      "bootstrap_running",
+      "registered_repository_unchecked",
+    ] as const) {
+      expect(REGISTER_REFUSALS[reason]).not.toMatch(/\$\{|garden/);
     }
   });
 });

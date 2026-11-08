@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { run } from "../../flows/reconcile.ts";
 import { run as verifyStaging } from "../../flows/verify-staging.ts";
 import type { FlowDeps } from "../../flows/lib/compose.ts";
+import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import { setupMerge } from "../merge-fixture.ts";
 import { stalledItems, stalledRuns } from "../../src/core/stalls.ts";
 import { HEAD, REPO } from "../reconcile-fixture.ts";
@@ -90,6 +91,8 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
       repoScans: { scan: notUsed },
       projectSettings: { listedSlugs: notUsed },
       projectRepositories: { generate: notUsed, read: notUsed },
+      bootstrapAccess: createFakeBootstrap(),
+      bootstrapRuns: createFakeBootstrap(),
       tasks: { taskFor: notUsed },
       newRunToken: () => "not-used",
       executionsThisMonth: async () => 120,
@@ -126,6 +129,8 @@ function stagingFlowDeps(t: Awaited<ReturnType<typeof setupStaging>>): FlowDeps 
     repoScans: { scan: notUsed },
     projectSettings: { listedSlugs: notUsed },
     projectRepositories: { generate: notUsed, read: notUsed },
+    bootstrapAccess: createFakeBootstrap(),
+    bootstrapRuns: createFakeBootstrap(),
     tasks: { taskFor: notUsed },
     newRunToken: () => "not-used",
     executionsThisMonth: async () => 120,

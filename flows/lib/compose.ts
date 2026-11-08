@@ -1,7 +1,7 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
-// the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task and the staging check. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
+// the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task, the staging check and the ports for `BOOTSTRAP_TOKEN`'s access. Flows take these as `FlowDeps` and hold no rule of their own (architecture section
 // 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
@@ -26,6 +26,11 @@ import {
   loadAllContractFiles,
   loadTaskTypesFile,
 } from "../../src/adapters/contracts-file/load.ts";
+import {
+  createGitHubBootstrapAccess,
+  createGitHubBootstrapRuns,
+} from "../../src/adapters/github/bootstrap-access.ts";
+import type { BootstrapTokens } from "../../src/adapters/github/bootstrap-tokens.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import type { InstallationTokens } from "../../src/adapters/github/installation-tokens.ts";
 import { createGitHubPostHttp } from "../../src/adapters/github/post-http.ts";
@@ -37,9 +42,14 @@ import {
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
 import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
+import { createGitHubWriteHttp } from "../../src/adapters/github/write-http.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import type {
+  BootstrapAccess,
+  BootstrapRuns,
+} from "../../src/core/bootstrap-access.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub, GitHubWorkflowReader } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
@@ -143,6 +153,18 @@ export interface FlowDeps extends ReconcileDeps {
    * Refuses until the runner App exists (D-178), so nothing is created or recorded.
    */
   projectRepositories: ProjectRepositories;
+  /**
+   * `BOOTSTRAP_TOKEN`'s selected repositories (D-358 lock (2), O-114): the form's grant, the
+   * removal once Bootstrap's run ends and the reconcile pass's backstop, each with its own token
+   * narrowed to one step ("Organization secrets"). Refuses until the runner App exists (D-178).
+   */
+  bootstrapAccess: BootstrapAccess;
+  /**
+   * Bootstrap's restart from the form ("Actions: write", narrowed to the new repository) and its
+   * newest restarted run, read with the runner App's `actions: read` token (D-267, O-114).
+   * Refuses until the runner App exists (D-178).
+   */
+  bootstrapRuns: BootstrapRuns;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
   executionsThisMonth(): Promise<number>;
@@ -301,6 +323,45 @@ export function runnerProjectRepositories(
   });
 }
 
+/**
+ * The tokens for `BOOTSTRAP_TOKEN`'s access (D-358, O-114): "Organization secrets" write for one
+ * repository's grant or removal, read for the list, and "Actions: write" for one repository's
+ * restart. The runner App gains both permissions at first hosting through the new-permissions
+ * gate; until then every request refuses, so nothing is granted, started or removed.
+ */
+export function unregisteredBootstrapTokens(): BootstrapTokens {
+  const refuse = async (): Promise<never> => {
+    throw new NotBuiltError(
+      "The BOOTSTRAP_TOKEN access tokens need the runner App, registered at first hosting through the new-credentials gate with Organization secrets write and Actions write (D-178, D-358)",
+    );
+  };
+  return { secretsChange: refuse, secretsList: refuse, restart: refuse };
+}
+
+/** The secret's list: grant, removal and list (O-114); refuses on the token today. */
+export function runnerBootstrapAccess(
+  tokens: BootstrapTokens = unregisteredBootstrapTokens(),
+): BootstrapAccess {
+  return createGitHubBootstrapAccess({
+    tokens,
+    http: createGitHubHttp(),
+    write: createGitHubWriteHttp(),
+  });
+}
+
+/** Bootstrap's restart and newest restarted run (O-114); refuses on the tokens today. */
+export function runnerBootstrapRuns(
+  tokens: BootstrapTokens = unregisteredBootstrapTokens(),
+  readTokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+): BootstrapRuns {
+  return createGitHubBootstrapRuns({
+    tokens,
+    readTokens,
+    http: createGitHubHttp(),
+    post: createGitHubPostHttp(),
+  });
+}
+
 /** Built on first use, so a flow that never starts an agent never reads the cluster token. */
 function lazyRuntime(build: () => Promise<FlowRuntime>): FlowRuntime {
   let made: Promise<FlowRuntime> | undefined;
@@ -419,6 +480,8 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     repoScans: runnerRepoScans(clusterParts),
     projectSettings: runnerProjectSettings(),
     projectRepositories: runnerProjectRepositories(),
+    bootstrapAccess: runnerBootstrapAccess(),
+    bootstrapRuns: runnerBootstrapRuns(),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

@@ -49,9 +49,18 @@
 //    queued after `usage_exhausted` (O-41, O-43). It runs after the staging and escalation passes,
 //    so an escalation that pass recovers is taken first, and after step 1, whose dispatch already
 //    started what the plan found due, so it finds those runs active and starts nothing twice.
+// 16. In both modes, unless the kill switch stopped the pass, the backstop of `BOOTSTRAP_TOKEN`'s
+//    access (D-358 lock (2), O-114, src/core/bootstrap-access.ts): each repository on the secret's
+//    list outside its setup window is removed, and in dry run reported as one it would remove.
 // The stall check and the clean-up candidates (steps 5 and 6) are the pass's own reports, in both
-// modes. In dry run none of this runs: the result carries the cancel step's report of what it
-// would do instead. Everything here runs inside the reconcile flow's one Windmill run (D-164).
+// modes. In dry run none of steps 1 to 15 runs: the result carries the cancel step's report of
+// what it would do instead. Everything here runs inside the reconcile flow's one Windmill run
+// (D-164).
+import {
+  ACCESS_LIST_UNREADABLE,
+  bootstrapAccessPass,
+  type BootstrapAccessPass,
+} from "../../src/core/bootstrap-access.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import {
   createHoldReleases,
@@ -140,8 +149,25 @@ export interface LivePasses {
   optionCaptures: OptionCapturePassStep[] | null;
   /** The builder runs due with no move, and what their dispatch did. */
   builderRuns: BuilderRunStart[] | null;
+  /**
+   * Step 16, in both modes: the repositories kept on `BOOTSTRAP_TOKEN`'s list and those removed,
+   * or in dry run those it would remove (O-114). Null under the kill switch.
+   */
+  bootstrapAccess: BootstrapAccessPass | null;
   /** Settings the passes needed and could not read. */
   problems: string[];
+}
+
+/** Step 16, unless the kill switch stopped the pass; a list it cannot read is a problem. */
+async function accessBackstop(
+  deps: FlowDeps,
+  stopped: ReconcileReport["stopped"],
+): Promise<{ bootstrapAccess: BootstrapAccessPass | null; problems: string[] }> {
+  const pass = stopped === null ? await bootstrapAccessPass(deps) : null;
+  return {
+    bootstrapAccess: pass,
+    problems: pass?.problem ? [ACCESS_LIST_UNREADABLE] : [],
+  };
 }
 
 export async function runLivePasses(
@@ -153,6 +179,7 @@ export async function runLivePasses(
 ): Promise<LivePasses> {
   const { stopped, cancels: wouldStop } = report;
   if (stopped !== null || report.mode !== "live") {
+    const access = await accessBackstop(deps, stopped);
     return {
       released: null,
       dispatched: null,
@@ -174,7 +201,7 @@ export async function runLivePasses(
       holdReleases: null,
       optionCaptures: null,
       builderRuns: null,
-      problems: [],
+      ...access,
     };
   }
   const steps = await runReconcileSteps(deps, report);
@@ -215,6 +242,7 @@ export async function runLivePasses(
   );
   const optionCaptures = await optionCapturePass(deps);
   const builderRuns = await startBuilderRuns(deps);
+  const access = await accessBackstop(deps, stopped);
   return {
     released: steps.releases,
     dispatched: steps.dispatches,
@@ -235,6 +263,7 @@ export async function runLivePasses(
     holdReleases,
     optionCaptures,
     builderRuns,
-    problems: problem ? [problem] : [],
+    bootstrapAccess: access.bootstrapAccess,
+    problems: [...(problem ? [problem] : []), ...access.problems],
   };
 }

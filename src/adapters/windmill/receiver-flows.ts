@@ -8,7 +8,10 @@
 //   advance from evidence is due, so the item moves into In QA review and QA's run starts (O-104);
 // - after it records a finished `deployment_status` to `staging`, `f/foreman/verify_staging` with
 //   the repository and the commit, when an item of that repository is in Verifying on staging
-//   (O-104).
+//   (O-104);
+// - after it records a `workflow_run` `completed` for Bootstrap started by `workflow_dispatch`,
+//   `f/foreman/remove_bootstrap_access` with the repository, so the repository loses access to
+//   `BOOTSTRAP_TOKEN` once its setup run ends (D-358, O-114, ../../github-receiver/bootstrap-starts.ts).
 //
 // The receiver has one Windmill token, read from the secret path below, that can start only the
 // flows in `RECEIVER_FLOW_PATHS`. Each slice added to that list only the flows its events need
@@ -36,11 +39,15 @@ export const ADVANCE_ITEM_FLOW_PATH = "f/foreman/advance_item";
 /** The staging flow (flows/windmill.yaml, flows/verify-staging.ts, O-34). */
 export const VERIFY_STAGING_FLOW_PATH = "f/foreman/verify_staging";
 
+/** The removal of `BOOTSTRAP_TOKEN`'s access (flows/windmill.yaml, flows/remove-bootstrap-access.ts, O-114). */
+export const REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH = "f/foreman/remove_bootstrap_access";
+
 /** Every flow the receiver's token may start, and nothing else: one scope per path (D-291). */
 export const RECEIVER_FLOW_PATHS: readonly string[] = [
   OPTION_CAPTURE_FLOW_PATH,
   ADVANCE_ITEM_FLOW_PATH,
   VERIFY_STAGING_FLOW_PATH,
+  REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
 ];
 
 /** Starts the option capture flow for one design item. Resolves once Windmill accepts. */
@@ -58,11 +65,17 @@ export interface VerifyStagingFlow {
   start(repo: string, sha: string): Promise<void>;
 }
 
-/** The receiver's three starts. */
+/** Starts the removal of one repository's access to `BOOTSTRAP_TOKEN`. Resolves once Windmill accepts. */
+export interface RemoveBootstrapAccessFlow {
+  start(repo: string): Promise<void>;
+}
+
+/** The receiver's four starts. */
 export interface ReceiverFlows {
   optionCapture: OptionCaptureFlow;
   advanceItem: AdvanceItemFlow;
   verifyStaging: VerifyStagingFlow;
+  removeBootstrapAccess: RemoveBootstrapAccessFlow;
 }
 
 /** One start at `path`, refused with `NotBuiltError` while the token does not exist. */
@@ -95,10 +108,13 @@ export function windmillReceiverFlows(
   const capture = starter(OPTION_CAPTURE_FLOW_PATH, token, target, seams);
   const advance = starter(ADVANCE_ITEM_FLOW_PATH, token, target, seams);
   const staging = starter(VERIFY_STAGING_FLOW_PATH, token, target, seams);
+  const removal = starter(REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH, token, target, seams);
   return {
     optionCapture: { start: (nodeId) => capture({ nodeId }) },
     advanceItem: { start: (nodeId) => advance({ nodeId }) },
     // flows/verify-staging.ts reads `{ repo, sha }` as its input.
     verifyStaging: { start: (repo, sha) => staging({ repo, sha }) },
+    // flows/remove-bootstrap-access.ts reads `{ repo }` as its input.
+    removeBootstrapAccess: { start: (repo) => removal({ repo }) },
   };
 }
