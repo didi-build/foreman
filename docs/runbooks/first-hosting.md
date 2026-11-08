@@ -2,13 +2,14 @@
 
 **Purpose:** the gates Didi passes, in order, to bring up the agent and platform cluster, the state API, the GitHub receiver and its tunnel, and the run watcher, for the first time (ADR 0106, ADR 0110, D-183 to D-195, D-330). Nothing here has been done yet. No agent or runner does any step.
 
-Since D-339, the admin work runs as GitHub Actions jobs that wait for Didi's approval, not from a terminal: Didi creates each credential at its provider, pastes it once into GitHub's secret form for the environment named here, reads each plan in its job's summary, and approves the job that applies it. Three workflows do the work (O-105):
+Since D-339, the admin work runs as GitHub Actions jobs that wait for Didi's approval, not from a terminal: Didi creates each credential at its provider, pastes it once into GitHub's secret form for the environment named here, reads each plan in its job's summary, and approves the job that applies it. Four workflows do the work (O-105, O-115):
 
-| Workflow                                          | What it does                                                                                                                                                                                                                                                       | Jobs, with their environment                                                                                                         |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Images (`.github/workflows/images.yml`)           | Builds the seven images from main and pushes them to `ghcr.io/didi-build` (D-336). Gives each reference pinned by digest.                                                                                                                                          | `build-and-push` (no environment, `packages: write`)                                                                                 |
-| Infra apply (`.github/workflows/infra-apply.yml`) | Plans the factory stack and, once Didi approves, applies that exact saved plan. Steps 5, 11 and 11a, each project's staging name and route, and every later infrastructure change.                                                                                 | `tofu-plan` (`infra-plan`), `tofu-apply` (`infra`, Didi approves)                                                                    |
-| Platform (`.github/workflows/platform.yml`)       | Renders the settings file, diffs it against the cluster and, once Didi approves, applies it and runs the checks; sets the cluster's Secrets; writes the runner's cluster token into Windmill. Steps 7 to 10, the cluster Secrets of step 15, and adding a project. | `render` (none), `kubectl-diff` (`platform-plan`), `kubectl-apply`, `cluster-secrets` and `runner-token` (`platform`, Didi approves) |
+| Workflow                                                 | What it does                                                                                                                                                                                                                                                       | Jobs, with their environment                                                                                                         |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Images (`.github/workflows/images.yml`)                  | Builds the seven images from main and pushes them to `ghcr.io/didi-build` (D-336). Gives each reference pinned by digest.                                                                                                                                          | `build-and-push` (no environment, `packages: write`)                                                                                 |
+| Infra apply (`.github/workflows/infra-apply.yml`)        | Plans the factory stack and, once Didi approves, applies that exact saved plan. Steps 5, 11 and 11a, each project's staging name and route, and every later infrastructure change.                                                                                 | `tofu-plan` (`infra-plan`), `tofu-apply` (`infra`, Didi approves)                                                                    |
+| Platform (`.github/workflows/platform.yml`)              | Renders the settings file, diffs it against the cluster and, once Didi approves, applies it and runs the checks; sets the cluster's Secrets; writes the runner's cluster token into Windmill. Steps 7 to 10, the cluster Secrets of step 15, and adding a project. | `render` (none), `kubectl-diff` (`platform-plan`), `kubectl-apply`, `cluster-secrets` and `runner-token` (`platform`, Didi approves) |
+| Database migrations (`.github/workflows/db-migrate.yml`) | Applies every migration in `db/migrations/` not yet recorded in the state store, in name order, once Didi approves (D-362). Step 9a and every later migration.                                                                                                     | `db-migrate` (`database`, Didi approves)                                                                                             |
 
 **Rules for every step**
 
@@ -61,37 +62,40 @@ In the repository's settings (Settings, Environments), create these four environ
 
 For `infra` and `platform`, Didi is the only required reviewer. Leave "Prevent self-review" off: Didi starts most runs and is also the one who approves them. Set no wait timer. Set up all four, with these rules, before pasting any secret into one: a run that names an environment that does not exist yet creates it with no protection rule. Until the secrets are there, the jobs stop for want of one before they reach any account, and nothing is applied. Put none of these values in the repository's own secrets: any workflow on any branch could read those, which D-339 rules out.
 
+Step 9a adds a fifth environment, `database`, with the same rules as `infra` and `platform`, for the database migrations job (D-362).
+
 ### The credentials and where each one goes
 
 Create each credential at its provider, then paste it once into the secret of each environment the table names for it (GitHub keeps each environment's secrets apart, so a value two environments need is pasted into both, D-350). The value is never shown again.
 
-- A DigitalOcean API token with the narrowest scopes that can create a Kubernetes cluster, its node pools and a firewall, and read the cluster's credentials (`doctl kubernetes cluster kubeconfig`, D-340). Check on DigitalOcean's token form which scopes that is, and record them here with the date.
-- A Cloudflare API token for the `didi.build` account and zone, with exactly three permissions: Cloudflare Tunnel: Edit on the account, and DNS: Edit and Workers Routes: Edit on the `didi.build` zone only. The tunnel and DNS permissions make the receiver's tunnel and record; DNS and Workers Routes make each project's staging name `<slug>.didi.build` and its Worker route (D-357, O-112). Give it all three when creating it. Before saving, check that its summary lists these three and nothing else.
+- A DigitalOcean API token with the narrowest scopes that can create a Kubernetes cluster, its node pools and a firewall, and read the cluster's credentials (`doctl kubernetes cluster kubeconfig`, D-340). Made 2026-11-08 as `foreman-admin-jobs`, custom scopes, expiring after one year: `kubernetes:create`, `kubernetes:read`, `kubernetes:update`, `kubernetes:delete`, `kubernetes:access_cluster`, `firewall:create`, `firewall:read`, `firewall:update`, `firewall:delete`, `tag:create`, `tag:read`, `vpc:read`, `regions:read`, `sizes:read` and `droplet:read`, plus `actions:read`, `image:read` and `snapshot:read`, which DigitalOcean's form added as required. The first apply proved them: the cluster, its node pools and the firewall were created on 2026-11-08. A first token without `tag:create` was refused at the cluster's creation (401, "tagging requires tag:create permission"), because DigitalOcean tags the cluster's nodes, which the firewall targets. A missing scope answers 401 or 403 naming it, and since a token's scopes cannot be edited, the fix is a new token with that scope added, pasted into the same four environments, and the old token deleted.
+- A Cloudflare API token for the `didi.build` account and zone, with exactly three permissions: Cloudflare One Connector: cloudflared: Edit on the account, and DNS: Edit and Workers Routes: Edit on the `didi.build` zone only. Made 2026-11-08 as an account-owned token, `foreman-infra`, expiring after one year, in Cloudflare's policy form: one policy on the account for the tunnel permission, one on the `didi.build` zone for the other two. Cloudflare's API accepts any of Cloudflare One Connector: cloudflared, Cloudflare One Connectors or Cloudflare Tunnel for the tunnel calls the stack makes (create, configure, read its token; API reference, read 2026-11-08); the first is the narrowest, covering cloudflared tunnels only, and older forms show the third as Argo Tunnel (Legacy). The tunnel and DNS permissions make the receiver's tunnel and record; DNS and Workers Routes make each project's staging name `<slug>.didi.build` and its Worker route (D-357, O-112). Give it all three when creating it. Before saving, check that its summary lists these three and nothing else.
 - The R2 state bucket's access key and secret, a token for that bucket only, as in ADR 0110.
 - The state encryption passphrase, at least 16 characters, generated in Bitwarden and kept there (D-341): losing it makes the state unreadable.
 
-The later steps add the Windmill token that writes the runner's cluster token into Windmill (step 8), the database URLs and the webhook secret (step 10), and the planning token and the three Windmill tokens that start flows (step 15).
+The later steps add the Windmill token that writes the runner's cluster token into Windmill (step 8), the migration connection string (step 9a), the database URLs and the webhook secret (step 10), and the planning token and the three Windmill tokens that start flows (step 15).
 
-| Environment              | Secret                            | Where it comes from                                                                            | Step |
-| ------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------- | ---- |
-| `infra-plan` and `infra` | `DIGITALOCEAN_TOKEN`              | The DigitalOcean API token above                                                               | 3    |
-| `infra-plan` and `infra` | `CLOUDFLARE_API_TOKEN`            | The Cloudflare API token above                                                                 | 3    |
-| `infra-plan` and `infra` | `R2_STATE_ACCESS_KEY_ID`          | The R2 state bucket token's access key id                                                      | 3    |
-| `infra-plan` and `infra` | `R2_STATE_SECRET_ACCESS_KEY`      | The R2 state bucket token's secret access key                                                  | 3    |
-| `infra-plan` and `infra` | `STATE_ENCRYPTION_PASSPHRASE`     | The passphrase in Bitwarden                                                                    | 3    |
-| `platform-plan`          | `DIGITALOCEAN_TOKEN`              | The same DigitalOcean API token                                                                | 3    |
-| `platform`               | `DIGITALOCEAN_TOKEN`              | The same DigitalOcean API token                                                                | 3    |
-| `platform`               | `R2_STATE_ACCESS_KEY_ID`          | The same R2 access key id (the Secrets job reads the tunnel token from the state)              | 3    |
-| `platform`               | `R2_STATE_SECRET_ACCESS_KEY`      | The same R2 secret access key                                                                  | 3    |
-| `platform`               | `STATE_ENCRYPTION_PASSPHRASE`     | The same passphrase                                                                            | 3    |
-| `platform`               | `WINDMILL_RUNNER_RESOURCES_TOKEN` | The Windmill token whose only scope is `resources:write` on the runner's three resource paths  | 8    |
-| `platform`               | `STATE_API_DATABASE_URL`          | The connection string of the `factory_api` login user, from Supabase                           | 10   |
-| `platform`               | `RECEIVER_DATABASE_URL`           | The connection string of the `factory_ingest` login user, from Supabase                        | 10   |
-| `platform`               | `RECEIVER_WEBHOOK_SECRET`         | A long random value from Bitwarden's generator, also pasted into the runner App's webhook form | 10   |
-| `platform`               | `PLANNING_TOKEN`                  | The planning chat's token, kept in Bitwarden                                                   | 15   |
-| `platform`               | `STATE_API_WINDMILL_TOKEN`        | The Windmill token that runs only `f/foreman/plan_approval`                                    | 15   |
-| `platform`               | `RECEIVER_WINDMILL_TOKEN`         | The Windmill token that runs only the receiver's three flows                                   | 15   |
-| `platform`               | `RUN_WATCHER_WINDMILL_TOKEN`      | The Windmill token that runs only `f/foreman/record_run_end`                                   | 15   |
+| Environment              | Secret                            | Where it comes from                                                                                       | Step |
+| ------------------------ | --------------------------------- | --------------------------------------------------------------------------------------------------------- | ---- |
+| `infra-plan` and `infra` | `DIGITALOCEAN_TOKEN`              | The DigitalOcean API token above                                                                          | 3    |
+| `infra-plan` and `infra` | `CLOUDFLARE_API_TOKEN`            | The Cloudflare API token above                                                                            | 3    |
+| `infra-plan` and `infra` | `R2_STATE_ACCESS_KEY_ID`          | The R2 state bucket token's access key id                                                                 | 3    |
+| `infra-plan` and `infra` | `R2_STATE_SECRET_ACCESS_KEY`      | The R2 state bucket token's secret access key                                                             | 3    |
+| `infra-plan` and `infra` | `STATE_ENCRYPTION_PASSPHRASE`     | The passphrase in Bitwarden                                                                               | 3    |
+| `platform-plan`          | `DIGITALOCEAN_TOKEN`              | The same DigitalOcean API token                                                                           | 3    |
+| `platform`               | `DIGITALOCEAN_TOKEN`              | The same DigitalOcean API token                                                                           | 3    |
+| `platform`               | `R2_STATE_ACCESS_KEY_ID`          | The same R2 access key id (the Secrets job reads the tunnel token from the state)                         | 3    |
+| `platform`               | `R2_STATE_SECRET_ACCESS_KEY`      | The same R2 secret access key                                                                             | 3    |
+| `platform`               | `STATE_ENCRYPTION_PASSPHRASE`     | The same passphrase                                                                                       | 3    |
+| `platform`               | `WINDMILL_RUNNER_RESOURCES_TOKEN` | The Windmill token whose only scope is `resources:write` on the runner's three resource paths             | 8    |
+| `database`               | `MIGRATION_DATABASE_URL`          | The Supabase session pooler's connection string for the `postgres` user, with its password from Bitwarden | 9a   |
+| `platform`               | `STATE_API_DATABASE_URL`          | The connection string of the `factory_api` login user, from Supabase                                      | 10   |
+| `platform`               | `RECEIVER_DATABASE_URL`           | The connection string of the `factory_ingest` login user, from Supabase                                   | 10   |
+| `platform`               | `RECEIVER_WEBHOOK_SECRET`         | A long random value from Bitwarden's generator, also pasted into the runner App's webhook form            | 10   |
+| `platform`               | `PLANNING_TOKEN`                  | The planning chat's token, kept in Bitwarden                                                              | 15   |
+| `platform`               | `STATE_API_WINDMILL_TOKEN`        | The Windmill token that runs only `f/foreman/plan_approval`                                               | 15   |
+| `platform`               | `RECEIVER_WINDMILL_TOKEN`         | The Windmill token that runs only the receiver's three flows                                              | 15   |
+| `platform`               | `RUN_WATCHER_WINDMILL_TOKEN`      | The Windmill token that runs only `f/foreman/record_run_end`                                              | 15   |
 
 The account id, the zone id and the bucket name are identifiers, not keys, so they live outside the environments as secrets, and GitHub masks them in every log (D-361). The two Cloudflare ids are organization secrets shared with `foreman` only (the organization's Settings, Secrets and variables, Actions, New organization secret, Repository access: Selected repositories). The bucket name is a repository secret (the repository's Settings, Secrets and variables, Actions, New repository secret). A job reads an environment secret first, then a repository secret, then an organization secret, so none of the three needs wiring per environment. The R2 key pair stays in the environments, behind their protection rules. `RECEIVER_HOSTNAME` is public and stays an environment variable (Settings, Environments, the environment, Environment variables). Each is checked against its own pattern before any job uses it.
 
@@ -124,7 +128,7 @@ The encrypted plan file is kept for one day: approve within a day, or start the 
 
 **The managed worker firewall (D-331).** Once the cluster exists, read the firewall DOKS made for the worker nodes in the DigitalOcean control panel's Networking page, and its outbound rules. Read it only: never edit it, and add no deny rule, because DigitalOcean's reconciler owns that firewall by name. If it allows all outbound traffic, our cloud firewall's outbound rules take no effect and the network policies and egress proxies are the only outbound control; if its outbound rules are narrower, ours stay as a second layer. Record which, with the date, here:
 
-- Result: not checked yet.
+- Result, read by Didi on 2026-11-08: DOKS made two firewalls next to ours (`foreman-workers`), both on the cluster's two nodes. `k8s-<cluster id>-worker` allows inbound ICMP, all TCP and all UDP only from the private ranges (10.0.0.0/8, 172.16.0.0/12 and one more), and allows **all outbound** traffic (ICMP, all TCP, all UDP, to all IPv4 and IPv6). `k8s-public-access-<cluster id>` has **no inbound rule** and also allows all outbound. Cloud firewalls add up, so our firewall's outbound rules take no effect: the network policies and the egress proxies are the only outbound control, as D-331 foresaw. Nothing on the internet can open a connection to a node.
 
 ## 6. No admin kubeconfig is kept (D-340, revising D-188)
 
@@ -228,9 +232,37 @@ printf '%s' "$RECEIVER_TUNNEL_TOKEN" \
 
 Every other Secret goes in the same way, from its environment secret. The token never touches a file, an argument or the log. The job's summary names each Secret as created or updated, already up to date, skipped (its environment secret is empty, and the Secret is left as it is, which is not a failure), or refused (a value with a space or a newline at either end, or a planning token outside the state API's own rule, never shown); a refused Secret fails the run. It then restarts each deployment whose Secret changed and waits up to 3 minutes for it, naming any that is not ready.
 
+## 9a. The database migrations job (new-credentials gate, D-362)
+
+The migrations run as a GitHub Actions job Didi approves, never from a terminal (D-362, O-115). `0001_factory_schema.sql` was applied with `npm run db:migrate` on 2026-10-29 (D-173) and is recorded in `factory_meta.schema_migrations`; this job applies the others. Do it before step 10: the login users there belong to roles the migrations make (`factory_ingest` comes with `0002`).
+
+1. **Create the environment `database`.** In the repository's settings (Settings, Environments, New environment), name it `database`. Required reviewers: Didi only. Deployment branches: Selected branches, `main` only. Set no wait timer. Leave "Prevent self-review" off: Didi starts the run and is also the one who approves it. Create it, with these rules, before pasting the secret: a run that names an environment that does not exist yet creates it with no protection rule.
+2. **Take the connection string.** In Supabase's dashboard, open the project's Connect panel and copy the session pooler's connection string (session mode, port 5432) for the `postgres` user, the database owner. It reads `postgresql://postgres.<project ref>:[YOUR-PASSWORD]@<pooler host>:5432/postgres`. Put the `postgres` user's password in place of `[YOUR-PASSWORD]`, brackets included. Didi keeps that password in Bitwarden, moved there from the old password manager (D-341). An `@`, `/`, `?`, `#` or `%` in the password must be percent-encoded (`%40`, `%2F`, `%3F`, `%23`, `%25`). Add nothing after `/postgres`: the job requires SSL itself, and refuses anything after the database name.
+3. **Paste it once** into the environment `database` as the secret `MIGRATION_DATABASE_URL` (Settings, Environments, `database`, Add environment secret). This is the new-credentials gate: one approval, for this one secret. Paste it nowhere else: not a file, a chat, Linear or a log. Nothing new is kept: the password stays in Bitwarden.
+4. **Start the job and approve it.** Actions, Database migrations, Run workflow on `main`. Its `db-migrate` job waits for Didi's approval. Approve it.
+5. **Read the summary.** The job's summary lists the migrations applied, in order. For this first run that is `0002_github_ingest.sql` to `0021_ingest_preview_check.sql`, and not `0001`. If the run stops instead, the summary and the log say why, with the connection's values replaced (`***`, or `<DATABASE_HOST>` and `<DATABASE_USER>` in psql's own error): a migration that failed is rolled back and nothing after it is applied; a recorded migration whose file was edited or removed is refused before anything is applied. If it refuses `0001_factory_schema.sql` as changed, stop and ask Didi: the file in the repository is not the one applied on 2026-10-29.
+
+What the job does (`.github/workflows/db-migrate.yml`, `.github/scripts/db-migrate.sh`):
+
+- It checks out `.github/` and `db/migrations/` only, keeps no GitHub credential, and runs only that script, with bash and the runner image's `psql`. No npm, no Node and none of the repository's TypeScript run beside the connection string, since a bot can change those without Didi's approval.
+- It checks the connection string, then masks it, with its password, user and host, before anything else prints. psql gets it in its own environment only, never as an argument, with SSL required.
+- It takes the same advisory lock as `npm run db:migrate`, in one session for the whole run, so two runs never overlap. It refuses to run if a recorded migration's file is missing or was edited, then applies each migration not yet recorded, in name order, each in its own transaction with its record row, and stops at the first failure.
+
+**Every later migration** is a pull request, which Didi approves because `db/migrations/` is a privileged path (D-344), then this job, which starts when the pull request is merged and waits for Didi's approval. A waiting run blocks no merge and no other workflow. Nothing goes live on its own, so approve a migration's run before, or together with, the rollout of code that needs it (D-362). One run goes at a time: if a run is still waiting when another migration is merged, the newer run waits behind it. Reject the older one, and the newer one then waits in its place and applies every pending migration in order, with one approval.
+
+**To verify at the first real run,** and record each result with the date in O-115:
+
+- The environment: the `db-migrate` job waits for Didi's approval; a run started by hand from another branch skips the job, and the environment's branch rule would refuse it anyway.
+- psql: the runner image ships the PostgreSQL client (GitHub's software list for Ubuntu 24.04, image 20261101.360.1, lists PostgreSQL 16.15, read 2026-11-08), so the log shows no `psql: command not found`.
+- SSL: the job connects through the session pooler with SSL required. If the pooler refuses it, record psql's error as the log shows it (never the connection string) and stop.
+- The masking: the log and the summary show no connection string, password, user (`postgres.<project ref>`, which names the project) or pooler host, only `***` or the placeholders.
+- The rows: in Supabase's SQL editor, `select name from factory_meta.schema_migrations order by name` lists `0001_factory_schema.sql` to `0021_ingest_preview_check.sql`.
+- The lock: after the run, `select count(*) from pg_locks where locktype = 'advisory' and objid = 7104001` in the SQL editor answers 0. Whether the session pooler lets the lock go when a run fails: psql then ends its session with the failed transaction open. If a later run waits at the lock until its time limit, record it in O-115.
+- A second run, started by hand right after the first, starts at once and applies nothing: its summary says "Nothing to apply".
+
 ## 10. Supabase role passwords as Secrets (new-credentials gate)
 
-Create the login users for the `factory_api` and `factory_ingest` roles if they do not exist yet, then paste each connection string into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
+Create the login users for the `factory_api` and `factory_ingest` roles (the migrations make the roles, step 9a) if they do not exist yet, then paste each connection string into its `platform` environment secret, and generate the webhook secret in Bitwarden's generator:
 
 | Environment secret        | Secret in `foreman-platform`     | Key     |
 | ------------------------- | -------------------------------- | ------- |
@@ -280,7 +312,7 @@ The Developer's and Designer's runs open their own pull requests with their run'
 
 In each project repository, protect builder branches against force pushes (a branch ruleset covering the runner's branch names), so the rule in the Developer's and Designer's instructions is also enforced by GitHub (D-245).
 
-The admin workflows' four environments send deployment events like any other; the receiver acts only on deployments to `staging` (O-104), so it records theirs as deliveries and starts nothing.
+The admin workflows' five environments send deployment events like any other; the receiver acts only on deployments to `staging` (O-104), so it records theirs as deliveries and starts nothing.
 
 ## 14. Set `agent_cluster_max_active_runs`
 
@@ -424,7 +456,7 @@ The register-project form (D-345, D-346, D-348, O-109) and `BOOTSTRAP_TOKEN`'s a
 
 Each project's DNS record and Workers route (D-357, O-112) are built and tested with fixture plans, without a real Cloudflare zone or token. To verify at the first project's plan and apply, with no real personal data, and record each result with the date in O-112:
 
-- The token: its summary page lists Cloudflare Tunnel: Edit on the account and DNS: Edit and Workers Routes: Edit on the `didi.build` zone, and nothing else (step 3).
+- The token: its summary page lists Cloudflare One Connector: cloudflared: Edit on the account and DNS: Edit and Workers Routes: Edit on the `didi.build` zone, and nothing else (step 3).
 - The summary: the gates list `<slug>.didi.build` and `<slug>.didi.build/*` by name, each as `create`, and the plan changes nothing else.
 - The record is proxied: Cloudflare's DNS records page shows `<slug>` as `AAAA` `100::`, Proxied, and a public lookup (`dig AAAA <slug>.didi.build`) answers Cloudflare's addresses, never `100::`. A second plan right after the apply shows no change, so Cloudflare keeps the content as written.
 - The route before the Worker (not confirmed): whether Cloudflare accepts a route that names `<slug>-staging` before that Worker exists. Cloudflare's routes page lists "a Worker to invoke" among what a route needs, and its API reference marks the Worker optional and says nothing of one that does not exist (read 2026-11-07). If the apply refuses the route, record the error's code and message (never an id) and follow step 3 of "Adding a project".
@@ -449,7 +481,8 @@ The three workflows (D-336, D-339, D-340, O-105) are built and tested with fake 
 - The runner token job (D-352, O-110): the Windmill token's page shows exactly the one scope `resources:write:` with the three paths of step 8. The path limit holds: with that token, writing any other resource path, reading any other resource, listing resources, reading or writing a variable, and any other API call (for example listing jobs or running a script) are each refused; record the status (401 or 403). The job's three writes are accepted, both the first time and on a second run; record the status (201 expected). Windmill accepts the resource type `foreman_text`, which no resource type defines (a resource names its type without a foreign key in Windmill's code), and the workspace's resources page lists the three resources. DOKS fills in the Secret `foreman-runner-token` with a token within the job's minute. The logs show no token, endpoint or Windmill token, only `***` where one would be.
 - The runner reads the written values: once the Windmill binding is written at step 15 (`flows/lib/windmill.ts`), it reads the token, the endpoint (`https://host[:port]`) and the CA certificate (PEM) from those three resources as `flows/windmill.yaml` describes them, and with them the runner's token creates a Job in `agents-<slug>` while the refused calls are refused (ADR 0106 check 4, at rehearsal).
 - One run at a time: a second run of a workflow waits while the first's apply waits for Didi, and a third replaces the waiting second.
-- The receiver: the deployment events of the four environments are recorded as deliveries and start nothing.
+- The receiver: the deployment events of the five environments are recorded as deliveries and start nothing.
+- The database migrations job (D-362, O-115): the list in step 9a, recorded in O-115.
 
 ## Verification
 

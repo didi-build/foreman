@@ -1,6 +1,6 @@
-// Unit: repo guard on the admin workflows (D-336, D-339, D-340, O-105): the Images, Infra apply
-// and Platform workflows, the scripts they run, the cluster's settings file and the factory
-// stack's reviewed variables. Read as text and YAML; nothing runs. The scripts' behaviour is in
+// Unit: repo guard on the admin workflows (D-336, D-339, D-340, O-105, D-362, O-115): the Images,
+// Infra apply, Platform and Database migrations workflows, the scripts they run, the cluster's
+// settings file and the factory stack's reviewed variables. Read as text and YAML; nothing runs. The scripts' behaviour is in
 // test/admin-workflow-scripts.test.ts.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
 import { PLATFORM_SECRETS } from "../infra/kubernetes/platform.ts";
+import { MIGRATIONS_DIR } from "../src/adapters/store-postgres/migrate.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
 import { DEFAULT_PRIVILEGED_PATHS, globToRegExp } from "../src/core/guards/review.ts";
 import {
@@ -53,6 +54,7 @@ const WORKFLOWS = {
   images: ".github/workflows/images.yml",
   infra: ".github/workflows/infra-apply.yml",
   platform: ".github/workflows/platform.yml",
+  database: ".github/workflows/db-migrate.yml",
 } as const;
 const text = (path: string) => readFileSync(path, "utf8");
 const workflow = (path: string) => parseYaml(text(path)) as Workflow;
@@ -68,15 +70,15 @@ const script = (name: string) => text(join(SCRIPTS_DIR, name));
 /** A `${{ ... }}` expression that reads a secret. */
 const SECRET_REFERENCE = /\$\{\{[^}]*\bsecrets\./;
 
-/** The four environments of D-339: two plan environments with no reviewer, two Didi approves. */
 /** D-361: the account id, the zone id and the bucket name are organization and repository secrets. */
 const JOB_LEVEL_IDENTIFIERS = [
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_ZONE_ID",
   "STATE_BUCKET",
 ];
+/** The environments: two plan environments with no reviewer (D-339), three Didi approves (D-339, D-362). */
 const PLAN_ENVIRONMENTS = ["infra-plan", "platform-plan"];
-const APPROVED_ENVIRONMENTS = ["infra", "platform"];
+const APPROVED_ENVIRONMENTS = ["infra", "platform", "database"];
 
 describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
   it("run only from main, on a push there or by hand, never on a pull request", () => {
@@ -130,7 +132,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     for (const [key, refs] of pins) expect([...refs], key).toHaveLength(1);
   });
 
-  it("read secrets only in jobs of the four environments, only in a step's env, never in a script", () => {
+  it("read secrets only in jobs of the five environments, only in a step's env, never in a script", () => {
     for (const { path, wf } of all) {
       const raw = text(path);
       expect(raw, path).not.toMatch(/toJSON\(secrets\)|secrets:\s*inherit|secrets\[/);
@@ -183,6 +185,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       [`${WORKFLOWS.platform}#apply`]: "platform",
       [`${WORKFLOWS.platform}#cluster-secrets`]: "platform",
       [`${WORKFLOWS.platform}#runner-token`]: "platform",
+      [`${WORKFLOWS.database}#migrate`]: "database",
     });
   });
 
@@ -210,15 +213,15 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     }
   });
 
-  it("never let two runs of the infra or platform workflow overlap, so two applies never do", () => {
-    for (const path of [WORKFLOWS.infra, WORKFLOWS.platform]) {
+  it("never let two runs of the infra, platform or migrations workflow overlap, so two applies never do", () => {
+    for (const path of [WORKFLOWS.infra, WORKFLOWS.platform, WORKFLOWS.database]) {
       const { concurrency } = workflow(path);
       expect(concurrency?.["cancel-in-progress"], path).toBe(false);
       expect(concurrency?.group, path).toMatch(/^[a-z-]+$/);
     }
   });
 
-  it("are privileged paths, as is the secret-value scan that runs with the credentials", () => {
+  it("are privileged paths, as are the secret-value scan that runs with the credentials and the migrations", () => {
     const patterns = DEFAULT_PRIVILEGED_PATHS.map(globToRegExp);
     const privileged = (path: string) => patterns.some((re) => re.test(path));
     for (const path of [
@@ -226,6 +229,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       ...scripts,
       "scripts/find-secret-values.mjs",
       "scripts/lib/find-secret-values.mjs",
+      ...readdirSync(MIGRATIONS_DIR).map((name) => join(MIGRATIONS_DIR, name)),
     ]) {
       expect(privileged(path), path).toBe(true);
     }
@@ -789,6 +793,148 @@ describe("the runner token job (unit: D-352, O-110, runbook step 8)", () => {
     expect(runnerToken).not.toMatch(/--location|\s-L\s/);
     expect(runnerToken).not.toMatch(/-H "Authorization|--header "Authorization/);
     expect(runnerToken).not.toMatch(/--arg \w+ "\$(token|endpoint|windmill_token)"/);
+  });
+});
+
+describe("the database migrations workflow (unit: D-362, O-115)", () => {
+  const wf = workflow(WORKFLOWS.database);
+  const job = wf.jobs.migrate as Job & { "runs-on"?: string };
+  const withoutComments = (source: string) =>
+    source
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+  const raw = text(WORKFLOWS.database);
+  const migrateSh = script("db-migrate.sh");
+  const migrateTs = text("src/adapters/store-postgres/migrate.ts");
+
+  it("starts on a push to main that changes a migration or the job's own files, or by hand, never on a pull request", () => {
+    expect(wf.on).toEqual({
+      push: {
+        branches: ["main"],
+        paths: [
+          "db/migrations/**",
+          ".github/workflows/db-migrate.yml",
+          ".github/scripts/db-migrate.sh",
+        ],
+      },
+      workflow_dispatch: null,
+    });
+    expect(raw).not.toMatch(/pull_request|workflow_run|schedule:/);
+  });
+
+  it("has one job, on main only, in the environment database Didi approves, with a time limit and only contents: read", () => {
+    expect(wf.permissions).toEqual({});
+    expect(Object.keys(wf.jobs)).toEqual(["migrate"]);
+    expect(job.name).toBe("db-migrate");
+    expect(job.if).toBe("github.ref == 'refs/heads/main'");
+    expect(job.environment).toBe("database");
+    expect(job.permissions).toEqual({ contents: "read" });
+    expect(job["timeout-minutes"]).toBeGreaterThan(0);
+    expect(job["timeout-minutes"]).toBeLessThanOrEqual(30);
+    // The runner image whose PostgreSQL client O-115 read in GitHub's software list.
+    expect(job["runs-on"]).toBe("ubuntu-24.04");
+    expect(wf.concurrency).toEqual({
+      group: "db-migrate",
+      "cancel-in-progress": false,
+    });
+    expect(wf.env).toBeUndefined();
+    expect(job.env).toBeUndefined();
+    expect(job.outputs).toBeUndefined();
+  });
+
+  it("checks out only .github/ and the migrations, keeping no credential, and runs no npm, setup-node or repository code: only the protected script", () => {
+    expect(job.steps.map((s) => s.uses ?? "run")).toEqual([
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "run",
+    ]);
+    expect(job.steps[0]?.with).toEqual({
+      "persist-credentials": false,
+      "sparse-checkout": "/.github/\n/db/migrations/\n",
+      "sparse-checkout-cone-mode": false,
+    });
+    expect(withoutComments(raw)).not.toMatch(
+      /\b(npm|npx|node|setup-node|tsx|pnpm|yarn)\b/i,
+    );
+    const commands = (job.steps[1]?.run ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    // The script reads db/migrations when it is given no folder.
+    expect(commands).toEqual([
+      "set -euo pipefail",
+      'export REPORT="$RUNNER_TEMP/db-migrate.md"',
+      "status=0",
+      ".github/scripts/db-migrate.sh || status=$?",
+      'if [ -f "$REPORT" ]; then',
+      'tee -a "$GITHUB_STEP_SUMMARY" <"$REPORT"',
+      "fi",
+      'exit "$status"',
+    ]);
+  });
+
+  it("gives the connection string only to the step that runs the script, in its env, and no other workflow names it", () => {
+    expect(job.steps[1]?.env).toEqual({
+      MIGRATION_DATABASE_URL: "${{ secrets.MIGRATION_DATABASE_URL }}",
+    });
+    expect(job.steps[0]?.env).toBeUndefined();
+    expect(raw.match(/\$\{\{[^}]*\}\}/g)).toEqual([
+      "${{ secrets.MIGRATION_DATABASE_URL }}",
+    ]);
+    for (const name of readdirSync(".github/workflows")) {
+      if (join(".github/workflows", name) === WORKFLOWS.database) continue;
+      expect(text(join(".github/workflows", name)), name).not.toContain(
+        "MIGRATION_DATABASE_URL",
+      );
+    }
+  });
+
+  it("runs only bash, coreutils, redact.sh and psql in the script, psql once with no connection value as an argument", () => {
+    const code = withoutComments(migrateSh);
+    expect(code).not.toMatch(/\b(npm|npx|node|tsx|curl|wget|apt-get|pip)\b/);
+    expect(code).not.toMatch(/^\s*(source|\.)\s/m);
+    expect([...code.matchAll(/"\$here\/([^"]+)"/g)].map((m) => m[1])).toEqual([
+      "redact.sh",
+    ]);
+    expect(code).not.toMatch(/GITHUB_OUTPUT|GITHUB_ENV|GITHUB_STEP_SUMMARY/);
+    const starts = code.split("\n").filter((line) => /^\s*psql\s/.test(line));
+    expect(starts).toEqual([
+      '  psql -X -q -w --set=ON_ERROR_STOP=1 -f "$work/migrate.psql" \\',
+    ]);
+    expect(code).toContain(
+      'PGHOST="$host" PGPORT="$port" PGUSER="$user" PGPASSWORD="$password" PGDATABASE="$database" \\\n  PGSSLMODE=require ',
+    );
+  });
+
+  it("keeps migrate.ts's semantics: the same lock, file rule, order, setup and record row (test/db/db-migrate-script.test.ts runs both)", () => {
+    const lock = /const MIGRATION_LOCK = ([\d_]+);/
+      .exec(migrateTs)?.[1]
+      ?.replaceAll("_", "");
+    expect(lock).toBe("7104001");
+    expect(migrateSh).toContain(`lock_id=${lock}\n`);
+    const rule = /\.filter\(\(name\) => \/(.+)\/\.test\(name\)\)/.exec(migrateTs)?.[1];
+    expect(rule).toBe("^\\d{4}_[a-z0-9_]+\\.sql$");
+    expect(migrateSh).toContain(`name_rule='${rule?.replace("\\d", "[0-9]")}'\n`);
+    // readMigrations sorts by UTF-16 code unit; for these ASCII names that is the C locale's order.
+    expect(migrateTs).toMatch(/\.test\(name\)\)\s*\.sort\(\)/);
+    expect(migrateSh).toContain("export LC_ALL=C\n");
+    const words = (sql: string) => sql.replace(/\s+/g, " ").trim();
+    const tsSetup = /await client\.query\(`([^`]*create schema[^`]*)`\)/.exec(
+      migrateTs,
+    )?.[1];
+    const shSetup = /^setup_sql='([^']*)'$/m.exec(migrateSh)?.[1];
+    expect(words(shSetup ?? "")).toBe(words(tsSetup ?? "-"));
+    expect(words(shSetup ?? "")).toContain(
+      "revoke all on schema factory_meta from public;",
+    );
+    expect(migrateTs).toContain(
+      '"insert into factory_meta.schema_migrations (name, sha256) values ($1, $2)"',
+    );
+    expect(migrateSh).toContain(
+      "insert into factory_meta.schema_migrations (name, sha256) values ('${names[i]}', '${shas[i]}');",
+    );
+    expect(MIGRATIONS_DIR).toBe("db/migrations");
+    expect(migrateSh).toContain('migrations="${1:-db/migrations}"\n');
   });
 });
 

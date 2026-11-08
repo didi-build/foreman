@@ -1,8 +1,9 @@
 # 0104. State store schema
 
 - **Status:** accepted at the M1.1 review (D-169, 2026-10-29). Applying it to Supabase still waits for the project and its credentials, which Didi creates.
+- **Amended by D-362** (2026-11-08): the real database is migrated by an approved GitHub Actions job, not from a terminal. See "How migrations run".
 - **Date:** 2026-10-29
-- **Related:** P-02, P-03, O-05, P-11, D-161, D-162, D-164, D-166, D-167, `docs/schema.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0103](./0103-managed-postgres-provider.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
+- **Related:** P-02, P-03, O-05, P-11, D-161, D-162, D-164, D-166, D-167, D-173, D-362, O-115, `docs/schema.md`, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0103](./0103-managed-postgres-provider.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md)
 
 ## Context
 
@@ -66,6 +67,7 @@ The store holds no end-user personal data; agents work from synthetic data (D-15
 - Now: CI only. `.github/workflows/db.yml` applies every file in `db/migrations/` to an empty PostgreSQL 16 on the runner and runs `test/db/`.
 - M1.2 added the Postgres driver (`pg`) and `npm run db:migrate` (`src/adapters/store-postgres/migrate.ts`). It applies new files in name order, each in its own transaction together with its record in `factory_meta.schema_migrations` (name and SHA-256), under an advisory lock so two runs cannot overlap. It refuses to run if an applied file was edited or removed: a change is always a new migration.
 - Applying to Supabase happens only after this review and once Didi has created the project and its credentials. At that point: the Data API is confirmed off, the login users are created, and a test confirms the anon key reads nothing through the REST endpoint (ADR 0103).
+- Since D-362 (2026-11-08), the real database is migrated only by the Database migrations workflow (`.github/workflows/db-migrate.yml`), never from a terminal. Its one job runs in the GitHub environment `database` once Didi approves, on a push to main that changes a migration, or by hand, and applies every migration not yet recorded. Only protected code touches the connection string: the job runs `.github/scripts/db-migrate.sh` (bash and `psql`, no npm and none of the repository's TypeScript) on a checkout of `.github/` and `db/migrations/` only. The script keeps exactly the semantics above: the same advisory lock, the same `factory_meta.schema_migrations`, the same refusals for an edited or missing file, each file in its own transaction with its record, and a stop at the first failure. `test/db/db-migrate-script.test.ts` runs both on twin databases. `npm run db:migrate` stays for local development and the tests. `0001` was applied with it on 2026-10-29 (D-173), so the job's first run applies `0002` to `0021`. How it is built is O-115; the first-hosting runbook's step 9a sets it up.
 
 ## Constraints
 
