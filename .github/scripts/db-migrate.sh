@@ -5,8 +5,9 @@
 # owner. Usage: db-migrate.sh [migrations folder, db/migrations by default].
 #
 # Only protected code touches the credential (the pattern of D-358 lock 1): this script, redact.sh,
-# bash, coreutils and psql read it, with the migration files and nothing else from the repository.
-# npm, Node and the repository's TypeScript never run in the job. `npm run db:migrate`
+# bash, coreutils and psql read it, with the migration files and Supabase's CA certificate (a
+# privileged path, O-118) and nothing else from the repository. npm, Node and the repository's
+# TypeScript never run in the job. `npm run db:migrate`
 # (src/adapters/store-postgres/migrate.ts) stays for local development and the tests.
 #
 # The same semantics as migrate.ts, so the two never disagree (test/db/db-migrate-script.test.ts
@@ -26,9 +27,12 @@
 # The connection string is never printed and never an argument. It is checked first (no space,
 # newline or control character, then its shape), and masked before anything else prints, with
 # its password, user and host, as written and percent-decoded. psql gets it parsed into PGHOST,
-# PGPORT, PGUSER, PGPASSWORD and PGDATABASE in its own environment only, with SSL required and no
-# other PG* setting inherited. psql's own error lines are printed only through redact.sh, since a
-# connection error can quote the host or the user. psql's normal output is read as fixed lines
+# PGPORT, PGUSER, PGPASSWORD and PGDATABASE in its own environment only, with no other PG*
+# setting inherited, over TLS verified against Supabase's CA certificate in the checkout and the
+# host name (verify-full, D-364, O-118). Before that, one connection without TLS and without any
+# password checks that the database refuses it, so the run stops if Supabase's "Enforce SSL on
+# incoming connections" is off. psql's own error lines are printed only through redact.sh, since
+# a connection error can quote the host or the user. psql's normal output is read as fixed lines
 # only; any other line stops the run without being shown.
 set -euo pipefail
 export LC_ALL=C
@@ -36,6 +40,12 @@ export LC_ALL=C
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 migrations="${1:-db/migrations}"
 report="${REPORT:-}"
+
+# Supabase's root CA certificate, the file the services read (SUPABASE_CA_PATH in
+# src/adapters/store-postgres/tls.ts), checked out with the migrations. psql trusts only it. The
+# path is relative to the working directory, as db/migrations is: the workflow runs from the
+# checkout's root. Nothing else names a CA: no variable or argument can change it.
+ca_file="src/adapters/store-postgres/supabase-ca.crt"
 
 # migrate.ts's MIGRATION_LOCK and its file name rule (test/admin-workflows.test.ts holds both).
 lock_id=7104001
@@ -51,6 +61,8 @@ create table if not exists factory_meta.schema_migrations (
 revoke all on schema factory_meta from public;'
 
 applied=()
+# Set once the database has refused a connection without TLS.
+checked=""
 
 # The job summary: migration names and fixed text only.
 summary() {
@@ -58,6 +70,10 @@ summary() {
   {
     echo "## Database migrations"
     echo
+    if [ -n "$checked" ]; then
+      echo "$checked"
+      echo
+    fi
     if [ "${#applied[@]}" -gt 0 ]; then
       echo "Applied, in order:"
       echo
@@ -103,6 +119,34 @@ percent_decode() {
   done
 }
 
+# One or more PEM certificates and nothing else, as readDatabaseCa in tls.ts reads the file: each
+# block's lines are base64 that decodes. libpq reads the certificates itself and fails on one it
+# cannot use; this makes a missing or wrong file a fixed refusal before anything connects.
+is_pem_certificates() {
+  local line inside=false body="" blocks=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    if [ "$inside" = false ]; then
+      if [ "$line" = "-----BEGIN CERTIFICATE-----" ]; then
+        inside=true
+        body=""
+      elif ! [[ "$line" =~ ^[[:space:]]*$ ]]; then
+        return 1
+      fi
+    elif [ "$line" = "-----END CERTIFICATE-----" ]; then
+      [ -n "$body" ] || return 1
+      printf '%s' "$body" | base64 -d >/dev/null 2>&1 || return 1
+      inside=false
+      blocks=$((blocks + 1))
+    elif [[ "$line" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+      body+="$line"
+    else
+      return 1
+    fi
+  done <"$1"
+  [ "$inside" = false ] && [ "$blocks" -gt 0 ]
+}
+
 # The connection string: checked, then masked, before anything else prints.
 url="${MIGRATION_DATABASE_URL:-}"
 if [ -z "$url" ]; then
@@ -136,6 +180,15 @@ user="$decoded"
 [ "$user" = "$user_encoded" ] || mask "$user"
 if ((10#$port < 1 || 10#$port > 65535)); then
   refuse "The port in MIGRATION_DATABASE_URL is not between 1 and 65535 (first-hosting runbook step 9a)."
+fi
+
+# The CA certificate, before anything connects, refused in tls.ts's words (tls.ts also checks
+# that each certificate is a CA, which bash cannot read; libpq then decides what it trusts).
+if [ ! -f "$ca_file" ]; then
+  refuse "The database CA certificate is missing at $ca_file."
+fi
+if ! is_pem_certificates "$ca_file"; then
+  refuse "The database CA certificate at $ca_file is not a PEM certificate."
 fi
 
 # The migration files, in name order, as migrate.ts's readMigrations picks them.
@@ -215,23 +268,69 @@ fi
   echo '\echo done'
 } >"$work/migrate.psql"
 
-# Only psql's environment holds the connection settings, and no inherited PG* setting is kept.
-while IFS= read -r inherited; do
-  unset "$inherited"
-done < <(compgen -e PG || true)
-status=0
-PGHOST="$host" PGPORT="$port" PGUSER="$user" PGPASSWORD="$password" PGDATABASE="$database" \
-  PGSSLMODE=require PGCLIENTENCODING=UTF8 PGCONNECT_TIMEOUT=30 PGAPPNAME=foreman-db-migrate \
-  psql -X -q -w --set=ON_ERROR_STOP=1 -f "$work/migrate.psql" \
-  >"$work/out" 2>"$work/err" </dev/null || status=$?
-
-# psql's error lines, with the connection's values and any id or address replaced.
+# psql's error lines from the file named, with the connection's values and any id or address
+# replaced.
 show_psql_errors() {
   REDACT_NAMES="MIGRATION_DATABASE_URL,DATABASE_PASSWORD,DATABASE_PASSWORD_ENCODED,DATABASE_USER,DATABASE_USER_ENCODED,DATABASE_HOST" \
     MIGRATION_DATABASE_URL="$url" DATABASE_PASSWORD_ENCODED="$password_encoded" \
     DATABASE_PASSWORD="$password" DATABASE_USER_ENCODED="$user_encoded" DATABASE_USER="$user" \
-    DATABASE_HOST="$host" "$here/redact.sh" <"$work/err" >&2
+    DATABASE_HOST="$host" "$here/redact.sh" <"$1" >&2
 }
+
+# Only psql's environment holds the connection settings, and no inherited PG* setting is kept.
+while IFS= read -r inherited; do
+  unset "$inherited"
+done < <(compgen -e PG || true)
+
+# First, the database must refuse a connection without TLS (D-364, O-118). This connection has
+# TLS and GSSAPI encryption off, no password in its environment, a password file that does not
+# exist, and -w, so psql never sends a password, whatever the server asks. It passes only when
+# psql fails to connect (status 2) because the server's pg_hba.conf check refuses a connection
+# with no encryption, which Supabase's docs show as "SSL off" and PostgreSQL 16 words "no
+# encryption", and no other server error comes with it. If the server asks for a password or
+# lets it in, enforcement is off. Any other answer stops the run too.
+check_status=0
+PGHOST="$host" PGPORT="$port" PGUSER="$user" PGDATABASE="$database" \
+  PGPASSFILE="$work/no-password-file" PGSSLMODE=disable PGGSSENCMODE=disable \
+  PGCONNECT_TIMEOUT=30 PGAPPNAME=foreman-db-migrate-tls-check \
+  psql -X -q -w -c "select 1" >/dev/null 2>"$work/check-err" </dev/null || check_status=$?
+refused_rule='FATAL:  no pg_hba\.conf entry for host "[^"]*", user "[^"]*", database "[^"]*", (SSL off|no encryption)$'
+refused=false
+asked_for_password=false
+other_server_error=false
+while IFS= read -r line || [ -n "$line" ]; do
+  if [[ "$line" == *"no password supplied"* ]]; then
+    asked_for_password=true
+  elif [[ "$line" =~ $refused_rule ]]; then
+    refused=true
+  elif [[ "$line" == *"FATAL:"* || "$line" == *"ERROR:"* ]]; then
+    other_server_error=true
+  fi
+done <"$work/check-err"
+enforcement_off="Supabase's \"Enforce SSL on incoming connections\" is off"
+if [ "$check_status" -eq 0 ]; then
+  show_psql_errors "$work/check-err"
+  refuse "$enforcement_off: the database let in a connection without TLS. Turn it on (first-hosting runbook step 9a), then run this job again. Nothing was applied."
+fi
+if [ "$asked_for_password" = true ]; then
+  show_psql_errors "$work/check-err"
+  refuse "$enforcement_off: the database asked a connection without TLS for a password, and none was sent. Turn it on (first-hosting runbook step 9a), then run this job again. Nothing was applied."
+fi
+if [ "$check_status" -ne 2 ] || [ "$refused" != true ] || [ "$other_server_error" = true ]; then
+  show_psql_errors "$work/check-err"
+  refuse "The check that the database refuses a connection without TLS did not end in the refusal it expects, so nothing was applied. psql's error, redacted, is above (first-hosting runbook step 9a)."
+fi
+checked="Checked first: the database refuses a connection without TLS."
+echo "$checked"
+
+# Then the migrations, over TLS verified against the CA certificate and the host name. GSSAPI
+# encryption is off, so TLS is the only encryption libpq may use.
+status=0
+PGHOST="$host" PGPORT="$port" PGUSER="$user" PGPASSWORD="$password" PGDATABASE="$database" \
+  PGSSLMODE=verify-full PGSSLROOTCERT="$ca_file" PGGSSENCMODE=disable \
+  PGCLIENTENCODING=UTF8 PGCONNECT_TIMEOUT=30 PGAPPNAME=foreman-db-migrate \
+  psql -X -q -w --set=ON_ERROR_STOP=1 -f "$work/migrate.psql" \
+  >"$work/out" 2>"$work/err" </dev/null || status=$?
 
 print_applied() {
   if [ "${#applied[@]}" -gt 0 ]; then
@@ -270,7 +369,7 @@ if [ -n "$refusal" ] && [ "$status" -eq 0 ]; then
   refuse "$refusal"
 fi
 if [ "$status" -ne 0 ] || [ "$finished" != true ]; then
-  show_psql_errors
+  show_psql_errors "$work/err"
   if [ -n "$applying" ]; then
     refuse "$applying failed and was rolled back; nothing after it was applied. psql's error, redacted, is above."
   fi

@@ -225,7 +225,7 @@ The runner's merge writes `merge_commit` under the same ingest key as GitHub ing
 
 - `failure_threshold` and `qa_round_cap` (settings) against the `failure` and `qa_round` counters.
 - `designer_identity` (setting): the only author allowed on spec commits.
-- `project.privilegedPathsExtra` adds to the default privileged paths: `**/migrations/**`, `.github/**`, `docs/privacy/**`, `**/*secret*`, `**/*secret*/**`, `**/.env*`, `infra/**`. Every project shares this list: `infra/**` joined it so the `foreman` project needs no extra paths (D-344, D-345), and the register-project form records each project with none (O-109).
+- `project.privilegedPathsExtra` adds to the default privileged paths: `**/migrations/**`, `.github/**`, `docs/privacy/**`, `**/*secret*`, `**/*secret*/**`, `**/.env*`, `infra/**`, `**/*.crt`. Every project shares this list: `infra/**` joined it so the `foreman` project needs no extra paths (D-344, D-345), and the register-project form records each project with none (O-109). `**/*.crt` joined it because a committed certificate decides whom a service or a job trusts, such as Supabase's CA for every database connection, so a bot cannot change one without Didi's approval (O-118).
 - `project.prodRequiresApproval` for `prod_env_protected`.
 
 ## What each guard reads

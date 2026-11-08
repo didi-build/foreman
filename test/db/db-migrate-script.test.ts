@@ -1,22 +1,39 @@
-// Seam: database integration (docs/test-plan.md, D-362, O-115). The migrations job's script,
-// .github/scripts/db-migrate.sh, run with bash and the real psql against a real PostgreSQL, next
-// to migrate.ts's applyMigrations on a twin database: the two record the same rows, refuse the
-// same things and stop at the same failure. The script connects as the job does, over TCP with
-// SSL required and a password, as a login role made for this file with a made-up password and
-// dropped at the end. No real credential is used. Needs TEST_DATABASE_URL, and a server that
-// takes password logins with SSL on 127.0.0.1, as the PostgreSQL packaged for Ubuntu does
-// (.github/workflows/db.yml).
+// Seam: database integration (docs/test-plan.md, D-362, O-115, O-118). The migrations job's
+// script, .github/scripts/db-migrate.sh, run with bash and the real psql against a real
+// PostgreSQL, next to migrate.ts's applyMigrations on a twin database: the two record the same
+// rows, refuse the same things and stop at the same failure. The script connects as the job
+// does: first a connection without TLS and without a password, which the server must refuse,
+// then over TCP with TLS verified against a CA and the host name (verify-full) and a password,
+// as a login role made for this file with a made-up password. No real credential is used.
+//
+// The server is a throwaway PostgreSQL this file starts with initdb and pg_ctl, with a CA and a
+// server certificate for localhost that openssl makes at test time, and a pg_hba.conf that takes
+// TCP logins only over TLS, as Supabase does with "Enforce SSL on incoming connections" on. The
+// machine's own server cannot stand in: it takes plain-text logins with a password on 127.0.0.1,
+// and its certificate is the machine's, so neither the check nor verify-full could pass without
+// changing the machine's settings. The script runs from a folder that stands for the job's
+// checkout and holds the test's CA at the certificate's path, so the CA and the host name come
+// from this setup, and the script and the workflow have no setting for either.
+//
+// Runs when TEST_DATABASE_URL is set, as the database seam does, and needs PostgreSQL's server
+// programs (the PostgreSQL packaged for Ubuntu installs them, .github/workflows/db.yml). Run as
+// root, as in a container, the server runs as the postgres user, since initdb refuses root.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
+  chownSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import pg from "pg";
@@ -27,21 +44,216 @@ import {
   applyMigrations,
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
-import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
+import { SUPABASE_CA_PATH } from "../../src/adapters/store-postgres/tls.ts";
+import { adminUrl as machineAdminUrl, dbRequired } from "./database.ts";
 
 const SCRIPT = resolve(".github/scripts/db-migrate.sh");
+const MIGRATIONS = resolve("db/migrations");
 const BASE = `foreman_db_migrate_test_${process.pid}`;
 const ROLE = `${BASE}_owner`;
+/** The throwaway server's own superuser, reached through its socket only. */
+const ADMIN = "foreman_test_admin";
 /** Made up for this file; it needs percent-encoding in a URL, as a real one may. */
 const PASSWORD = `${randomBytes(9).toString("hex")}@:/%?#x`;
-const HOST = "127.0.0.1";
+/** The host the job's URL names, and the only name the server's certificate holds. */
+const HOST = "localhost";
 const LOCK = 7104001;
+/** The one database whose pg_hba.conf line also takes a TCP login without TLS. */
+const PLAIN_SUFFIX = "enforcement_off";
+/** The script's log line, and its summary's, once the server refused a connection without TLS. */
+const CHECKED = "Checked first: the database refuses a connection without TLS.\n";
 
+const OPENSSL_CONFIG = `[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = Foreman throwaway test CA
+[ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+[localhost]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:localhost
+`;
+
+/** initdb and pg_ctl: where pg_config says, or the newest PostgreSQL under /usr/lib/postgresql. */
+function serverPrograms(): string | undefined {
+  const config = spawnSync("pg_config", ["--bindir"], { encoding: "utf8" });
+  const packaged = existsSync("/usr/lib/postgresql")
+    ? readdirSync("/usr/lib/postgresql")
+        .filter((version) => /^\d+$/.test(version))
+        .sort((a, b) => Number(b) - Number(a))
+        .map((version) => join("/usr/lib/postgresql", version, "bin"))
+    : [];
+  return [config.status === 0 ? config.stdout.trim() : "", ...packaged].find(
+    (dir) =>
+      dir !== "" && existsSync(join(dir, "initdb")) && existsSync(join(dir, "pg_ctl")),
+  );
+}
+const PROGRAMS = serverPrograms();
+
+/** Run as root, the server's files and programs belong to the postgres user. */
+function serverOwner(): { uid: number; gid: number } | undefined {
+  if (process.getuid?.() !== 0) return undefined;
+  const id = (flag: string) =>
+    spawnSync("id", [flag, "postgres"], { encoding: "utf8" }).stdout.trim();
+  const [uid, gid] = [Number(id("-u")), Number(id("-g"))];
+  if (!(uid > 0 && gid > 0))
+    throw new Error(
+      "Run as root, this test needs the postgres user to run its server.",
+    );
+  return { uid, gid };
+}
+
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
+  const { port } = probe.address() as AddressInfo;
+  await new Promise((done) => probe.close(done));
+  return port;
+}
+
+interface Server {
+  root: string;
+  port: string;
+  /** The server's superuser, through its socket, on the postgres database. */
+  adminUrl: string;
+  /** A folder standing for the job's checkout, with the server's CA at the certificate's path. */
+  checkout: string;
+  /** The same, with a CA the server's certificate does not chain to. */
+  otherCheckout: string;
+  stop: () => void;
+}
+
+/**
+ * A throwaway PostgreSQL on localhost with a certificate from a CA made here, taking TCP logins
+ * only over TLS (and, for one database, also without), and its superuser through its socket.
+ */
+async function startServer(programs: string): Promise<Server> {
+  const owner = serverOwner();
+  const root = mkdtempSync(join(tmpdir(), "db-migrate-tls-"));
+  const at = (name: string) => join(root, name);
+  const own = (path: string) => {
+    if (owner) chownSync(path, owner.uid, owner.gid);
+  };
+  const asServer = (program: string, args: string[]) => {
+    const done = spawnSync(join(programs, program), args, {
+      cwd: root,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", LC_ALL: "C" },
+      ...(owner ?? {}),
+    });
+    if (done.status !== 0) throw new Error(`${program} failed: ${done.stderr}`);
+  };
+  const stop = () => {
+    if (existsSync(at("data/postmaster.pid")))
+      asServer("pg_ctl", ["-D", at("data"), "-m", "immediate", "-w", "stop"]);
+    rmSync(root, { recursive: true, force: true });
+  };
+  try {
+    own(root);
+    writeFileSync(at("openssl.cnf"), OPENSSL_CONFIG);
+    const openssl = (args: string[]) => {
+      const done = spawnSync("openssl", args, { encoding: "utf8" });
+      if (done.status !== 0) throw new Error(`openssl failed: ${done.stderr}`);
+    };
+    const newKey = [
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+    ];
+    for (const ca of ["trusted", "other"]) {
+      openssl([
+        "req", "-x509", "-config", at("openssl.cnf"), "-extensions", "ca", ...newKey,
+        "-days", "1", "-keyout", at(`${ca}.key`), "-out", at(`${ca}.crt`),
+      ]); // prettier-ignore
+    }
+    openssl([
+      "req", "-new", "-config", at("openssl.cnf"), ...newKey, "-subj", "/CN=localhost",
+      "-keyout", at("server.key"), "-out", at("server.csr"),
+    ]); // prettier-ignore
+    openssl([
+      "x509", "-req", "-in", at("server.csr"), "-CA", at("trusted.crt"), "-CAkey", at("trusted.key"),
+      "-set_serial", "4660", "-days", "1", "-extfile", at("openssl.cnf"),
+      "-extensions", "localhost", "-out", at("server.crt"),
+    ]); // prettier-ignore
+    chmodSync(at("server.key"), 0o600);
+    mkdirSync(at("socket"));
+    for (const path of ["server.key", "server.crt", "socket"]) own(at(path));
+
+    asServer("initdb", [
+      "-D", at("data"), "-U", ADMIN, "--auth=trust", "--no-sync", "--no-instructions",
+      "--encoding=UTF8", "--locale=C",
+    ]); // prettier-ignore
+    const port = String(await freePort());
+    appendFileSync(
+      at("data/postgresql.conf"),
+      [
+        "listen_addresses = 'localhost'",
+        `port = ${port}`,
+        `unix_socket_directories = '${at("socket")}'`,
+        "ssl = on",
+        `ssl_cert_file = '${at("server.crt")}'`,
+        `ssl_key_file = '${at("server.key")}'`,
+        "fsync = off",
+        "",
+      ].join("\n"),
+    );
+    // As Supabase with SSL enforcement on: over TCP, TLS only, but for one database, which stands
+    // for enforcement off. The socket, which only this file's user (and root) can reach, is for
+    // the test's own superuser.
+    const plain = `${BASE}_${PLAIN_SUFFIX}`;
+    writeFileSync(
+      at("data/pg_hba.conf"),
+      [
+        "local all all trust",
+        `host ${plain} all 127.0.0.1/32 scram-sha-256`,
+        `host ${plain} all ::1/128 scram-sha-256`,
+        "hostssl all all 127.0.0.1/32 scram-sha-256",
+        "hostssl all all ::1/128 scram-sha-256",
+        "",
+      ].join("\n"),
+    );
+    asServer("pg_ctl", [
+      "-D",
+      at("data"),
+      "-l",
+      at("server.log"),
+      "-w",
+      "-t",
+      "60",
+      "start",
+    ]);
+
+    const checkoutWith = (name: string, ca: string) => {
+      const checkout = at(name);
+      mkdirSync(join(checkout, SUPABASE_CA_PATH, ".."), { recursive: true });
+      cpSync(at(ca), join(checkout, SUPABASE_CA_PATH));
+      return checkout;
+    };
+    return {
+      root,
+      port,
+      adminUrl: `postgresql://${ADMIN}@localhost:${port}/postgres?host=${at("socket")}`,
+      checkout: checkoutWith("checkout", "trusted.crt"),
+      otherCheckout: checkoutWith("checkout-other-ca", "other.crt"),
+      stop,
+    };
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+let server: Server | undefined;
 const roots: string[] = [];
-const databases: string[] = [];
 
-/** One statement as the admin user, on the admin database or another one. */
-function admin(sql: string, url: string = adminUrl ?? ""): string {
+/** One statement as the server's superuser, on its postgres database or another one. */
+function admin(sql: string, url: string = server?.adminUrl ?? ""): string {
   const done = spawnSync(
     "psql",
     [url, "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-c", sql],
@@ -59,13 +271,15 @@ interface Database {
   url: string;
 }
 
-let port = "";
 function database(suffix: string, password = PASSWORD): Database {
   const name = `${BASE}_${suffix}`;
-  databases.push(name);
+  admin(`drop database if exists ${name}`);
+  admin(`create database ${name}`);
+  const url = new URL(server?.adminUrl ?? "");
+  url.pathname = `/${name}`;
   return {
     name,
-    adminUrl: createTestDatabase(name),
+    adminUrl: url.toString(),
     url: [
       "postgresql://",
       ROLE,
@@ -74,7 +288,7 @@ function database(suffix: string, password = PASSWORD): Database {
       "@",
       HOST,
       ":",
-      port,
+      server?.port ?? "",
       "/",
       name,
     ].join(""),
@@ -121,9 +335,19 @@ interface Run {
   report: string;
 }
 
-function runScript(db: Database, dir = "db/migrations", url = db.url): Run {
+/** The script as the job runs it, from the checkout's root (the server's CA, unless another). */
+function runScript(
+  db: Database,
+  dir = MIGRATIONS,
+  url = db.url,
+  checkout = server?.checkout,
+): Run {
   const env = scriptEnv(url);
-  const done = spawnSync("bash", [SCRIPT, dir], { encoding: "utf8", env });
+  const done = spawnSync("bash", [SCRIPT, dir], {
+    cwd: checkout,
+    encoding: "utf8",
+    env,
+  });
   const report = env.REPORT as string;
   return {
     status: done.status,
@@ -141,8 +365,13 @@ const shown = (stdout: string): string =>
     .join("\n");
 
 /** The connection's values never show outside a mask line, and the masks come first. */
-function expectNoValueShown(run: Run, url: string, password = PASSWORD): void {
-  const values = [url, encodeURIComponent(password), password, ROLE, HOST];
+function expectNoValueShown(
+  run: Run,
+  url: string,
+  password = PASSWORD,
+  host = HOST,
+): void {
+  const values = [url, encodeURIComponent(password), password, ROLE, host];
   for (const out of [shown(run.stdout), run.stderr, run.report]) {
     for (const value of values) expect(out).not.toContain(value);
   }
@@ -177,7 +406,7 @@ const objects = (db: Database): string =>
 
 async function withTool(
   db: Database,
-  dir = "db/migrations",
+  dir = MIGRATIONS,
 ): Promise<{ applied?: string[]; error?: Error }> {
   const pool = new pg.Pool({ connectionString: db.adminUrl, max: 1 });
   try {
@@ -209,18 +438,22 @@ const lockRows = (db: Database, granted: boolean): number =>
 
 const NAMES = readMigrations().map((file) => file.name);
 
-describe.skipIf(!adminUrl)(
-  "the migrations job's script on Postgres (database integration, D-362, O-115)",
+describe.skipIf(!machineAdminUrl || (!PROGRAMS && !dbRequired))(
+  "the migrations job's script on Postgres over verified TLS (database integration, D-362, O-115, O-118)",
   { timeout: 60_000 },
   () => {
-    beforeAll(() => {
-      port = admin("show port");
-      admin(`drop role if exists ${ROLE}`);
+    beforeAll(async () => {
+      if (!PROGRAMS)
+        throw new Error(
+          "PostgreSQL's server programs (initdb, pg_ctl) are not installed: this test runs its own server.",
+        );
+      server = await startServer(PROGRAMS);
+      // Supabase's role, as test/db/database.ts makes it on the machine's server.
+      admin("create role anon nologin");
       admin(`create role ${ROLE} login superuser password '${PASSWORD}'`);
-    });
+    }, 120_000);
     afterAll(() => {
-      for (const name of databases) dropTestDatabase(name);
-      if (adminUrl) admin(`drop role if exists ${ROLE}`);
+      server?.stop();
       while (roots.length > 0)
         rmSync(roots.pop() as string, { recursive: true, force: true });
     });
@@ -231,7 +464,7 @@ describe.skipIf(!adminUrl)(
       const run = runScript(script);
       expect(run.stderr).toBe("");
       expect(run.status).toBe(0);
-      expect(shown(run.stdout)).toBe(`Applied: ${NAMES.join(", ")}\n`);
+      expect(shown(run.stdout)).toBe(`${CHECKED}Applied: ${NAMES.join(", ")}\n`);
       expectNoValueShown(run, script.url);
       for (const name of NAMES) expect(run.report).toContain(`- \`${name}\`\n`);
 
@@ -250,7 +483,7 @@ describe.skipIf(!adminUrl)(
       const before = recorded(db);
       const again = runScript(db);
       expect(again.status).toBe(0);
-      expect(shown(again.stdout)).toBe("Nothing to apply.\n");
+      expect(shown(again.stdout)).toBe(`${CHECKED}Nothing to apply.\n`);
       expect(again.report).toContain("Nothing to apply");
       expect(recorded(db)).toEqual(before);
     });
@@ -270,7 +503,7 @@ describe.skipIf(!adminUrl)(
 
       const run = runScript(script, dir);
       expect(run.status).toBe(1);
-      expect(shown(run.stdout)).toBe("Applied: 0002_aa_late.sql\n");
+      expect(shown(run.stdout)).toBe(`${CHECKED}Applied: 0002_aa_late.sql\n`);
       expect(run.stderr).toBe(
         "::error::0003_run_dispatch.sql changed after it was applied. Add a new migration instead of editing it.\n",
       );
@@ -301,7 +534,7 @@ describe.skipIf(!adminUrl)(
 
       const run = runScript(script, dir);
       expect(run.status).toBe(1);
-      expect(shown(run.stdout)).toBe("");
+      expect(shown(run.stdout)).toBe(CHECKED);
       expect(run.stderr).toBe(
         "::error::0021_ingest_preview_check.sql is recorded as applied but its file is missing.\n",
       );
@@ -328,7 +561,7 @@ describe.skipIf(!adminUrl)(
 
       const run = runScript(script);
       expect(run.status).toBe(1);
-      expect(shown(run.stdout)).toBe("");
+      expect(shown(run.stdout)).toBe(CHECKED);
       expect(run.stderr).toBe(
         "::error::A row whose name is not a migration file name is recorded as applied, and no file has that name.\n",
       );
@@ -349,7 +582,7 @@ describe.skipIf(!adminUrl)(
 
       const run = runScript(script, dir);
       expect(run.status).toBe(1);
-      expect(shown(run.stdout)).toBe(`Applied: ${NAMES.join(", ")}\n`);
+      expect(shown(run.stdout)).toBe(`${CHECKED}Applied: ${NAMES.join(", ")}\n`);
       expect(run.stderr).toMatch(
         /ERROR: {2}function no_such_function\(\) does not exist/,
       );
@@ -376,7 +609,7 @@ describe.skipIf(!adminUrl)(
       await eventually(() => lockRows(script, true) === 0);
     });
 
-    it("holds the advisory lock through the whole run in one session over SSL, and waits while another session holds it", async () => {
+    it("holds the advisory lock through the whole run in one session over TLS, and waits while another session holds it", async () => {
       const db = database("lock");
       // Each file checks, in the database, that its own session holds the lock over SSL, and the
       // second that it runs in the first one's session.
@@ -412,7 +645,7 @@ end $$;
       await eventually(() => lockRows(db, true) === 1);
 
       const env = scriptEnv(db.url);
-      const child = spawn("bash", [SCRIPT, dir], { env });
+      const child = spawn("bash", [SCRIPT, dir], { cwd: server?.checkout, env });
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
@@ -433,7 +666,7 @@ end $$;
       expect(await exited).toBe(0);
       expect(stderr).toBe("");
       expect(shown(stdout)).toBe(
-        "Applied: 0001_lock_held.sql, 0002_lock_still_held.sql\n",
+        `${CHECKED}Applied: 0001_lock_held.sql, 0002_lock_still_held.sql\n`,
       );
       expect(recorded(db).map((row) => row.split(" ")[0])).toEqual([
         "0001_lock_held.sql",
@@ -449,8 +682,9 @@ end $$;
         encodeURIComponent(PASSWORD),
         encodeURIComponent(wrong),
       );
-      const run = runScript(db, "db/migrations", url);
+      const run = runScript(db, MIGRATIONS, url);
       expect(run.status).toBe(1);
+      expect(shown(run.stdout)).toBe(CHECKED);
       expect(run.stderr).toContain(
         'password authentication failed for user "<DATABASE_USER>"',
       );
@@ -464,6 +698,57 @@ end $$;
           db.adminUrl,
         ),
       ).toBe("t");
+    });
+
+    const nothingDone = (db: Database) =>
+      admin(
+        "select to_regclass('factory_meta.schema_migrations') is null",
+        db.adminUrl,
+      );
+
+    it("refuses a server whose certificate does not chain to the CA in the checkout, and never falls back to plain text", () => {
+      const db = database("other_ca");
+      const run = runScript(db, MIGRATIONS, db.url, server?.otherCheckout);
+      expect(run.status).toBe(1);
+      expect(shown(run.stdout)).toBe(CHECKED);
+      expect(run.stderr).toContain("certificate verify failed");
+      expect(run.stderr).toContain(
+        "::error::psql stopped (exit status 2) before the end, with nothing more applied. psql's error, redacted, is above.\n",
+      );
+      expectNoValueShown(run, db.url);
+      expect(nothingDone(db)).toBe("t");
+    });
+
+    it("refuses a server whose certificate does not hold the host name the URL names", () => {
+      const db = database("other_name");
+      const url = db.url.replace("@localhost:", "@127.0.0.1:");
+      const run = runScript(db, MIGRATIONS, url);
+      expect(run.status).toBe(1);
+      // The check reaches 127.0.0.1 too, and is refused as it should be.
+      expect(shown(run.stdout)).toBe(CHECKED);
+      expect(run.stderr).toMatch(
+        /server certificate for "localhost" (\(and \d+ other names?\) )?does not match host name "<DATABASE_HOST>"/,
+      );
+      expectNoValueShown(run, url, PASSWORD, "127.0.0.1");
+      expect(nothingDone(db)).toBe("t");
+    });
+
+    it("stops before any migration when the server takes a connection without TLS, which psql never sends a password on", () => {
+      const db = database(PLAIN_SUFFIX);
+      const run = runScript(db);
+      expect(run.status).toBe(1);
+      expect(shown(run.stdout)).toBe("");
+      expect(run.stderr).toContain("fe_sendauth: no password supplied");
+      expect(run.stderr).toContain(
+        `::error::Supabase's "Enforce SSL on incoming connections" is off: the database asked a connection without TLS for a password, and none was sent. Turn it on (first-hosting runbook step 9a), then run this job again. Nothing was applied.\n`,
+      );
+      expect(run.report).toContain(
+        'Stopped: Supabase\'s "Enforce SSL on incoming connections" is off',
+      );
+      expect(run.report).not.toContain("Applied");
+      expectNoValueShown(run, db.url);
+      expect(nothingDone(db)).toBe("t");
+      expect(lockRows(db, true) + lockRows(db, false)).toBe(0);
     });
   },
 );
