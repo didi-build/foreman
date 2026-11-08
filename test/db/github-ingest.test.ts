@@ -3,9 +3,10 @@
 // role's grants and row level security back up the core's rules: it writes only deliveries and
 // ingested evidence kinds under a key, changes nothing, and a replay is a no-op. Migration 0020
 // (O-101): it reads the kill switch and dry run and no other setting, so capture's due check runs
-// as this role before the receiver starts the option capture flow. The advance and staging checks
-// run as this role too (O-104), with no new grant: the one read they could need beyond it, a
-// decision on a design head QA already reported on, is refused, so the check fails closed.
+// as this role before the receiver starts the option capture flow, and before it starts the
+// staging deploy (O-116), which reads nothing else. The advance check runs as this role too
+// (O-104), with no new grant: the one read it could need beyond it, a decision on a design head
+// QA already reported on, is refused, so the check fails closed.
 // Migration 0021 (O-111): it also records CI's preview check, under its key.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -38,7 +39,6 @@ import {
   PREVIEW_CHECK_WORKFLOW_FILE,
   previewCheckKey,
 } from "../../src/core/preview-check.ts";
-import { createStagingReads } from "../../src/core/staging.ts";
 import { testRouteColumns } from "../../src/core/routing-testing.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../src/core/runs.ts";
 import type { Evidence, Json, Node, Store } from "../../src/core/store.ts";
@@ -392,7 +392,7 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("runs the advance and staging checks as factory_ingest with no new grant, and a decision read fails closed (O-104)", async () => {
+    it("runs the advance check as factory_ingest with no new grant, and a decision read fails closed (O-104)", async () => {
       const at = deps.clock.now();
       const node = async (state: string, extra: Partial<Node> = {}): Promise<Node> => {
         const created: Node = {
@@ -506,19 +506,8 @@ describe.skipIf(!adminUrl)(
         contracts: machines(),
         guards: GUARDS,
       });
-      const staging = createStagingReads(machines());
-      const deploy = {
-        repo: REPO,
-        sha: MERGE_SHA,
-        environment: "staging",
-        state: "success" as const,
-      };
       // Dry run is seeded on (0001): nothing is due until it is off.
       expect(await advances.due(code.id)).toMatchObject({
-        due: false,
-        reason: "dry_run",
-      });
-      expect(await staging.due(ingest, deploy)).toEqual({
         due: false,
         reason: "dry_run",
       });
@@ -536,11 +525,6 @@ describe.skipIf(!adminUrl)(
           nodeId: code.id,
           toState: "in_qa_review",
         });
-        expect(await staging.due(ingest, deploy)).toEqual({
-          due: true,
-          repo: REPO,
-          sha: MERGE_SHA,
-        });
         expect(await advances.due(merged.id)).toMatchObject({
           due: false,
           reason: "no_advance_move",
@@ -550,9 +534,6 @@ describe.skipIf(!adminUrl)(
         await expect(advances.due(design.id)).rejects.toThrow(/permission denied/);
         await set("kill_switch", true);
         expect(await advances.due(code.id)).toMatchObject({ reason: "kill_switch" });
-        expect(await staging.due(ingest, deploy)).toMatchObject({
-          reason: "kill_switch",
-        });
       } finally {
         await set("kill_switch", false);
         await set("dry_run", true);

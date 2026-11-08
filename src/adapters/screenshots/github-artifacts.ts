@@ -14,6 +14,10 @@
 // CI's Screenshots workflow makes the bundles (scripts/render-screenshots.ts, O-81); until the
 // runner App is registered (D-178) the token port refuses with `NotBuiltError`
 // (flows/lib/compose.ts). Tests pass fakes.
+//
+// The listing of one run's artifacts by name, the choice of the newest unexpired one and the
+// bounded download are shared with the staging deploy's read of CI's `staging-site` build
+// (src/adapters/github/staging-builds.ts, O-116).
 import type {
   BundleKind,
   ScreenshotBundle,
@@ -42,7 +46,7 @@ const MAX_LISTING_BYTES = 4 * 1024 * 1024;
 /** The most workflow runs of one commit the runner looks in (re-runs and other workflows). */
 export const MAX_RUNS_PER_COMMIT = 20;
 
-interface Artifact {
+export interface Artifact {
   id: number;
   /** The workflow run whose artifact listing named it. */
   runId: number;
@@ -74,6 +78,55 @@ function runIds(body: Uint8Array, commitSha: string): number[] {
     })
     .sort((a, b) => b - a)
     .slice(0, MAX_RUNS_PER_COMMIT);
+}
+
+/** One run's artifacts of one name, unexpired or not, as GitHub lists them. */
+export async function listRunArtifacts(
+  http: GitHubHttp,
+  request: { repo: string; runId: number; name: string; token: string },
+): Promise<Artifact[]> {
+  const { repo, runId, name, token } = request;
+  const listing = await http.get({
+    path: `/repos/${repo}/actions/runs/${runId}/artifacts?name=${encodeURIComponent(name)}`,
+    token,
+    accept: "json",
+    maxBytes: MAX_LISTING_BYTES,
+  });
+  if (listing.status !== 200) {
+    throw new GitHubReadError(`listing the artifacts failed with ${listing.status}`);
+  }
+  return artifacts(listing.body, runId);
+}
+
+/** The newest unexpired artifact named `name` among `candidates`, or undefined. */
+export function newestArtifact(
+  candidates: readonly Artifact[],
+  name: string,
+): Artifact | undefined {
+  return candidates
+    .filter((a) => a.name === name && !a.expired)
+    .sort((a, b) =>
+      a.createdAt === b.createdAt ? b.id - a.id : a.createdAt < b.createdAt ? 1 : -1,
+    )[0];
+}
+
+/** An artifact's zip file, at most `MAX_ARTIFACT_BYTES`. */
+export async function downloadArtifact(
+  http: GitHubHttp,
+  request: { repo: string; id: number; token: string },
+): Promise<Uint8Array> {
+  const download = await http.get({
+    path: `/repos/${request.repo}/actions/artifacts/${request.id}/zip`,
+    token: request.token,
+    accept: "raw",
+    maxBytes: MAX_ARTIFACT_BYTES,
+  });
+  if (download.status !== 200) {
+    throw new GitHubReadError(
+      `downloading the artifact failed with ${download.status}`,
+    );
+  }
+  return download.body;
 }
 
 function artifacts(body: Uint8Array, runId: number): Artifact[] {
@@ -130,41 +183,15 @@ export function createGitHubScreenshotBundles({
       }
       const candidates: Artifact[] = [];
       for (const runId of runIds(runs.body, commitSha)) {
-        const listing = await http.get({
-          path: `/repos/${repo}/actions/runs/${runId}/artifacts?name=${encodeURIComponent(name)}`,
-          token,
-          accept: "json",
-          maxBytes: MAX_LISTING_BYTES,
-        });
-        if (listing.status !== 200) {
-          throw new GitHubReadError(
-            `listing the artifacts failed with ${listing.status}`,
-          );
-        }
-        candidates.push(...artifacts(listing.body, runId));
-      }
-      const found = candidates
-        .filter((a) => a.name === name && !a.expired)
-        .sort((a, b) =>
-          a.createdAt === b.createdAt
-            ? b.id - a.id
-            : a.createdAt < b.createdAt
-              ? 1
-              : -1,
-        )[0];
-      if (!found) return null;
-      const download = await http.get({
-        path: `/repos/${repo}/actions/artifacts/${found.id}/zip`,
-        token,
-        accept: "raw",
-        maxBytes: MAX_ARTIFACT_BYTES,
-      });
-      if (download.status !== 200) {
-        throw new GitHubReadError(
-          `downloading the artifact failed with ${download.status}`,
+        candidates.push(
+          ...(await listRunArtifacts(http, { repo, runId, name, token })),
         );
       }
-      const files = readZip(download.body);
+      const found = newestArtifact(candidates, name);
+      if (!found) return null;
+      const files = readZip(
+        await downloadArtifact(http, { repo, id: found.id, token }),
+      );
       const raw = files.get(MANIFEST);
       let manifest: unknown = null;
       if (raw) {

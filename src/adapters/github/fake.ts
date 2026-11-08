@@ -1,6 +1,5 @@
 // A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs, changed
-// files, workflow runs and their jobs (D-354), mergeability, deployments and a commit history held
-// in memory, a squash merge that behaves like
+// files, workflow runs and their jobs (D-354), mergeability and a commit history held in memory, a squash merge that behaves like
 // GitHub's (it refuses a head that moved, a PR GitHub cannot merge and a PR that is not open), a
 // compare that walks the history it was given (D-225), plus builders for webhook
 // payloads in GitHub's shape (only the fields ingestion reads). Signatures use the real HMAC
@@ -8,7 +7,6 @@
 import type {
   CheckRun,
   CommitRelation,
-  Deployment,
   PullRequest,
   WorkflowJob,
   WorkflowRun,
@@ -38,8 +36,6 @@ export interface FakeGitHub extends GitHubAdapter {
   setWorkflowJobs(repo: string, runId: number, jobs: WorkflowJob[]): void;
   /** What GitHub reports as the PR's mergeable state. A PR starts as `true` (no conflict). */
   setMergeable(repo: string, number: number, mergeable: boolean | null): void;
-  /** Adds a deployment, or replaces the one with the same id (a new deployment status). */
-  putDeployment(repo: string, deployment: Deployment): void;
   /**
    * Adds a commit with its parents, for the compare. A commit never added has no history, so it
    * is `diverged` from every other commit.
@@ -65,7 +61,6 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const workflowJobs = new Map<string, WorkflowJob[]>();
   const mergeable = new Map<string, boolean | null>();
   const merges: { repo: string; number: number; headSha: string }[] = [];
-  const deployments = new Map<string, Deployment[]>();
   const parentsOf = new Map<string, string[]>();
   const branchHeads = new Map<string, string>();
   let reads = 0;
@@ -129,21 +124,6 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
         .map((pr) => structuredClone(pr));
     },
 
-    async listDeployments(repo, environment, sha) {
-      reads++;
-      return (deployments.get(repo) ?? [])
-        .filter((d) => d.environment === environment && d.sha === sha)
-        .sort((a, b) => b.id - a.id)
-        .map((d) => ({ ...d }));
-    },
-    async listRecentDeployments(repo, environment, limit) {
-      reads++;
-      return (deployments.get(repo) ?? [])
-        .filter((d) => d.environment === environment)
-        .sort((a, b) => b.id - a.id)
-        .slice(0, limit)
-        .map((d) => ({ ...d }));
-    },
     async getBranchHead(repo, branch) {
       reads++;
       return branchHeads.get(`${repo}#${branch}`) ?? null;
@@ -211,10 +191,6 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     setMergeable(repo, number, value) {
       mergeable.set(prKey(repo, number), value);
     },
-    putDeployment(repo, deployment) {
-      const list = (deployments.get(repo) ?? []).filter((d) => d.id !== deployment.id);
-      deployments.set(repo, [...list, { ...deployment }]);
-    },
     putCommit(repo, sha, parents) {
       parentsOf.set(`${repo}@${sha}`, [...parents]);
     },
@@ -265,7 +241,10 @@ export function checkCompletedEvent(
   };
 }
 
-/** A `deployment_status` event: one status of one deployment of `sha` to `environment`. */
+/**
+ * A `deployment_status` event: one status of one deployment of `sha` to `environment`. The receiver
+ * still records such a delivery, and starts nothing on it (D-356, O-116).
+ */
 export function deploymentStatusEvent(
   repo: string,
   sha: string,

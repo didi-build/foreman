@@ -19,12 +19,9 @@ describe("real GitHub client before M3 (unit: D-178)", () => {
     await expect(
       client.squashMerge("didi-build/rehearsal", 1, "b".repeat(40)),
     ).rejects.toThrow(GitHubNotConfiguredError);
-    await expect(
-      client.listDeployments("didi-build/rehearsal", "staging", "b".repeat(40)),
-    ).rejects.toThrow(GitHubNotConfiguredError);
-    await expect(
-      client.listRecentDeployments("didi-build/rehearsal", "staging", 20),
-    ).rejects.toThrow(GitHubNotConfiguredError);
+    // GitHub's deployments are not read at all: the runner records its own staging deploys (D-356).
+    expect("listDeployments" in client).toBe(false);
+    expect("listRecentDeployments" in client).toBe(false);
     await expect(
       client.compareCommits("didi-build/rehearsal", "b".repeat(40), "c".repeat(40)),
     ).rejects.toThrow(GitHubNotConfiguredError);

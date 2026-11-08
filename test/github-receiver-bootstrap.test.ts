@@ -96,7 +96,6 @@ async function setup(): Promise<Harness> {
         ids: f.deps.ids,
         optionCapture: others,
         advanceItem: others,
-        verifyStaging: others,
         logger,
       }),
       bootstrapStarts: createBootstrapStarts({

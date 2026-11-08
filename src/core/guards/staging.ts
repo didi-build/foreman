@@ -1,8 +1,11 @@
 // Guards on staging: the check for the merge commit passed, or failed, or a staging deploy covering
-// the merge commit failed (ADR 0105, D-225).
+// the merge commit failed (ADR 0105, D-225). A deploy the runner's own upload could not make for a
+// reason of infrastructure (Cloudflare, the deploy credential or GitHub's artifact, O-116) is not a
+// failed deploy here: it counts no failure until Didi decides otherwise (N-103).
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import type { Evidence, Json } from "../store.ts";
 import {
+  countsAsFailedDeploy,
   latest,
   onCommit,
   readCoverProof,
@@ -41,7 +44,7 @@ export async function stagingNoResults(
 
 /**
  * What the staging guards read for the latest merge commit: a recorded failed staging deploy that
- * covers it (D-225), else the latest staging check with its parsed result. A failed deploy or a
+ * covers it and counts (D-225, N-103), else the latest staging check with its parsed result. A failed deploy or a
  * check counts only when its commit is the merge commit, or contains it (`containment` `ahead`)
  * and is on main (`onMain` with main's head), as the row itself records (D-225, O-38, O-39).
  */
@@ -61,7 +64,7 @@ async function stagingCheck(
   const sha = merge.commitSha;
   const failedDeploy = latest(
     (await onCommit(ctx, "staging_deploy_failed", sha)).filter(
-      (e) => readCoverProof(e.payload, sha) !== null,
+      (e) => countsAsFailedDeploy(e.payload) && readCoverProof(e.payload, sha) !== null,
     ),
   );
   if (failedDeploy) {

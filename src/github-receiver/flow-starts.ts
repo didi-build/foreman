@@ -1,4 +1,4 @@
-// The flows the receiver starts on the events it records (D-274, D-291, D-327, D-329, O-101,
+// The flows the receiver starts on CI's end on a PR head (D-274, D-291, D-327, D-329, O-101,
 // O-104). Each start is decided by the flow's own due check, which reads the kill switch and dry
 // run first, so under either nothing is started, and which reads only what the receiver's role
 // reads: nodes, runs, evidence and those two settings rows.
@@ -7,21 +7,20 @@
 //   `f/foreman/advance_item` when an advance from evidence is due (`createAdvances`,
 //   src/core/advances.ts): the move into In QA review whose guards pass now, so in practice a green
 //   result. The flow then plans and acts with the reconcile pass's own step 4.
-// - A finished `deployment_status` to `staging` (success, failure or error): `f/foreman/verify_staging`
-//   with the repository and the commit when an item of that repository is in Verifying on staging
-//   (`createStagingReads`, src/core/staging.ts). The flow reads the deploy from GitHub again.
+// A `deployment_status` delivery starts nothing any more: the runner deploys staging itself and
+// records that deploy (D-356, O-116), and the deploy flow starts on CI's build on main
+// (./staging-starts.ts).
 // Each start uses one of the Windmill free plan's 1,000 runs a month (D-164): a replay, or a fact
-// another delivery already recorded, names no head and no deployment (`finishedCi`,
-// `deployment`) and starts nothing, and neither does a pending result.
+// another delivery already recorded, names no head (`finishedCi`) and starts nothing, and neither
+// does a pending result.
 //
 // A start that fails, or a check that cannot be read, is logged with the error's type and the
 // client's step and status, never an id, a token or a text, and changes nothing else: the
 // evidence is already committed and the webhook is still answered as before. The reconcile pass
-// (its capture, advance and staging steps) and the run-end flow's capture stay the backstops.
+// (its capture and advance steps) and the run-end flow's capture stay the backstops.
 import type {
   AdvanceItemFlow,
   OptionCaptureFlow,
-  VerifyStagingFlow,
 } from "../adapters/windmill/receiver-flows.ts";
 import { startErrorFields } from "../adapters/windmill/client.ts";
 import { createAdvances } from "../core/advances.ts";
@@ -29,7 +28,6 @@ import type { Contracts, GuardRegistry } from "../core/contracts.ts";
 import type { IngestResult } from "../core/github-ingest.ts";
 import type { Clock, IdSource } from "../core/library.ts";
 import { createCaptureReads } from "../core/option-capture.ts";
-import { createStagingReads } from "../core/staging.ts";
 import type { Store } from "../core/store.ts";
 import type { Logger } from "../service-kit/logger.ts";
 
@@ -46,7 +44,6 @@ export interface FlowStartOptions {
   ids: IdSource;
   optionCapture: OptionCaptureFlow;
   advanceItem: AdvanceItemFlow;
-  verifyStaging: VerifyStagingFlow;
   logger: Logger;
 }
 
@@ -59,15 +56,11 @@ export const OPTION_CAPTURE_NOT_STARTED =
 export const ADVANCE_STARTED = "advance flow started";
 export const ADVANCE_NOT_STARTED =
   "advance flow not started; the reconcile pass advances later";
-export const STAGING_STARTED = "staging flow started";
-export const STAGING_NOT_STARTED =
-  "staging flow not started; the reconcile pass verifies later";
 
 export function createFlowStarts(options: FlowStartOptions): FlowStarts {
-  const { store, optionCapture, advanceItem, verifyStaging, logger } = options;
+  const { store, optionCapture, advanceItem, logger } = options;
   const captures = createCaptureReads(options.contracts);
   const advances = createAdvances(options);
-  const staging = createStagingReads(options.contracts);
 
   /** Runs one check and its start; logs the outcome, never throws. */
   async function attempt(
@@ -99,15 +92,6 @@ export function createFlowStarts(options: FlowStartOptions): FlowStarts {
         { started: ADVANCE_STARTED, notStarted: ADVANCE_NOT_STARTED },
         async () => (await advances.due(nodeId)).due,
         () => advanceItem.start(nodeId),
-      );
-    }
-    const deploy = result.deployment;
-    if (deploy) {
-      await attempt(
-        deliveryId,
-        { started: STAGING_STARTED, notStarted: STAGING_NOT_STARTED },
-        async () => (await staging.due(store, deploy)).due,
-        () => verifyStaging.start(deploy.repo, deploy.sha),
       );
     }
   };

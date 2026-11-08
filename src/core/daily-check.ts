@@ -29,7 +29,9 @@
 // - blocked: items with a blocked reason, the reason, and the unfinished items they wait on.
 // - staging: the project's `stagingUrl`, the items in the state a staging check moves out of
 //   (Verifying on staging, read from the contracts by the guard `staging_check_on_merge_commit`),
-//   and the items a passed staging check moved to Done in the window.
+//   each with the runner's last staging deploy that infrastructure refused since it entered the
+//   state while no deploy is recorded (`deployError`, O-116: counted as no failure, N-103), and the
+//   items a passed staging check moved to Done in the window.
 // - questions: open gate requests owned by Didi, of every kind (so a proposed playbook rule shows
 //   here once something opens one).
 // - heldItems: the held-items list (D-272, O-90) with each item's fresh-request flow (D-295).
@@ -115,6 +117,7 @@ import {
   type ScanNewIdea,
 } from "./scan-ideas.ts";
 import { STAGING_PASS_GUARD } from "./staging.ts";
+import { pendingDeployError } from "./staging-deploy.ts";
 import {
   stalledItems,
   stalledRuns,
@@ -219,6 +222,12 @@ export interface BlockedItem extends CheckItem {
 
 export interface StagingItem extends CheckItem {
   since: Date;
+  /**
+   * On an item waiting on its check: the last staging deploy covering it that infrastructure
+   * refused, with the runner's fixed reason and text, while no deploy is recorded (O-116). It
+   * counted no failure (N-103).
+   */
+  deployError?: { at: Date; reason: string; text: string } | null;
 }
 
 export interface StagingSection {
@@ -711,9 +720,14 @@ export async function generateDailyCheck(
         a.nodeId.localeCompare(b.nodeId),
     );
 
-    const onStaging: StagingItem[] = projectNodes
-      .filter((n) => stagingStates.has(n.state))
-      .map((n) => ({ ...itemOf(n), since: n.stateSince }));
+    const onStaging: StagingItem[] = [];
+    for (const n of projectNodes.filter((n) => stagingStates.has(n.state))) {
+      onStaging.push({
+        ...itemOf(n),
+        since: n.stateSince,
+        deployError: await pendingDeployError(store, n),
+      });
+    }
 
     const questions: QuestionItem[] = openGates
       .filter((g) => g.owner === "didi")

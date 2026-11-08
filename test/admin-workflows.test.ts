@@ -9,6 +9,7 @@ import { parse as parseYaml } from "yaml";
 
 import { PLATFORM_SECRETS } from "../infra/kubernetes/platform.ts";
 import { MIGRATIONS_DIR } from "../src/adapters/store-postgres/migrate.ts";
+import { SUPABASE_CA_PATH } from "../src/adapters/store-postgres/tls.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
 import { DEFAULT_PRIVILEGED_PATHS, globToRegExp } from "../src/core/guards/review.ts";
 import {
@@ -221,7 +222,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     }
   });
 
-  it("are privileged paths, as are the secret-value scan that runs with the credentials and the migrations", () => {
+  it("are privileged paths, as are the secret-value scan that runs with the credentials, the migrations and the CA certificate the migrations job trusts", () => {
     const patterns = DEFAULT_PRIVILEGED_PATHS.map(globToRegExp);
     const privileged = (path: string) => patterns.some((re) => re.test(path));
     for (const path of [
@@ -230,6 +231,8 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       "scripts/find-secret-values.mjs",
       "scripts/lib/find-secret-values.mjs",
       ...readdirSync(MIGRATIONS_DIR).map((name) => join(MIGRATIONS_DIR, name)),
+      // O-118: the certificate decides whom the job and the services trust.
+      SUPABASE_CA_PATH,
     ]) {
       expect(privileged(path), path).toBe(true);
     }
@@ -808,7 +811,7 @@ describe("the database migrations workflow (unit: D-362, O-115)", () => {
   const migrateSh = script("db-migrate.sh");
   const migrateTs = text("src/adapters/store-postgres/migrate.ts");
 
-  it("starts on a push to main that changes a migration or the job's own files, or by hand, never on a pull request", () => {
+  it("starts on a push to main that changes a migration, the job's own files or the CA certificate, or by hand, never on a pull request", () => {
     expect(wf.on).toEqual({
       push: {
         branches: ["main"],
@@ -816,6 +819,7 @@ describe("the database migrations workflow (unit: D-362, O-115)", () => {
           "db/migrations/**",
           ".github/workflows/db-migrate.yml",
           ".github/scripts/db-migrate.sh",
+          SUPABASE_CA_PATH,
         ],
       },
       workflow_dispatch: null,
@@ -843,14 +847,14 @@ describe("the database migrations workflow (unit: D-362, O-115)", () => {
     expect(job.outputs).toBeUndefined();
   });
 
-  it("checks out only .github/ and the migrations, keeping no credential, and runs no npm, setup-node or repository code: only the protected script", () => {
+  it("checks out only .github/, the migrations and the CA certificate, keeping no credential, and runs no npm, setup-node or repository code: only the protected script", () => {
     expect(job.steps.map((s) => s.uses ?? "run")).toEqual([
       "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
       "run",
     ]);
     expect(job.steps[0]?.with).toEqual({
       "persist-credentials": false,
-      "sparse-checkout": "/.github/\n/db/migrations/\n",
+      "sparse-checkout": `/.github/\n/db/migrations/\n/${SUPABASE_CA_PATH}\n`,
       "sparse-checkout-cone-mode": false,
     });
     expect(withoutComments(raw)).not.toMatch(
@@ -889,7 +893,7 @@ describe("the database migrations workflow (unit: D-362, O-115)", () => {
     }
   });
 
-  it("runs only bash, coreutils, redact.sh and psql in the script, psql once with no connection value as an argument", () => {
+  it("runs only bash, coreutils, redact.sh and psql in the script, psql twice (the plain-text check, then the migrations) with no connection value as an argument", () => {
     const code = withoutComments(migrateSh);
     expect(code).not.toMatch(/\b(npm|npx|node|tsx|curl|wget|apt-get|pip)\b/);
     expect(code).not.toMatch(/^\s*(source|\.)\s/m);
@@ -899,10 +903,74 @@ describe("the database migrations workflow (unit: D-362, O-115)", () => {
     expect(code).not.toMatch(/GITHUB_OUTPUT|GITHUB_ENV|GITHUB_STEP_SUMMARY/);
     const starts = code.split("\n").filter((line) => /^\s*psql\s/.test(line));
     expect(starts).toEqual([
+      '  psql -X -q -w -c "select 1" >/dev/null 2>"$work/check-err" </dev/null || check_status=$?',
       '  psql -X -q -w --set=ON_ERROR_STOP=1 -f "$work/migrate.psql" \\',
     ]);
-    expect(code).toContain(
-      'PGHOST="$host" PGPORT="$port" PGUSER="$user" PGPASSWORD="$password" PGDATABASE="$database" \\\n  PGSSLMODE=require ',
+  });
+
+  it("checks that the database refuses a connection without TLS, with no password, before the migrations, which connect with verify-full only (D-364, O-118)", () => {
+    const code = withoutComments(migrateSh);
+    // Each psql command with the environment set in front of it.
+    const commands = code
+      .split(/\n(?=PGHOST=)/)
+      .slice(1)
+      .map((rest) => rest.slice(0, rest.indexOf("</dev/null")));
+    expect(commands).toHaveLength(2);
+    const [check, migrate] = commands as [string, string];
+    expect(check).toBe(
+      [
+        'PGHOST="$host" PGPORT="$port" PGUSER="$user" PGDATABASE="$database" \\',
+        '  PGPASSFILE="$work/no-password-file" PGSSLMODE=disable PGGSSENCMODE=disable \\',
+        "  PGCONNECT_TIMEOUT=30 PGAPPNAME=foreman-db-migrate-tls-check \\",
+        '  psql -X -q -w -c "select 1" >/dev/null 2>"$work/check-err" ',
+      ].join("\n"),
+    );
+    expect(check).not.toMatch(/PGPASSWORD|password"/);
+    expect(migrate).toBe(
+      [
+        'PGHOST="$host" PGPORT="$port" PGUSER="$user" PGPASSWORD="$password" PGDATABASE="$database" \\',
+        '  PGSSLMODE=verify-full PGSSLROOTCERT="$ca_file" PGGSSENCMODE=disable \\',
+        "  PGCLIENTENCODING=UTF8 PGCONNECT_TIMEOUT=30 PGAPPNAME=foreman-db-migrate \\",
+        '  psql -X -q -w --set=ON_ERROR_STOP=1 -f "$work/migrate.psql" \\',
+        '  >"$work/out" 2>"$work/err" ',
+      ].join("\n"),
+    );
+    expect(code.indexOf(check)).toBeLessThan(code.indexOf(migrate));
+    expect([...code.matchAll(/PGSSLMODE=\S+/g)].map((m) => m[0])).toEqual([
+      "PGSSLMODE=disable",
+      "PGSSLMODE=verify-full",
+    ]);
+    // The run stops on the check's outcome before the migrations' psql.
+    const between = code.slice(code.indexOf(check), code.indexOf(migrate));
+    expect(between).toContain('if [ "$check_status" -eq 0 ]; then');
+    expect(between).toContain('if [ "$asked_for_password" = true ]; then');
+    expect(between).toContain(
+      'if [ "$check_status" -ne 2 ] || [ "$refused" != true ] || [ "$other_server_error" = true ]; then',
+    );
+  });
+
+  it("trusts only the CA certificate the services read, at its fixed path in the checkout, with no way to name another (O-118)", () => {
+    const code = withoutComments(migrateSh);
+    expect(code.match(/^ca_file=.*$/gm)).toEqual([`ca_file="${SUPABASE_CA_PATH}"`]);
+    expect(code.match(/PGSSLROOTCERT=\S+/g)).toEqual(['PGSSLROOTCERT="$ca_file"']);
+    // The script reads no variable of its environment but these (and bash's own two), so none
+    // can name a CA or turn verification off; inherited PG* settings are unset before psql runs.
+    const read = new Set(
+      [...code.matchAll(/\$\{?([A-Z][A-Z0-9_]*)/g)].map((m) => m[1] as string),
+    );
+    expect([...read].sort()).toEqual([
+      "BASH_REMATCH",
+      "BASH_SOURCE",
+      "MIGRATION_DATABASE_URL",
+      "REPORT",
+      "RUNNER_TEMP",
+    ]);
+    // The workflow sets nothing for the step but the connection string.
+    expect(job.steps[1]?.env).toEqual({
+      MIGRATION_DATABASE_URL: "${{ secrets.MIGRATION_DATABASE_URL }}",
+    });
+    expect(raw).not.toMatch(
+      /PGSSL|sslmode|sslrootcert|FOREMAN_LOCAL_DATABASE_WITHOUT_TLS/i,
     );
   });
 

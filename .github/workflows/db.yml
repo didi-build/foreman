@@ -12,6 +12,9 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/db.yml"
+      # The migrations job's script and its redaction, which test/db/db-migrate-script.test.ts runs.
+      - ".github/scripts/db-migrate.sh"
+      - ".github/scripts/redact.sh"
 
 concurrency:
   group: db-${{ github.event.pull_request.number }}

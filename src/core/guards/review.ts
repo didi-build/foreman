@@ -191,8 +191,10 @@ export async function qaVerdictIndependentOnHead(
 
 /**
  * The privileged paths every project shares: Launchpad's (migrations, PII and privacy, deploy
- * workflows, `.github`, secrets) and the infrastructure code, `infra/**` (D-344, D-345). Every
- * project starts from Launchpad alike, so the list is shared and a project row adds nothing.
+ * workflows, `.github`, secrets), the infrastructure code, `infra/**` (D-344, D-345), and every
+ * certificate file (`.crt`, in any folder), since a committed certificate decides whom a service
+ * or a job trusts (O-118). Every project starts from Launchpad alike, so the list is shared and a
+ * project row adds nothing.
  */
 export const DEFAULT_PRIVILEGED_PATHS = [
   "**/migrations/**",
@@ -202,6 +204,7 @@ export const DEFAULT_PRIVILEGED_PATHS = [
   "**/*secret*/**",
   "**/.env*",
   "infra/**",
+  "**/*.crt",
 ];
 
 /** `**` matches across folders, `*` within one path segment. */

@@ -3,6 +3,7 @@
 - **Status:** accepted at the end-of-M0 review (D-168, 2026-10-29), confirming P-10.
 - **Amended by D-193** (2026-10-30): the first-release Kubernetes exception also covers the state API and receiver deployments.
 - **Amended by D-354** (2026-11-07): hosted branch previews are dropped, so the deploy adapter has no `preview` operation and `teardown` removes a deployment only (section 2). The preview check is a CI job (O-111).
+- **Amended by D-353 and D-356** (2026-11-08, O-116): `deploy` is built for staging, with the staging check beside it (section 2).
 - **Date:** 2026-10-28
 - **Related:** D-134, P-10, [build plan M0.8](../build-plan.md#m08-conventions-that-make-kubernetes-easy-proposed-d-134), `docs/architecture/technical-architecture.md` section 2.10, ADRs [0101](./0101-repo-layout-and-tooling.md), [0102](./0102-state-api-hosting-and-agent-auth.md), [0110](./0110-infrastructure-as-code.md)
 
@@ -39,6 +40,8 @@ The deploy adapter (`src/adapters/deploy/`, built in M3.7) exposes operations, n
 | `teardown` | Remove a deployment                                    |
 
 Staging is a concept of the adapter. Code outside it never builds a Cloudflare or DigitalOcean URL itself. Cloudflare is the first implementation. A fake second target runs the same contract test, so a Kubernetes implementation is a third one, not a change to callers. Production deploys stay out of the adapter (only Didi deploys to production).
+
+`deploy` for staging, as built (D-353, D-356, O-116): the core's port `StagingTarget` (`src/core/staging-deploy.ts`) takes a project, a commit and CI's `staging-site` build as GitHub's zip, and answers deployed or refused, never thrown for a refusal. The Cloudflare implementation (`src/adapters/deploy/cloudflare-staging.ts`) first checks the file set (`site-files.ts`: plain relative paths, no link, Cloudflare's 20,000 files and 25 MiB a file, the runner's 200 MiB in all, the commit marker equal to the commit, no `_worker.js`); a set that fails is refused (`file_set`) and nothing is uploaded. It then uploads exactly those files to the assets-only Worker `<slug>-staging` with Cloudflare's direct upload (an upload session with the manifest, the buckets, then the Worker with the completion token and no code module) and one API token of Workers Scripts: Edit kept in Windmill; any refusal on the way is `infrastructure`. It can send only those three requests (`ALLOWED_CALLS`), never a route, custom domain or DNS record, which come from the infra plan (D-357). The staging check (`staging-checker.ts`) reads the commit marker the site serves at `https://<slug>.didi.build/foreman-commit.txt`. The fake target is `src/adapters/deploy/fake.ts`; no second real target and no contract test across targets is built yet. `health`, `logs` and `teardown` are not built.
 
 ### 3. Each project has an explicit boundary
 

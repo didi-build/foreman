@@ -2,14 +2,25 @@
 // ADR 0111 section 4). With a fake environment: which secrets and values are read and when, and
 // that every part not built yet refuses with a reason. No database is reached: the pool connects
 // on first use and the test never uses it.
-import { describe, expect, it } from "vitest";
+import { checkServerIdentity } from "node:tls";
+
+import pg from "pg";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import { readApprovalReply } from "../../flows/lib/approval.ts";
 import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
+import { storedZip } from "../zip-fixture.ts";
+import {
+  DatabaseTlsError,
+  LOCAL_WITHOUT_TLS_ENV,
+  readDatabaseCa,
+} from "../../src/adapters/store-postgres/tls.ts";
 import {
   compose,
   NotBuiltError,
+  unbuiltStagingDeployCredentials,
+  windmillStagingDeployCredentials,
   unregisteredBootstrapTokens,
   unregisteredRepositoryCreationTokens,
   unregisteredRunnerAppTokens,
@@ -85,6 +96,48 @@ function fakeEnvironment(values: Record<string, string> = {}) {
 }
 
 describe("flow composition (unit: flow layer, build plan M3.1)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("builds the runner's pool through the TLS builder, verified against Supabase's CA (O-117)", async () => {
+    const configs: pg.PoolConfig[] = [];
+    const RealPool = pg.Pool;
+    vi.spyOn(pg, "Pool").mockImplementation(function (config?: pg.PoolConfig) {
+      configs.push(config ?? {});
+      return new RealPool(config);
+    } as unknown as () => pg.Pool);
+    const env: FlowEnvironment = {
+      ...fakeEnvironment().env,
+      secret: async () =>
+        "postgresql://runner:not-a-real-password@pooler.example.test:5432/postgres?sslmode=disable",
+    };
+    const deps = await compose(env);
+    try {
+      expect(configs).toEqual([
+        {
+          connectionString:
+            "postgresql://runner:not-a-real-password@pooler.example.test:5432/postgres",
+          max: 2,
+          ssl: { ca: readDatabaseCa(), rejectUnauthorized: true, checkServerIdentity },
+        },
+      ]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("refuses the local opt-out for the runner's remote database", async () => {
+    vi.stubEnv(LOCAL_WITHOUT_TLS_ENV, "1");
+    const env: FlowEnvironment = {
+      ...fakeEnvironment().env,
+      secret: async () =>
+        "postgresql://runner:not-a-real-password@pooler.example.test/postgres",
+    };
+    await expect(compose(env)).rejects.toThrow(DatabaseTlsError);
+  });
+
   it("builds the deps from the environment, reading only the database secret up front", async () => {
     const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
@@ -136,14 +189,28 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
           runId: "r",
         }),
       ).rejects.toThrow(NotBuiltError);
-      await expect(
-        deps.github.listDeployments("didi-build/x", "staging", "b".repeat(40)),
-      ).rejects.toThrow(GitHubNotConfiguredError);
+      // GitHub's deployments are not read at all (D-356, O-116).
+      expect("listDeployments" in deps.github).toBe(false);
       await expect(
         deps.github.compareCommits("didi-build/x", "b".repeat(40), "c".repeat(40)),
       ).rejects.toThrow(GitHubNotConfiguredError);
-      await expect(deps.stagingChecker.check({} as never)).rejects.toThrow(
-        /deploy adapter's staging target/,
+      // The staging check reads the public marker and needs no credential (O-116); a slug that
+      // makes no staging address is no result, with nothing reached.
+      expect(
+        await deps.stagingChecker.check({
+          project: { slug: "Not A Slug" },
+          commitSha: "b".repeat(40),
+        } as never),
+      ).toEqual({ result: "no_result", reason: "unreachable" });
+      // CI's builds wait on the runner App's actions read token (D-267, O-116).
+      await expect(deps.stagingBuilds.getRun("didi-build/x", 1)).rejects.toThrow(
+        NotBuiltError,
+      );
+      await expect(deps.stagingBuilds.latestMainBuild("didi-build/x")).rejects.toThrow(
+        NotBuiltError,
+      );
+      await expect(deps.stagingBuilds.siteArchive("didi-build/x", 1)).rejects.toThrow(
+        NotBuiltError,
       );
       // The repo map and the screenshot bundles wait on the runner App's read tokens (D-267).
       // The repo map's Job (D-275 (2)) refuses on the token, before the cluster is read.
@@ -180,6 +247,59 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     } finally {
       await deps.close();
     }
+  });
+
+  it("refuses the staging deploy on its credential until Didi creates it, uploading nothing (D-353, O-116)", async () => {
+    const { env, secretsRead } = fakeEnvironment();
+    const deps = await compose(env);
+    try {
+      // A site that passes the file-set check still reaches no network: the credential refuses.
+      const commit = "b".repeat(40);
+      const archive = storedZip([{ name: "foreman-commit.txt", data: `${commit}\n` }]);
+      expect(
+        await deps.stagingTarget.deploy({
+          project: { slug: "x", repo: "didi-build/x" } as never,
+          commitSha: commit,
+          archive,
+        }),
+      ).toEqual({
+        outcome: "refused",
+        cause: "infrastructure",
+        reason: "credential_unavailable",
+        text: "the staging deploy credential is not available",
+      });
+      await expect(unbuiltStagingDeployCredentials().read()).rejects.toThrow(
+        /Workers Scripts Edit only/,
+      );
+      // Nothing beyond the database secret was read.
+      expect(secretsRead).toEqual([SECRET_PATHS.database]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("reads the staging deploy token and account id by path once Didi stores them (O-116)", async () => {
+    const read: string[] = [];
+    const credentials = windmillStagingDeployCredentials({
+      async secret(path) {
+        read.push(path);
+        return path === SECRET_PATHS.cloudflareAccountId
+          ? `${"0".repeat(32)}\n`
+          : "fake-token-for-tests-only-0123456789";
+      },
+    });
+    expect(await credentials.read()).toEqual({
+      accountId: "0".repeat(32),
+      token: "fake-token-for-tests-only-0123456789",
+    });
+    expect(read).toEqual([
+      SECRET_PATHS.cloudflareAccountId,
+      SECRET_PATHS.stagingDeployToken,
+    ]);
+    expect(SECRET_PATHS.stagingDeployToken).toBe(
+      "platform/cloudflare/staging-deploy-token",
+    );
+    expect(SECRET_PATHS.cloudflareAccountId).toBe("platform/cloudflare/account-id");
   });
 
   it("refuses the register-project form's GitHub parts until the runner App exists (D-345, D-346)", async () => {

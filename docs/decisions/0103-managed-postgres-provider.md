@@ -40,6 +40,7 @@ Supabase serves a REST API (PostgREST) over the database, and by default it expo
 - The Data API is turned off for the project, and row level security is enabled on every table as a second barrier.
 - The application connects as a dedicated role with only the grants the API and runner need (ADR 0102), never as `postgres` or the service role.
 - A migration test in M1.1 connects with the anon key through the REST endpoint and checks it can read nothing. (These settings are checked again at signup, because the defaults could not be read from this session.)
+- Every connection to the database is encrypted and verified (D-364, added 2026-11-08). "Enforce SSL on incoming connections" is on, so the database and the session pooler refuse any connection without TLS. Each client checks the server's certificate against Supabase's root CA, committed at `src/adapters/store-postgres/supabase-ca.crt` (it expires on 2031-04-26), and against the pooler's host name, and refuses a connection that does not verify. How it is built is O-117.
 
 ### Backups until the paid plan
 

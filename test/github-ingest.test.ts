@@ -357,35 +357,24 @@ describe("webhook deliveries to evidence (unit: GitHub ingestion, ADR 0113)", ()
     },
   );
 
-  it("names the deployment a fresh deployment_status delivery reports, and never for a replay (O-104)", async () => {
+  it("records a deployment_status delivery and names nothing in it: nothing starts on one (D-356, O-116)", async () => {
     const f = await createIngestFixture();
     const event = deploymentStatusEvent(REPO, MERGE_SHA, "staging", "success");
     const fresh = await deliver(f, "deployment_status", event, "d-1");
-    expect(fresh).toMatchObject({
+    expect(fresh).toEqual({
       outcome: "ignored",
       reason: "not evidence by itself",
-      deployment: {
-        repo: REPO,
-        sha: MERGE_SHA,
-        environment: "staging",
-        state: "success",
-      },
+      repo: REPO,
+      pr: null,
+      evidenceIds: [],
+      finishedCi: [],
     });
+    expect("deployment" in fresh).toBe(false);
+    expect((await f.store.getGithubDelivery("d-1"))?.outcome).toBe("ignored");
     expect(await f.evidence()).toHaveLength(0);
     expect(await deliver(f, "deployment_status", event, "d-1")).toMatchObject({
       outcome: "duplicate",
-      deployment: null,
     });
-    // A payload missing a field, or with a commit that is not one, names none.
-    for (const payload of [
-      { repository: { full_name: REPO } },
-      deploymentStatusEvent(REPO, "not-a-commit", "staging", "success"),
-      deploymentStatusEvent(REPO, MERGE_SHA, "staging", "exploded"),
-    ]) {
-      expect((await deliver(f, "deployment_status", payload)).deployment).toBeNull();
-    }
-    // Any other event names none.
-    expect((await opened(f)).deployment).toBeNull();
   });
 
   it("stores nothing for an event type it does not read", async () => {

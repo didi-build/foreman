@@ -160,7 +160,8 @@ export type ReturnReason =
       kind: "staging_deploy_failed";
       mergeCommitSha: string | null;
       deployedSha: string | null;
-      deployState: string | null;
+      /** The runner's fixed text for why its deploy was refused (O-116), or null. */
+      refusal: string | null;
     }
   | {
       /** The builder's last done report was refused on its guards, and counted (O-43). */
@@ -216,6 +217,8 @@ export const RETURN_LIMITS = {
 } as const;
 
 const COMMIT = /^[0-9a-f]{7,64}$/i;
+/** The runner's own fixed refusal text (O-116): plain words only, one line. */
+const FIXED_TEXT = /^[A-Za-z0-9 ,.;:'()_/-]{1,200}$/;
 /** A commit id as recorded, or the words that say none was; any other text is not shown. */
 export const commit = (sha: string | null, label = "commit"): string =>
   sha !== null && COMMIT.test(sha) ? `${label} ${sha}` : `${label} (not recorded)`;
@@ -315,7 +318,7 @@ function returnSection(reason: ReturnReason): string {
     case "staging_check_failed":
       return `The runner's staging check failed for ${commit(reason.mergeCommitSha, "merge commit")}, with staging serving ${commit(reason.servedCommitSha)}. The change is merged on main; fix it on the same branch.`;
     case "staging_deploy_failed":
-      return `The staging deploy of ${commit(reason.deployedSha)} failed${reason.deployState === "failure" || reason.deployState === "error" ? ` (GitHub state ${reason.deployState})` : ""}, and it covers ${commit(reason.mergeCommitSha, "merge commit")}. The change is merged on main; fix it on the same branch.`;
+      return `The staging deploy of ${commit(reason.deployedSha)} failed${reason.refusal !== null && FIXED_TEXT.test(reason.refusal) ? `: ${reason.refusal}` : ""}, and it covers ${commit(reason.mergeCommitSha, "merge commit")}. The change is merged on main; fix it on the same branch.`;
     case "report_refused": {
       const names = reason.failedGuards.filter((g) => /^[a-z_]{1,64}$/.test(g));
       const lines = [

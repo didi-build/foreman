@@ -197,6 +197,38 @@ export function readCoverProof(
   return null;
 }
 
+/**
+ * Why a staging deploy the runner made itself was refused (D-356, O-116): `file_set`, the build
+ * CI kept is not a site the runner uploads (the change's own output, so D-225 rule 2 applies), or
+ * `infrastructure`, Cloudflare, the deploy credential or GitHub's artifact refused or failed.
+ */
+export const INFRASTRUCTURE_CAUSE = "infrastructure";
+
+/**
+ * Whether a recorded `staging_deploy_failed` counts as a failed staging deploy (D-225 rule 2): every
+ * one does except a refusal by infrastructure, which says nothing about the change and counts no
+ * failure until Didi decides otherwise (N-103). Read by the guards, the staging check and the
+ * Council's input alike, so the three cannot drift.
+ */
+export function countsAsFailedDeploy(payload: Json): boolean {
+  return !isRecord(payload) || payload.cause !== INFRASTRUCTURE_CAUSE;
+}
+
+/**
+ * The fixed reason and text the runner recorded with a refused staging deploy (O-116), or null.
+ * Only a short code and a short plain text count, so nothing else recorded there is ever shown.
+ */
+export function readDeployRefusal(
+  payload: Json,
+): { reason: string; text: string } | null {
+  if (!isRecord(payload)) return null;
+  const { reason, text } = payload;
+  if (typeof reason !== "string" || !/^[a-z_]{1,40}$/.test(reason)) return null;
+  if (typeof text !== "string" || !/^[A-Za-z0-9 ,.;:'()_/-]{1,200}$/.test(text))
+    return null;
+  return { reason, text };
+}
+
 export function readStagingCheck(payload: Json): StagingCheckPayload | null {
   const check = readCheck(payload);
   if (!check || !isRecord(payload)) return null;

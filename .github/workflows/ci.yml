@@ -161,6 +161,9 @@ jobs:
   # (`PREVIEW_CHECK_JOB` and `PREVIEW_CHECK_WORKFLOW` in src/core/preview-check.ts). On a pull
   # request the commit is the PR's head, never the merge ref GitHub would check out by default.
   # The scripts live in .github/scripts/, a privileged path.
+  # On a push to main only, the build it probed is kept as the artifact `staging-site` for 7 days:
+  # the runner fetches it with its `actions: read` and deploys exactly those files to the project's
+  # staging site (D-353, O-116). The job still holds no secret and no environment.
   preview-check:
     name: preview-check
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -193,3 +196,11 @@ jobs:
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
           node .github/scripts/preview-check.mjs probe "http://127.0.0.1:${SITE_PORT}" "$COMMIT_SHA"
+      - name: Keep the probed build for the staging deploy
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-site
+          path: dist/gallery/
+          if-no-files-found: error
+          retention-days: 7

@@ -6,9 +6,12 @@
 //   when a capture is due, so Didi's visual-approval request opens at once (O-101);
 // - after it records CI's end on an item's PR head, `f/foreman/advance_item` for the item when an
 //   advance from evidence is due, so the item moves into In QA review and QA's run starts (O-104);
-// - after it records a finished `deployment_status` to `staging`, `f/foreman/verify_staging` with
-//   the repository and the commit, when an item of that repository is in Verifying on staging
-//   (O-104);
+// - after it records a `workflow_run` `completed` with conclusion `success` for
+//   `.github/workflows/ci.yml` started by a push to the repository's default branch from the
+//   repository itself, `f/foreman/deploy_staging` with the repository and the run's id, so the
+//   runner deploys that build to the project's staging site and records the deploy (D-353, D-356,
+//   O-116, ../../github-receiver/staging-starts.ts). A `deployment_status` starts nothing any more;
+//   `f/foreman/verify_staging` is gone;
 // - after it records a `workflow_run` `completed` for Bootstrap started by `workflow_dispatch`,
 //   `f/foreman/remove_bootstrap_access` with the repository, so the repository loses access to
 //   `BOOTSTRAP_TOKEN` once its setup run ends (D-358, O-114, ../../github-receiver/bootstrap-starts.ts).
@@ -36,8 +39,8 @@ export const OPTION_CAPTURE_FLOW_PATH = "f/foreman/option_capture";
 /** The advance flow (flows/windmill.yaml, flows/advance-item.ts, O-104). */
 export const ADVANCE_ITEM_FLOW_PATH = "f/foreman/advance_item";
 
-/** The staging flow (flows/windmill.yaml, flows/verify-staging.ts, O-34). */
-export const VERIFY_STAGING_FLOW_PATH = "f/foreman/verify_staging";
+/** The staging deploy flow (flows/windmill.yaml, flows/deploy-staging.ts, O-116). */
+export const DEPLOY_STAGING_FLOW_PATH = "f/foreman/deploy_staging";
 
 /** The removal of `BOOTSTRAP_TOKEN`'s access (flows/windmill.yaml, flows/remove-bootstrap-access.ts, O-114). */
 export const REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH = "f/foreman/remove_bootstrap_access";
@@ -46,7 +49,7 @@ export const REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH = "f/foreman/remove_bootstrap_acc
 export const RECEIVER_FLOW_PATHS: readonly string[] = [
   OPTION_CAPTURE_FLOW_PATH,
   ADVANCE_ITEM_FLOW_PATH,
-  VERIFY_STAGING_FLOW_PATH,
+  DEPLOY_STAGING_FLOW_PATH,
   REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
 ];
 
@@ -60,9 +63,9 @@ export interface AdvanceItemFlow {
   start(nodeId: string): Promise<void>;
 }
 
-/** Starts the staging flow for one repository and commit. Resolves once Windmill accepts. */
-export interface VerifyStagingFlow {
-  start(repo: string, sha: string): Promise<void>;
+/** Starts the staging deploy of one CI run of one repository. Resolves once Windmill accepts. */
+export interface DeployStagingFlow {
+  start(repo: string, runId: number): Promise<void>;
 }
 
 /** Starts the removal of one repository's access to `BOOTSTRAP_TOKEN`. Resolves once Windmill accepts. */
@@ -74,7 +77,7 @@ export interface RemoveBootstrapAccessFlow {
 export interface ReceiverFlows {
   optionCapture: OptionCaptureFlow;
   advanceItem: AdvanceItemFlow;
-  verifyStaging: VerifyStagingFlow;
+  deployStaging: DeployStagingFlow;
   removeBootstrapAccess: RemoveBootstrapAccessFlow;
 }
 
@@ -107,13 +110,13 @@ export function windmillReceiverFlows(
 ): ReceiverFlows {
   const capture = starter(OPTION_CAPTURE_FLOW_PATH, token, target, seams);
   const advance = starter(ADVANCE_ITEM_FLOW_PATH, token, target, seams);
-  const staging = starter(VERIFY_STAGING_FLOW_PATH, token, target, seams);
+  const staging = starter(DEPLOY_STAGING_FLOW_PATH, token, target, seams);
   const removal = starter(REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH, token, target, seams);
   return {
     optionCapture: { start: (nodeId) => capture({ nodeId }) },
     advanceItem: { start: (nodeId) => advance({ nodeId }) },
-    // flows/verify-staging.ts reads `{ repo, sha }` as its input.
-    verifyStaging: { start: (repo, sha) => staging({ repo, sha }) },
+    // flows/deploy-staging.ts reads `{ repo, runId }` as its input.
+    deployStaging: { start: (repo, runId) => staging({ repo, runId }) },
     // flows/remove-bootstrap-access.ts reads `{ repo }` as its input.
     removeBootstrapAccess: { start: (repo) => removal({ repo }) },
   };

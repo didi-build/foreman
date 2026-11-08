@@ -315,6 +315,28 @@ describe("review guards (unit: guards on the memory store, ADR 0105 and 0112)", 
       expect(infra.test("src/infra/a.ts")).toBe(false);
       expect(infra.test("infrastructure.md")).toBe(false);
     });
+    it("holds every certificate file on the shared list, in any folder, since a certificate decides whom a service or a job trusts (O-118)", () => {
+      expect(DEFAULT_PRIVILEGED_PATHS).toContain("**/*.crt");
+      const patterns = DEFAULT_PRIVILEGED_PATHS.map(globToRegExp);
+      const privileged = (path: string) => patterns.some((re) => re.test(path));
+      expect(privileged("src/adapters/store-postgres/supabase-ca.crt")).toBe(true);
+      expect(privileged("ca.crt")).toBe(true);
+      expect(privileged("a/b/c/server.crt")).toBe(true);
+      const crt = globToRegExp("**/*.crt");
+      expect(crt.test("docs/certificates.crt.md")).toBe(false);
+      expect(crt.test("src/crt/notes.ts")).toBe(false);
+    });
+    it("passes a certificate change only with Didi's approval of that head commit (O-118)", async () => {
+      const f = await fixture();
+      await f.ci(HEAD, "success", ["src/adapters/store-postgres/supabase-ca.crt"]);
+      const check = await f.check("privileged_paths_approved");
+      expect(check.pass).toBe(false);
+      await f.decision("approval", "didi", {
+        kind: "privileged_path",
+        commitSha: HEAD,
+      });
+      expect((await f.check("privileged_paths_approved")).pass).toBe(true);
+    });
     it("matches globs by folder", () => {
       expect(globToRegExp("**/migrations/**").test("migrations/1.sql")).toBe(true);
       expect(globToRegExp("**/migrations/**").test("db/migrations/1.sql")).toBe(true);

@@ -71,9 +71,9 @@ describe.skipIf(!adminUrl)(
           reportedCostUsd: null,
         });
       }
-      t.deploy();
+      await t.deploy();
       t.checker.answers.push({ result: "fail", servedCommitSha: t.mergeSha });
-      await t.staging().verifyCommit(REPO, t.mergeSha);
+      await t.staging().verify(t.node.id);
       expect(await t.state()).toBe("in_development");
       const moves = (await store.listTransitions(t.node.id)).length;
       // The run starts after the fail move, as a real clock moves on.

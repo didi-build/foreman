@@ -3,7 +3,9 @@
 // migration 0011 allows, each under its key, the Done move with the counters reset and the move back
 // with `failure` up by one in the same transaction, and a repeated call that writes nothing more.
 // Migration 0012 (D-225): a later deploy covering two merge commits is keyed once for each, and a
-// failed deploy is recorded once and takes the fail path once.
+// failed deploy is recorded once and takes the fail path once. The deploy is the runner's own
+// (D-356, O-116), recorded under the runner's keys with no new migration: a refused file set counts,
+// and a refusal by infrastructure is recorded under its own key and counts no failure (N-103).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -12,14 +14,15 @@ import {
   readMigrations,
 } from "../../src/adapters/store-postgres/migrate.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
+import { mainBuild } from "../../src/adapters/deploy/fake.ts";
+import { stagingCheckKey } from "../../src/core/staging.ts";
 import {
-  stagingCheckKey,
-  stagingDeployFailedKey,
-  stagingDeployKey,
-} from "../../src/core/staging.ts";
+  stagingDeployRecordKey,
+  stagingDeployRefusedKey,
+} from "../../src/core/staging-deploy.ts";
 import type { Store } from "../../src/core/store.ts";
 import { REPO } from "../reconcile-fixture.ts";
-import { setupStaging } from "../staging-fixture.ts";
+import { outcomeOf, setupStaging } from "../staging-fixture.ts";
 import { adminUrl, createTestDatabase, dropTestDatabase } from "./database.ts";
 
 const DB = `foreman_staging_test_${process.pid}`;
@@ -57,13 +60,20 @@ describe.skipIf(!adminUrl)(
         mergeSha: "1".repeat(40),
       });
       await store.setCounter(t.node.id, "failure", 2, t.clock.now());
-      t.deploy();
+      const runId = await t.deploy();
 
       const result = await t.staging().verify(t.node.id);
       await t.staging().verify(t.node.id);
 
       expect(result.move).toMatchObject({ toState: "done", outcome: "applied" });
       expect(await t.kind("staging_deploy")).toHaveLength(1);
+      const deployed = await pool.query(
+        "select id, recorded_by from factory.evidence where ingest_key = $1",
+        [stagingDeployRecordKey(REPO, runId, t.mergeSha)],
+      );
+      expect(deployed.rows).toEqual([
+        { id: result.deployEvidenceId, recorded_by: "runner" },
+      ]);
       const keyed = await pool.query(
         "select id from factory.evidence where ingest_key = $1",
         [stagingCheckKey(REPO, t.mergeSha)],
@@ -82,7 +92,7 @@ describe.skipIf(!adminUrl)(
         pr: 12,
         mergeSha: "2".repeat(40),
       });
-      t.deploy();
+      await t.deploy();
       t.checker.answers.push(
         { result: "no_result", reason: "unreachable" },
         { result: "fail", servedCommitSha: t.mergeSha },
@@ -119,18 +129,17 @@ describe.skipIf(!adminUrl)(
       });
       // Main: the first merge, then the second, then a later commit; only that one is deployed.
       const later = "5".repeat(40);
-      const deployment = {
-        id: 7300,
-        sha: later,
-        environment: "staging",
-        state: "success" as const,
-      };
       for (const t of [first, second]) {
         t.github.putCommit(REPO, second.mergeSha, [first.mergeSha]);
         t.github.putCommit(REPO, later, [second.mergeSha]);
         t.github.setBranchHead(REPO, "main", later);
-        t.github.putDeployment(REPO, deployment);
       }
+      await first
+        .deploys()
+        .record(REPO, mainBuild(REPO, 7300, later), outcomeOf("success"));
+      await second
+        .deploys()
+        .record(REPO, mainBuild(REPO, 7300, later), outcomeOf("success"));
 
       for (const t of [first, second]) {
         expect((await t.staging().verify(t.node.id)).move).toMatchObject({
@@ -139,16 +148,16 @@ describe.skipIf(!adminUrl)(
         });
         const keyed = await pool.query(
           "select payload from factory.evidence where ingest_key = $1",
-          [stagingDeployKey(REPO, deployment.id, t.mergeSha)],
+          [stagingDeployRecordKey(REPO, 7300, t.mergeSha)],
         );
         expect(keyed.rows.map((r) => r.payload)).toEqual([
           {
-            environment: "staging",
-            deploymentId: deployment.id,
             deployedSha: later,
+            workflowRunId: 7300,
             containment: "ahead",
             onMain: true,
             mainHeadSha: later,
+            files: 3,
           },
         ]);
       }
@@ -162,7 +171,7 @@ describe.skipIf(!adminUrl)(
         pr: 15,
         mergeSha: "6".repeat(40),
       });
-      const deployment = t.deploy(t.mergeSha, "failure");
+      const runId = await t.deploy(t.mergeSha, "failure");
 
       const result = await t.staging().verify(t.node.id);
       await t.staging().verify(t.node.id);
@@ -174,11 +183,46 @@ describe.skipIf(!adminUrl)(
       });
       const keyed = await pool.query(
         "select id from factory.evidence where ingest_key = $1",
-        [stagingDeployFailedKey(REPO, deployment.id, t.mergeSha)],
+        [stagingDeployRefusedKey(REPO, runId, "file_set", t.mergeSha)],
       );
       expect(keyed.rows.map((r) => r.id)).toEqual([result.deployFailedEvidenceId]);
       expect(await store.getCounter(t.node.id, "failure")).toBe(1);
       expect(t.checker.calls).toEqual([]);
+    });
+
+    it("records a refusal by infrastructure under its own key, once, and counts no failure (N-103)", async () => {
+      const t = await setupStaging({
+        store,
+        idPrefix: "76000000-0000-4000-8000",
+        slug: "f",
+        pr: 16,
+        mergeSha: "7".repeat(40),
+      });
+      const runId = await t.deploy(t.mergeSha, "error");
+      await t
+        .deploys()
+        .record(REPO, mainBuild(REPO, runId, t.mergeSha), outcomeOf("error"));
+
+      expect((await t.staging().verify(t.node.id)).step).toBe("waiting_for_deploy");
+      await t.staging().verifyReady();
+
+      const keyed = await pool.query(
+        "select payload->>'cause' as cause from factory.evidence where ingest_key = $1",
+        [stagingDeployRefusedKey(REPO, runId, "infrastructure", t.mergeSha)],
+      );
+      expect(keyed.rows).toEqual([{ cause: "infrastructure" }]);
+      expect((await store.getNode(t.node.id))?.state).toBe("verifying_on_staging");
+      expect(await store.getCounter(t.node.id, "failure")).toBe(0);
+
+      // The retry of the same run goes through: Done, and the refusal still counts nothing.
+      await t
+        .deploys()
+        .record(REPO, mainBuild(REPO, runId, t.mergeSha), outcomeOf("success"));
+      expect((await t.staging().verify(t.node.id)).move).toMatchObject({
+        toState: "done",
+        outcome: "applied",
+      });
+      expect(await store.getCounter(t.node.id, "failure")).toBe(0);
     });
   },
 );

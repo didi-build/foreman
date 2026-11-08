@@ -1,7 +1,7 @@
 # The runner's Windmill flows, schedules and resources, as data (build plan M3.1). Nothing here is
 # deployed. Deploying is mechanical once the Windmill workspace and token exist (first-hosting
-# runbook, step 15): bundle each entry with its imports and contracts/, push it as a
-# script at its path, create the schedule and the approval flow, and store each resource and
+# runbook, step 15): bundle each entry with its imports and the files in `bundle_files`, push it
+# as a script at its path, create the schedule and the approval flow, and store each resource and
 # variable at the path below. test/flows/windmill-description.test.ts keeps this file in step
 # with the code.
 #
@@ -13,6 +13,14 @@
 # guards already say which moves exist and what each needs.
 
 workspace_folder: f/foreman
+
+# The repository files every bundle carries besides its imports, at the same paths from the
+# bundle's root, because the code reads them from there when it runs: the contracts, task types
+# and bot files, and Supabase's CA certificate, which the runner's database connection verifies
+# the server against (D-364, O-117). Without the certificate the runner refuses to connect.
+bundle_files:
+  - contracts/
+  - src/adapters/store-postgres/supabase-ca.crt
 
 flows:
   - name: reconcile
@@ -29,8 +37,10 @@ flows:
     # inside this one run, so a pass adds no Windmill run per item. Each of these is the safety
     # net for an event start (D-329 slice 4, O-104). Then it runs the merge pass (M3.3, O-31),
     # which merges through the runner App's GitHub credential (D-127) once that App exists
-    # (D-178), and the merged-change pass after it (D-308 (3)), then the staging pass
-    # (M3.4, O-37), whose check needs the deploy adapter's staging target (M3.7), and last the
+    # (D-178), and the merged-change pass after it (D-308 (3)), then the staging deploy backstop,
+    # which deploys CI's newest build on main for a project whose item in Verifying on staging has
+    # no deploy recorded (D-353, O-116; in dry run it reports what it would deploy), then the
+    # staging pass (M3.4, O-37), whose check reads the commit marker staging serves, and last the
     # builder runs pass, which starts the fix round of an item a failed QA round or staging check
     # sent back (O-41). The full order is in flows/lib/live-passes.ts.
     # Its plan approval pass opens Didi's request for each plan the planning chat submitted and
@@ -112,22 +122,26 @@ flows:
     # as many as admission lets (N-81).
     trigger: called
 
-  - name: verify_staging
-    path: f/foreman/verify_staging
-    entry: flows/verify-staging.ts
-    # Called with a repository and a commit when GitHub reports a staging deploy (a
-    # `deployment_status` event, O-34). It verifies each item of the repository in Verifying on
-    # staging, since a later commit's deploy may cover its merge commit (D-225), reading the deploy
-    # from GitHub itself. A fail move starts the builder's fix round (O-41), and a move to Done
-    # starts the first run of each item that Done frees (D-329, O-103). The GitHub receiver calls
-    # it (D-329 slice 4, O-104): after it records a `deployment_status` delivery for a finished
-    # deploy (success, failure or error) to the `staging` environment, and only when an item of
-    # that repository is in Verifying on staging and neither switch holds the runner, so a
-    # replay, another environment and an unfinished status start nothing. It uses the receiver's
-    # Windmill token (the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in the cluster
-    # Secret `github-receiver-windmill-token`, runbook step 15) through the shared Windmill
-    # egress proxy (D-328), with `{"input": {"repo": ..., "sha": ...}}`. About one run per staging
-    # deploy (D-164). The reconcile flow's staging pass is the backstop.
+  - name: deploy_staging
+    path: f/foreman/deploy_staging
+    entry: flows/deploy-staging.ts
+    # Called with a repository and a CI run's id once CI's build on main has finished (D-353,
+    # D-356, O-116). It reads the run from GitHub again, fetches that run's `staging-site` build
+    # with the runner App's `actions: read` token (D-267), has the deploy adapter check the file set
+    # and upload exactly those files to the project's assets-only Worker `<slug>-staging` with the
+    # staging deploy token (the resource below), records the deploy on each item in Verifying on
+    # staging whose merge commit it covers, and runs their staging check in the same run. A fail
+    # move starts the builder's fix round (O-41), and a move to Done starts the first run of each
+    # item that Done frees (D-329). The GitHub receiver calls it: after it records a `workflow_run`
+    # `completed` with conclusion `success` for .github/workflows/ci.yml started by a push to the
+    # default branch from the repository itself, only when neither switch holds the runner, so a
+    # replay, a pull request's run, a failed run and another workflow start nothing. It uses the
+    # receiver's Windmill token (the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in
+    # the cluster Secret `github-receiver-windmill-token`, runbook step 15) through the shared
+    # Windmill egress proxy (D-328), with `{"input": {"repo": ..., "runId": ...}}`. About one run
+    # per push to main of each repository the runner App is installed on (D-164). The flow refuses
+    # a repository that is not a registered project. The reconcile flow's staging deploy backstop
+    # catches a missed event. A `deployment_status` starts nothing (D-356).
     trigger: called
 
   - name: advance_item
@@ -315,6 +329,11 @@ resources:
   # The services' own secrets (the planning chat's token hash and the three Windmill tokens that
   # start flows) are not kept in Windmill: each lives only in the `platform` environment's secrets
   # and the cluster's Secrets (D-351, first-hosting runbook step 15).
+  #
+  # The staging deploy token and the Cloudflare account id (D-353, O-116) are stored by Didi by hand
+  # at first hosting (runbook step 16), in the same shape: resource type `foreman_text`, value
+  # `{"content": "<the value>"}`, at their `windmill_path`. Until then the composition's credential
+  # port refuses with `NotBuiltError`, so nothing is uploaded.
   secrets:
     - path: platform/state-store/runner-database-url
       holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
@@ -322,6 +341,14 @@ resources:
       holds: The runner's cluster token (ADR 0106 section 1, first-hosting runbook step 8)
       windmill_path: f/foreman/platform/agent-cluster/runner-token
       written_by: the Platform workflow's runner-token job (D-352)
+    - path: platform/cloudflare/staging-deploy-token
+      holds: The staging deploy token, one Cloudflare API token with Workers Scripts Edit on the account only (D-353, O-116). New credential at first hosting
+      windmill_path: f/foreman/platform/cloudflare/staging-deploy-token
+      written_by: Didi, by hand (first-hosting runbook step 16)
+    - path: platform/cloudflare/account-id
+      holds: The Cloudflare account id of the staging Workers, 32 hex characters, kept as a secret as D-361 keeps it (O-116)
+      windmill_path: f/foreman/platform/cloudflare/account-id
+      written_by: Didi, by hand (first-hosting runbook step 16)
   values:
     - name: spec_version
       holds: The git commit of docs/spec.md and contracts/ the bundle was built from

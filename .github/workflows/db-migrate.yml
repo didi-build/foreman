@@ -6,17 +6,21 @@ name: Database migrations
 #
 # - `migrate` runs in the environment `database` (main only, Didi the required reviewer), which
 #   holds MIGRATION_DATABASE_URL, the Supabase session pooler's connection string for the
-#   database owner (first-hosting runbook step 9a). It checks out `.github/` and `db/migrations/`
-#   only and runs `.github/scripts/db-migrate.sh`, which uses bash and psql (on GitHub's Ubuntu
-#   24.04 runner image) and nothing else: no npm, no Node and none of the repository's
-#   TypeScript, which a bot can change without Didi's approval. Only protected code touches the
-#   credential (the pattern of D-358 lock 1).
+#   database owner (first-hosting runbook step 9a). It checks out `.github/`, `db/migrations/`
+#   and Supabase's CA certificate only and runs `.github/scripts/db-migrate.sh`, which uses bash
+#   and psql (on GitHub's Ubuntu 24.04 runner image) and nothing else: no npm, no Node and none
+#   of the repository's TypeScript, which a bot can change without Didi's approval. Only
+#   protected code touches the credential (the pattern of D-358 lock 1), and the certificate is a
+#   privileged path too (`**/*.crt`, O-118).
+# - The script first checks that the database refuses a connection without TLS, sending no
+#   password, then connects with TLS verified against that certificate and the host name
+#   (verify-full, D-364, O-118). Nothing here can change the certificate or the TLS settings.
 # - The summary lists the migrations applied, or says there was nothing to apply.
 #
-# It starts on a push to main that changes a migration or this job's own files, or by hand. A run
-# waiting for Didi blocks no merge and no other workflow. One run at a time: a newer run waits
-# until the older one is approved, rejected or finished, and each run applies every migration
-# still pending in its commit. Pull requests never run this workflow.
+# It starts on a push to main that changes a migration, this job's own files or the certificate,
+# or by hand. A run waiting for Didi blocks no merge and no other workflow. One run at a time: a
+# newer run waits until the older one is approved, rejected or finished, and each run applies
+# every migration still pending in its commit. Pull requests never run this workflow.
 
 on:
   push:
@@ -25,6 +29,7 @@ on:
       - "db/migrations/**"
       - ".github/workflows/db-migrate.yml"
       - ".github/scripts/db-migrate.sh"
+      - "src/adapters/store-postgres/supabase-ca.crt"
   workflow_dispatch:
 
 concurrency:
@@ -43,13 +48,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      # The scripts and the migrations, and nothing else.
+      # The scripts, the migrations and the CA certificate, and nothing else.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           sparse-checkout: |
             /.github/
             /db/migrations/
+            /src/adapters/store-postgres/supabase-ca.crt
           sparse-checkout-cone-mode: false
       - name: Apply the migrations not yet recorded
         env:

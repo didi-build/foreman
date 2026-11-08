@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
 import { readMigrations } from "../src/adapters/store-postgres/migrate.ts";
+import { SUPABASE_CA_PATH } from "../src/adapters/store-postgres/tls.ts";
 import {
   RENDER_PLACEHOLDER,
   RUN_TIME_KUBERNETES_API,
@@ -1689,6 +1690,7 @@ describe.skipIf(process.platform === "win32")(
       interface PsqlCall {
         args: string[];
         env: Record<string, string>;
+        passFileExists: boolean | null;
         script: string;
       }
       const psqlCalls = (box: Sandbox): PsqlCall[] =>
@@ -1696,6 +1698,14 @@ describe.skipIf(process.platform === "win32")(
           .split("\n")
           .filter(Boolean)
           .map((line) => JSON.parse(line) as PsqlCall);
+      /** The one call that runs the migrations' script (the check runs no script, O-118). */
+      const migrateCalls = (box: Sandbox): PsqlCall[] =>
+        psqlCalls(box).filter((call) => call.args.includes("-f"));
+      const checkCalls = (box: Sandbox): PsqlCall[] =>
+        psqlCalls(box).filter((call) => !call.args.includes("-f"));
+
+      /** The log line, and the summary's, once the database refused a connection without TLS. */
+      const CHECKED = "Checked first: the database refuses a connection without TLS.\n";
 
       function expectNoValueShown(
         result: { stdout: string; stderr: string },
@@ -1736,30 +1746,36 @@ describe.skipIf(process.platform === "win32")(
         expect(masks[1]).toBe(`::add-mask::${encoded.replaceAll("%", "%25")}`);
         expectNoValueShown(result);
         expect(withoutMasks(result.stdout)).toBe(
-          "Applied: 0001_first.sql, 0002_second.sql\n",
+          `${CHECKED}Applied: 0001_first.sql, 0002_second.sql\n`,
         );
       });
 
-      it("gives psql the connection only in its environment, with SSL required and no PG setting inherited", () => {
+      it("gives psql the connection only in its environment, with TLS verified against the committed CA certificate and no PG setting inherited", () => {
         const box = sandbox();
         const result = migrate(box, {
           PGOPTIONS: "-c search_path=elsewhere",
           PGSERVICE: "elsewhere",
           PGSSLMODE: "disable",
+          PGSSLROOTCERT: "/elsewhere/any-ca.crt",
+          PGGSSENCMODE: "require",
           PGHOST: "elsewhere.example.com",
           PGPASSFILE: "/dev/null",
+          PGPASSWORD: "inherited-not-it",
         });
         expect(result.status).toBe(0);
         const calls = psqlCalls(box);
-        expect(calls).toHaveLength(1);
-        const [call] = calls as [PsqlCall];
+        expect(calls).toHaveLength(2);
+        const [check, call] = calls as [PsqlCall, PsqlCall];
+        expect(check.args).toEqual(["-X", "-q", "-w", "-c", "select 1"]);
         expect(call.env).toEqual({
           PGHOST: host,
           PGPORT: "6543",
           PGUSER: user,
           PGPASSWORD: password,
           PGDATABASE: "postgres",
-          PGSSLMODE: "require",
+          PGSSLMODE: "verify-full",
+          PGSSLROOTCERT: "src/adapters/store-postgres/supabase-ca.crt",
+          PGGSSENCMODE: "disable",
           PGCLIENTENCODING: "UTF8",
           PGCONNECT_TIMEOUT: "30",
           PGAPPNAME: "foreman-db-migrate",
@@ -1788,14 +1804,282 @@ describe.skipIf(process.platform === "win32")(
           MIGRATION_DATABASE_URL: url.replace(":6543/", "/"),
         });
         expect(result.status).toBe(0);
-        expect(psqlCalls(box)[0]?.env.PGPORT).toBe("5432");
+        expect(psqlCalls(box).map((call) => call.env.PGPORT)).toEqual(["5432", "5432"]);
+      });
+
+      it("checks first, with no password in the call, that the database refuses a connection without TLS (O-118)", () => {
+        const box = sandbox();
+        // An inherited password and password file, which must not reach the check.
+        writeFileSync(join(box.root, "a-password-file"), "*:*:*:*:inherited-not-it\n");
+        const result = migrate(box, {
+          FAKE_PSQL_MODE: "fresh",
+          PGPASSWORD: "inherited-not-it",
+          PGPASSFILE: join(box.root, "a-password-file"),
+        });
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        const [check, ...rest] = psqlCalls(box) as [PsqlCall, ...PsqlCall[]];
+        expect(rest).toEqual(migrateCalls(box));
+        expect(rest).toHaveLength(1);
+        expect(check.args).toEqual(["-X", "-q", "-w", "-c", "select 1"]);
+        expect(check.env).toEqual({
+          PGHOST: host,
+          PGPORT: "6543",
+          PGUSER: user,
+          PGDATABASE: "postgres",
+          PGPASSFILE: expect.stringMatching(
+            /\/runner-temp\/db-migrate\.[A-Za-z0-9]+\/no-password-file$/,
+          ),
+          PGSSLMODE: "disable",
+          PGGSSENCMODE: "disable",
+          PGCONNECT_TIMEOUT: "30",
+          PGAPPNAME: "foreman-db-migrate-tls-check",
+        });
+        // No password reaches the call: not in its environment, and no password file exists.
+        expect(check.env).not.toHaveProperty("PGPASSWORD");
+        expect(check.passFileExists).toBe(false);
+        for (const value of [password, encoded, url, "inherited-not-it"]) {
+          expect(JSON.stringify(check), value).not.toContain(value);
+        }
+        // The refusal quotes the host and the user, and is not shown when the check passes.
+        expect(withoutMasks(result.stdout)).toBe(
+          `${CHECKED}Applied: 0001_first.sql, 0002_second.sql\n`,
+        );
+        expectNoValueShown(result);
+      });
+
+      it("passes the check on Postgres's own wordings of the refusal, met on a direct connection, beside an address that does not answer", () => {
+        // Supabase's docs show "SSL off"; PostgreSQL 16 prints "no encryption".
+        for (const wording of ["SSL off", "no encryption"]) {
+          const box = sandbox();
+          const result = migrate(box, {
+            FAKE_PSQL_CHECK_STDERR: [
+              `psql: error: connection to server at "${host}" (192.0.2.7), port 6543 failed: Connection refused`,
+              "\tIs the server running on that host and accepting TCP/IP connections?",
+              `connection to server at "${host}" (192.0.2.9), port 6543 failed: FATAL:  no pg_hba.conf entry for host "192.0.2.8", user "${user}", database "postgres", ${wording}`,
+              "",
+            ].join("\n"),
+          });
+          expect(result.stderr, wording).toBe("");
+          expect(result.status, wording).toBe(0);
+          expect(withoutMasks(result.stdout), wording).toBe(
+            `${CHECKED}Nothing to apply.\n`,
+          );
+          expect(migrateCalls(box), wording).toHaveLength(1);
+        }
+      });
+
+      it("stops before any migration when the database asks a connection without TLS for a password, or lets it in: enforcement is off", () => {
+        const off = `::error::Supabase's "Enforce SSL on incoming connections" is off: `;
+        const cases: [string, Record<string, string>, string[]][] = [
+          [
+            "asks for a password",
+            {
+              FAKE_PSQL_CHECK_STDERR: `psql: error: connection to server at "${host}" (192.0.2.7), port 6543 failed: fe_sendauth: no password supplied\n`,
+            },
+            [
+              'psql: error: connection to server at "<DATABASE_HOST>" (<ip>), port 6543 failed: fe_sendauth: no password supplied',
+              `${off}the database asked a connection without TLS for a password, and none was sent. Turn it on (first-hosting runbook step 9a), then run this job again. Nothing was applied.`,
+            ],
+          ],
+          [
+            "lets it in",
+            { FAKE_PSQL_CHECK_STDERR: "", FAKE_PSQL_CHECK_STATUS: "0" },
+            [
+              `${off}the database let in a connection without TLS. Turn it on (first-hosting runbook step 9a), then run this job again. Nothing was applied.`,
+            ],
+          ],
+          [
+            "asks one address for a password after another refused",
+            {
+              FAKE_PSQL_CHECK_STDERR: [
+                `psql: error: connection to server at "${host}" (192.0.2.7), port 6543 failed: FATAL:  no pg_hba.conf entry for host "192.0.2.8", user "${user}", database "postgres", SSL off`,
+                `connection to server at "${host}" (192.0.2.9), port 6543 failed: fe_sendauth: no password supplied`,
+                "",
+              ].join("\n"),
+            },
+            [
+              'psql: error: connection to server at "<DATABASE_HOST>" (<ip>), port 6543 failed: FATAL:  no pg_hba.conf entry for host "<ip>", user "<DATABASE_USER>", database "postgres", SSL off',
+              'connection to server at "<DATABASE_HOST>" (<ip>), port 6543 failed: fe_sendauth: no password supplied',
+              `${off}the database asked a connection without TLS for a password, and none was sent. Turn it on (first-hosting runbook step 9a), then run this job again. Nothing was applied.`,
+            ],
+          ],
+        ];
+        for (const [label, env, stderr] of cases) {
+          const box = sandbox();
+          const result = migrate(box, { FAKE_PSQL_MODE: "fresh", ...env });
+          expect(result.status, label).toBe(1);
+          expect(result.stderr, label).toBe(`${stderr.join("\n")}\n`);
+          expect(withoutMasks(result.stdout), label).toBe("");
+          expect(checkCalls(box), label).toHaveLength(1);
+          expect(migrateCalls(box), label).toEqual([]);
+          expect(report(box), label).toBe(
+            `## Database migrations\n\nStopped: ${(stderr.at(-1) as string).slice("::error::".length)}\n`,
+          );
+          expectNoValueShown(result);
+        }
+      });
+
+      it("stops before any migration on any other answer to the check, showing psql's error only redacted", () => {
+        const at = `connection to server at "${host}" (192.0.2.7), port 6543 failed: `;
+        const refusal = `${at}FATAL:  no pg_hba.conf entry for host "192.0.2.8", user "${user}", database "postgres", SSL off`;
+        const cases: [string, string, string][] = [
+          ["a timeout", `psql: error: ${at}timeout expired\n`, "2"],
+          ["no answer at all", "", "2"],
+          [
+            "the refusal beside another server error",
+            `psql: error: ${refusal}\n${at}FATAL:  Tenant or user not found\n`,
+            "2",
+          ],
+          ["the refusal with another exit status", `psql: error: ${refusal}\n`, "1"],
+          [
+            "SSL off without the pg_hba.conf refusal",
+            `psql: error: ${at}FATAL:  SSL off\n`,
+            "2",
+          ],
+          ["the refusal with more after it", `psql: error: ${refusal}, or not\n`, "2"],
+          [
+            "a refusal of a connection with SSL",
+            `psql: error: ${refusal.replace("SSL off", "SSL encryption")}\n`,
+            "2",
+          ],
+          [
+            "the pooler's refusal with more after it",
+            `psql: error: ${at}FATAL:  (ESSLREQUIRED) SSL connection is required for user: postgres, or not\n`,
+            "2",
+          ],
+          [
+            "the pooler's wording without its code",
+            `psql: error: ${at}FATAL:  SSL connection is required for user: postgres\n`,
+            "2",
+          ],
+          [
+            "the pooler's refusal beside another of its errors",
+            `psql: error: ${at}FATAL:  (ESSLREQUIRED) SSL connection is required for user: postgres\n${at}FATAL:  (ETENANTNOTFOUND) Tenant or user not found\n`,
+            "2",
+          ],
+        ];
+        for (const [label, checkStderr, checkStatus] of cases) {
+          const box = sandbox();
+          const result = migrate(box, {
+            FAKE_PSQL_MODE: "fresh",
+            FAKE_PSQL_CHECK_STDERR: checkStderr,
+            FAKE_PSQL_CHECK_STATUS: checkStatus,
+          });
+          expect(result.status, label).toBe(1);
+          expect(result.stderr, label).toMatch(
+            /\n?::error::The check that the database refuses a connection without TLS did not end in the refusal it expects, so nothing was applied\. psql's error, redacted, is above \(first-hosting runbook step 9a\)\.\n$/,
+          );
+          if (checkStderr !== "") {
+            expect(result.stderr, label).toContain(
+              'connection to server at "<DATABASE_HOST>" (<ip>), port 6543 failed: ',
+            );
+          }
+          expect(withoutMasks(result.stdout), label).toBe("");
+          expect(migrateCalls(box), label).toEqual([]);
+          expect(report(box), label).toContain(
+            "Stopped: The check that the database refuses a connection without TLS did not end in the refusal it expects",
+          );
+          expectNoValueShown(result);
+        }
+      });
+
+      it("refuses with fixed text, before psql runs, a CA certificate file that is missing or is not PEM certificates, and takes one or more PEM certificates", () => {
+        const committed = readFileSync(SUPABASE_CA_PATH, "utf8");
+        const [, body = ""] =
+          /-----BEGIN CERTIFICATE-----\n([\s\S]+?)-----END CERTIFICATE-----/.exec(
+            committed,
+          ) ?? [];
+        /** The script run from another checkout's root, with this at the certificate's path. */
+        function migrateFrom(ca: string | null | "folder") {
+          const box = sandbox();
+          const checkout = join(box.root, "checkout");
+          const path = join(checkout, SUPABASE_CA_PATH);
+          mkdirSync(join(path, ".."), { recursive: true });
+          if (ca === "folder") mkdirSync(path);
+          else if (ca !== null) writeFileSync(path, ca);
+          const done = spawnSync(
+            "bash",
+            [join(SCRIPTS, "db-migrate.sh"), folder(box)],
+            {
+              cwd: checkout,
+              encoding: "utf8",
+              env: { ...box.env, MIGRATION_DATABASE_URL: url, REPORT: reportPath(box) },
+            },
+          );
+          return { box, status: done.status, stdout: done.stdout, stderr: done.stderr };
+        }
+        const missing = `::error::The database CA certificate is missing at ${SUPABASE_CA_PATH}.\n`;
+        const notPem = `::error::The database CA certificate at ${SUPABASE_CA_PATH} is not a PEM certificate.\n`;
+        const refused: [string, string | null | "folder", string][] = [
+          ["no file", null, missing],
+          ["a folder", "folder", missing],
+          ["an empty file", "", notPem],
+          ["text", "not a certificate\n", notPem],
+          [
+            "a public key",
+            `-----BEGIN PUBLIC KEY-----\n${body}-----END PUBLIC KEY-----\n`,
+            notPem,
+          ],
+          ["a certificate with text after it", `${committed}trust me too\n`, notPem],
+          ["a certificate with text before it", `subject=CN = x\n${committed}`, notPem],
+          [
+            "a certificate with a character base64 does not have",
+            committed.replace(body, `${body.slice(0, 10)}!${body.slice(11)}`),
+            notPem,
+          ],
+          [
+            "an unfinished certificate",
+            committed.replace("-----END CERTIFICATE-----", ""),
+            notPem,
+          ],
+          [
+            "an empty certificate",
+            "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n",
+            notPem,
+          ],
+          [
+            "base64 that does not decode",
+            "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n",
+            notPem,
+          ],
+        ];
+        for (const [label, ca, error] of refused) {
+          const result = migrateFrom(ca);
+          expect(result.status, label).toBe(1);
+          expect(result.stderr, label).toBe(error);
+          expect(psqlCalls(result.box), label).toEqual([]);
+          expect(report(result.box), label).toContain(
+            `Stopped: ${error.slice("::error::".length, -1)}`,
+          );
+        }
+        const taken: [string, string][] = [
+          ["the committed certificate", committed],
+          [
+            "two certificates, as during a switch to a new root",
+            `${committed}${committed}`,
+          ],
+          [
+            "Windows line ends and blank lines",
+            `\n${committed.replaceAll("\n", "\r\n")}\n\n`,
+          ],
+          ["no line end after the last line", committed.trimEnd()],
+        ];
+        for (const [label, ca] of taken) {
+          const result = migrateFrom(ca);
+          expect(result.stderr, label).toBe("");
+          expect(result.status, label).toBe(0);
+          expect(migrateCalls(result.box)[0]?.env.PGSSLROOTCERT, label).toBe(
+            SUPABASE_CA_PATH,
+          );
+        }
       });
 
       it("runs one script in one session: the lock, migrate.ts's setup, the recorded rows read once, then each file with its record in its own transaction, then the unlock", () => {
         const box = sandbox();
         const dir = folder(box);
         expect(migrate(box, {}, dir).status).toBe(0);
-        const lines = (psqlCalls(box)[0] as PsqlCall).script.split("\n");
+        const lines = (migrateCalls(box)[0] as PsqlCall).script.split("\n");
         const gexec =
           /^select convert_from\(decode\('([A-Za-z0-9+/=]*)', 'base64'\), 'UTF8'\) \\gexec$/;
         const decoded = (line: string | undefined) =>
@@ -1880,9 +2164,9 @@ describe.skipIf(process.platform === "win32")(
         const box = sandbox();
         const result = migrate(box, { FAKE_PSQL_STDOUT: "done\n" });
         expect(result.status).toBe(0);
-        expect(withoutMasks(result.stdout)).toBe("Nothing to apply.\n");
+        expect(withoutMasks(result.stdout)).toBe(`${CHECKED}Nothing to apply.\n`);
         expect(report(box)).toBe(
-          "## Database migrations\n\nNothing to apply: every migration is recorded.\n",
+          `## Database migrations\n\n${CHECKED}\nNothing to apply: every migration is recorded.\n`,
         );
       });
 
@@ -1892,6 +2176,8 @@ describe.skipIf(process.platform === "win32")(
         expect(report(box)).toBe(
           [
             "## Database migrations",
+            "",
+            CHECKED.trimEnd(),
             "",
             "Applied, in order:",
             "",
@@ -1914,7 +2200,7 @@ describe.skipIf(process.platform === "win32")(
           FAKE_PSQL_STATUS: "3",
         });
         expect(result.status).toBe(1);
-        expect(withoutMasks(result.stdout)).toBe("Applied: 0001_first.sql\n");
+        expect(withoutMasks(result.stdout)).toBe(`${CHECKED}Applied: 0001_first.sql\n`);
         expect(result.stderr).toBe(
           [
             'psql:/tmp/migrate.psql:20: ERROR:  relation "two" already exists',
@@ -1976,7 +2262,8 @@ describe.skipIf(process.platform === "win32")(
           expect(result.status, stdout).toBe(1);
           expect(result.stderr, stdout).toBe(`${error}\n`);
           expect(withoutMasks(result.stdout), stdout).toBe(
-            stdout.startsWith("applying") ? "Applied: 0001_first.sql\n" : "",
+            CHECKED +
+              (stdout.startsWith("applying") ? "Applied: 0001_first.sql\n" : ""),
           );
           expect(report(box), stdout).toContain(
             `Stopped: ${error.slice("::error::".length)}`,
@@ -2007,7 +2294,7 @@ describe.skipIf(process.platform === "win32")(
           FAKE_PSQL_STDOUT: "applying 0001_first.sql\napplied 0001_first.sql\n",
         });
         expect(result.status).toBe(1);
-        expect(withoutMasks(result.stdout)).toBe("Applied: 0001_first.sql\n");
+        expect(withoutMasks(result.stdout)).toBe(`${CHECKED}Applied: 0001_first.sql\n`);
         expect(result.stderr).toBe(
           "::error::psql stopped (exit status 0) before the end, with nothing more applied. psql's error, redacted, is above.\n",
         );

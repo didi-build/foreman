@@ -18,9 +18,9 @@
 //   (flows/lib/reconcile-steps.ts), where admission decides again under its lock. The merge,
 //   staging and cancel steps are the flow's live passes (flows/lib/live-passes.ts), not here.
 // In both modes the pass writes the evidence the GitHub polling backstop records (`ci_run`,
-// `merge_commit`), and in dry run the `merge_check` the merge step reads from GitHub (M3.3) and
-// the `staging_deploy` or `staging_deploy_failed` the staging step reads from GitHub (M3.4,
-// D-225). That is real evidence of what GitHub reports, recorded the same way as a webhook, and
+// `merge_commit`), and in dry run the `merge_check` the merge step reads from GitHub (M3.3). The
+// staging step reads the staging deploys the runner recorded itself (D-356, O-116) and records
+// none. That is real evidence of what GitHub reports, recorded the same way as a webhook, and
 // webhooks record it in dry run too (ADR 0113 sections 5 and 6). Recording a fact is not acting
 // on it. The pass itself never inserts a run, starts an agent, records a dispatch, closes or opens
 // a gate request, changes a counter or a setting, or sends anything: dispatch admission is
@@ -42,7 +42,8 @@
 // `f/foreman/advance_item` share, and that flow plans one item with this pass's own step 4
 // (`planAdvance`, D-329 slice 4, O-104). The
 // moves a staging check takes (guards `staging_check_on_merge_commit` and `staging_check_failed`)
-// go through src/core/staging.ts, which records the staging deploy of the merge commit as a fact.
+// go through src/core/staging.ts, which reads the staging deploy the runner recorded when it made
+// it (./staging-deploy.ts).
 // The bot to dispatch is the owner of the state, from the contracts. The merge and the staging
 // check are never done here: in live mode the reconcile flow runs the merge pass, the staging pass
 // and the builder runs pass (flows/reconcile.ts, O-31, O-37, O-41).
@@ -278,8 +279,8 @@ export interface ReconcileReport {
    */
   merges: MovePlan[];
   /**
-   * The items in Verifying on staging: the staging deploy covering each merge commit, recorded
-   * when GitHub reports it, and the dry-run row of the move a recorded staging check or failed
+   * The items in Verifying on staging: whether the runner has recorded a deploy covering each
+   * merge commit (O-116), and the dry-run row of the move a recorded staging check or failed
    * deploy calls for. In dry run only; in live mode the reconcile flow's staging pass checks them
    * (M3.4).
    */
@@ -777,10 +778,10 @@ export async function reconcile(
     }
 
     // Step 4 also says to dispatch the staging check once main has deployed to staging (M3.4). The
-    // polling backstop for the deploy: the staging step reads GitHub's staging deployments covering
-    // each merge commit and records the newest finished one as `staging_deploy` or
-    // `staging_deploy_failed` (D-225). It runs no check (no checker in dry
-    // run); a check already recorded gets the dry-run row of its move. A node that has waited past
+    // staging step reads the deploy the runner recorded on each merge commit when it deployed
+    // (D-356, O-116); the deploy's own backstop is the reconcile flow's (flows/lib/live-passes.ts).
+    // It runs no check (no checker in dry run); a check or failed deploy already recorded gets the
+    // dry-run row of its move. A node that has waited past
     // `staging_deploy_attention_after_minutes` with no deploy recorded goes on the attention list
     // (D-225, O-40). In dry run only: in live mode the staging pass checks these items and lists
     // the waits (flows/lib/live-passes.ts, M3.4).

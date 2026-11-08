@@ -138,9 +138,10 @@ function projectSections(p: ProjectCheck, to: Date): Section[] {
           ? [{ stagingUrl: p.staging.url }]
           : ["no staging address recorded"],
       items: [
-        ...p.staging.onStaging.map(
-          (s) =>
-            line`on staging, waiting on its check: ${item(s)} since ${when(s.since)}`,
+        ...p.staging.onStaging.map((s) =>
+          s.deployError
+            ? line`on staging, waiting on its check: ${item(s)} since ${when(s.since)}; the staging deploy did not go through at ${when(s.deployError.at)}: ${s.deployError.text}. Counted as no failure; the reconcile pass tries again`
+            : line`on staging, waiting on its check: ${item(s)} since ${when(s.since)}`,
         ),
         ...p.staging.passedInWindow.map(
           (s) => line`passed its staging check: ${item(s)} at ${when(s.since)}`,
