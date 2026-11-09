@@ -10,8 +10,9 @@
 kubernetes_version_prefix = "1.37."
 
 # The DNS gate (runbook step 11, D-195): true only once Didi approves the receiver's DNS record.
-publish_receiver_dns = false
+# Turned on with the tunnel gate in one pull request and one plan (D-367).
+publish_receiver_dns = true
 
 # The tunnel gate (runbook step 11a, D-271): true only once Didi approves the planning chat's
-# paths on the receiver's tunnel.
-expose_planning_route = false
+# paths on the receiver's tunnel. Turned on with the DNS gate (D-367).
+expose_planning_route = true

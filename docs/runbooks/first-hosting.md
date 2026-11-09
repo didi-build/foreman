@@ -292,6 +292,8 @@ Then run the cluster Secrets job (step 9). The webhook secret is the one the run
 
 ## 11. The DNS record (DNS gate)
 
+Steps 11 and 11a are opened together at first hosting (D-367): one pull request sets both switches, and one plan shows both changes, each checked as its step says, then one apply.
+
 A pull request sets `publish_receiver_dns = true` in `infra/stacks/factory/production.tfvars`. Once it is merged, the Infra apply workflow plans: check that the summary's DNS change lists exactly one record, the receiver's (`module.edge.cloudflare_dns_record.receiver[0]`) as `create`, that the plan adds exactly one `cloudflare_dns_record` (the proxied CNAME for `foreman.didi.build`, which the summary shows as its placeholder) and changes nothing else, and that no Workers route changes. Then approve the apply.
 
 Each project's staging name is its own DNS change, in its own plan (step 7, "Adding a project"). A project named `foreman` never gets a second record on this host name (O-112).
