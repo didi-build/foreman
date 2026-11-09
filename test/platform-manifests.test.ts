@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -42,7 +47,7 @@ import {
   type PlatformObject,
   type PlatformSettings,
 } from "../infra/kubernetes/platform.ts";
-import { clusterObjects } from "../infra/kubernetes/render.ts";
+import { clusterObjects, forServerSideApply } from "../infra/kubernetes/render.ts";
 import { LOCAL_WITHOUT_TLS_ENV } from "../src/adapters/store-postgres/tls.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../src/api/auth.ts";
 import { windmillSettings, windmillTargetOf } from "../src/adapters/windmill/client.ts";
@@ -786,6 +791,116 @@ describe("cluster objects (unit: render)", () => {
       "foreman-runner",
       "agents-rehearsal",
     ]);
+  });
+});
+
+describe("the objects as kubectl applies them (unit and integration: render output, O-119)", () => {
+  const settings = {
+    platform: PLATFORM,
+    projects: [
+      {
+        slug: "rehearsal",
+        quota: {
+          pods: 4,
+          cpu: "2",
+          memory: "4Gi",
+          ephemeralStorage: "8Gi",
+          storage: "4Gi",
+          persistentVolumeClaims: 2,
+        },
+      },
+    ],
+  };
+  const emptyListsIn = (value: unknown, path = ""): string[] => {
+    if (Array.isArray(value)) {
+      return value.length === 0
+        ? [path]
+        : value.flatMap((v, i) => emptyListsIn(v, `${path}[${i}]`));
+    }
+    if (value && typeof value === "object") {
+      return Object.entries(value).flatMap(([k, v]) => emptyListsIn(v, `${path}.${k}`));
+    }
+    return [];
+  };
+  const policyNamed = (items: { kind: string }[], namespace: string, name: string) =>
+    items.find(
+      (o) =>
+        o.kind === "NetworkPolicy" &&
+        (o as NetworkPolicy).metadata.namespace === namespace &&
+        (o as NetworkPolicy).metadata.name === name,
+    ) as NetworkPolicy;
+
+  it("holds no empty list in any NetworkPolicy, which the API server would count as a change on every apply", () => {
+    const before = clusterObjects(settings);
+    // The model says "nothing allowed" with empty lists; the case this guards is real.
+    expect(
+      before.items
+        .filter((o) => o.kind === "NetworkPolicy")
+        .flatMap((o) => emptyListsIn((o as NetworkPolicy).spec)),
+    ).not.toEqual([]);
+    const applied = forServerSideApply(before);
+    for (const item of applied.items.filter((o) => o.kind === "NetworkPolicy")) {
+      const policy = item as NetworkPolicy;
+      expect(emptyListsIn(policy.spec), policy.metadata.name).toEqual([]);
+      // Each policy still governs both directions, so a left-out list still denies everything.
+      expect(policy.spec.policyTypes, policy.metadata.name).toEqual([
+        "Ingress",
+        "Egress",
+      ]);
+    }
+  });
+
+  it("leaves out only the empty lists: default deny, the run watcher's API rule, and every other object as rendered", () => {
+    const before = clusterObjects(settings);
+    const applied = forServerSideApply(before);
+    expect(applied.items.map((o) => o.kind)).toEqual(before.items.map((o) => o.kind));
+    applied.items.forEach((item, i) => {
+      if (item.kind !== "NetworkPolicy") expect(item).toEqual(before.items[i]);
+    });
+    for (const namespace of [PLATFORM_NAMESPACE, "agents-rehearsal"]) {
+      expect(policyNamed(applied.items, namespace, "default-deny").spec).toEqual({
+        podSelector: {},
+        policyTypes: ["Ingress", "Egress"],
+      });
+    }
+    const watcher = policyNamed(applied.items, PLATFORM_NAMESPACE, RUN_WATCHER.name);
+    const watcherBefore = policyNamed(
+      before.items,
+      PLATFORM_NAMESPACE,
+      RUN_WATCHER.name,
+    );
+    expect(watcher.spec.ingress).toBeUndefined();
+    expect(watcher.spec.egress[1]).toEqual({
+      to: [{ ipBlock: { cidr: "192.0.2.10/32" } }],
+      ports: [{ protocol: "TCP", port: 443 }],
+    });
+    expect([watcher.spec.egress[0], watcher.spec.egress[2]]).toEqual([
+      watcherBefore.spec.egress[0],
+      watcherBefore.spec.egress[2],
+    ]);
+    // A policy with no empty list is unchanged, its `except` ranges included.
+    const stateApi = policyNamed(applied.items, PLATFORM_NAMESPACE, STATE_API.name);
+    expect(stateApi).toEqual(
+      policyNamed(before.items, PLATFORM_NAMESPACE, STATE_API.name),
+    );
+  });
+
+  it("is what `node infra/kubernetes/render.ts` prints for the Platform workflow", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-"));
+    try {
+      const file = join(dir, "settings.json");
+      writeFileSync(file, JSON.stringify(settings));
+      const result = spawnSync(process.execPath, ["infra/kubernetes/render.ts", file], {
+        encoding: "utf8",
+      });
+      expect(result.stderr).not.toMatch(/error/i);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(
+        JSON.parse(JSON.stringify(forServerSideApply(clusterObjects(settings)))),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

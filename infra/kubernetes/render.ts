@@ -51,6 +51,40 @@ export function clusterObjects(settings: ClusterSettings): {
   };
 }
 
+/** A copy of `value` with every empty list left out, at any depth. */
+function withoutEmptyLists(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutEmptyLists);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, v]) => !(Array.isArray(v) && v.length === 0))
+        .map(([k, v]) => [k, withoutEmptyLists(v)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * The objects as the Platform workflow hands them to `kubectl apply --server-side`: each
+ * NetworkPolicy's spec without its empty lists (a rule list with no rule, an `except` with no
+ * range). They mean the same as the field left out, and the API server stores them so, but it
+ * counts receiving `[]` for a field it holds as absent as a change and raises the object's
+ * generation on every apply, so the plan would list those policies as changed on every run and
+ * ask Didi to approve an apply that changes nothing (O-119). Nothing else is touched.
+ */
+export function forServerSideApply(
+  list: ReturnType<typeof clusterObjects>,
+): ReturnType<typeof clusterObjects> {
+  return {
+    ...list,
+    items: list.items.map((item) =>
+      item.kind === "NetworkPolicy"
+        ? ({ ...item, spec: withoutEmptyLists(item.spec) } as typeof item)
+        : item,
+    ),
+  };
+}
+
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const path = process.argv[2];
@@ -59,5 +93,7 @@ if (isMain) {
     process.exit(2);
   }
   const settings = JSON.parse(readFileSync(path, "utf8")) as ClusterSettings;
-  process.stdout.write(`${JSON.stringify(clusterObjects(settings), null, 2)}\n`);
+  process.stdout.write(
+    `${JSON.stringify(forServerSideApply(clusterObjects(settings)), null, 2)}\n`,
+  );
 }
