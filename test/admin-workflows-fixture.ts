@@ -1,5 +1,5 @@
-// Shared by the admin workflow tests (D-339, O-105): the committed settings file, filled in with
-// made-up values where first hosting fills it (digests, app logins, the Windmill host and
+// Shared by the admin workflow tests (D-339, O-105): the committed settings file, with made-up
+// values in place of what first hosting fills in (digests, app logins, the Windmill host and
 // workspace, a project), plus an API server address. Nothing here is a real value: every address
 // is a documentation address (RFC 5737).
 import { readFileSync } from "node:fs";
@@ -25,12 +25,23 @@ const fakeDigest = (seed: string): string =>
     .map((c) => (c.charCodeAt(0) % 16).toString(16))
     .join("");
 
-/** Each empty value the settings file leaves for first hosting, filled with a made-up one. */
+/**
+ * Each value first hosting fills in, made up: an image's digest, the Windmill host and workspace,
+ * and the app logins, whether the committed file still leaves them empty or holds the real ones,
+ * so no test reads a production value. Any other empty value is made up too.
+ */
 function fill(value: unknown, path: string): unknown {
   if (typeof value === "string") {
-    if (value.endsWith("@sha256:")) return `${value}${fakeDigest(path)}`;
-    if (value === "")
-      return path.endsWith(".host") ? "windmill.example.com" : "example";
+    const digestAt = value.indexOf("@sha256:");
+    if (path.startsWith(".platform.images.") && digestAt >= 0)
+      return `${value.slice(0, digestAt + "@sha256:".length)}${fakeDigest(path)}`;
+    if (path === ".platform.windmill.host") return "windmill.example.com";
+    if (
+      path === ".platform.windmill.workspace" ||
+      path.startsWith(".platform.receiver.")
+    )
+      return "example";
+    if (value === "") return "example";
     return value;
   }
   if (Array.isArray(value)) return value.map((v, i) => fill(v, `${path}[${i}]`));

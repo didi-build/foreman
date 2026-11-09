@@ -1,10 +1,10 @@
 {
   "platform": {
     "images": {
-      "stateApi": "ghcr.io/didi-build/foreman-state-api@sha256:",
-      "receiver": "ghcr.io/didi-build/foreman-github-receiver@sha256:",
-      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:",
-      "runWatcher": "ghcr.io/didi-build/foreman-run-watcher@sha256:"
+      "stateApi": "ghcr.io/didi-build/foreman-state-api@sha256:79b65616442382902bca4e8c6f306404e6dc3803702f30b650bf744198060c33",
+      "receiver": "ghcr.io/didi-build/foreman-github-receiver@sha256:f3429ddd63079174269851ce8e2ced5fafe45f0fcbb953208e60484cafd39edd",
+      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:edc2eecfffad1e8d30fed67bfefc8b87c46a81675866f80a213934a0dcc83052",
+      "runWatcher": "ghcr.io/didi-build/foreman-run-watcher@sha256:f92bd7a5b8a509511af9b448d500456175729b0bc4953e95305f6728e08f99ea"
     },
     "serviceUser": 1000,
     "resources": {
@@ -29,11 +29,11 @@
         "limits": { "cpu": "500m", "memory": "512Mi", "ephemeral-storage": "256Mi" }
       }
     },
-    "windmill": { "host": "", "workspace": "" },
+    "windmill": { "host": "app.windmill.dev", "workspace": "foreman" },
     "receiver": {
-      "developerAppLogin": "",
-      "designerAppLogin": "",
-      "runnerAppSlug": ""
+      "developerAppLogin": "didi-build-foreman-developer[bot]",
+      "designerAppLogin": "didi-build-foreman-designer[bot]",
+      "runnerAppSlug": "didi-build-foreman-runner"
     },
     "clusterDns": { "namespace": "kube-system", "podLabels": { "k8s-app": "kube-dns" } }
   },
