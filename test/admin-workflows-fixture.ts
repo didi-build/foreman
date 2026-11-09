@@ -4,7 +4,11 @@
 // is a documentation address (RFC 5737).
 import { readFileSync } from "node:fs";
 
-import { clusterObjects, type ClusterSettings } from "../infra/kubernetes/render.ts";
+import {
+  clusterObjects,
+  forServerSideApply,
+  type ClusterSettings,
+} from "../infra/kubernetes/render.ts";
 
 export const SETTINGS_FILE = "infra/kubernetes/settings/production.json";
 
@@ -82,6 +86,11 @@ export function filledSettings(
   };
 }
 
+/**
+ * The rendered objects as the Platform workflow's render job prints them
+ * (`node infra/kubernetes/render.ts`): the form the plan, the address swap and the apply read, so
+ * the scripts are tested on what they really get (O-119).
+ */
 export const renderedObjects = (
   kubernetesApi: KubernetesApi = RUN_TIME_KUBERNETES_API,
-) => clusterObjects(filledSettings(kubernetesApi));
+) => forServerSideApply(clusterObjects(filledSettings(kubernetesApi)));
