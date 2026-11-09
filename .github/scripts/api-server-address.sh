@@ -52,7 +52,7 @@ if ! jq -e '
 fi
 
 placeholder_rule='type == "object"
-  and .to == [{ ipBlock: { cidr: $cidr, except: [] } }]
+  and .to == [{ ipBlock: { cidr: $cidr } }]
   and [.ports[]?.port] == [$port]'
 matches="$(jq --arg cidr "${placeholder_address}/32" --argjson port "$placeholder_port" \
   "[paths($placeholder_rule)] | length" "$manifests")"
@@ -70,7 +70,7 @@ trap 'rm -f "$swapped"' EXIT
 jq --arg cidr "${placeholder_address}/32" --argjson port "$placeholder_port" --argjson api "$api" "
   first(paths($placeholder_rule)) as \$at
   | setpath(\$at; getpath(\$at)
-      | .to = [\$api.addresses[] | { ipBlock: { cidr: (. + \"/32\"), except: [] } }]
+      | .to = [\$api.addresses[] | { ipBlock: { cidr: (. + \"/32\") } }]
       | .ports |= map(.port = \$api.port[0]))" "$manifests" >"$swapped"
 
 if grep -Eq "(^|[^0-9])${placeholder_address//./\\.}([^0-9]|$)" "$swapped"; then
