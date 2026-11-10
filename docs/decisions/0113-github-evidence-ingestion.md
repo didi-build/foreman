@@ -22,7 +22,7 @@ The guards (M2.2) read evidence the runner records from outside the agents: CI r
 A new container service, `src/github-receiver/`, with the ADR 0111 conventions, connected to the store through its own narrow database role `factory_ingest`.
 
 - Not a route on the state API: the API's role (`factory_api`) cannot write evidence a guard trusts, by design (essential 6, ADR 0102). Giving the API that power to receive webhooks would break that separation.
-- Not Windmill webhooks: every delivery would be a Windmill execution, and the free tier's 1,000 a month (D-164) would be gone in days.
+- Not Windmill webhooks: every delivery would be a Windmill execution, and the free tier's 1,000 a month (D-164) would be gone in days. (Since D-369 the workspace is on the Team plan, 10,000 a month; webhook deliveries would still spend them for nothing.)
 - It runs next to the state API on the platform pool of the one DigitalOcean Kubernetes cluster (D-193, [ADR 0106](./0106-agent-execution-environment.md) section 1), so it adds no separate host. It accepts inbound webhooks only.
 
 ### 2. Authenticity, before anything is parsed
