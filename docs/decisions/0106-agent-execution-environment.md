@@ -14,7 +14,7 @@ What is known:
 
 - The M0.2 spike (D-172) started Claude Code headless with `--output-format json`, `--max-turns` and `--max-budget-usd`, and read back status, turns and cost. A trivial task took 3 turns, 16 seconds and about 0.02 USD. It ran on Didi's Windows laptop, which is not a place to run agents unattended.
 - The state API and the GitHub receiver were planned on one DigitalOcean host in Toronto (D-141, D-180). D-193 moves them onto the cluster's platform pool instead (section 1). Nothing is created yet.
-- Windmill Cloud stays on the free tier with 1,000 executions a month, and the reconcile pass runs every 2 hours until Kubernetes exists (D-163, D-164). Amended 2026-11-09 by D-369: the free tier counts each second of a job as an execution and is too small, so the workspace is on the Team plan, 10,000 executions a month.
+- Windmill Cloud stays on the free tier with 1,000 executions a month, and the reconcile pass runs every 2 hours until Kubernetes exists (D-163, D-164). Amended 2026-11-10 by D-369: the free tier counts each second of a job as an execution and is too small, so the workspace is on the Team plan, 10,000 executions a month.
 - Kubernetes on DigitalOcean is the second release (D-165).
 - Agents get no production access and no credential that reaches real personal data (essentials, section 4 of the architecture).
 
