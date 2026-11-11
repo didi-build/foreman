@@ -232,7 +232,7 @@ See `docs/cutover.md`.
 | QA agent           | Read PRs, CI (with its preview check) and staging. Post verdicts under its own identity                                  | Merge. Edit code                                                                                                                     |
 | Council and Triage | Read the status view of all projects, create plans, work items and decisions                                             | Read other projects' code or secrets. Move states directly                                                                           |
 | Run watcher        | Get, list and watch Jobs in agent namespaces. Start the run-end flow through the Windmill proxy (D-330)                  | Read pods, logs or Secrets. Write anything in the cluster. Touch another namespace. Reach the database. Start any other flow         |
-| Didi               | Everything gated to him                                                                                                  |                                                                                                                                      |
+| Didi               | Everything gated to them                                                                                                 |                                                                                                                                      |
 
 Rules:
 
