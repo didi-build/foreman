@@ -873,15 +873,14 @@ describe.skipIf(process.platform === "win32")(
     });
 
     describe("runner-token.sh", () => {
-      const WINDMILL_TOKEN = "test-only-windmill-resources-token-0001";
+      const WINDMILL_TOKEN = "test-only-windmill-variables-token-0001";
       const RUNNER_TOKEN = "test-only-runner-head.test-only-runner-body.test-only-sig";
       const ENDPOINT = "https://test-only-cluster.k8s.example.com";
       const CA_PEM =
         "-----BEGIN CERTIFICATE-----\nTESTONLYNOTACERT\n-----END CERTIFICATE-----\n";
       const DESCRIPTION =
         "Written by the Platform workflow's runner-token job (D-352). Run it again rather than editing this by hand.";
-      const CREATE_URL =
-        "https://windmill.example.com/api/w/example/resources/create?update_if_exists=true";
+      const API = "https://windmill.example.com/api/w/example/variables";
 
       /** The three Windmill paths flows/windmill.yaml gives the values the runner reads. */
       const description = parseYaml(readFileSync("flows/windmill.yaml", "utf8")) as {
@@ -890,14 +889,16 @@ describe.skipIf(process.platform === "win32")(
           values: { name: string; windmill_path?: string }[];
         };
       };
-      const windmillPath = (key: string) =>
-        [...description.resources.secrets, ...description.resources.values].find(
-          (entry) => ("path" in entry ? entry.path : entry.name) === key,
-        )?.windmill_path as string;
       const PATHS = {
-        token: windmillPath("platform/agent-cluster/runner-token"),
-        endpoint: windmillPath("agent_cluster_endpoint"),
-        ca: windmillPath("agent_cluster_ca_certificate"),
+        token: description.resources.secrets.find(
+          (s) => s.path === "platform/agent-cluster/runner-token",
+        )?.windmill_path as string,
+        endpoint: description.resources.values.find(
+          (v) => v.name === "agent_cluster_endpoint",
+        )?.windmill_path as string,
+        ca: description.resources.values.find(
+          (v) => v.name === "agent_cluster_ca_certificate",
+        )?.windmill_path as string,
       };
 
       interface CurlCall {
@@ -907,6 +908,7 @@ describe.skipIf(process.platform === "win32")(
         method: string;
         url: string;
         body: string;
+        stdin?: string;
       }
       const curlCalls = (box: Sandbox): CurlCall[] =>
         readFileSync(box.env.FAKE_CURL_LOG as string, "utf8")
@@ -914,8 +916,40 @@ describe.skipIf(process.platform === "win32")(
           .filter(Boolean)
           .map((line) => JSON.parse(line) as CurlCall);
 
-      const tokenBox = (state: Record<string, unknown> = {}) =>
-        sandbox({
+      interface Variable {
+        value: string;
+        is_secret: boolean;
+        description: string;
+      }
+      /** The variables the fake Windmill holds (fake-curl.mjs). */
+      const storeFile = (box: Sandbox) =>
+        `${box.env.FAKE_CURL_LOG as string}.variables`;
+      const variables = (box: Sandbox): Record<string, Variable> =>
+        existsSync(storeFile(box))
+          ? (JSON.parse(readFileSync(storeFile(box), "utf8")) as Record<
+              string,
+              Variable
+            >)
+          : {};
+      const WRITTEN = (): Record<string, Variable> => ({
+        [PATHS.token]: {
+          value: RUNNER_TOKEN,
+          is_secret: true,
+          description: DESCRIPTION,
+        },
+        [PATHS.endpoint]: {
+          value: ENDPOINT,
+          is_secret: false,
+          description: DESCRIPTION,
+        },
+        [PATHS.ca]: { value: CA_PEM, is_secret: false, description: DESCRIPTION },
+      });
+
+      const tokenBox = (
+        state: Record<string, unknown> = {},
+        held: Record<string, Variable> = {},
+      ) => {
+        const box = sandbox({
           kubeconfigServer: ENDPOINT,
           kubeconfigCaData: Buffer.from(CA_PEM).toString("base64"),
           serviceAccounts: ["foreman-runner/foreman-runner"],
@@ -923,6 +957,10 @@ describe.skipIf(process.platform === "win32")(
           tokenFillAfterPolls: 1,
           ...state,
         });
+        if (Object.keys(held).length > 0)
+          writeFileSync(storeFile(box), JSON.stringify(held));
+        return box;
+      };
 
       const tokenRun = (
         box: Sandbox,
@@ -971,7 +1009,19 @@ describe.skipIf(process.platform === "win32")(
           expect(content).not.toContain(WINDMILL_TOKEN);
       };
 
-      it("makes the token Secret for foreman-runner server-side, then writes the token, endpoint and CA certificate to exactly the three Windmill paths", () => {
+      /** The log a reader sees, line by line, with the masks left out. */
+      const logLines = (stdout: string) =>
+        withoutMasks(stdout).split("\n").filter(Boolean);
+
+      /** Each call's method and URL, and the JSON body of each write. */
+      const requests = (box: Sandbox) =>
+        curlCalls(box).map((c) =>
+          c.method === "GET"
+            ? [c.method, c.url]
+            : [c.method, c.url, JSON.parse(c.body) as unknown],
+        );
+
+      it("makes the token Secret for foreman-runner server-side, then on a first run creates three variables at exactly the three Windmill paths, only the token secret", () => {
         const box = tokenBox();
         const result = tokenRun(box);
         expect(result.status).toBe(0);
@@ -1005,46 +1055,71 @@ describe.skipIf(process.platform === "win32")(
             "foreman-runner-token"
           ]?.polls,
         ).toBe(2);
-        const calls = curlCalls(box);
-        expect(calls.map((c) => [c.method, c.url])).toEqual([
-          ["POST", CREATE_URL],
-          ["POST", CREATE_URL],
-          ["POST", CREATE_URL],
+        // For each path: is it there (no), then create it, with the value itself as its value.
+        expect(requests(box)).toEqual([
+          ["GET", `${API}/exists/${PATHS.token}`],
+          [
+            "POST",
+            `${API}/create`,
+            {
+              path: PATHS.token,
+              value: RUNNER_TOKEN,
+              is_secret: true,
+              description: DESCRIPTION,
+            },
+          ],
+          ["GET", `${API}/exists/${PATHS.endpoint}`],
+          [
+            "POST",
+            `${API}/create`,
+            {
+              path: PATHS.endpoint,
+              value: ENDPOINT,
+              is_secret: false,
+              description: DESCRIPTION,
+            },
+          ],
+          ["GET", `${API}/exists/${PATHS.ca}`],
+          [
+            "POST",
+            `${API}/create`,
+            {
+              path: PATHS.ca,
+              value: CA_PEM,
+              is_secret: false,
+              description: DESCRIPTION,
+            },
+          ],
         ]);
-        for (const call of calls) {
-          expect(call.headers).toEqual([
-            `Authorization: Bearer ${WINDMILL_TOKEN}`,
-            "Content-Type: application/json",
-          ]);
-          expect(call.headerFiles).toHaveLength(1);
-          expect(call.args).toEqual(
-            expect.arrayContaining(["--data-binary", "@-", "--output", "/dev/null"]),
+        for (const call of curlCalls(box)) {
+          expect(call.headers).toEqual(
+            call.method === "GET"
+              ? [`Authorization: Bearer ${WINDMILL_TOKEN}`]
+              : [
+                  `Authorization: Bearer ${WINDMILL_TOKEN}`,
+                  "Content-Type: application/json",
+                ],
           );
+          expect(call.headerFiles).toHaveLength(1);
           expect(call.args).toContain("=https");
+          if (call.method === "GET") {
+            // The check sends nothing: no body, and nothing on its stdin.
+            expect(call.body).toBe("");
+            expect(call.stdin).toBe("");
+          } else {
+            expect(call.args).toEqual(
+              expect.arrayContaining(["--data-binary", "@-", "--output", "/dev/null"]),
+            );
+          }
         }
-        expect(calls.map((c) => JSON.parse(c.body) as unknown)).toEqual([
-          {
-            path: PATHS.token,
-            value: { content: RUNNER_TOKEN },
-            resource_type: "foreman_text",
-            description: DESCRIPTION,
-          },
-          {
-            path: PATHS.endpoint,
-            value: { content: ENDPOINT },
-            resource_type: "foreman_text",
-            description: DESCRIPTION,
-          },
-          {
-            path: PATHS.ca,
-            value: { content: CA_PEM },
-            resource_type: "foreman_text",
-            description: DESCRIPTION,
-          },
+        expect(variables(box)).toEqual(WRITTEN());
+        // The log names each path and its status, and nothing else.
+        expect(logLines(result.stdout)).toEqual([
+          `Created ${PATHS.token} in Windmill (HTTP status 201).`,
+          `Created ${PATHS.endpoint} in Windmill (HTTP status 201).`,
+          `Created ${PATHS.ca} in Windmill (HTTP status 201).`,
+          "The runner's cluster token, the cluster's endpoint and its CA certificate are in Windmill.",
         ]);
-        expect(withoutMasks(result.stdout)).toContain(
-          `Wrote ${PATHS.token} in Windmill (HTTP status 201).`,
-        );
       });
 
       it("shows the Windmill token, the endpoint and the runner's token only on ::add-mask:: lines, never in an argument, and leaves no file holding the Windmill token", () => {
@@ -1064,35 +1139,121 @@ describe.skipIf(process.platform === "win32")(
         expectNothingShown(box, result);
       });
 
-      it("applies the same Secret and writes the same token again on a second run", () => {
+      it("applies the same Secret again and updates the three variables on a second run, keeping only the token secret", () => {
         const box = tokenBox({ tokenFillAfterPolls: 0 });
         expect(tokenRun(box).status).toBe(0);
-        expect(tokenRun(box).status).toBe(0);
+        const firstCalls = curlCalls(box).length;
+        const second = tokenRun(box);
+        expect(second.status).toBe(0);
         const applies = box.calls().filter((c) => c.args[0] === "apply");
         expect(applies).toHaveLength(2);
         expect(applies[1]).toEqual(applies[0]);
-        const tokens = curlCalls(box)
-          .map(
-            (c) => JSON.parse(c.body) as { path: string; value: { content: string } },
-          )
-          .filter((b) => b.path === PATHS.token)
-          .map((b) => b.value.content);
-        expect(tokens).toEqual([RUNNER_TOKEN, RUNNER_TOKEN]);
+        expect(requests(box).slice(firstCalls)).toEqual([
+          ["GET", `${API}/exists/${PATHS.token}`],
+          [
+            "POST",
+            `${API}/update/${PATHS.token}`,
+            { value: RUNNER_TOKEN, is_secret: true, description: DESCRIPTION },
+          ],
+          ["GET", `${API}/exists/${PATHS.endpoint}`],
+          [
+            "POST",
+            `${API}/update/${PATHS.endpoint}`,
+            { value: ENDPOINT, is_secret: false, description: DESCRIPTION },
+          ],
+          ["GET", `${API}/exists/${PATHS.ca}`],
+          [
+            "POST",
+            `${API}/update/${PATHS.ca}`,
+            { value: CA_PEM, is_secret: false, description: DESCRIPTION },
+          ],
+        ]);
+        expect(variables(box)).toEqual(WRITTEN());
+        expect(logLines(second.stdout)).toEqual([
+          `Updated ${PATHS.token} in Windmill (HTTP status 200).`,
+          `Updated ${PATHS.endpoint} in Windmill (HTTP status 200).`,
+          `Updated ${PATHS.ca} in Windmill (HTTP status 200).`,
+          "The runner's cluster token, the cluster's endpoint and its CA certificate are in Windmill.",
+        ]);
+        expectNothingShown(box, second);
       });
 
-      it("refuses any status but 2xx with fixed text, shows none of Windmill's answer, and writes nothing more", () => {
-        for (const status of ["302", "401", "403", "500"]) {
-          const box = tokenBox();
-          const result = tokenRun(box, { FAKE_CURL_STATUSES: `201 ${status}` });
-          expect(result.status, status).toBe(1);
-          expect(result.stderr).toContain(
+      it("puts a variable made by hand back into its decided shape: the token secret, the others plain", () => {
+        const byHand = { description: "made by hand" };
+        const box = tokenBox(
+          {},
+          {
+            [PATHS.token]: { ...byHand, value: "test-only-old", is_secret: false },
+            [PATHS.ca]: { ...byHand, value: "test-only-old", is_secret: true },
+          },
+        );
+        expect(tokenRun(box).status).toBe(0);
+        expect(curlCalls(box).map((c) => `${c.method} ${c.url}`)).toEqual([
+          `GET ${API}/exists/${PATHS.token}`,
+          `POST ${API}/update/${PATHS.token}`,
+          `GET ${API}/exists/${PATHS.endpoint}`,
+          `POST ${API}/create`,
+          `GET ${API}/exists/${PATHS.ca}`,
+          `POST ${API}/update/${PATHS.ca}`,
+        ]);
+        expect(variables(box)).toEqual(WRITTEN());
+      });
+
+      it("refuses any status but 2xx, on the check or on the write, with fixed text, shows none of Windmill's answer, and writes nothing more", () => {
+        for (const status of ["302", "400", "401", "403", "404", "500"]) {
+          // The endpoint's write fails: the token is written, the CA certificate is not.
+          const onWrite = tokenBox();
+          const write = tokenRun(onWrite, { FAKE_CURL_STATUSES: `- - - ${status}` });
+          expect(write.status, status).toBe(1);
+          expect(write.stderr).toContain(
             `::error::Windmill refused writing ${PATHS.endpoint} (HTTP status ${status}). Its answer is not shown, since it could repeat what was sent.`,
           );
-          expect(curlCalls(box)).toHaveLength(2);
+          expect(curlCalls(onWrite)).toHaveLength(4);
+          expect(Object.keys(variables(onWrite))).toEqual([PATHS.token]);
           // The fake's answer repeats the request: none of it reaches the log.
+          expect(`${write.stdout}${write.stderr}`).not.toContain("echo");
+          expectNothingShown(onWrite, write);
+
+          // The endpoint's check fails: nothing is written for it.
+          const onCheck = tokenBox();
+          const check = tokenRun(onCheck, { FAKE_CURL_STATUSES: `- - ${status}` });
+          expect(check.status, status).toBe(1);
+          expect(check.stderr).toContain(
+            `::error::Windmill refused checking ${PATHS.endpoint} (HTTP status ${status}). Its answer is not shown.`,
+          );
+          expect(curlCalls(onCheck)).toHaveLength(3);
+          expect(Object.keys(variables(onCheck))).toEqual([PATHS.token]);
+          expect(`${check.stdout}${check.stderr}`).not.toContain("echo");
+          expectNothingShown(onCheck, check);
+        }
+      });
+
+      it("refuses, showing none of it, an answer to the check that is neither true nor false, and writes nothing", () => {
+        for (const answer of ["echo", "", "TRUE", "true\nfalse", '{"exists": true}']) {
+          const box = tokenBox();
+          const result = tokenRun(box, { FAKE_CURL_EXISTS_ANSWER: answer });
+          expect(result.status, answer).toBe(1);
+          expect(result.stderr).toContain(
+            `::error::Windmill's answer to checking ${PATHS.token} is neither true nor false. It is not shown.`,
+          );
+          expect(curlCalls(box)).toHaveLength(1);
+          expect(variables(box)).toEqual({});
+          // The echo repeats the request's headers, the Windmill token among them.
           expect(`${result.stdout}${result.stderr}`).not.toContain("echo");
           expectNothingShown(box, result);
         }
+      });
+
+      it("never reads an earlier path's answer again when a check answers nothing", () => {
+        // The token's check answers false; the endpoint's answers an empty body.
+        const box = tokenBox();
+        const result = tokenRun(box, { FAKE_CURL_EXISTS_ANSWER: '["false", ""]' });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          `::error::Windmill's answer to checking ${PATHS.endpoint} is neither true nor false. It is not shown.`,
+        );
+        expect(curlCalls(box)).toHaveLength(3);
+        expect(Object.keys(variables(box))).toEqual([PATHS.token]);
       });
 
       it("refuses with fixed text when Windmill cannot be reached, showing no value", () => {
@@ -1100,7 +1261,7 @@ describe.skipIf(process.platform === "win32")(
         const result = tokenRun(box, { FAKE_CURL_EXIT: "7" });
         expect(result.status).toBe(1);
         expect(result.stderr).toContain(
-          `::error::Windmill could not be reached to write ${PATHS.token}`,
+          `::error::Windmill could not be reached to check ${PATHS.token}`,
         );
         expect(curlCalls(box)).toHaveLength(1);
         expectNothingShown(box, result);

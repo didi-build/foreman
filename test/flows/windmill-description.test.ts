@@ -68,6 +68,10 @@ interface Description {
   resources: {
     secrets: { path: string; read_by?: string; windmill_path?: string }[];
     values: { name: string; windmill_path?: string }[];
+    github_apps: {
+      secrets: { path: string; windmill_path?: string; written_by?: string }[];
+      values: { name: string; windmill_path?: string; written_by?: string }[];
+    };
   };
 }
 
@@ -173,12 +177,13 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     }
   });
 
-  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes and the two Didi stores for the staging deploy (D-352, O-110, O-116)", () => {
+  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes and the three Didi stores for the database login and the staging deploy (D-352, D-370, O-110, O-116)", () => {
     const withPath = [
       ...description.resources.secrets.map((s) => [s.path, s.windmill_path]),
       ...description.resources.values.map((v) => [v.name, v.windmill_path]),
     ].filter(([, windmillPath]) => windmillPath !== undefined);
     expect(Object.fromEntries(withPath)).toEqual({
+      [SECRET_PATHS.database]: `f/foreman/${SECRET_PATHS.database}`,
       [SECRET_PATHS.clusterToken]: `f/foreman/${SECRET_PATHS.clusterToken}`,
       [VALUE_NAMES.clusterEndpoint]: `f/foreman/${VALUE_NAMES.clusterEndpoint}`,
       [VALUE_NAMES.clusterCaCertificate]: `f/foreman/${VALUE_NAMES.clusterCaCertificate}`,
@@ -197,6 +202,72 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     expect(runbook).toContain("## 16. The staging deploy token (new-credentials gate)");
     expect(runbook).toContain(`\`f/foreman/${SECRET_PATHS.stagingDeployToken}\``);
     expect(runbook).toContain(`\`f/foreman/${SECRET_PATHS.cloudflareAccountId}\``);
+  });
+
+  it("lists every secret as a secret variable and every value as a plain variable, never a resource (D-370)", () => {
+    const yaml = readFileSync("flows/windmill.yaml", "utf8");
+    expect(yaml).toContain(
+      "Every secret here is a Windmill secret variable, which Windmill encrypts with the workspace's",
+    );
+    expect(yaml).not.toMatch(/foreman_text|"content"|resource type/);
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    const step = (n: string) =>
+      runbook.slice(
+        runbook.indexOf(`## ${n}. `),
+        runbook.indexOf("\n## ", runbook.indexOf(`## ${n}. `) + 1),
+      );
+    // The database login (step 15) and the staging pair (step 16) are secret variables there.
+    expect(step("15")).toContain(
+      `stored in Windmill as a secret variable at \`f/foreman/${SECRET_PATHS.database}\``,
+    );
+    expect(step("16")).toContain(
+      "add two secret variables, each holding the value itself",
+    );
+    // ("resource" is left only in Cloudflare's own form: resource Workers Scripts.)
+    expect(step("16")).not.toMatch(
+      /foreman_text|"content"|two resources|both resources/,
+    );
+  });
+
+  it("names the GitHub Apps' keys as secret variables and their ids as plain variables beside them, read by no flow yet (D-368, D-370)", () => {
+    const roles = ["runner", "developer", "designer", "qa"];
+    const apps = description.resources.github_apps;
+    expect(apps.secrets.map((s) => [s.path, s.windmill_path])).toEqual(
+      roles.map((role) => [
+        `platform/github/${role}-app-private-key`,
+        `f/foreman/platform/github/${role}-app-private-key`,
+      ]),
+    );
+    expect(apps.values.map((v) => [v.name, v.windmill_path])).toEqual([
+      ...roles.map((role) => [
+        `platform/github/${role}-app-id`,
+        `f/foreman/platform/github/${role}-app-id`,
+      ]),
+      [
+        "platform/github/runner-app-installation-id",
+        "f/foreman/platform/github/runner-app-installation-id",
+      ],
+    ]);
+    for (const entry of [...apps.secrets, ...apps.values])
+      expect(entry.written_by).toBe("Didi, by hand (first-hosting runbook step 15)");
+    // Not read by the composition yet, so neither a secret path nor a value name of it.
+    const read = [
+      ...Object.values(SECRET_PATHS),
+      ...Object.values(VALUE_NAMES),
+    ] as string[];
+    for (const entry of apps.secrets) expect(read).not.toContain(entry.path);
+    for (const entry of apps.values) expect(read).not.toContain(entry.name);
+    // Step 15 names each path: the keys as secret variables, the ids beside them as plain ones.
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    const line = runbook
+      .split("\n")
+      .find((l) =>
+        l.startsWith("- The four GitHub Apps' private keys and ids (D-368, D-370)"),
+      );
+    for (const entry of [...apps.secrets, ...apps.values])
+      expect(line, entry.windmill_path).toContain(`\`${entry.windmill_path ?? ""}\``);
+    expect(line).toMatch(/paste the PEM into its Windmill secret variable/);
+    expect(line).toMatch(/as plain variables, since they are not secret/);
   });
 });
 

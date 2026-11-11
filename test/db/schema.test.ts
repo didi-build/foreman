@@ -221,13 +221,43 @@ describe.skipIf(!adminUrl)(
       expect(changed.out).toBe("true|false|didi");
     });
 
-    it("seeds the loop interval from D-164 and the Windmill alert from D-167", () => {
+    it("seeds the loop interval from D-164 and the Windmill alert from D-167, with the Team plan's limit (D-369)", () => {
       const values = sql(
         "select string_agg(key || '=' || value::text, ',' order by key) from factory.settings where key in ('reconcile_interval_minutes', 'windmill_monthly_execution_limit', 'windmill_alert_percent');",
       );
       expect(values.out).toBe(
-        "reconcile_interval_minutes=120,windmill_alert_percent=80,windmill_monthly_execution_limit=1000",
+        "reconcile_interval_minutes=120,windmill_alert_percent=80,windmill_monthly_execution_limit=10000",
       );
+      // 0022 changed 0001's seed, and the change is logged like any other.
+      expect(
+        sql(
+          "select string_agg(coalesce(old_value::text, '-') || '>' || new_value::text || ' by ' || changed_by, ',' order by id) from factory.settings_log where key = 'windmill_monthly_execution_limit';",
+        ).out,
+      ).toBe("->1000 by migration,1000>10000 by migration");
+    });
+
+    it("moves only the seeded execution limit to the Team plan's, never one Didi set (migration 0022, D-369)", () => {
+      const TEAM_PLAN = "db/migrations/0022_windmill_team_plan.sql";
+      const limit = (): string =>
+        sql(
+          "select value::text from factory.settings where key = 'windmill_monthly_execution_limit';",
+        ).out;
+      const set = (value: string, by: string) =>
+        sql(
+          `update factory.settings set value = '${value}'::jsonb, updated_by = '${by}', updated_at = ${AT} where key = 'windmill_monthly_execution_limit';`,
+        );
+      try {
+        expect(set("5000", "didi").ok).toBe(true);
+        const kept = sql(readFileSync(TEAM_PLAN, "utf8"));
+        expect(kept.ok, kept.err).toBe(true);
+        expect(limit()).toBe("5000");
+        expect(set("1000", "didi").ok).toBe(true);
+        const moved = sql(readFileSync(TEAM_PLAN, "utf8"));
+        expect(moved.ok, moved.err).toBe(true);
+        expect(limit()).toBe("10000");
+      } finally {
+        expect(set("10000", "migration").ok).toBe(true);
+      }
     });
 
     describe("the close runs' routes (migration 0019, D-318, D-324)", () => {
@@ -331,13 +361,35 @@ describe.skipIf(!adminUrl)(
       });
     });
 
-    it("seeds the usage-exhausted wait and leaves the cluster run limit to be set (migration 0003)", () => {
+    it("seeds the usage-exhausted wait (migration 0003) and the cluster run limit of two (migration 0023, D-372)", () => {
       const values = sql(
         "select string_agg(key || '=' || value::text, ',' order by key) from factory.settings where key in ('usage_exhausted_wait_minutes', 'agent_cluster_max_active_runs');",
       );
-      expect(values.out).toBe("usage_exhausted_wait_minutes=30");
+      expect(values.out).toBe(
+        "agent_cluster_max_active_runs=2,usage_exhausted_wait_minutes=30",
+      );
       const index = sql("select to_regclass('factory.runs_active') is not null;");
       expect(index.out).toBe("t");
+    });
+
+    it("never replaces a cluster run limit already set (migration 0023, D-372)", () => {
+      const RUN_LIMIT = "db/migrations/0023_cluster_run_limit.sql";
+      const limit = (): string =>
+        sql(
+          "select value::text from factory.settings where key = 'agent_cluster_max_active_runs';",
+        ).out;
+      const set = (value: string, by: string) =>
+        sql(
+          `update factory.settings set value = '${value}'::jsonb, updated_by = '${by}', updated_at = ${AT} where key = 'agent_cluster_max_active_runs';`,
+        );
+      try {
+        expect(set("3", "didi").ok).toBe(true);
+        const again = sql(readFileSync(RUN_LIMIT, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        expect(limit()).toBe("3");
+      } finally {
+        expect(set("2", "migration").ok).toBe(true);
+      }
     });
 
     it("keeps a usage-exhausted cause and retry-after on usage_exhausted ends only", () => {

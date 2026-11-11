@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Make the runner's cluster token and write it, with the cluster's endpoint and CA certificate,
-# into Windmill's resources (first-hosting runbook step 8, D-352, O-110). The Platform workflow's
-# `runner-token` job runs it right after fetching its short-lived cluster credential.
+# into Windmill's variables (first-hosting runbook step 8, D-352, D-370, O-110, O-120). The
+# Platform workflow's `runner-token` job runs it right after fetching its short-lived cluster
+# credential.
 #
 # The token: a `kubernetes.io/service-account-token` Secret for the `foreman-runner` service
 # account, which the cluster fills in (Kubernetes' "Manually create a long-lived API token for a
@@ -13,13 +14,16 @@
 #
 # Each value is checked before it is masked, and masked before anything else can print it, so a
 # value with a newline never leaves half a mask line; a value that fails its check is refused
-# with fixed text and never printed. Each goes to Windmill in one call of `createResource` with
-# `update_if_exists=true`, made with the Windmill token in WINDMILL_RUNNER_RESOURCES_TOKEN, whose
-# only scope is `resources:write` on exactly the three paths below. A value goes through stdin
-# into jq, and the body from jq through stdin into curl; the Windmill token goes into a header
-# file only this user can read, removed on exit. Neither is ever an argument. Windmill's answer is
-# never printed, since it could repeat what was sent: only its status, and any status but 2xx
-# stops the run with fixed text.
+# with fixed text and never printed. Each becomes one Windmill variable (D-370): the token a
+# secret variable, which Windmill encrypts with the workspace's key, the endpoint and the CA
+# certificate plain variables. For each, the script asks Windmill whether the variable exists,
+# then creates it (the first run) or updates its value (every run after). The calls are made with
+# the Windmill token in WINDMILL_RUNNER_RESOURCES_TOKEN (its name is D-352's), whose only scope
+# is `variables:write` on exactly the three paths below. A value goes through stdin into jq, and
+# the body from jq through stdin into curl; the Windmill token goes into a header file only this
+# user can read, removed on exit. Neither is ever an argument. Windmill's answer is never printed,
+# since it could repeat what was sent: only the status of each write, and any status but 2xx, or
+# an answer to the existence check other than true or false, stops the run with fixed text.
 set -euo pipefail
 : "${SETTINGS_FILE:?}" "${RUNNER_TEMP:?}"
 
@@ -28,11 +32,11 @@ namespace="foreman-runner"
 service_account="foreman-runner"
 token_secret="foreman-runner-token"
 field_manager="foreman-runner-token"
-# The Windmill side: the paths, type and shape flows/windmill.yaml gives (O-110).
+# The Windmill side: the paths flows/windmill.yaml gives (O-110). The token is under its
+# `secrets`, so a secret variable; the endpoint and the CA certificate are under its `values`.
 token_path="f/foreman/platform/agent-cluster/runner-token"
 endpoint_path="f/foreman/agent_cluster_endpoint"
 ca_path="f/foreman/agent_cluster_ca_certificate"
-resource_type="foreman_text"
 description="Written by the Platform workflow's runner-token job (D-352). Run it again rather than editing this by hand."
 # How long the cluster has to fill in the token: 30 polls, 2 seconds apart.
 poll_seconds="${RUNNER_TOKEN_POLL_SECONDS:-2}"
@@ -122,14 +126,51 @@ fi
 echo "::add-mask::$token"
 
 printf 'Authorization: Bearer %s\n' "$windmill_token" >"$work/headers"
+api="https://$host/api/w/$workspace/variables"
 
-# One resource, its value read from stdin.
-write_resource() {
-  local path="$1" status
+# One variable, its value read from stdin, secret or not as the second argument says (true or
+# false). Windmill's create refuses a path that exists and its update one that does not, so the
+# script asks first: `exists` answers true or false. Windmill's route check lets any token with a
+# variables scope ask it, for any path (that check is blind to paths, and write includes read),
+# and the handler adds no check of its own; it tells only whether a path exists. The answer
+# file is emptied first, so an earlier path's answer is never read again.
+write_variable() {
+  local path="$1" is_secret="$2" status body url done_text
+  : >"$work/exists"
+  if ! status="$(
+    curl --silent --show-error --proto '=https' --max-time 30 \
+      --header @"$work/headers" \
+      --output "$work/exists" \
+      --write-out '%{http_code}' \
+      "$api/exists/$path" </dev/null
+  )"; then
+    refuse "Windmill could not be reached to check $path (curl's own error is above; it shows no value)."
+  fi
+  if ! [[ "$status" =~ ^2[0-9]{2}$ ]]; then
+    if ! [[ "$status" =~ ^[0-9]{3}$ ]]; then
+      status="none"
+    fi
+    refuse "Windmill refused checking $path (HTTP status $status). Its answer is not shown. A 401 or 403 means the token is wrong, expired or not limited to these paths (first-hosting runbook step 8)."
+  fi
+  case "$(cat "$work/exists")" in
+    false)
+      url="$api/create"
+      body='{path: $path, value: ., is_secret: $is_secret, description: $description}'
+      done_text="Created"
+      ;;
+    true)
+      url="$api/update/$path"
+      body='{value: ., is_secret: $is_secret, description: $description}'
+      done_text="Updated"
+      ;;
+    *)
+      refuse "Windmill's answer to checking $path is neither true nor false. It is not shown."
+      ;;
+  esac
   if ! status="$(
     jq --raw-input --slurp --compact-output \
-      --arg path "$path" --arg type "$resource_type" --arg description "$description" \
-      '{path: $path, value: {content: .}, resource_type: $type, description: $description}' |
+      --arg path "$path" --argjson is_secret "$is_secret" --arg description "$description" \
+      "$body" |
       curl --silent --show-error --proto '=https' --max-time 30 \
         --request POST \
         --header @"$work/headers" \
@@ -137,7 +178,7 @@ write_resource() {
         --data-binary @- \
         --output /dev/null \
         --write-out '%{http_code}' \
-        "https://$host/api/w/$workspace/resources/create?update_if_exists=true"
+        "$url"
   )"; then
     refuse "Windmill could not be reached to write $path (curl's own error is above; it shows no value)."
   fi
@@ -147,10 +188,10 @@ write_resource() {
     fi
     refuse "Windmill refused writing $path (HTTP status $status). Its answer is not shown, since it could repeat what was sent. A 401 or 403 means the token is wrong, expired or not limited to these paths (first-hosting runbook step 8)."
   fi
-  echo "Wrote $path in Windmill (HTTP status $status)."
+  echo "$done_text $path in Windmill (HTTP status $status)."
 }
 
-printf '%s' "$token" | write_resource "$token_path"
-printf '%s' "$endpoint" | write_resource "$endpoint_path"
-write_resource "$ca_path" <"$work/ca.pem"
+printf '%s' "$token" | write_variable "$token_path" true
+printf '%s' "$endpoint" | write_variable "$endpoint_path" false
+write_variable "$ca_path" false <"$work/ca.pem"
 echo "The runner's cluster token, the cluster's endpoint and its CA certificate are in Windmill."

@@ -23,8 +23,9 @@ name: Platform
 # - `runner-token` (environment `platform`, Didi's approval): only when started by hand with
 #   `runner_token`, makes the `foreman-runner` service account's token (a Secret the cluster fills
 #   in) and writes it, with the cluster's endpoint and CA certificate from this job's own
-#   credential, into Windmill's resources with a Windmill token limited to writing exactly those
-#   three resources (D-352, O-110). Nothing it writes is printed.
+#   credential, into Windmill's variables (the token a secret variable) with a Windmill token
+#   limited to writing exactly those three variables (D-352, D-370, O-110, O-120). Nothing it
+#   writes is printed.
 #
 # Each job that reaches the cluster fetches its own short-lived admin credential with the
 # DigitalOcean token (D-340), valid for the job's own time limit, and removes it at its end.
