@@ -130,7 +130,9 @@ api="https://$host/api/w/$workspace/variables"
 
 # One variable, its value read from stdin, secret or not as the second argument says (true or
 # false). Windmill's create refuses a path that exists and its update one that does not, so the
-# script asks first: `exists` answers true or false and needs no scope of its own. The answer
+# script asks first: `exists` answers true or false. Windmill's route check lets any token with a
+# variables scope ask it, for any path (that check is blind to paths, and write includes read),
+# and the handler adds no check of its own; it tells only whether a path exists. The answer
 # file is emptied first, so an earlier path's answer is never read again.
 write_variable() {
   local path="$1" is_secret="$2" status body url done_text
