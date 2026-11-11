@@ -1,0 +1,37 @@
+{
+  "agentImages": {
+    "opencode": "",
+    "claude-api": ""
+  },
+  "runSettings": {
+    "fetchImage": "",
+    "repoMapImage": "",
+    "proxyPort": 8080,
+    "runAsUser": 1000,
+    "resources": {
+      "agent": {
+        "requests": { "cpu": "250m", "memory": "512Mi", "ephemeral-storage": "1Gi" },
+        "limits": { "cpu": "1", "memory": "1Gi", "ephemeral-storage": "2Gi" }
+      },
+      "proxy": {
+        "requests": { "cpu": "50m", "memory": "64Mi", "ephemeral-storage": "64Mi" },
+        "limits": { "cpu": "250m", "memory": "128Mi", "ephemeral-storage": "256Mi" }
+      },
+      "fetch": {
+        "requests": { "cpu": "100m", "memory": "128Mi", "ephemeral-storage": "1Gi" },
+        "limits": { "cpu": "500m", "memory": "256Mi", "ephemeral-storage": "2Gi" }
+      },
+      "repoMap": {
+        "requests": { "cpu": "250m", "memory": "1Gi", "ephemeral-storage": "256Mi" },
+        "limits": { "cpu": "1", "memory": "1536Mi", "ephemeral-storage": "1Gi" }
+      }
+    },
+    "scratchSizeLimit": "1Gi",
+    "terminationGracePeriodSeconds": 30,
+    "ttlSecondsAfterFinished": 10800,
+    "proxyDeadlineMarginSeconds": 120,
+    "fetchMaxMinutes": 10,
+    "repoMapMaxMinutes": 5,
+    "workspace": { "size": "1Gi", "storageClassName": "do-block-storage" }
+  }
+}

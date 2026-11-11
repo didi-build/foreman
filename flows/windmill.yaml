@@ -1,8 +1,11 @@
-# The runner's Windmill flows, schedules, secrets and values, as data (build plan M3.1). Nothing
-# here is deployed yet. The Windmill deploy workflow (D-371, first-hosting runbook step 15)
-# bundles each entry with its imports and the files in `bundle_files` embedded, pushes it as a
-# script at its path with its `job_token_scopes`, and creates the schedules and the approval flow;
-# each secret and value is a Windmill variable at the path below (D-370).
+# The runner's Windmill flows, schedules, secrets and values, as data (build plan M3.1). The
+# Windmill deploy workflow (.github/workflows/windmill-deploy.yml, D-371, O-123, first-hosting
+# runbook step 15) reads this file: once Didi approves a run, it puts each entry into Windmill as
+# a script at its path with its `job_token_scopes`, its bundle holding its imports and the files
+# in `bundle_files` (scripts/windmill-bundle.ts), creates or updates each schedule, and writes the
+# plain values that no one else writes (those without `written_by` below). The approval flow is
+# not deployed until its `ask` step exists (M4.1). Each secret and value is a Windmill variable at
+# the path below (D-370); the deploy never writes a secret.
 # test/flows/windmill-description.test.ts keeps this file in step with the code.
 #
 # Why these flows, and not one per contract move: the architecture's reason for "one flow per
@@ -385,6 +388,12 @@ resources:
       holds: The Cloudflare account id of the staging Workers, 32 hex characters, kept as a secret as D-361 keeps it (O-116)
       windmill_path: f/foreman/platform/cloudflare/account-id
       written_by: Didi, by hand (first-hosting runbook step 16)
+  # The Windmill deploy writes each value below that has no `written_by`, as a plain variable, and
+  # only those (its token's `variables:write` names exactly them): `spec_version` is the deploy's
+  # own commit, the App names come from `platform.receiver` in
+  # infra/kubernetes/settings/production.json, and `agent_run_settings` and `agent_images` from
+  # infra/kubernetes/settings/agent-runs.json, which leaves each out until its images are pinned
+  # (O-123).
   values:
     - name: spec_version
       holds: The git commit of docs/spec.md and contracts/ the bundle was built from

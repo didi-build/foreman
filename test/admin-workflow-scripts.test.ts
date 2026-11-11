@@ -13,6 +13,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1383,6 +1384,860 @@ describe.skipIf(process.platform === "win32")(
           expect(`${result.stdout}${result.stderr}`).not.toContain("::warning::");
           expect(box.calls()).toEqual([]);
           expect(curlCalls(box)).toEqual([]);
+        }
+      });
+    });
+
+    describe("windmill-deploy.sh", () => {
+      const TOKEN = "test-only-windmill-deploy-token-0001";
+      const API = "https://windmill.example.com/api/w/example";
+      const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+      const DESCRIPTION =
+        "Written by the Windmill deploy workflow (D-371). Change flows/windmill.yaml and its settings in a pull request rather than editing this by hand.";
+      const READ = "variables:read:f/foreman/*";
+      const USAGE = "workspaces:read";
+      const BUNDLES: Record<string, string> = {
+        reconcile: "exports.main = async () => 'test-only reconcile';\n",
+        scan: "exports.main = async () => 'test-only scan';\n",
+        cancel_item: "exports.main = async (input) => input;\n",
+      };
+      const VALUES: Record<string, string> = {
+        spec_version: COMMIT,
+        github_runner_app_slug: "test-only-runner-slug",
+        agent_images: JSON.stringify({
+          "claude-api": `registry.example.com/test-only/claude-api@sha256:${"c".repeat(64)}`,
+        }),
+      };
+      const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+      interface ManifestShape {
+        version: unknown;
+        commit: unknown;
+        scripts: Record<string, unknown>[];
+        schedules: Record<string, unknown>[];
+        values: Record<string, unknown>[];
+        [key: string]: unknown;
+      }
+      const manifestOf = (bundles = BUNDLES): ManifestShape => ({
+        version: 1,
+        commit: COMMIT,
+        scripts: Object.entries(bundles).map(([name, text]) => ({
+          path: `f/foreman/${name}`,
+          content: `export async function main() {\n  return "${name}";\n}\n`,
+          job_token_scopes: name === "reconcile" ? [READ, USAGE] : [READ],
+          sha256: sha(text),
+          size: Buffer.byteLength(text),
+        })),
+        schedules: [
+          {
+            path: "f/foreman/reconcile",
+            schedule: "0 0 */2 * * *",
+            timezone: "UTC",
+            script_path: "f/foreman/reconcile",
+          },
+          {
+            path: "f/foreman/scan",
+            schedule: "0 0 5 * * *",
+            timezone: "America/Toronto",
+            script_path: "f/foreman/scan",
+          },
+        ],
+        values: Object.entries(VALUES).map(([name, value]) => ({ name, value })),
+      });
+
+      interface CurlCall {
+        args: string[];
+        headerFiles: string[];
+        headers: string[];
+        method: string;
+        url: string;
+        body: string;
+        stdin?: string;
+        form: {
+          name: string;
+          kind: string;
+          type: string;
+          text?: string;
+          sha256?: string;
+          size?: number;
+        }[];
+      }
+      const curlCalls = (box: Sandbox): CurlCall[] =>
+        readFileSync(box.env.FAKE_CURL_LOG as string, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as CurlCall);
+      const stored = (box: Sandbox, kind: "scripts" | "schedules" | "variables") => {
+        const file = `${box.env.FAKE_CURL_LOG as string}.${kind}`;
+        return existsSync(file)
+          ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>)
+          : {};
+      };
+      const hold = (box: Sandbox, kind: "schedules" | "variables", held: unknown) =>
+        writeFileSync(
+          `${box.env.FAKE_CURL_LOG as string}.${kind}`,
+          JSON.stringify(held),
+        );
+
+      /** The artifact folder as the bundle job leaves it: manifest.json and bundles/<name>.js. */
+      const artifact = (
+        box: Sandbox,
+        manifest: unknown = manifestOf(),
+        bundles: Record<string, string> = BUNDLES,
+        folder = "artifact",
+      ) => {
+        const dir = join(box.root, folder);
+        mkdirSync(join(dir, "bundles"), { recursive: true });
+        for (const [name, text] of Object.entries(bundles))
+          writeFileSync(join(dir, "bundles", `${name}.js`), text);
+        writeFileSync(
+          join(dir, "manifest.json"),
+          typeof manifest === "string" ? manifest : JSON.stringify(manifest),
+        );
+        return dir;
+      };
+      const deployRun = (
+        box: Sandbox,
+        dir: string,
+        env: Record<string, string> = {},
+        settings: unknown = filledSettings(),
+      ) => {
+        const settingsFile = join(box.root, "settings.json");
+        writeFileSync(settingsFile, JSON.stringify(settings));
+        return run(box, "windmill-deploy.sh", [dir], {
+          SETTINGS_FILE: settingsFile,
+          WINDMILL_DEPLOY_TOKEN: TOKEN,
+          REPORT: join(box.root, "report.md"),
+          ...env,
+        });
+      };
+      const reportOf = (box: Sandbox) =>
+        readFileSync(join(box.root, "report.md"), "utf8");
+      const logLines = (stdout: string) =>
+        withoutMasks(stdout).split("\n").filter(Boolean);
+
+      /** Every file left under RUNNER_TEMP, with its content. */
+      const leftOver = (box: Sandbox): string[] => {
+        const found: string[] = [];
+        const walk = (dir: string) => {
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            const path = join(dir, entry.name);
+            if (entry.isDirectory()) walk(path);
+            else found.push(readFileSync(path, "utf8"));
+          }
+        };
+        walk(box.env.RUNNER_TEMP as string);
+        return found;
+      };
+      /** No token anywhere but its mask and the header file; no value in an argument or the log. */
+      const expectNothingShown = (
+        box: Sandbox,
+        result: { stdout: string; stderr: string },
+      ) => {
+        for (const text of [withoutMasks(result.stdout), result.stderr, reportOf(box)])
+          expect(text).not.toContain(TOKEN);
+        for (const call of curlCalls(box)) {
+          expect(call.args.join(" ")).not.toContain(TOKEN);
+          expect(call.body).not.toContain(TOKEN);
+          expect(JSON.stringify(call.form)).not.toContain(TOKEN);
+          for (const value of Object.values(VALUES))
+            expect(call.args.join(" ")).not.toContain(value);
+        }
+        for (const value of Object.values(VALUES).filter((v) => v !== COMMIT)) {
+          expect(result.stdout).not.toContain(value);
+          expect(result.stderr).not.toContain(value);
+        }
+        for (const content of leftOver(box)) expect(content).not.toContain(TOKEN);
+      };
+
+      const scriptBody = (name: string) => {
+        const entry = manifestOf().scripts.find((s) => s.path === `f/foreman/${name}`);
+        return {
+          path: `f/foreman/${name}`,
+          summary: name,
+          description: DESCRIPTION,
+          content: entry?.content,
+          language: "bun",
+          codebase: entry?.sha256,
+          auto_parent: true,
+          job_token_scopes: entry?.job_token_scopes,
+          deployment_message: `Windmill deploy workflow, commit ${COMMIT}`,
+        };
+      };
+      /** Each call's method and URL, the script's JSON and bundle of a deploy, or a write's JSON. */
+      const requests = (box: Sandbox) =>
+        curlCalls(box).map((c) =>
+          c.method === "GET"
+            ? [c.method, c.url]
+            : c.form.length > 0
+              ? [
+                  c.method,
+                  c.url,
+                  JSON.parse(c.form[0]?.text ?? "{}") as unknown,
+                  c.form.map(({ name, kind, type, sha256: s, size }) => ({
+                    name,
+                    kind,
+                    type,
+                    ...(s === undefined ? {} : { sha256: s, size }),
+                  })),
+                ]
+              : [c.method, c.url, JSON.parse(c.body) as unknown],
+        );
+      const SNAPSHOT = `${API}/scripts/create_snapshot?skip_if_noop=true`;
+      const deployRequest = (name: string) => [
+        "POST",
+        SNAPSHOT,
+        scriptBody(name),
+        [
+          { name: "script", kind: "<", type: "application/json" },
+          {
+            name: "file",
+            kind: "@",
+            type: "application/javascript",
+            sha256: sha(BUNDLES[name] as string),
+            size: Buffer.byteLength(BUNDLES[name] as string),
+          },
+        ],
+      ];
+      const SCHEDULE_BODY = (path: string) => {
+        const s = manifestOf().schedules.find((x) => x.path === path) as Record<
+          string,
+          string
+        >;
+        return { schedule: s.schedule, timezone: s.timezone };
+      };
+
+      it("on a first run deploys each script as a codebase script, then creates each schedule enabled and each value as a plain variable, with exactly these calls", () => {
+        const box = sandbox();
+        const result = deployRun(box, artifact(box));
+        expect(result.status, result.stderr).toBe(0);
+        expect(requests(box)).toEqual([
+          deployRequest("reconcile"),
+          deployRequest("scan"),
+          deployRequest("cancel_item"),
+          ...["f/foreman/reconcile", "f/foreman/scan"].flatMap((path) => [
+            ["GET", `${API}/schedules/exists/${path}`],
+            [
+              "POST",
+              `${API}/schedules/create`,
+              {
+                path,
+                ...SCHEDULE_BODY(path),
+                script_path: path,
+                is_flow: false,
+                args: {},
+                enabled: true,
+                cron_version: "v2",
+                description: DESCRIPTION,
+              },
+            ],
+          ]),
+          ...Object.entries(VALUES).flatMap(([name, value]) => [
+            ["GET", `${API}/variables/exists/f/foreman/${name}`],
+            [
+              "POST",
+              `${API}/variables/create`,
+              {
+                path: `f/foreman/${name}`,
+                value,
+                is_secret: false,
+                description: DESCRIPTION,
+              },
+            ],
+          ]),
+        ]);
+        for (const call of curlCalls(box)) {
+          expect(call.headerFiles).toHaveLength(1);
+          expect(call.headers).toEqual(
+            call.method === "POST" && call.form.length === 0
+              ? [`Authorization: Bearer ${TOKEN}`, "Content-Type: application/json"]
+              : [`Authorization: Bearer ${TOKEN}`],
+          );
+          expect(call.args).toContain("=https");
+          if (call.body === "") expect(call.stdin).toBe("");
+        }
+        // Windmill now holds one version of each script, with its bundle, and the schedules and values.
+        const scripts = stored(box, "scripts") as Record<
+          string,
+          { codebase: string; bundle: string }[]
+        >;
+        expect(Object.keys(scripts)).toEqual(
+          Object.keys(BUNDLES).map((n) => `f/foreman/${n}`),
+        );
+        for (const [name, text] of Object.entries(BUNDLES)) {
+          expect(
+            scripts[`f/foreman/${name}`]?.map((v) => [v.codebase, v.bundle]),
+          ).toEqual([[sha(text), sha(text)]]);
+        }
+        expect(
+          Object.values(stored(box, "schedules")).map(
+            (s) => (s as { enabled: boolean }).enabled,
+          ),
+        ).toEqual([true, true]);
+        expect(stored(box, "variables")).toEqual(
+          Object.fromEntries(
+            Object.entries(VALUES).map(([name, value]) => [
+              `f/foreman/${name}`,
+              { value, is_secret: false, description: DESCRIPTION },
+            ]),
+          ),
+        );
+        const done = [
+          ...Object.keys(BUNDLES).map(
+            (n) => `Deployed script f/foreman/${n} in Windmill (HTTP status 201).`,
+          ),
+          "Created schedule f/foreman/reconcile in Windmill (HTTP status 200).",
+          "Created schedule f/foreman/scan in Windmill (HTTP status 200).",
+          ...Object.keys(VALUES).map(
+            (n) => `Created variable f/foreman/${n} in Windmill (HTTP status 201).`,
+          ),
+        ];
+        expect(logLines(result.stdout)).toEqual([
+          ...done,
+          "Every script, schedule and plain value in the manifest is in Windmill.",
+        ]);
+        expect(reportOf(box)).toBe(
+          [
+            "## Windmill deploy",
+            "",
+            ...done.map(
+              (line) => `- ${line.replace(/ (f\/foreman\/\S+) in Windmill/, " `$1`")}`,
+            ),
+            "",
+            `Every script, schedule and plain value in the manifest of commit \`${COMMIT}\` is in Windmill.`,
+            "",
+          ].join("\n"),
+        );
+        expectNothingShown(box, result);
+      });
+
+      it("on a second run adds no version of an unchanged script, and updates each schedule and value", () => {
+        const box = sandbox();
+        const dir = artifact(box);
+        expect(deployRun(box, dir).status).toBe(0);
+        const first = curlCalls(box).length;
+        const second = deployRun(box, dir);
+        expect(second.status, second.stderr).toBe(0);
+        expect(requests(box).slice(first)).toEqual([
+          deployRequest("reconcile"),
+          deployRequest("scan"),
+          deployRequest("cancel_item"),
+          ...["f/foreman/reconcile", "f/foreman/scan"].flatMap((path) => [
+            ["GET", `${API}/schedules/exists/${path}`],
+            [
+              "POST",
+              `${API}/schedules/update/${path}`,
+              {
+                ...SCHEDULE_BODY(path),
+                args: {},
+                cron_version: "v2",
+                description: DESCRIPTION,
+              },
+            ],
+          ]),
+          ...Object.entries(VALUES).flatMap(([name, value]) => [
+            ["GET", `${API}/variables/exists/f/foreman/${name}`],
+            [
+              "POST",
+              `${API}/variables/update/f/foreman/${name}`,
+              { value, is_secret: false, description: DESCRIPTION },
+            ],
+          ]),
+        ]);
+        const scripts = stored(box, "scripts") as Record<string, unknown[]>;
+        for (const versions of Object.values(scripts)) expect(versions).toHaveLength(1);
+        expect(
+          logLines(second.stdout).filter((l) => l.startsWith("Updated")),
+        ).toHaveLength(2 + Object.keys(VALUES).length);
+        expectNothingShown(box, second);
+      });
+
+      it("adds a version on top of the current one only for a script whose bundle changed", () => {
+        const box = sandbox();
+        expect(deployRun(box, artifact(box)).status).toBe(0);
+        const changed = {
+          ...BUNDLES,
+          scan: "exports.main = async () => 'test-only scan, changed';\n",
+        };
+        const result = deployRun(
+          box,
+          artifact(box, manifestOf(changed), changed, "artifact-2"),
+        );
+        expect(result.status, result.stderr).toBe(0);
+        const scripts = stored(box, "scripts") as Record<
+          string,
+          { codebase: string }[]
+        >;
+        expect(scripts["f/foreman/scan"]?.map((v) => v.codebase)).toEqual([
+          sha(BUNDLES.scan as string),
+          sha(changed.scan),
+        ]);
+        expect(scripts["f/foreman/reconcile"]).toHaveLength(1);
+        expect(scripts["f/foreman/cancel_item"]).toHaveLength(1);
+      });
+
+      it("leaves a schedule Didi paused paused, and puts a value made secret by hand back to plain", () => {
+        const box = sandbox();
+        hold(box, "schedules", {
+          "f/foreman/reconcile": {
+            path: "f/foreman/reconcile",
+            schedule: "0 0 * * * *",
+            timezone: "UTC",
+            script_path: "f/foreman/reconcile",
+            enabled: false,
+          },
+        });
+        hold(box, "variables", {
+          "f/foreman/spec_version": {
+            value: "test-only-old",
+            is_secret: true,
+            description: "by hand",
+          },
+        });
+        expect(deployRun(box, artifact(box)).status).toBe(0);
+        expect(stored(box, "schedules")["f/foreman/reconcile"]).toMatchObject({
+          schedule: "0 0 */2 * * *",
+          enabled: false,
+        });
+        expect(stored(box, "variables")["f/foreman/spec_version"]).toEqual({
+          value: COMMIT,
+          is_secret: false,
+          description: DESCRIPTION,
+        });
+      });
+
+      it("shows the token only on its ::add-mask:: line, before anything else", () => {
+        const box = sandbox();
+        const result = deployRun(box, artifact(box));
+        expect(result.status).toBe(0);
+        expect(
+          result.stdout.split("\n").filter((l) => l.startsWith("::add-mask::")),
+        ).toEqual([`::add-mask::${TOKEN}`]);
+        expect(result.stdout.split("\n")[0]).toBe(`::add-mask::${TOKEN}`);
+        expectNothingShown(box, result);
+      });
+
+      it("refuses any status but 2xx, on a deploy, a check or a write, with fixed text, shows none of Windmill's answer, and goes no further", () => {
+        // Calls: three deploys (0 to 2), each schedule's check and write (3 to 6), each value's (7 on).
+        const at: [number, string, string[]][] = [
+          [
+            0,
+            "deploying f/foreman/reconcile",
+            ["302", "400", "401", "403", "404", "500"],
+          ],
+          [3, "checking f/foreman/reconcile", ["401", "500"]],
+          [4, "writing f/foreman/reconcile", ["400", "403"]],
+          [7, "checking f/foreman/spec_version", ["403", "500"]],
+          [8, "writing f/foreman/spec_version", ["400", "404"]],
+        ];
+        for (const [index, what, statuses] of at) {
+          for (const status of statuses) {
+            const box = sandbox();
+            const result = deployRun(box, artifact(box), {
+              FAKE_CURL_STATUSES: [...Array(index).fill("-"), status].join(" "),
+            });
+            expect(result.status, `${what} ${status}`).toBe(1);
+            const message = `Windmill refused ${what} (HTTP status ${status}). Its answer is not shown.`;
+            expect(result.stderr).toContain(`::error::${message}`);
+            expect(reportOf(box)).toContain(`Stopped: ${message}`);
+            expect(curlCalls(box)).toHaveLength(index + 1);
+            expect(`${result.stdout}${result.stderr}${reportOf(box)}`).not.toContain(
+              "echo",
+            );
+            expectNothingShown(box, result);
+          }
+        }
+      });
+
+      it("refuses, showing none of it, an answer to a check that is neither true nor false", () => {
+        for (const answer of ["echo", "", "TRUE", "true\nfalse"]) {
+          // The first check is the reconcile schedule's; the third is spec_version's.
+          for (const [answers, path, calls] of [
+            [[answer], "f/foreman/reconcile", 4],
+            [["false", "false", answer], "f/foreman/spec_version", 8],
+          ] as const) {
+            const box = sandbox();
+            const result = deployRun(box, artifact(box), {
+              FAKE_CURL_EXISTS_ANSWER: JSON.stringify(answers),
+            });
+            expect(result.status, `${path} ${JSON.stringify(answer)}`).toBe(1);
+            expect(result.stderr).toContain(
+              `::error::Windmill's answer to checking ${path} is neither true nor false. It is not shown.`,
+            );
+            expect(curlCalls(box)).toHaveLength(calls);
+            expect(`${result.stdout}${result.stderr}`).not.toContain("echo");
+            expectNothingShown(box, result);
+          }
+        }
+      });
+
+      it("refuses with fixed text when Windmill cannot be reached", () => {
+        const box = sandbox();
+        const result = deployRun(box, artifact(box), { FAKE_CURL_EXIT: "7" });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          "::error::Windmill could not be reached to deploy f/foreman/reconcile",
+        );
+        expect(curlCalls(box)).toHaveLength(1);
+        expectNothingShown(box, result);
+      });
+
+      it("refuses a token that is missing or holds a newline, and a settings file without a usable Windmill host or workspace, before any call", () => {
+        const filled = filledSettings() as unknown as {
+          platform: { windmill: { host: string; workspace: string } };
+        };
+        const withWindmill = (host: string, workspace: string) => ({
+          ...filled,
+          platform: { ...filled.platform, windmill: { host, workspace } },
+        });
+        const cases: [Record<string, string>, unknown, string][] = [
+          [
+            { WINDMILL_DEPLOY_TOKEN: "" },
+            filled,
+            "WINDMILL_DEPLOY_TOKEN is not set in the windmill environment",
+          ],
+          [
+            { WINDMILL_DEPLOY_TOKEN: `${TOKEN}\n::warning::injected` },
+            filled,
+            "WINDMILL_DEPLOY_TOKEN holds a space, a newline or a control character",
+          ],
+          [
+            {},
+            withWindmill("https://windmill.example.com", "example"),
+            "windmill.host in the settings file",
+          ],
+          [
+            {},
+            withWindmill("192.0.2.1", "example"),
+            "windmill.host in the settings file",
+          ],
+          [
+            {},
+            withWindmill("windmill.example.com", "bad/workspace"),
+            "windmill.workspace in the settings file",
+          ],
+        ];
+        for (const [env, settings, message] of cases) {
+          const box = sandbox();
+          const result = deployRun(box, artifact(box), env, settings);
+          expect(result.status, message).toBe(1);
+          expect(result.stderr).toContain(`::error::${message}`);
+          expect(`${result.stdout}${result.stderr}`).not.toContain("::warning::");
+          expect(curlCalls(box)).toEqual([]);
+        }
+      });
+
+      it("checks the manifest strictly and refuses, before any call and naming only the field, anything off its shape", () => {
+        const refused = (text: string) =>
+          `The bundle job's manifest is refused: ${text}.`;
+        const script = (m: ManifestShape, i = 0) =>
+          m.scripts[i] as Record<string, unknown>;
+        const cases: [string, (m: ManifestShape) => unknown, string][] = [
+          [
+            "not JSON",
+            () => "{not json",
+            "The bundle job's manifest is not JSON of the expected shape.",
+          ],
+          [
+            "a list",
+            () => [],
+            "The bundle job's manifest is not JSON of the expected shape.",
+          ],
+          [
+            "an extra key",
+            (m) => ({ ...m, flows: [] }),
+            refused(
+              "the manifest does not hold exactly commit, schedules, scripts, values and version",
+            ),
+          ],
+          [
+            "version 2",
+            (m) => ({ ...m, version: 2 }),
+            refused("the manifest is not version 1"),
+          ],
+          [
+            "a short commit",
+            (m) => ({ ...m, commit: "0123456" }),
+            refused("the manifest's commit is not a full commit id"),
+          ],
+          [
+            "no script",
+            (m) => ({ ...m, scripts: [] }),
+            refused("the manifest does not list between 1 and 32 scripts"),
+          ],
+          [
+            "another folder",
+            (m) => void (script(m).path = "f/other/reconcile"),
+            refused(
+              "scripts[0].path is not f/foreman/ followed by lowercase letters and underscores",
+            ),
+          ],
+          [
+            "a path out of the folder",
+            (m) => void (script(m).path = "f/foreman/../reconcile"),
+            refused(
+              "scripts[0].path is not f/foreman/ followed by lowercase letters and underscores",
+            ),
+          ],
+          [
+            "a nested path",
+            (m) => void (script(m).path = "f/foreman/platform/reconcile"),
+            refused(
+              "scripts[0].path is not f/foreman/ followed by lowercase letters and underscores",
+            ),
+          ],
+          [
+            "an identity to run as",
+            (m) => void (script(m).on_behalf_of_email = "admin@example.com"),
+            refused(
+              "scripts[0] does not hold exactly content, job_token_scopes, path, sha256 and size",
+            ),
+          ],
+          [
+            "empty content",
+            (m) => void (script(m).content = ""),
+            refused("scripts[0].content is empty, not text or larger than 65536 bytes"),
+          ],
+          [
+            "content too large",
+            (m) => void (script(m).content = "x".repeat(65537)),
+            refused("scripts[0].content is empty, not text or larger than 65536 bytes"),
+          ],
+          [
+            "a bad sha256",
+            (m) => void (script(m).sha256 = "abc"),
+            refused("scripts[0].sha256 is not a sha256"),
+          ],
+          [
+            "a zero size",
+            (m) => void (script(m).size = 0),
+            refused("scripts[0].size is not a size from 1 to 16777216 bytes"),
+          ],
+          [
+            "a fractional size",
+            (m) => void (script(m).size = 1.5),
+            refused("scripts[0].size is not a size from 1 to 16777216 bytes"),
+          ],
+          [
+            "no scopes, so an unrestricted job token",
+            (m) => void (script(m).job_token_scopes = null),
+            refused("scripts[0].job_token_scopes is not a list of scopes"),
+          ],
+          [
+            "a scope twice",
+            (m) => void (script(m, 2).job_token_scopes = [READ, READ]),
+            refused("scripts[2].job_token_scopes names a scope twice"),
+          ],
+          [
+            "no variables scope",
+            (m) => void (script(m, 2).job_token_scopes = [USAGE]),
+            refused("scripts[2].job_token_scopes does not read the folder's variables"),
+          ],
+          [
+            "every variable",
+            (m) => void (script(m, 2).job_token_scopes = [READ, "variables:read:*"]),
+            refused(
+              "scripts[2].job_token_scopes holds a scope this script does not allow there",
+            ),
+          ],
+          [
+            "running jobs",
+            (m) =>
+              void (script(m, 2).job_token_scopes = [
+                READ,
+                "jobs:run:scripts:f/foreman/*",
+              ]),
+            refused(
+              "scripts[2].job_token_scopes holds a scope this script does not allow there",
+            ),
+          ],
+          [
+            "the count off the reconcile flow",
+            (m) => void (script(m, 1).job_token_scopes = [READ, USAGE]),
+            refused(
+              "scripts[1].job_token_scopes holds a scope this script does not allow there",
+            ),
+          ],
+          [
+            "a path twice",
+            (m) => void (m.scripts = [...m.scripts, { ...script(m) }]),
+            refused("the manifest names a script path twice"),
+          ],
+          [
+            "a schedule of another script",
+            (m) =>
+              void ((m.schedules[0] as Record<string, unknown>).script_path =
+                "f/foreman/scan"),
+            refused("schedules[0] does not run the manifest's script at its own path"),
+          ],
+          [
+            "a schedule of a script not deployed",
+            (m) =>
+              void (m.schedules[0] = {
+                ...m.schedules[0],
+                path: "f/foreman/daily_check",
+                script_path: "f/foreman/daily_check",
+              }),
+            refused("schedules[0] does not run the manifest's script at its own path"),
+          ],
+          [
+            "five cron fields",
+            (m) =>
+              void ((m.schedules[0] as Record<string, unknown>).schedule =
+                "0 */2 * * *"),
+            refused("schedules[0].schedule is not a cron expression of six fields"),
+          ],
+          [
+            "a cron with words",
+            (m) =>
+              void ((m.schedules[0] as Record<string, unknown>).schedule =
+                "0 0 */2 * * * ; x"),
+            refused("schedules[0].schedule is not a cron expression of six fields"),
+          ],
+          [
+            "a time zone path",
+            (m) =>
+              void ((m.schedules[0] as Record<string, unknown>).timezone =
+                "../etc/passwd"),
+            refused("schedules[0].timezone is not a time zone name"),
+          ],
+          [
+            "a schedule setting",
+            (m) =>
+              void ((m.schedules[0] as Record<string, unknown>).on_failure =
+                "f/foreman/scan"),
+            refused(
+              "schedules[0] does not hold exactly path, schedule, script_path and timezone",
+            ),
+          ],
+          [
+            "a schedule twice",
+            (m) =>
+              void (m.schedules = [
+                m.schedules[0] as Record<string, unknown>,
+                { ...m.schedules[0] },
+              ]),
+            refused("the manifest names a schedule twice"),
+          ],
+          [
+            "a value the runner-token job writes",
+            (m) =>
+              void ((m.values[0] as Record<string, unknown>).name =
+                "agent_cluster_endpoint"),
+            refused("values[0].name is not one of the plain values this script writes"),
+          ],
+          [
+            "a secret's path",
+            (m) =>
+              void ((m.values[0] as Record<string, unknown>).name =
+                "platform/state-store/runner-database-url"),
+            refused("values[0].name is not one of the plain values this script writes"),
+          ],
+          [
+            "a value marked secret",
+            (m) => void ((m.values[0] as Record<string, unknown>).is_secret = true),
+            refused("values[0] does not hold exactly name and value"),
+          ],
+          [
+            "an empty value",
+            (m) => void ((m.values[0] as Record<string, unknown>).value = ""),
+            refused("values[0].value is empty, not text or larger than 15000 bytes"),
+          ],
+          [
+            "a value too long",
+            (m) =>
+              void ((m.values[0] as Record<string, unknown>).value = "x".repeat(15001)),
+            refused("values[0].value is empty, not text or larger than 15000 bytes"),
+          ],
+          [
+            "a value twice",
+            (m) => void (m.values = [...m.values, { ...m.values[0] }]),
+            refused("the manifest names a value twice"),
+          ],
+        ];
+        for (const [what, mutate, message] of cases) {
+          const box = sandbox();
+          const manifest = structuredClone(manifestOf());
+          const changed = mutate(manifest);
+          const written = changed === undefined ? manifest : changed;
+          const result = deployRun(box, artifact(box, written));
+          expect(result.status, what).toBe(1);
+          expect(result.stderr, what).toContain(`::error::${message}`);
+          expect(curlCalls(box), what).toEqual([]);
+          expect(reportOf(box), what).toContain(`Stopped: ${message}`);
+          expectNothingShown(box, result);
+        }
+      });
+
+      it("refuses a bundle that is missing, a link, or not the one the manifest names, and a folder or manifest it cannot use, before any call", () => {
+        const cases: [string, (box: Sandbox) => string, string][] = [
+          [
+            "a missing bundle",
+            (box) => {
+              const dir = artifact(box);
+              rmSync(join(dir, "bundles", "scan.js"));
+              return dir;
+            },
+            "The bundle of f/foreman/scan is missing.",
+          ],
+          [
+            "a link",
+            (box) => {
+              const dir = artifact(box);
+              rmSync(join(dir, "bundles", "scan.js"));
+              symlinkSync(
+                join(dir, "bundles", "reconcile.js"),
+                join(dir, "bundles", "scan.js"),
+              );
+              return dir;
+            },
+            "The bundle of f/foreman/scan is missing.",
+          ],
+          [
+            "another bundle of the same size",
+            (box) => {
+              const dir = artifact(box);
+              writeFileSync(
+                join(dir, "bundles", "scan.js"),
+                (BUNDLES.scan as string).replace("scan", "SCAN"),
+              );
+              return dir;
+            },
+            "The bundle of f/foreman/scan is not the one the manifest names (its size or sha256 differs).",
+          ],
+          [
+            "a longer bundle",
+            (box) => {
+              const dir = artifact(box);
+              writeFileSync(
+                join(dir, "bundles", "scan.js"),
+                `${BUNDLES.scan as string}\n`,
+              );
+              return dir;
+            },
+            "The bundle of f/foreman/scan is not the one the manifest names (its size or sha256 differs).",
+          ],
+          [
+            "no manifest",
+            (box) => {
+              const dir = artifact(box);
+              rmSync(join(dir, "manifest.json"));
+              return dir;
+            },
+            "The bundle job's manifest is missing.",
+          ],
+          [
+            "a folder curl would misread",
+            (box) => artifact(box, manifestOf(), BUNDLES, "art;type=x"),
+            "The bundle job's folder is not a plain folder.",
+          ],
+        ];
+        for (const [what, make, message] of cases) {
+          const box = sandbox();
+          const result = deployRun(box, make(box));
+          expect(result.status, what).toBe(1);
+          expect(result.stderr, what).toContain(`::error::${message}`);
+          expect(curlCalls(box), what).toEqual([]);
         }
       });
     });
