@@ -1,7 +1,8 @@
 // Unit: repo guard on the admin workflows (D-336, D-339, D-340, O-105, D-362, O-115, D-371,
 // O-123): the Images, Infra apply, Platform, Database migrations and Windmill deploy workflows,
-// the scripts they run, the cluster's settings file and the factory stack's reviewed variables. Read as text and YAML; nothing runs. The scripts' behaviour is in
+// the scripts they run, the cluster's settings file and the factory stack's reviewed variables. Read as text and YAML (and the scripts' modes from git's index); nothing runs. The scripts' behaviour is in
 // test/admin-workflow-scripts.test.ts.
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -112,6 +113,22 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
         expect(job.permissions, `${path} ${id}`).toEqual(expected);
       }
     }
+  });
+
+  it("commit every shell script as executable, since a step runs it by its path and not through bash (O-123)", () => {
+    // The mode the runner's checkout gets is the one in git, not the one on this disk. Each line
+    // reads "<mode> <object> <stage>\t<path>".
+    const modes = new Map(
+      execFileSync("git", ["ls-files", "-s", "--", SCRIPTS_DIR], { encoding: "utf8" })
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [entry = "", path = ""] = line.split("\t");
+          return [path, entry.split(" ")[0]] as const;
+        }),
+    );
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const path of scripts) expect(modes.get(path), path).toBe("100755");
   });
 
   it("pin every action by full commit SHA with its version, the same SHA as everywhere else in the repo", () => {
