@@ -124,37 +124,80 @@ function runGh(ghArgs) {
   return result.stdout;
 }
 
-function mergeDependabotPr(prNumber, repo) {
-  const autoResult = tryRunGh([
+/**
+ * GitHub's answer when another pull request merged into the base branch while this merge was
+ * being made, as happens when several Dependabot PRs finish CI at once. Trying again a little
+ * later succeeds; nothing else is wrong with the PR.
+ *
+ * @param {string | null | undefined} stderr
+ */
+export function isBaseModifiedError(stderr) {
+  return /base branch was modified/i.test(stderr ?? "");
+}
+
+/** How long to wait before each further try after a "base branch was modified" refusal. */
+export const MERGE_RETRY_DELAYS_MS = [15_000, 30_000, 60_000];
+
+/** @param {number} ms */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Turn on auto-merge (or merge at once when GitHub says the PR is already mergeable), trying
+ * again after a short wait when another PR merged first. Any other refusal ends it.
+ *
+ * @param {number} prNumber
+ * @param {string} repo
+ * @param {{
+ *   run?: (args: string[]) => { command: string; ok: boolean; status: number; stdout: string; stderr: string };
+ *   sleep?: (ms: number) => void;
+ *   retryDelaysMs?: number[];
+ *   log?: (line: string) => void;
+ * }} [options]
+ * @returns {{ ok: true } | { ok: false; failure: string }}
+ */
+export function mergeDependabotPr(
+  prNumber,
+  repo,
+  {
+    run = tryRunGh,
+    sleep = sleepSync,
+    retryDelaysMs = MERGE_RETRY_DELAYS_MS,
+    log = console.log,
+  } = {},
+) {
+  const merge = (extra) => [
     "pr",
     "merge",
     String(prNumber),
     "--repo",
     repo,
-    "--auto",
+    ...extra,
     "--squash",
     "--delete-branch",
-  ]);
-  if (autoResult.ok) {
-    return;
+  ];
+  for (let attempt = 0; ; attempt += 1) {
+    let result = run(merge(["--auto"]));
+    if (!result.ok && isCleanStatusError(result.stderr)) {
+      log(
+        "Auto-merge unavailable (PR already in clean/mergeable status); merging with squash.",
+      );
+      result = run(merge([]));
+    }
+    if (result.ok) {
+      return { ok: true };
+    }
+    if (isBaseModifiedError(result.stderr) && attempt < retryDelaysMs.length) {
+      const waitMs = retryDelaysMs[attempt];
+      log(
+        `The base branch moved while merging (another PR merged first); trying again in ${waitMs / 1000}s (try ${attempt + 2} of ${retryDelaysMs.length + 1}).`,
+      );
+      sleep(waitMs);
+      continue;
+    }
+    return { ok: false, failure: formatGhFailure(result.command, result) };
   }
-  if (isCleanStatusError(autoResult.stderr)) {
-    console.log(
-      "Auto-merge unavailable (PR already in clean/mergeable status); merging with squash.",
-    );
-    runGh([
-      "pr",
-      "merge",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--squash",
-      "--delete-branch",
-    ]);
-    return;
-  }
-  console.error(formatGhFailure(autoResult.command, autoResult));
-  process.exit(1);
 }
 
 function main() {
@@ -191,7 +234,11 @@ function main() {
   console.log(
     `Enabling auto-merge for Dependabot PR #${prNumber} (${pr.headRefName}) after successful CI.`,
   );
-  mergeDependabotPr(prNumber, repo);
+  const merged = mergeDependabotPr(prNumber, repo);
+  if (!merged.ok) {
+    console.error(merged.failure);
+    process.exit(1);
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
