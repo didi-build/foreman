@@ -762,27 +762,69 @@ describe("the runner token job (unit: D-352, O-110, runbook step 8)", () => {
     });
   });
 
-  it("writes exactly the Windmill paths flows/windmill.yaml gives the values the runner reads", () => {
+  it("writes exactly the Windmill paths flows/windmill.yaml gives the values the runner reads, the token as its one secret variable (D-370)", () => {
     const description = parseYaml(text("flows/windmill.yaml")) as {
       resources: {
         secrets: { path: string; windmill_path?: string }[];
         values: { name: string; windmill_path?: string }[];
       };
     };
-    const yamlPath = (key: string) =>
-      [...description.resources.secrets, ...description.resources.values].find(
-        (entry) => ("path" in entry ? entry.path : entry.name) === key,
-      )?.windmill_path;
+    const secretPath = (path: string) =>
+      description.resources.secrets.find((entry) => entry.path === path)?.windmill_path;
+    const valuePath = (name: string) =>
+      description.resources.values.find((entry) => entry.name === name)?.windmill_path;
     const scriptValue = (name: string) =>
       new RegExp(`^${name}="([^"]+)"$`, "m").exec(runnerToken)?.[1];
+    // The token is a secret (a secret variable), the endpoint and the CA certificate values.
     expect(scriptValue("token_path")).toBe(
-      yamlPath("platform/agent-cluster/runner-token"),
+      secretPath("platform/agent-cluster/runner-token"),
     );
-    expect(scriptValue("endpoint_path")).toBe(yamlPath("agent_cluster_endpoint"));
-    expect(scriptValue("ca_path")).toBe(yamlPath("agent_cluster_ca_certificate"));
-    expect(text("flows/windmill.yaml")).toContain(
-      `resource type \`${scriptValue("resource_type")}\``,
+    expect(scriptValue("endpoint_path")).toBe(valuePath("agent_cluster_endpoint"));
+    expect(scriptValue("ca_path")).toBe(valuePath("agent_cluster_ca_certificate"));
+    const writes = [...runnerToken.matchAll(/write_variable "\$(\w+)" (\w+)/g)].map(
+      (m) => [m[1], m[2]],
     );
+    expect(writes).toEqual([
+      ["token_path", "true"],
+      ["endpoint_path", "false"],
+      ["ca_path", "false"],
+    ]);
+    // Variables, never resources: no resource route, type or shape is left.
+    expect(runnerToken).not.toMatch(/resources\/|resource_type|foreman_text|content:/);
+    expect(text("flows/windmill.yaml")).not.toMatch(/foreman_text|"content"/);
+  });
+
+  it("asks for a Windmill token whose one scope is variables:write on exactly the script's three paths (runbook step 8, D-370)", () => {
+    const runbook = text("docs/runbooks/first-hosting.md");
+    const paths = ["token_path", "endpoint_path", "ca_path"].map(
+      (name) => new RegExp(`^${name}="([^"]+)"$`, "m").exec(runnerToken)?.[1],
+    );
+    const step8 = runbook.slice(
+      runbook.indexOf("## 8. The runner's cluster token"),
+      runbook.indexOf("## 9. "),
+    );
+    const scopeLines = step8
+      .split("\n")
+      .filter((line) => line.includes("Check that the selected scopes read exactly"));
+    expect(scopeLines).toHaveLength(1);
+    expect(
+      [...(scopeLines[0] ?? "").matchAll(/`(\w+:\w+:[^`]+)`/g)].map((m) => m[1]),
+    ).toEqual([`variables:write:${paths.join(",")}`]);
+    // The secrets table names the same scope for the same secret.
+    const row = runbook
+      .split("\n")
+      .find(
+        (line) =>
+          line.startsWith("| `platform`") &&
+          line.includes("WINDMILL_RUNNER_RESOURCES_TOKEN"),
+      );
+    expect(row).toContain("`variables:write`");
+    // No step asks for a resources scope or writes the runner's values as resources: the old
+    // resources scope is named once, where step 8 revokes the token that carries it.
+    expect(runbook).not.toMatch(/resources\/create|foreman_text/);
+    expect(
+      runbook.split("\n").filter((line) => line.includes("resources:write")),
+    ).toEqual([expect.stringMatching(/^5\. \*\*Revoke the old token\.\*\* /)]);
   });
 
   it("hands nothing to another job or the summary, and sends values only through stdin or a private file", () => {
@@ -796,6 +838,8 @@ describe("the runner token job (unit: D-352, O-110, runbook step 8)", () => {
     expect(runnerToken).not.toMatch(/--location|\s-L\s/);
     expect(runnerToken).not.toMatch(/-H "Authorization|--header "Authorization/);
     expect(runnerToken).not.toMatch(/--arg \w+ "\$(token|endpoint|windmill_token)"/);
+    // The existence check reads nothing from stdin, so a value can never reach it.
+    expect(runnerToken).toMatch(/"\$api\/exists\/\$path" <\/dev\/null/);
   });
 });
 

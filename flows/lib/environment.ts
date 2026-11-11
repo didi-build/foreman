@@ -1,7 +1,7 @@
 // What a flow reads from its host (build plan M3.1, ADR 0111 section 4). Secrets are asked for by
-// path, never by a variable of their own: Windmill resources now, Vault later. Plain values are
-// settings that are not secret, such as the cluster address. The Windmill binding is in
-// ./windmill.ts; tests pass a fake.
+// path, never by a variable of their own: Windmill secret variables now (D-370), Vault later.
+// Plain values are settings that are not secret, such as the cluster address, Windmill plain
+// variables. The Windmill binding is in ./windmill.ts; tests pass a fake.
 
 export interface FlowEnvironment {
   /** The secret at `path`. Never logged, never returned in a flow result. */

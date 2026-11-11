@@ -51,7 +51,7 @@ PlanetScale at about $5 a month is the cheapest paid option, but whether it allo
 ## Constraints
 
 - No database is created, and no account or credential exists, until Didi approves the provider, the spend and the credentials.
-- Credentials go into the vault or Windmill resources only. Never in the repo, logs or chat.
+- Credentials go into the vault or Windmill secret variables only (D-370). Never in the repo, logs or chat.
 - If data residency in Canada matters, check where each provider keeps backups and logs, not only the primary region.
 
 ## How success is judged

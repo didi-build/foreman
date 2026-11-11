@@ -4,6 +4,7 @@
 - **Amended by D-193** (2026-10-30): the first-release Kubernetes exception also covers the state API and receiver deployments.
 - **Amended by D-354** (2026-11-07): hosted branch previews are dropped, so the deploy adapter has no `preview` operation and `teardown` removes a deployment only (section 2). The preview check is a CI job (O-111).
 - **Amended by D-353 and D-356** (2026-11-08, O-116): `deploy` is built for staging, with the staging check beside it (section 2).
+- **Amended by D-370** (2026-11-11, O-120): in Windmill a secret is a secret variable, encrypted with the workspace's key, never a resource (section 4).
 - **Date:** 2026-10-28
 - **Related:** D-134, P-10, [build plan M0.8](../build-plan.md#m08-conventions-that-make-kubernetes-easy-proposed-d-134), `docs/architecture/technical-architecture.md` section 2.10, ADRs [0101](./0101-repo-layout-and-tooling.md), [0102](./0102-state-api-hosting-and-agent-auth.md), [0110](./0110-infrastructure-as-code.md)
 
@@ -56,7 +57,7 @@ An agent dispatched for a project gets only that project's credentials and secre
 
 ### 4. Secrets are referenced by path, behind an interface
 
-Code asks for a secret by path (for example `projects/we-met/linear/token`), through one small interface with one implementation per store: Windmill resources now, Vault later. Code never reads a secret from a file in the repo, and the interface never logs a value. The interface is built when the first service needs a secret (M1.4).
+Code asks for a secret by path (for example `projects/we-met/linear/token`), through one small interface with one implementation per store: Windmill secret variables now (D-370), Vault later. Code never reads a secret from a file in the repo, and the interface never logs a value. The interface is built when the first service needs a secret (M1.4).
 
 ### 4a. Model endpoints are settings
 

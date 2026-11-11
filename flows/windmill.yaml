@@ -1,9 +1,9 @@
-# The runner's Windmill flows, schedules and resources, as data (build plan M3.1). Nothing here is
-# deployed. Deploying is mechanical once the Windmill workspace and token exist (first-hosting
-# runbook, step 15): bundle each entry with its imports and the files in `bundle_files`, push it
-# as a script at its path, create the schedule and the approval flow, and store each resource and
-# variable at the path below. test/flows/windmill-description.test.ts keeps this file in step
-# with the code.
+# The runner's Windmill flows, schedules, secrets and values, as data (build plan M3.1). Nothing
+# here is deployed. Deploying is mechanical once the Windmill workspace and token exist
+# (first-hosting runbook, step 15): bundle each entry with its imports and the files in
+# `bundle_files`, push it as a script at its path, create the schedule and the approval flow, and
+# store each secret and value as a Windmill variable at the path below (D-370).
+# test/flows/windmill-description.test.ts keeps this file in step with the code.
 #
 # Why these flows, and not one per contract move: the architecture's reason for "one flow per
 # transition" is that Windmill flows are acyclic while the machine has cycles, so each flow run
@@ -129,7 +129,7 @@ flows:
     # D-356, O-116). It reads the run from GitHub again, fetches that run's `staging-site` build
     # with the runner App's `actions: read` token (D-267), has the deploy adapter check the file set
     # and upload exactly those files to the project's assets-only Worker `<slug>-staging` with the
-    # staging deploy token (the resource below), records the deploy on each item in Verifying on
+    # staging deploy token (the secret below), records the deploy on each item in Verifying on
     # staging whose merge commit it covers, and runs their staging check in the same run. A fail
     # move starts the builder's fix round (O-41), and a move to Done starts the first run of each
     # item that Done frees (D-329). The GitHub receiver calls it: after it records a `workflow_run`
@@ -316,27 +316,36 @@ flows:
 # them and none is listed here.
 
 resources:
+  # Every secret here is a Windmill secret variable, which Windmill encrypts with the workspace's
+  # key, and every value a plain variable; none is a Windmill resource, which Windmill stores as
+  # given (D-370). Each lives at `f/foreman/` (the flows' folder) followed by its path or name,
+  # and holds the value itself, as the flows read it. `windmill_path` spells that out for each one
+  # stored outside the deploy: by the Platform workflow's job, or by Didi by hand.
+  #
   # A run's model key is read at the path its bot file's provider names for the run's project,
-  # projects/<slug>/models/<provider> (D-143, contracts/bots/). Each is stored at first hosting.
+  # projects/<slug>/models/<provider> (D-143, contracts/bots/), a secret variable at
+  # `f/foreman/projects/<slug>/models/<provider>`. Each is stored at first hosting (runbook step
+  # 12).
   #
   # The runner's cluster token, endpoint and CA certificate are not stored by hand: the Platform
-  # workflow's `runner-token` job, which Didi approves, writes them (D-352, O-110). Each is a
-  # Windmill resource at its `windmill_path` (the flows' folder, then its path or name), of
-  # resource type `foreman_text`, whose value is `{"content": "<the value as the flows read
-  # it>"}`: the token as it is, the endpoint as `https://host[:port]`, the certificate in PEM. The
-  # Windmill binding (flows/lib/windmill.ts), written at first hosting, reads these three there.
+  # workflow's `runner-token` job, which Didi approves, writes them (D-352, O-110, O-120): the
+  # token as it is, a secret variable; the endpoint as `https://host[:port]` and the certificate in
+  # PEM, plain variables. The Windmill binding (flows/lib/windmill.ts), written at first hosting,
+  # reads these three there.
   #
   # The services' own secrets (the planning chat's token hash and the three Windmill tokens that
   # start flows) are not kept in Windmill: each lives only in the `platform` environment's secrets
   # and the cluster's Secrets (D-351, first-hosting runbook step 15).
   #
-  # The staging deploy token and the Cloudflare account id (D-353, O-116) are stored by Didi by hand
-  # at first hosting (runbook step 16), in the same shape: resource type `foreman_text`, value
-  # `{"content": "<the value>"}`, at their `windmill_path`. Until then the composition's credential
-  # port refuses with `NotBuiltError`, so nothing is uploaded.
+  # The runner's database login (step 15), and the staging deploy token and the Cloudflare account
+  # id (D-353, O-116, step 16), are stored by Didi by hand at first hosting, as secret variables at
+  # their `windmill_path`. Until the staging pair is stored the composition's credential port
+  # refuses with `NotBuiltError`, so nothing is uploaded.
   secrets:
     - path: platform/state-store/runner-database-url
       holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
+      windmill_path: f/foreman/platform/state-store/runner-database-url
+      written_by: Didi, by hand (first-hosting runbook step 15)
     - path: platform/agent-cluster/runner-token
       holds: The runner's cluster token (ADR 0106 section 1, first-hosting runbook step 8)
       windmill_path: f/foreman/platform/agent-cluster/runner-token
@@ -370,6 +379,50 @@ resources:
       holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106), the repo map Job's image, resources and deadline included (D-275 (2))
     - name: agent_images
       holds: The agent image references by image kind as JSON, each pinned by digest. Each bot file (contracts/bots/) names its kind
+  # The four GitHub Apps' private keys, each a secret variable, and their ids, plain variables
+  # beside them (D-368, D-370). Didi stores them by hand at first hosting (runbook step 15), with
+  # a copy of each key in Bitwarden. No flow reads them yet: every GitHub token port refuses
+  # (`NotBuiltError`) until the Apps' token code is written, so they are not among the secrets and
+  # values the composition reads above.
+  github_apps:
+    secrets:
+      - path: platform/github/runner-app-private-key
+        holds: The runner App's private key, in PEM (D-368)
+        windmill_path: f/foreman/platform/github/runner-app-private-key
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - path: platform/github/developer-app-private-key
+        holds: The Developer App's private key, in PEM (D-368)
+        windmill_path: f/foreman/platform/github/developer-app-private-key
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - path: platform/github/designer-app-private-key
+        holds: The Designer App's private key, in PEM (D-368)
+        windmill_path: f/foreman/platform/github/designer-app-private-key
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - path: platform/github/qa-app-private-key
+        holds: The QA App's private key, in PEM (D-368)
+        windmill_path: f/foreman/platform/github/qa-app-private-key
+        written_by: Didi, by hand (first-hosting runbook step 15)
+    values:
+      - name: platform/github/runner-app-id
+        holds: The runner App's id (D-368)
+        windmill_path: f/foreman/platform/github/runner-app-id
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - name: platform/github/developer-app-id
+        holds: The Developer App's id (D-368)
+        windmill_path: f/foreman/platform/github/developer-app-id
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - name: platform/github/designer-app-id
+        holds: The Designer App's id (D-368)
+        windmill_path: f/foreman/platform/github/designer-app-id
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - name: platform/github/qa-app-id
+        holds: The QA App's id (D-368)
+        windmill_path: f/foreman/platform/github/qa-app-id
+        written_by: Didi, by hand (first-hosting runbook step 15)
+      - name: platform/github/runner-app-installation-id
+        holds: The runner App's installation id on didi-build (D-368)
+        windmill_path: f/foreman/platform/github/runner-app-installation-id
+        written_by: Didi, by hand (first-hosting runbook step 15)
   # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is
   # a new credential at first hosting; until then the count is not read and the pass says so.
   windmill_token: needed for the execution count (D-167)
