@@ -415,8 +415,9 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     }
   });
 
-  it("has a Windmill binding that refuses until the workspace and token exist", async () => {
-    const env = windmillEnvironment();
+  it("has a Windmill binding that refuses outside a Windmill job, and composes nothing there (O-121)", async () => {
+    // The binding itself is tested in ./windmill-binding.test.ts, with a fake fetch.
+    const env = windmillEnvironment({ env: {} });
     await expect(env.secret(SECRET_PATHS.database)).rejects.toThrow(
       WindmillNotConfiguredError,
     );
@@ -424,6 +425,7 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       WindmillNotConfiguredError,
     );
     await expect(env.executionsThisMonth()).rejects.toThrow(WindmillNotConfiguredError);
+    await expect(compose(env)).rejects.toThrow(WindmillNotConfiguredError);
   });
 });
 

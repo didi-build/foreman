@@ -30,5 +30,6 @@ export async function run(
   return step;
 }
 
-export const main = (input: PlanApprovalInput): Promise<PlanApprovalResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: PlanApprovalInput): Promise<PlanApprovalResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

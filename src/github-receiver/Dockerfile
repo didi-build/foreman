@@ -14,6 +14,7 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src/service-kit ./src/service-kit
 COPY src/core ./src/core
 COPY src/adapters/store-postgres ./src/adapters/store-postgres
+COPY src/adapters/bundle-files/files.ts ./src/adapters/bundle-files/files.ts
 COPY src/adapters/github ./src/adapters/github
 COPY src/adapters/windmill/client.ts ./src/adapters/windmill/client.ts
 COPY src/adapters/windmill/receiver-flows.ts ./src/adapters/windmill/receiver-flows.ts

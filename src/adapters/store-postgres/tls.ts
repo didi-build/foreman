@@ -13,17 +13,17 @@
 // socket, or the config is refused. Every refusal is fixed text that carries no part of the
 // connection string.
 import { X509Certificate } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { checkServerIdentity } from "node:tls";
 import pg from "pg";
 
 import type { Setting } from "../../service-kit/config.ts";
+import { readBundledFile } from "../bundle-files/files.ts";
 
 /**
  * Supabase's root CA certificate ("Supabase Root 2021 CA", from the project's SSL Configuration
  * panel). Relative to the working directory, as the contracts are: `/app` in the state API's and
- * the receiver's images, which copy this folder, and the bundle's root in Windmill, whose bundle
- * carries this file (`bundle_files` in flows/windmill.yaml).
+ * the receiver's images, which copy this folder. A flow's bundle embeds it (`bundle_files` in
+ * flows/windmill.yaml) and reads it from there (../bundle-files/files.ts, O-121).
  */
 export const SUPABASE_CA_PATH = "src/adapters/store-postgres/supabase-ca.crt";
 
@@ -51,7 +51,7 @@ export class DatabaseTlsError extends Error {
 export function readDatabaseCa(path: string = SUPABASE_CA_PATH): string {
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    text = readBundledFile(path).toString("utf8");
   } catch {
     throw new DatabaseTlsError(`The database CA certificate is missing at ${path}.`);
   }

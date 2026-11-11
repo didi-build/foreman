@@ -23,5 +23,8 @@ export async function run(
   return createHoldReleaseRequests(deps).requestAgain(input.nodeId);
 }
 
-export const main = (input: HoldReleaseRequestInput): Promise<HoldReleaseRequestStep> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(
+  input: HoldReleaseRequestInput,
+): Promise<HoldReleaseRequestStep> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

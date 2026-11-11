@@ -27,5 +27,8 @@ export function run(
   return createProjectRegistration(deps).register(input);
 }
 
-export const main = (input: RegisterProjectInput): Promise<RegisterProjectResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(
+  input: RegisterProjectInput,
+): Promise<RegisterProjectResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

@@ -16,9 +16,9 @@
 // reach a log. The task types are checked by the core with the task types file
 // (src/core/task-types.ts); everything else is checked here, reusing the egress proxy's own
 // parsers so a bot file the runner accepts is one the proxy accepts. `checkRunSpec` checks the
-// built run again before anything starts.
+// built run again before anything starts. The files are read through ../bundle-files/files.ts:
+// from disk, or from a flow's bundle (O-121).
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse, YAMLParseError } from "yaml";
 
@@ -41,6 +41,7 @@ import {
   type ModelProviderSetting,
 } from "../agent-runtime/kubernetes/manifests.ts";
 import { TOOL } from "../agent-runtime/kubernetes/task.ts";
+import { listBundledFolder, readBundledFile } from "../bundle-files/files.ts";
 
 export const BOT_FILES_DIR = "contracts/bots";
 
@@ -159,7 +160,7 @@ export interface RawBotFile {
 export function loadBotFiles(
   dir: string = BOT_FILES_DIR,
 ): Record<AgentRole, RawBotFile> {
-  const names = readdirSync(dir).filter((name) => name.endsWith(".yaml"));
+  const names = listBundledFolder(dir).filter((name) => name.endsWith(".yaml"));
   for (const name of names) {
     if (!BOT_ROLES.some((role) => `${role}.yaml` === name)) {
       throw new Error(`${name} in ${dir} is not the bot file of an agent role`);
@@ -169,7 +170,7 @@ export function loadBotFiles(
   for (const role of BOT_ROLES) {
     const file = `${role}.yaml`;
     if (!names.includes(file)) throw new Error(`${dir}/${file} is missing`);
-    const bytes = readFileSync(join(dir, file));
+    const bytes = readBundledFile(join(dir, file));
     let data: unknown;
     try {
       data = parse(bytes.toString("utf8"));

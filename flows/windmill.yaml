@@ -1,8 +1,8 @@
 # The runner's Windmill flows, schedules, secrets and values, as data (build plan M3.1). Nothing
-# here is deployed. Deploying is mechanical once the Windmill workspace and token exist
-# (first-hosting runbook, step 15): bundle each entry with its imports and the files in
-# `bundle_files`, push it as a script at its path, create the schedule and the approval flow, and
-# store each secret and value as a Windmill variable at the path below (D-370).
+# here is deployed yet. The Windmill deploy workflow (D-371, first-hosting runbook step 15)
+# bundles each entry with its imports and the files in `bundle_files` embedded, pushes it as a
+# script at its path with its `job_token_scopes`, and creates the schedules and the approval flow;
+# each secret and value is a Windmill variable at the path below (D-370).
 # test/flows/windmill-description.test.ts keeps this file in step with the code.
 #
 # Why these flows, and not one per contract move: the architecture's reason for "one flow per
@@ -14,19 +14,31 @@
 
 workspace_folder: f/foreman
 
-# The repository files every bundle carries besides its imports, at the same paths from the
-# bundle's root, because the code reads them from there when it runs: the contracts, task types
-# and bot files, and Supabase's CA certificate, which the runner's database connection verifies
-# the server against (D-364, O-117). Without the certificate the runner refuses to connect.
+# The repository files every bundle carries besides its imports, because the code reads them when
+# it runs: the contracts, task types and bot files, and Supabase's CA certificate, which the
+# runner's database connection verifies the server against (D-364, O-117). Without the
+# certificate the runner refuses to connect. A folder ends in `/` and stands for every file under
+# it. The deploy embeds them in each bundle by their paths from the repository root
+# (`bundleFilesDefine` in src/adapters/bundle-files/embed.ts), and the code reads them only
+# through src/adapters/bundle-files/files.ts, from the bundle in Windmill and from disk elsewhere
+# (O-121).
 bundle_files:
   - contracts/
   - src/adapters/store-postgres/supabase-ca.crt
 
+# Each entry's `job_token_scopes` cap the token of every job of its script (D-371, O-121): without
+# them a job runs with all the rights of whoever started it. Every flow reads only its secrets and
+# values, the variables under the folder (flows/lib/windmill.ts), and calls no other Windmill API;
+# the reconcile flow also reads the month's execution count, which needs `workspaces:read`
+# (Windmill cannot limit that scope to paths). The routes about a job's own run (its progress and
+# its flow's step results) stay open to it whatever the scopes (Windmill's source, version
+# 1.865.0, `is_own_job_runtime_route` in windmill-api-auth `scopes.rs`).
 flows:
   - name: reconcile
     path: f/foreman/reconcile
     entry: flows/reconcile.ts
     trigger: schedule
+    job_token_scopes: ["variables:read:f/foreman/*", "workspaces:read"]
     # Every `reconcile_interval_minutes` (setting, 120 until Kubernetes, D-164). Windmill reads
     # the schedule from here, not from the setting; changing one means changing both. It is the
     # safety net for missed events (D-274): its pass plans release, dispatch and advance from
@@ -60,6 +72,7 @@ flows:
     path: f/foreman/scan
     entry: flows/scan.ts
     trigger: schedule
+    job_token_scopes: ["variables:read:f/foreman/*"]
     # The Scanner's stage 1 (D-299, D-300, O-92): once a day at 05:00 Toronto time, an hour
     # before the daily check, which shows what it found (D-297). About 30 runs a month (D-164).
     # It scans every project's repository at its default branch's head with fixed checks and no
@@ -77,6 +90,7 @@ flows:
     path: f/foreman/daily_check
     entry: flows/daily-check.ts
     trigger: schedule
+    job_token_scopes: ["variables:read:f/foreman/*"]
     # Didi's daily check (spec section 6, M4.4, O-91): once a day, about 30 runs a month next to
     # the reconcile flow's 360 (D-164). Its run's result is the page Didi reads (D-319, D-320,
     # O-100): Windmill's `render_all` with the check as a page for a phone first, then the check
@@ -98,6 +112,7 @@ flows:
     # start path (flows/lib/start-run.ts, flows/lib/ready-runs.ts), so a start adds no Windmill
     # run (D-164). It stays for a start by hand from its Windmill page, for example at rehearsal.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: record_run_end
     path: f/foreman/record_run_end
@@ -121,6 +136,7 @@ flows:
     # run's freed slot starts the first runs of the project's ready items, in the pass's order,
     # as many as admission lets (N-81).
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: deploy_staging
     path: f/foreman/deploy_staging
@@ -143,6 +159,7 @@ flows:
     # a repository that is not a registered project. The reconcile flow's staging deploy backstop
     # catches a missed event. A `deployment_status` starts nothing (D-356).
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: advance_item
     path: f/foreman/advance_item
@@ -161,6 +178,7 @@ flows:
     # head whose CI ends green with the item's move due (D-164). The reconcile flow's advance step
     # is the backstop.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: cancel_runs
     path: f/foreman/cancel_runs
@@ -168,6 +186,7 @@ flows:
     # D-202: called right after the kill switch is turned on, and run by the reconcile flow on
     # every pass the kill switch stops. It stops every active agent run and ends it cancelled.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: plan_approval
     path: f/foreman/plan_approval
@@ -182,6 +201,7 @@ flows:
     # opens Didi's plan-approval request at once; the reconcile flow's plan approval pass stays as
     # the safety net for a start that failed or that a switch held.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: option_capture
     path: f/foreman/option_capture
@@ -199,6 +219,7 @@ flows:
     # `{"input": {"nodeId": ...}}`. The run-end flow tries the same capture at a
     # Designer run's end, and the reconcile flow's capture pass is the backstop.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: hold_release_request
     path: f/foreman/hold_release_request
@@ -211,6 +232,7 @@ flows:
     # nothing. Didi starts it from its page in the Windmill workspace, signed in (D-295); the
     # daily check's page links each held item to that page (D-320, O-100). No new credential.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: cancel_item
     path: f/foreman/cancel_item
@@ -221,6 +243,7 @@ flows:
     # Never a public or signed-token link. No schedule, pass or other flow starts it; the kill
     # switch and dry run write nothing. No new credential.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: register_project
     path: f/foreman/register_project
@@ -238,6 +261,7 @@ flows:
     # Bootstrap again on main, each with a token narrowed to the new repository. Run again on a
     # project whose setup has not finished, it grants and restarts again.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: remove_bootstrap_access
     path: f/foreman/remove_bootstrap_access
@@ -254,6 +278,7 @@ flows:
     # switch it does nothing (N-100); in dry run it reports. The reconcile pass's backstop removes
     # any access it missed.
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: request_transition
     path: f/foreman/request_transition
@@ -261,6 +286,7 @@ flows:
     # For an event, a bot report, a human or a timeout, with the trigger's own id. Which caller
     # turns a bot report or a GitHub event into this call is open (M3.1 report).
     trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
 
   - name: approval
     path: f/foreman/approval
@@ -275,6 +301,8 @@ flows:
     # Council's answer does at its run's end (O-104), unless a switch holds the runner.
     entry: flows/approval-resume.ts
     trigger: approval_resume
+    # The scopes of the `record` step's script; the `ask` step is not built (M4.1).
+    job_token_scopes: ["variables:read:f/foreman/*"]
     suspend:
       required_events: 1
       # D-170: every approval expires after a short time. One day, as in M0.4, until M4.1 sets it.
@@ -330,8 +358,7 @@ resources:
   # The runner's cluster token, endpoint and CA certificate are not stored by hand: the Platform
   # workflow's `runner-token` job, which Didi approves, writes them (D-352, O-110, O-120): the
   # token as it is, a secret variable; the endpoint as `https://host[:port]` and the certificate in
-  # PEM, plain variables. The Windmill binding (flows/lib/windmill.ts), written at first hosting,
-  # reads these three there.
+  # PEM, plain variables. The Windmill binding (flows/lib/windmill.ts) reads these three there.
   #
   # The services' own secrets (the planning chat's token hash and the three Windmill tokens that
   # start flows) are not kept in Windmill: each lives only in the `platform` environment's secrets
@@ -423,6 +450,3 @@ resources:
         holds: The runner App's installation id on didi-build (D-368)
         windmill_path: f/foreman/platform/github/runner-app-installation-id
         written_by: Didi, by hand (first-hosting runbook step 15)
-  # Reading the execution count needs a Windmill token that can list the workspace's jobs. It is
-  # a new credential at first hosting; until then the count is not read and the pass says so.
-  windmill_token: needed for the execution count (D-167)

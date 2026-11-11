@@ -16,7 +16,8 @@ import {
   tarHeader,
   tarball,
 } from "./fixtures.ts";
-import { readHeadCommit, readRepoMapAt } from "./github.ts";
+import { readRepoMapAt } from "./github.ts";
+import { readHeadCommit } from "./head-commit.ts";
 import {
   decodeRepoMapResult,
   encodeRepoMapResult,

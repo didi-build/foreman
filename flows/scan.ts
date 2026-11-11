@@ -14,5 +14,6 @@ export async function run(deps: FlowDeps): Promise<ScanPassResult> {
   return scanPass(deps);
 }
 
-export const main = (): Promise<ScanPassResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+export async function main(): Promise<ScanPassResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+}

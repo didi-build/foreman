@@ -33,5 +33,6 @@ export async function run(
   return { outcome: "advanced", advances: await advanceSteps(deps, plans) };
 }
 
-export const main = (input: AdvanceItemInput): Promise<AdvanceItemResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: AdvanceItemInput): Promise<AdvanceItemResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

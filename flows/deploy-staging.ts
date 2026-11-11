@@ -53,5 +53,6 @@ export async function run(
   return { outcome: "done", deploy, ...(await afterStagingDeploys(deps, [deploy])) };
 }
 
-export const main = (input: DeployStagingInput): Promise<DeployStagingResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: DeployStagingInput): Promise<DeployStagingResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}
