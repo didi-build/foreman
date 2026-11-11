@@ -3,7 +3,10 @@ import {
   evaluatePrJson,
   isCleanStatusError,
   isDependabotAuthor,
+  isBaseModifiedError,
   isEligible,
+  MERGE_RETRY_DELAYS_MS,
+  mergeDependabotPr,
   pickPrNumber,
 } from "../scripts/dependabot-automerge.mjs";
 
@@ -140,6 +143,124 @@ describe("dependabot-automerge (unit)", () => {
       const pr = JSON.parse(ghPrViewFixture) as { headRefName: string };
       pr.headRefName = "feature/x";
       expect(evaluatePrJson(JSON.stringify(pr)).ok).toBe(false);
+    });
+  });
+
+  describe("mergeDependabotPr (a fake gh: no network)", () => {
+    const BASE_MODIFIED =
+      "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)";
+    const CLEAN = "gh: Pull request is in clean status (HTTP 422)";
+    /** A fake gh that answers each call from `answers` in order, and records the calls. */
+    const fakeGh = (answers: { ok: boolean; stderr?: string }[]) => {
+      const calls: string[][] = [];
+      const run = (args: string[]) => {
+        calls.push(args);
+        const answer = answers[calls.length - 1] ?? {
+          ok: false,
+          stderr: "no answer left",
+        };
+        return {
+          command: `gh ${args.join(" ")}`,
+          ok: answer.ok,
+          status: answer.ok ? 0 : 1,
+          stdout: "",
+          stderr: answer.stderr ?? "",
+        };
+      };
+      return { calls, run };
+    };
+    const merge = (answers: { ok: boolean; stderr?: string }[]) => {
+      const gh = fakeGh(answers);
+      const slept: number[] = [];
+      const lines: string[] = [];
+      const result = mergeDependabotPr(119, "owner/repo", {
+        run: gh.run,
+        sleep: (ms: number) => slept.push(ms),
+        log: (line: string) => lines.push(line),
+      });
+      return { result, calls: gh.calls, slept, lines };
+    };
+    const AUTO = [
+      "pr",
+      "merge",
+      "119",
+      "--repo",
+      "owner/repo",
+      "--auto",
+      "--squash",
+      "--delete-branch",
+    ];
+    const DIRECT = [
+      "pr",
+      "merge",
+      "119",
+      "--repo",
+      "owner/repo",
+      "--squash",
+      "--delete-branch",
+    ];
+
+    it("knows GitHub's refusal when another PR merged first, and nothing else", () => {
+      expect(isBaseModifiedError(BASE_MODIFIED)).toBe(true);
+      expect(isBaseModifiedError(CLEAN)).toBe(false);
+      expect(isBaseModifiedError("Pull request is not mergeable")).toBe(false);
+      expect(isBaseModifiedError(undefined)).toBe(false);
+    });
+
+    it("turns on auto-merge once when GitHub accepts it", () => {
+      const { result, calls, slept } = merge([{ ok: true }]);
+      expect(result).toEqual({ ok: true });
+      expect(calls).toEqual([AUTO]);
+      expect(slept).toEqual([]);
+    });
+
+    it("merges at once when the PR is already mergeable", () => {
+      const { result, calls } = merge([{ ok: false, stderr: CLEAN }, { ok: true }]);
+      expect(result).toEqual({ ok: true });
+      expect(calls).toEqual([AUTO, DIRECT]);
+    });
+
+    it("tries again after a short wait when the base branch moved, and then succeeds", () => {
+      const { result, calls, slept, lines } = merge([
+        { ok: false, stderr: CLEAN },
+        { ok: false, stderr: BASE_MODIFIED },
+        { ok: false, stderr: CLEAN },
+        { ok: true },
+      ]);
+      expect(result).toEqual({ ok: true });
+      expect(calls).toEqual([AUTO, DIRECT, AUTO, DIRECT]);
+      expect(slept).toEqual([MERGE_RETRY_DELAYS_MS[0]]);
+      expect(lines.some((l) => l.includes("trying again in 15s (try 2 of 4)"))).toBe(
+        true,
+      );
+    });
+
+    it("gives up, failing the job, after the last wait if the base keeps moving", () => {
+      const { result, calls, slept } = merge(
+        Array.from({ length: 8 }, () => ({ ok: false, stderr: BASE_MODIFIED })),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        failure: expect.stringContaining(BASE_MODIFIED),
+      });
+      expect(calls).toHaveLength(MERGE_RETRY_DELAYS_MS.length + 1);
+      expect(slept).toEqual(MERGE_RETRY_DELAYS_MS);
+    });
+
+    it("fails at once, without waiting, on any other refusal", () => {
+      const { result, calls, slept } = merge([
+        { ok: false, stderr: "GraphQL: Pull request is not mergeable" },
+      ]);
+      expect(result).toMatchObject({
+        ok: false,
+        failure: expect.stringContaining("not mergeable"),
+      });
+      expect(calls).toEqual([AUTO]);
+      expect(slept).toEqual([]);
+    });
+
+    it("waits 15, 30 and 60 seconds, under two minutes in all", () => {
+      expect(MERGE_RETRY_DELAYS_MS).toEqual([15_000, 30_000, 60_000]);
     });
   });
 });
