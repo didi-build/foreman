@@ -4,12 +4,13 @@
 // The only thing decided here is which file is the escalation file, and that comes from the
 // file name (escalation.yaml), never from what the file says about itself.
 // A YAML syntax error throws, naming the file: there is no object to validate.
+// The files are read through ../bundle-files/files.ts: from disk, or from a flow's bundle (O-121).
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
 import type { RawContractFile } from "../../core/contracts.ts";
+import { listBundledFolder, readBundledFile } from "../bundle-files/files.ts";
 
 export const MACHINE_2_DIR = "contracts/machine-2";
 
@@ -36,14 +37,14 @@ export function loadContractFiles(
   version: string,
   dir: string = MACHINE_2_DIR,
 ): LoadedContractFiles {
-  const names = readdirSync(dir)
+  const names = listBundledFolder(dir)
     .filter((name) => name.endsWith(".yaml"))
     .sort();
   const hash = createHash("sha256");
   const files: RawContractFile[] = [];
 
   for (const name of names) {
-    const bytes = readFileSync(join(dir, name));
+    const bytes = readBundledFile(join(dir, name));
     hash.update(bytes);
     let data: unknown;
     try {
@@ -88,7 +89,7 @@ export const TASK_TYPES_FILE = "contracts/task-types.yaml";
 
 /** Parses the task types file. A YAML syntax error throws, naming the file. */
 export function loadTaskTypesFile(path: string = TASK_TYPES_FILE): unknown {
-  const text = readFileSync(path, "utf8");
+  const text = readBundledFile(path).toString("utf8");
   try {
     return parse(text) as unknown;
   } catch (error) {

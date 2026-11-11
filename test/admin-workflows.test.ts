@@ -1,6 +1,6 @@
-// Unit: repo guard on the admin workflows (D-336, D-339, D-340, O-105, D-362, O-115): the Images,
-// Infra apply, Platform and Database migrations workflows, the scripts they run, the cluster's
-// settings file and the factory stack's reviewed variables. Read as text and YAML; nothing runs. The scripts' behaviour is in
+// Unit: repo guard on the admin workflows (D-336, D-339, D-340, O-105, D-362, O-115, D-371,
+// O-123): the Images, Infra apply, Platform, Database migrations and Windmill deploy workflows,
+// the scripts they run, the cluster's settings file and the factory stack's reviewed variables. Read as text and YAML; nothing runs. The scripts' behaviour is in
 // test/admin-workflow-scripts.test.ts.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +12,11 @@ import { MIGRATIONS_DIR } from "../src/adapters/store-postgres/migrate.ts";
 import { SUPABASE_CA_PATH } from "../src/adapters/store-postgres/tls.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
 import { DEFAULT_PRIVILEGED_PATHS, globToRegExp } from "../src/core/guards/review.ts";
+import {
+  AGENT_RUNS_FILE,
+  DEPLOYED_VALUES,
+  PLATFORM_SETTINGS_FILE,
+} from "../scripts/windmill-bundle.ts";
 import {
   RENDER_PLACEHOLDER,
   SETTINGS_FILE,
@@ -56,6 +61,7 @@ const WORKFLOWS = {
   infra: ".github/workflows/infra-apply.yml",
   platform: ".github/workflows/platform.yml",
   database: ".github/workflows/db-migrate.yml",
+  windmill: ".github/workflows/windmill-deploy.yml",
 } as const;
 const text = (path: string) => readFileSync(path, "utf8");
 const workflow = (path: string) => parseYaml(text(path)) as Workflow;
@@ -77,9 +83,9 @@ const JOB_LEVEL_IDENTIFIERS = [
   "CLOUDFLARE_ZONE_ID",
   "STATE_BUCKET",
 ];
-/** The environments: two plan environments with no reviewer (D-339), three Didi approves (D-339, D-362). */
+/** The environments: two plan environments with no reviewer (D-339), four Didi approves (D-339, D-362, D-371). */
 const PLAN_ENVIRONMENTS = ["infra-plan", "platform-plan"];
-const APPROVED_ENVIRONMENTS = ["infra", "platform", "database"];
+const APPROVED_ENVIRONMENTS = ["infra", "platform", "database", "windmill"];
 
 describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
   it("run only from main, on a push there or by hand, never on a pull request", () => {
@@ -133,7 +139,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     for (const [key, refs] of pins) expect([...refs], key).toHaveLength(1);
   });
 
-  it("read secrets only in jobs of the five environments, only in a step's env, never in a script", () => {
+  it("read secrets only in jobs of the six environments, only in a step's env, never in a script", () => {
     for (const { path, wf } of all) {
       const raw = text(path);
       expect(raw, path).not.toMatch(/toJSON\(secrets\)|secrets:\s*inherit|secrets\[/);
@@ -187,6 +193,8 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       [`${WORKFLOWS.platform}#cluster-secrets`]: "platform",
       [`${WORKFLOWS.platform}#runner-token`]: "platform",
       [`${WORKFLOWS.database}#migrate`]: "database",
+      [`${WORKFLOWS.windmill}#bundle`]: null,
+      [`${WORKFLOWS.windmill}#deploy`]: "windmill",
     });
   });
 
@@ -214,8 +222,13 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     }
   });
 
-  it("never let two runs of the infra, platform or migrations workflow overlap, so two applies never do", () => {
-    for (const path of [WORKFLOWS.infra, WORKFLOWS.platform, WORKFLOWS.database]) {
+  it("never let two runs of the infra, platform, migrations or Windmill deploy workflow overlap, so two applies never do", () => {
+    for (const path of [
+      WORKFLOWS.infra,
+      WORKFLOWS.platform,
+      WORKFLOWS.database,
+      WORKFLOWS.windmill,
+    ]) {
       const { concurrency } = workflow(path);
       expect(concurrency?.["cancel-in-progress"], path).toBe(false);
       expect(concurrency?.group, path).toMatch(/^[a-z-]+$/);
@@ -233,6 +246,9 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       ...readdirSync(MIGRATIONS_DIR).map((name) => join(MIGRATIONS_DIR, name)),
       // O-118: the certificate decides whom the job and the services trust.
       SUPABASE_CA_PATH,
+      // O-123: the settings the Windmill deploy writes into Windmill (images, app names, sizes).
+      SETTINGS_FILE,
+      AGENT_RUNS_FILE,
     ]) {
       expect(privileged(path), path).toBe(true);
     }
@@ -1047,6 +1063,270 @@ describe("the database migrations workflow (unit: D-362, O-115)", () => {
     );
     expect(MIGRATIONS_DIR).toBe("db/migrations");
     expect(migrateSh).toContain('migrations="${1:-db/migrations}"\n');
+  });
+});
+
+describe("the Windmill deploy workflow (unit: D-371, O-123)", () => {
+  const wf = workflow(WORKFLOWS.windmill);
+  const bundle = wf.jobs.bundle as Job & { "runs-on"?: string };
+  const deploy = wf.jobs.deploy as Job & { "runs-on"?: string };
+  const raw = text(WORKFLOWS.windmill);
+  const deploySh = script("windmill-deploy.sh");
+  const code = deploySh
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+  const description = parseYaml(text("flows/windmill.yaml")) as {
+    flows: {
+      name: string;
+      path: string;
+      trigger: string;
+      job_token_scopes: string[];
+    }[];
+    resources: {
+      secrets: { path: string; windmill_path?: string }[];
+      values: { name: string; windmill_path?: string; written_by?: string }[];
+      github_apps: {
+        secrets: { windmill_path: string }[];
+        values: { windmill_path: string }[];
+      };
+    };
+  };
+  /** The value names the deploy script writes, from its own list. */
+  const scriptValues = [
+    ...(/^value_names=\(\n([\s\S]*?)\n\)$/m.exec(deploySh)?.[1] ?? "").matchAll(
+      /^\s+([a-z_]+)$/gm,
+    ),
+  ].map((m) => m[1]);
+
+  it("starts on a push to main that changes what the flows use, or by hand, never on a pull request", () => {
+    expect(wf.on).toEqual({
+      push: {
+        branches: ["main"],
+        paths: [
+          "flows/**",
+          "src/**",
+          "contracts/**",
+          "package.json",
+          "package-lock.json",
+          "scripts/windmill-bundle.ts",
+          "infra/kubernetes/platform.ts",
+          PLATFORM_SETTINGS_FILE,
+          AGENT_RUNS_FILE,
+          WORKFLOWS.windmill,
+          ".github/scripts/windmill-deploy.sh",
+        ],
+      },
+      workflow_dispatch: null,
+    });
+    expect(raw).not.toMatch(/pull_request|workflow_run|schedule:/);
+    // Waiting runs line up and the newest waiting one stands for them all (D-371).
+    expect(wf.concurrency).toEqual({
+      group: "windmill-deploy",
+      "cancel-in-progress": false,
+    });
+    expect(wf.permissions).toEqual({});
+    expect(wf.env).toEqual({ SETTINGS_FILE });
+  });
+
+  it("bundles in a job with no environment and no secret, the only job that runs the repository's code, and keeps the result one day", () => {
+    expect(Object.keys(wf.jobs)).toEqual(["bundle", "deploy"]);
+    expect(bundle.environment).toBeUndefined();
+    expect(bundle.needs).toBeUndefined();
+    expect(bundle.if).toBe("github.ref == 'refs/heads/main'");
+    expect(bundle["runs-on"]).toBe("ubuntu-24.04");
+    expect(JSON.stringify(bundle)).not.toMatch(SECRET_REFERENCE);
+    expect(bundle.steps.map((s) => s.uses?.replace(/@.*/, "") ?? s.name)).toEqual([
+      "actions/checkout",
+      "actions/setup-node",
+      "npm ci",
+      "Bundle each flow entry and write the manifest",
+      "actions/upload-artifact",
+    ]);
+    expect(bundle.steps[0]?.with).toEqual({ "persist-credentials": false });
+    expect(bundle.steps[2]?.run).toBe("set -euo pipefail\nnpm ci --ignore-scripts\n");
+    expect(bundle.steps[3]?.run).toContain(
+      'node scripts/windmill-bundle.ts --commit "$GITHUB_SHA" --out "$RUNNER_TEMP/windmill-deploy"',
+    );
+    expect(bundle.steps[3]?.env).toBeUndefined();
+    expect(bundle.steps[4]?.with).toEqual({
+      name: "windmill-deploy",
+      path: "${{ runner.temp }}/windmill-deploy",
+      "if-no-files-found": "error",
+      "retention-days": 1,
+    });
+    expect(bundle.outputs).toBeUndefined();
+  });
+
+  it("deploys in the environment windmill Didi approves, after the bundle, from .github/ and the settings file only, running no npm, node or repository code", () => {
+    expect(deploy.environment).toBe("windmill");
+    expect(deploy.needs).toBe("bundle");
+    expect(deploy.if).toBe("github.ref == 'refs/heads/main'");
+    expect(deploy.permissions).toEqual({ contents: "read" });
+    expect(deploy["timeout-minutes"]).toBeLessThanOrEqual(30);
+    expect(deploy.env).toBeUndefined();
+    expect(deploy.outputs).toBeUndefined();
+    expect(deploy.steps.map((s) => s.uses ?? "run")).toEqual([
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "run",
+    ]);
+    expect(deploy.steps[0]?.with).toEqual({
+      "persist-credentials": false,
+      "sparse-checkout": `/.github/\n/${SETTINGS_FILE}\n`,
+      "sparse-checkout-cone-mode": false,
+    });
+    expect(deploy.steps[1]?.with).toEqual({
+      name: bundle.steps[4]?.with?.name,
+      path: "${{ runner.temp }}/windmill-deploy",
+    });
+    const commands = (deploy.steps[2]?.run ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    expect(commands).toEqual([
+      "set -euo pipefail",
+      'export REPORT="$RUNNER_TEMP/windmill-deploy.md"',
+      "status=0",
+      '.github/scripts/windmill-deploy.sh "$RUNNER_TEMP/windmill-deploy" || status=$?',
+      'if [ -f "$REPORT" ]; then',
+      'tee -a "$GITHUB_STEP_SUMMARY" <"$REPORT"',
+      "fi",
+      'exit "$status"',
+    ]);
+    expect(JSON.stringify(deploy)).not.toMatch(/\b(npm|npx|node|setup-node|tsx)\b/);
+  });
+
+  it("gives WINDMILL_DEPLOY_TOKEN only to the step that runs the protected script, and no other workflow names it", () => {
+    expect(deploy.steps[2]?.env).toEqual({
+      WINDMILL_DEPLOY_TOKEN: "${{ secrets.WINDMILL_DEPLOY_TOKEN }}",
+    });
+    expect(raw.match(/\$\{\{[^}]*secrets\.[^}]*\}\}/g)).toEqual([
+      "${{ secrets.WINDMILL_DEPLOY_TOKEN }}",
+    ]);
+    for (const name of readdirSync(".github/workflows")) {
+      if (join(".github/workflows", name) === WORKFLOWS.windmill) continue;
+      expect(text(join(".github/workflows", name)), name).not.toContain(
+        "WINDMILL_DEPLOY_TOKEN",
+      );
+    }
+  });
+
+  it("runs only bash, coreutils, jq and curl, reads no setting of its environment but its own, and hands nothing on", () => {
+    expect(code).not.toMatch(/\b(npm|npx|node|tsx|wget|python3?|apt-get|pip)\b/);
+    // (jq's own `. as $m` is no shell source.)
+    expect(code).not.toMatch(/^\s*(source\s|\.\s+["$./])/m);
+    expect(code).not.toMatch(/GITHUB_OUTPUT|GITHUB_ENV|GITHUB_STEP_SUMMARY/);
+    const read = new Set(
+      [...code.matchAll(/\$\{?([A-Z][A-Z0-9_]*)/g)].map((m) => m[1] as string),
+    );
+    expect([...read].sort()).toEqual([
+      "REPORT",
+      "RUNNER_TEMP",
+      "SETTINGS_FILE",
+      "WINDMILL_DEPLOY_TOKEN",
+    ]);
+  });
+
+  it("sends the token in a private header file only, every body through a file or stdin, follows no redirect and never deletes", () => {
+    expect(code).toContain(
+      'printf \'Authorization: Bearer %s\\n\' "$token" >"$work/headers"',
+    );
+    expect(code.match(/--header @"\$work\/headers"/g)).toHaveLength(3);
+    expect(code).not.toMatch(/-H "Authorization|--header "Authorization/);
+    expect(code.match(/--data\S* \S+/g)).toEqual(["--data-binary @-"]);
+    expect(code.match(/--form "[^"]+"/g)).toEqual([
+      '--form "script=<$work/script.json;type=application/json"',
+      '--form "file=@$dir/bundles/$name.js;type=application/javascript"',
+    ]);
+    // (`[ -L` tests for a symbolic link; a curl option would start its own line.)
+    expect(code).not.toMatch(
+      /--location|^\s+-L\s|--request (DELETE|PUT)|\/delete|archive/m,
+    );
+    expect(code).toMatch(/"\$api\/\$kind\/exists\/\$path" <\/dev\/null/);
+    expect(code).toMatch(
+      /"\$api\/scripts\/create_snapshot\?skip_if_noop=true" <\/dev\/null/,
+    );
+    // The routes it calls, and no other: no resource, flow, job, user or workspace route.
+    const routes = [...code.matchAll(/\$api\/([a-z_/$?=]+)/g)].map((m) => m[1]);
+    expect([...new Set(routes)].sort()).toEqual([
+      "$kind/exists/$path",
+      "schedules/create",
+      "schedules/update/$path",
+      "scripts/create_snapshot?skip_if_noop=true",
+      "variables/create",
+      "variables/update/$path",
+    ]);
+    expect(code).toContain('api="https://$host/api/w/$workspace"');
+  });
+
+  it("writes exactly the plain values flows/windmill.yaml leaves to it, each as a plain variable, never a secret one", () => {
+    const leftToDeploy = description.resources.values
+      .filter((v) => v.written_by === undefined)
+      .map((v) => v.name);
+    expect([...scriptValues].sort()).toEqual([...leftToDeploy].sort());
+    expect(scriptValues).toEqual([...DEPLOYED_VALUES]);
+    // None names a secret, or a value someone else writes.
+    const elsewhere = [
+      ...description.resources.secrets.map(
+        (s) => s.windmill_path ?? `f/foreman/${s.path}`,
+      ),
+      ...description.resources.values
+        .filter((v) => v.written_by !== undefined)
+        .map((v) => v.windmill_path),
+      ...description.resources.github_apps.secrets.map((s) => s.windmill_path),
+      ...description.resources.github_apps.values.map((v) => v.windmill_path),
+    ];
+    for (const name of scriptValues)
+      expect(elsewhere).not.toContain(`f/foreman/${name}`);
+    expect(code).not.toMatch(/is_secret: true/);
+    expect(code.match(/is_secret: [a-z$]+/g)).toEqual([
+      "is_secret: false",
+      "is_secret: false",
+    ]);
+  });
+
+  it("allows each script only the job token scopes flows/windmill.yaml gives it (D-371, O-121)", () => {
+    const every = /^every_script_scope='([^']+)'$/m.exec(deploySh)?.[1];
+    const reconcileOnly = /^reconcile_only_scope='([^']+)'$/m.exec(deploySh)?.[1];
+    expect(/^reconcile_path='([^']+)'$/m.exec(deploySh)?.[1]).toBe(
+      "f/foreman/reconcile",
+    );
+    for (const flow of description.flows) {
+      const allowed =
+        flow.path === "f/foreman/reconcile" ? [every, reconcileOnly] : [every];
+      expect(flow.job_token_scopes, flow.name).toEqual(allowed);
+    }
+  });
+
+  it("asks for a token with exactly the three scopes of D-371, and the runbook names its environment and secret (runbook step 15)", () => {
+    const runbook = text("docs/runbooks/first-hosting.md");
+    const step15 = runbook.slice(
+      runbook.indexOf("## 15. "),
+      runbook.indexOf("\n## 16. "),
+    );
+    const scopeLines = step15
+      .split("\n")
+      .filter((line) => line.includes("Check that the selected scopes read exactly"));
+    expect(scopeLines).toHaveLength(1);
+    expect(
+      [...(scopeLines[0] ?? "").matchAll(/`(\w+:\w+:[^`]+)`/g)].map((m) => m[1]),
+    ).toEqual([
+      "scripts:write:f/foreman/*",
+      "schedules:write:f/foreman/*",
+      `variables:write:${scriptValues.map((name) => `f/foreman/${name}`).join(",")}`,
+    ]);
+    const row = runbook
+      .split("\n")
+      .find(
+        (line) =>
+          line.startsWith("| `windmill`") && line.includes("WINDMILL_DEPLOY_TOKEN"),
+      );
+    expect(row).toContain("15");
+    // The environment comes first, with its rules, as step 9a's does.
+    expect(step15).toContain(
+      "name it `windmill`. Required reviewers: Didi only. Deployment branches: Selected branches, `main` only.",
+    );
   });
 });
 

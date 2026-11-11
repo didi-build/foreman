@@ -247,7 +247,8 @@ export function unbuiltStagingDeployCredentials(): StagingDeployCredentials {
 
 /**
  * The staging deploy token and the account id, read by path from the flow's environment (Windmill
- * resources, ADR 0111 section 4) each time a deploy needs them, and never kept or logged.
+ * secret variables, D-370, ADR 0111 section 4) each time a deploy needs them, and never kept or
+ * logged.
  */
 export function windmillStagingDeployCredentials(
   env: Pick<FlowEnvironment, "secret">,

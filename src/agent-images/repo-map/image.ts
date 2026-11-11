@@ -19,7 +19,8 @@ import {
   REPOSITORY,
   type GitHubHttp,
 } from "../../adapters/github/runner-app-tokens.ts";
-import { FULL_SHA, readRepoMapAt } from "../../adapters/repo-map/github.ts";
+import { readRepoMapAt } from "../../adapters/repo-map/github.ts";
+import { FULL_SHA } from "../../adapters/repo-map/head-commit.ts";
 import { encodeRepoMapResult } from "../../adapters/repo-map/result.ts";
 import { readScanAt } from "../../adapters/repo-map/scan.ts";
 import {

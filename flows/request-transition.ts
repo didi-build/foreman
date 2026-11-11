@@ -53,5 +53,8 @@ export async function run(
   };
 }
 
-export const main = (input: RequestTransitionInput): Promise<RequestTransitionResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(
+  input: RequestTransitionInput,
+): Promise<RequestTransitionResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

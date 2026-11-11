@@ -55,5 +55,6 @@ export async function run(
   return { outcome: "recorded", decisionId, ...(await afterAnswer(deps, gate)) };
 }
 
-export const main = (input: ApprovalResumeInput): Promise<ApprovalResumeResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: ApprovalResumeInput): Promise<ApprovalResumeResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

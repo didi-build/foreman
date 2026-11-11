@@ -48,5 +48,6 @@ export async function run(deps: FlowDeps): Promise<DailyCheckFlowResult> {
   };
 }
 
-export const main = (): Promise<DailyCheckFlowResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+export async function main(): Promise<DailyCheckFlowResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+}

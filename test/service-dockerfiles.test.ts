@@ -52,6 +52,46 @@ describe("service Dockerfiles (unit: container conventions guard, ADR 0111)", ()
     expect(dockerDirectories).toContain(`/src/${service}`);
   });
 
+  it.each(services)(
+    "%s copies every repository module its code imports as a value",
+    (service) => {
+      // A service starts with Node's type stripping, so a value import of a file its Dockerfile
+      // does not copy crashes it at start (the bundle files reader, O-121, is one such file).
+      // `import type` lines are erased and may point anywhere.
+      const copied = readFileSync(join("src", service, "Dockerfile"), "utf8")
+        .split("\n")
+        .filter((line) => /^COPY\s/i.test(line))
+        .map((line) => line.split(/\s+/).at(-2) ?? "")
+        .filter((source) => source.startsWith("src/"));
+      const files = readdirSync(join("src", service), {
+        recursive: true,
+        encoding: "utf8",
+      })
+        .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+        .map((file) => join("src", service, file));
+      const seen = new Set<string>();
+      const visit = (file: string) => {
+        if (seen.has(file)) return;
+        seen.add(file);
+        const text = readFileSync(file, "utf8");
+        for (const match of text.matchAll(
+          /^(?:import|export)\s+(?!type\s)[^;]*?from\s+"(\.[^"]+)";/gms,
+        )) {
+          const target = join(file, "..", match[1] ?? "");
+          expect(
+            copied.some(
+              (source) => target === source || target.startsWith(`${source}/`),
+            ),
+            `${file} imports ${target}, which the ${service} Dockerfile does not copy`,
+          ).toBe(true);
+          visit(target);
+        }
+      };
+      files.forEach(visit);
+      expect(seen.size).toBeGreaterThan(0);
+    },
+  );
+
   it("keeps every Dependabot docker entry off major base-image upgrades", () => {
     for (const update of dockerUpdates) {
       expect(

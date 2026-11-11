@@ -54,5 +54,6 @@ export async function run(
   return { mode: "cancel", cancel, closeRuns: await closePass(deps, [input.nodeId]) };
 }
 
-export const main = (input: CancelItemInput): Promise<CancelItemResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: CancelItemInput): Promise<CancelItemResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

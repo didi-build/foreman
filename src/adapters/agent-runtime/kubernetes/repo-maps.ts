@@ -27,7 +27,7 @@ import {
   type GitHubHttp,
   type RunnerAppTokens,
 } from "../../github/runner-app-tokens.ts";
-import { FULL_SHA, readHeadCommit } from "../../repo-map/github.ts";
+import { FULL_SHA, readHeadCommit } from "../../repo-map/head-commit.ts";
 import { decodeRepoMapResult, RESULT_LOG_BYTES } from "../../repo-map/result.ts";
 import { KubernetesApiError, type KubernetesClient } from "./client.ts";
 import {

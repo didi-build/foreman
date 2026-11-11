@@ -55,5 +55,6 @@ export async function run(
     : { outcome: "already_recorded", ...after };
 }
 
-export const main = (input: RecordRunEndInput): Promise<RecordRunEndResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: RecordRunEndInput): Promise<RecordRunEndResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

@@ -23,5 +23,8 @@ export async function run(
   return optionCapturePass(deps, [input.nodeId]);
 }
 
-export const main = (input: OptionCaptureInput): Promise<OptionCapturePassStep[]> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(
+  input: OptionCaptureInput,
+): Promise<OptionCapturePassStep[]> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

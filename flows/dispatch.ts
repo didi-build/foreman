@@ -24,5 +24,6 @@ export async function run(
   return startRun(deps, input);
 }
 
-export const main = (input: DispatchFlowInput): Promise<DispatchFlowResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: DispatchFlowInput): Promise<DispatchFlowResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

@@ -4,13 +4,28 @@
 // trigger kind's move, since those live in the contracts and the core (essentials 3 and 7). The
 // import side of "no rule" is the lint rule in eslint/layer-boundary.mjs
 // (test/import-boundaries.test.ts).
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
+import {
+  READ_USAGE_SCOPE,
+  READ_VARIABLES_SCOPE,
+  WINDMILL_FOLDER,
+  windmillVariablePath,
+} from "../../flows/lib/windmill.ts";
 import { PLATFORM_SECRETS } from "../../infra/kubernetes/platform.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
@@ -45,12 +60,14 @@ import { GUARD_NAMES } from "../../src/core/guards/index.ts";
 import { machine2 } from "../reconcile-fixture.ts";
 
 interface Description {
+  workspace_folder: string;
   bundle_files: string[];
   flows: {
     name: string;
     path: string;
     entry: string;
     trigger: string;
+    job_token_scopes: string[];
     schedule?: { every_minutes: number; cron: string; timezone: string };
     suspend?: {
       hide_cancel?: boolean;
@@ -68,6 +85,7 @@ interface Description {
   resources: {
     secrets: { path: string; read_by?: string; windmill_path?: string }[];
     values: { name: string; windmill_path?: string }[];
+    windmill_token?: unknown;
     github_apps: {
       secrets: { path: string; windmill_path?: string; written_by?: string }[];
       values: { name: string; windmill_path?: string; written_by?: string }[];
@@ -80,8 +98,11 @@ const entryFiles = readdirSync("flows")
   .filter((name) => name.endsWith(".ts"))
   .map((name) => join("flows", name));
 
-/** The most lines a flow entry needs to compose, check the switches and call one entrypoint. */
-const MAX_ENTRY_LINES = 60;
+/**
+ * The most lines a flow entry needs to compose, check the switches and call one entrypoint: 60,
+ * and one more for the closing brace of the `main` declaration Windmill reads (O-121).
+ */
+const MAX_ENTRY_LINES = 61;
 
 describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
   it("lists every flow entry once, each exporting `run` and `main`", async () => {
@@ -268,6 +289,141 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       expect(line, entry.windmill_path).toContain(`\`${entry.windmill_path ?? ""}\``);
     expect(line).toMatch(/paste the PEM into its Windmill secret variable/);
     expect(line).toMatch(/as plain variables, since they are not secret/);
+  });
+});
+
+describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", () => {
+  // Windmill reads a script's arguments only from a `main` function declaration (its source,
+  // version 1.865.0, windmill-parser-ts): `export const main = (input) => ...` gets none, so
+  // `input` would be undefined. A service starts an entry with `{"input": {...}}` (`entryArgs` in
+  // src/adapters/windmill/client.ts), so the one parameter must be called `input`.
+  const mainOf = (file: string) => {
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(file, "utf8"),
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    const declarations = source.statements.filter(
+      (s): s is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(s) && s.name?.text === "main",
+    );
+    const asVariable = source.statements.some(
+      (s) =>
+        ts.isVariableStatement(s) &&
+        s.declarationList.declarations.some(
+          (d) => ts.isIdentifier(d.name) && d.name.text === "main",
+        ),
+    );
+    const main = declarations[0];
+    const kinds = (main?.modifiers ?? []).map((m) => m.kind);
+    return {
+      declarations: declarations.length,
+      asVariable,
+      exported: kinds.includes(ts.SyntaxKind.ExportKeyword),
+      async: kinds.includes(ts.SyntaxKind.AsyncKeyword),
+      body: main?.body !== undefined,
+      params: (main?.parameters ?? []).map((p) =>
+        ts.isIdentifier(p.name) ? p.name.text : "<pattern>",
+      ),
+    };
+  };
+
+  it.each(description.flows.map((flow) => [flow.name, flow.entry] as const))(
+    "%s declares `export async function main`, with `input` as its one parameter or none",
+    (_name, entry) => {
+      const main = mainOf(entry);
+      expect(main).toMatchObject({
+        declarations: 1,
+        asVariable: false,
+        exported: true,
+        async: true,
+        body: true,
+      });
+      expect([[], ["input"]]).toContainEqual(main.params);
+    },
+  );
+
+  it("takes `input` on every entry a service starts and none on a schedule", () => {
+    const started = [
+      PLAN_APPROVAL_FLOW_PATH,
+      ...RECEIVER_FLOW_PATHS,
+      ...RUN_WATCHER_FLOW_PATHS,
+    ];
+    for (const flow of description.flows) {
+      const params = mainOf(flow.entry).params;
+      if (started.includes(flow.path)) expect(params, flow.name).toEqual(["input"]);
+      if (flow.trigger === "schedule") expect(params, flow.name).toEqual([]);
+    }
+  });
+
+  it("the check catches the arrow form Windmill does not read", () => {
+    const dir = mkdtempSync(join(tmpdir(), "entry-"));
+    const file = join(dir, "entry.ts");
+    writeFileSync(
+      file,
+      "export const main = (input: unknown) => Promise.resolve(input);\n",
+    );
+    expect(mainOf(file)).toMatchObject({ declarations: 0, asVariable: true });
+    writeFileSync(file, "export function main(args: unknown) { return args; }\n");
+    expect(mainOf(file)).toMatchObject({ async: false, params: ["args"] });
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("each entry's job token scopes (unit: repo guard, D-371, O-121)", () => {
+  it("caps every entry to reading the folder's variables, and adds the usage read on the reconcile flow only", () => {
+    expect(description.workspace_folder).toBe(WINDMILL_FOLDER);
+    for (const flow of description.flows) {
+      expect(flow.job_token_scopes, flow.name).toEqual(
+        flow.name === "reconcile"
+          ? [READ_VARIABLES_SCOPE, READ_USAGE_SCOPE]
+          : [READ_VARIABLES_SCOPE],
+      );
+    }
+  });
+
+  it("reads the execution count only in the reconcile flow, so only it needs the usage read", () => {
+    const flowFiles = [
+      ...entryFiles,
+      ...readdirSync("flows/lib")
+        .filter((name) => name.endsWith(".ts"))
+        .map((name) => join("flows/lib", name)),
+    ];
+    const readers = flowFiles
+      .filter((file) => readFileSync(file, "utf8").includes("executionsThisMonth"))
+      .sort();
+    expect(readers).toEqual([
+      "flows/lib/compose.ts",
+      "flows/lib/environment.ts",
+      "flows/lib/windmill.ts",
+      "flows/reconcile.ts",
+    ]);
+  });
+
+  it("reads every secret and value at the Windmill path the file gives it (D-370)", () => {
+    const named = [
+      ...description.resources.secrets.map((s) => [s.path, s.windmill_path]),
+      ...description.resources.values.map((v) => [v.name, v.windmill_path]),
+      ...description.resources.github_apps.secrets.map((s) => [
+        s.path,
+        s.windmill_path,
+      ]),
+      ...description.resources.github_apps.values.map((v) => [v.name, v.windmill_path]),
+    ] as [string, string | undefined][];
+    expect(named.length).toBeGreaterThan(0);
+    for (const [path, windmillPath] of named) {
+      // Without a `windmill_path`, the variable is at the folder followed by its name.
+      expect(windmillVariablePath(path), path).toBe(
+        windmillPath ?? `${WINDMILL_FOLDER}/${path}`,
+      );
+    }
+  });
+
+  it("needs no Windmill token of its own for the execution count", () => {
+    expect(description.resources.windmill_token).toBeUndefined();
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    expect(runbook).not.toMatch(/token that can list the workspace's jobs/);
   });
 });
 

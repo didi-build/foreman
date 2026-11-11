@@ -55,5 +55,6 @@ export async function run(deps: FlowDeps): Promise<ReconcileFlowResult> {
   };
 }
 
-export const main = (): Promise<ReconcileFlowResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+export async function main(): Promise<ReconcileFlowResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+}

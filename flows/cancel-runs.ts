@@ -16,5 +16,6 @@ export async function run(deps: FlowDeps): Promise<CancelRunsResult> {
   return { outcome: "cancelled", ...(await cancelActiveRuns(deps)) };
 }
 
-export const main = (): Promise<CancelRunsResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+export async function main(): Promise<CancelRunsResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps));
+}

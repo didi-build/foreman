@@ -1,0 +1,130 @@
+name: Windmill deploy
+
+# Puts the flows into Windmill from main once Didi approves (D-371, O-123): each entry of
+# flows/windmill.yaml as a script, its schedules and the plain values the flows read.
+#
+# - `bundle` (no environment, no secret): bundles each entry with esbuild, the bundle files
+#   embedded (O-121), and writes the manifest (scripts/windmill-bundle.ts), kept as an artifact for
+#   one day. Its summary lists each script's path with its bundle's sha256 and size, each schedule,
+#   and each plain value by name with the sha256 of its text. Only this job runs the repository's
+#   TypeScript.
+# - `deploy` (environment `windmill`, main only, Didi the only required reviewer): checks out
+#   `.github/` and the settings file only (the Windmill host and workspace), and runs
+#   `.github/scripts/windmill-deploy.sh` with bash, curl and jq and the one secret
+#   WINDMILL_DEPLOY_TOKEN. The script checks the manifest strictly, then creates or updates each
+#   script, schedule and plain value, and prints paths and statuses only. The token can write
+#   scripts and schedules under `f/foreman/` and exactly the plain value paths, and no secret
+#   variable, resource, flow, job, user or workspace (first-hosting runbook step 15).
+#
+# It starts on a push to main that changes what the flows use, or by hand. A run waiting for Didi
+# blocks no merge and no other workflow. One run at a time: a newer run waits until the older one
+# is approved, rejected or finished, and a newer waiting run replaces an older waiting one, which
+# loses nothing since each run deploys its whole commit, so Didi approves once per batch. Pull
+# requests never run this workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flows/**"
+      - "src/**"
+      - "contracts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/windmill-bundle.ts"
+      - "infra/kubernetes/platform.ts"
+      - "infra/kubernetes/settings/production.json"
+      - "infra/kubernetes/settings/agent-runs.json"
+      - ".github/workflows/windmill-deploy.yml"
+      - ".github/scripts/windmill-deploy.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: windmill-deploy
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  SETTINGS_FILE: infra/kubernetes/settings/production.json
+
+jobs:
+  bundle:
+    name: bundle
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: npm ci
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+      - name: Bundle each flow entry and write the manifest
+        run: |
+          set -euo pipefail
+          if ! node scripts/windmill-bundle.ts --commit "$GITHUB_SHA" --out "$RUNNER_TEMP/windmill-deploy" >"$RUNNER_TEMP/bundle-summary.md" 2>"$RUNNER_TEMP/bundle-error.txt"; then
+            {
+              echo "## The flows do not bundle"
+              echo
+              echo "Fix it in a pull request. What stopped the bundle:"
+              echo
+              echo '```text'
+              cat "$RUNNER_TEMP/bundle-error.txt"
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/bundle-summary.md"
+      - name: Keep the bundles and the manifest for the deploy
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windmill-deploy
+          path: ${{ runner.temp }}/windmill-deploy
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: windmill-deploy
+    needs: bundle
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: windmill
+    permissions:
+      contents: read
+    steps:
+      # The scripts and the settings file (the Windmill host and workspace), and nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /.github/
+            /infra/kubernetes/settings/production.json
+          sparse-checkout-cone-mode: false
+      - name: Fetch the bundles and the manifest the bundle job made
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windmill-deploy
+          path: ${{ runner.temp }}/windmill-deploy
+      - name: Upload the scripts, schedules and plain values to Windmill
+        env:
+          WINDMILL_DEPLOY_TOKEN: ${{ secrets.WINDMILL_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The report holds paths and statuses only; the script's own output, with its mask, stays in the log.
+          export REPORT="$RUNNER_TEMP/windmill-deploy.md"
+          status=0
+          .github/scripts/windmill-deploy.sh "$RUNNER_TEMP/windmill-deploy" || status=$?
+          if [ -f "$REPORT" ]; then
+            tee -a "$GITHUB_STEP_SUMMARY" <"$REPORT"
+          fi
+          exit "$status"

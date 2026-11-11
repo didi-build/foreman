@@ -27,5 +27,6 @@ export function run(
   return removeAfterBootstrap(deps, input?.repo);
 }
 
-export const main = (input: RemoveBootstrapAccessInput): Promise<RemovalResult> =>
-  withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+export async function main(input: RemoveBootstrapAccessInput): Promise<RemovalResult> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+}

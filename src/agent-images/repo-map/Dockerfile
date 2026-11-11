@@ -28,6 +28,7 @@ COPY src/core/github.ts ./src/core/github.ts
 COPY src/adapters/github/runner-app-tokens.ts ./src/adapters/github/runner-app-tokens.ts
 COPY src/adapters/github/archive-path.ts ./src/adapters/github/archive-path.ts
 COPY src/adapters/repo-map/github.ts ./src/adapters/repo-map/github.ts
+COPY src/adapters/repo-map/head-commit.ts ./src/adapters/repo-map/head-commit.ts
 COPY src/adapters/repo-map/tarball.ts ./src/adapters/repo-map/tarball.ts
 COPY src/adapters/repo-map/typescript.ts ./src/adapters/repo-map/typescript.ts
 COPY src/adapters/repo-map/result.ts ./src/adapters/repo-map/result.ts
