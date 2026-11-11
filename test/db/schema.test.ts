@@ -361,13 +361,35 @@ describe.skipIf(!adminUrl)(
       });
     });
 
-    it("seeds the usage-exhausted wait and leaves the cluster run limit to be set (migration 0003)", () => {
+    it("seeds the usage-exhausted wait (migration 0003) and the cluster run limit of two (migration 0023, D-372)", () => {
       const values = sql(
         "select string_agg(key || '=' || value::text, ',' order by key) from factory.settings where key in ('usage_exhausted_wait_minutes', 'agent_cluster_max_active_runs');",
       );
-      expect(values.out).toBe("usage_exhausted_wait_minutes=30");
+      expect(values.out).toBe(
+        "agent_cluster_max_active_runs=2,usage_exhausted_wait_minutes=30",
+      );
       const index = sql("select to_regclass('factory.runs_active') is not null;");
       expect(index.out).toBe("t");
+    });
+
+    it("never replaces a cluster run limit already set (migration 0023, D-372)", () => {
+      const RUN_LIMIT = "db/migrations/0023_cluster_run_limit.sql";
+      const limit = (): string =>
+        sql(
+          "select value::text from factory.settings where key = 'agent_cluster_max_active_runs';",
+        ).out;
+      const set = (value: string, by: string) =>
+        sql(
+          `update factory.settings set value = '${value}'::jsonb, updated_by = '${by}', updated_at = ${AT} where key = 'agent_cluster_max_active_runs';`,
+        );
+      try {
+        expect(set("3", "didi").ok).toBe(true);
+        const again = sql(readFileSync(RUN_LIMIT, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        expect(limit()).toBe("3");
+      } finally {
+        expect(set("2", "migration").ok).toBe(true);
+      }
     });
 
     it("keeps a usage-exhausted cause and retry-after on usage_exhausted ends only", () => {
