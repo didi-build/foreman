@@ -34,6 +34,7 @@ COPY src/adapters/repo-map/typescript.ts ./src/adapters/repo-map/typescript.ts
 COPY src/adapters/repo-map/result.ts ./src/adapters/repo-map/result.ts
 COPY src/adapters/repo-map/scan.ts ./src/adapters/repo-map/scan.ts
 COPY src/agent-images/shared/result.ts ./src/agent-images/shared/result.ts
+COPY src/agent-images/shared/job-kit.ts ./src/agent-images/shared/job-kit.ts
 COPY src/agent-images/repo-map/main.ts ./src/agent-images/repo-map/main.ts
 COPY src/agent-images/repo-map/image.ts ./src/agent-images/repo-map/image.ts
 

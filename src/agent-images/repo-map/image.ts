@@ -13,7 +13,7 @@
 // sets; it is checked here too, so a direct connection is never tried. A connection that fails
 // before GitHub answers (the proxy not ready yet) is tried again a few times; an answer GitHub
 // gave is never retried.
-import { readConfig, text, type Setting } from "../../service-kit/config.ts";
+import { readConfig, text } from "../../service-kit/config.ts";
 import {
   createGitHubHttp,
   REPOSITORY,
@@ -23,6 +23,7 @@ import { readRepoMapAt } from "../../adapters/repo-map/github.ts";
 import { FULL_SHA } from "../../adapters/repo-map/head-commit.ts";
 import { encodeRepoMapResult } from "../../adapters/repo-map/result.ts";
 import { readScanAt } from "../../adapters/repo-map/scan.ts";
+import { CONNECT_TRIES, matching, retryConnects } from "../shared/job-kit.ts";
 import {
   errorResult,
   exitCode,
@@ -31,14 +32,6 @@ import {
 } from "../shared/result.ts";
 
 const RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
-
-const matching = (env: string, pattern: RegExp, problem: string): Setting<string> => ({
-  env,
-  parse: (raw) => {
-    if (!pattern.test(raw)) throw new Error(problem);
-    return raw;
-  },
-});
 
 const SETTINGS = {
   runId: matching("FOREMAN_RUN_ID", RUN_ID, "is not a run id"),
@@ -53,9 +46,8 @@ const SETTINGS = {
   },
 };
 
-/** Tries of a request whose connection failed before any answer. */
-export const CONNECT_TRIES = 5;
-const RETRY_MS = 3_000;
+/** Tries of a request whose connection failed before any answer (../shared/job-kit.ts). */
+export { CONNECT_TRIES };
 
 export interface RepoMapImageDeps {
   /** GitHub's API. Production: `fetch` through the proxy. */
@@ -69,18 +61,7 @@ function retryingConnects(
   http: GitHubHttp,
   wait: (ms: number) => Promise<void>,
 ): GitHubHttp {
-  return {
-    async get(request) {
-      for (let attempt = 1; ; attempt++) {
-        try {
-          return await http.get(request);
-        } catch (error) {
-          if (!(error instanceof TypeError) || attempt >= CONNECT_TRIES) throw error;
-          await wait(RETRY_MS);
-        }
-      }
-    },
-  };
+  return { get: (request) => retryConnects(() => http.get(request), wait) };
 }
 
 /** Runs the Job; returns its exit code. The result line is the last thing written. */

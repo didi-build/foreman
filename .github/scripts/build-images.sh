@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Build and push the seven images first hosting needs (D-336, O-105) to GitHub Container Registry
-# as public images, each tagged with the commit, and write their references pinned by digest:
-# a Markdown table on stdout for the job summary, and <images.json> in the shapes the settings
-# take (the cluster's settings file and Windmill's `agent_images` and `agent_run_settings`).
+# Build and push the eight images first hosting needs (D-336, O-105, O-124) to GitHub Container
+# Registry as public images, each tagged with the commit, and write their references pinned by
+# digest: a Markdown table on stdout for the job summary, and <images.json> in the shapes the
+# settings take (the cluster's settings file and Windmill's `agent_images` and
+# `agent_run_settings`).
 #
 #   build-images.sh <images.json>
 #
@@ -23,6 +24,7 @@ IMAGES=(
   "foreman-agent-opencode     src/agent-images/opencode/Dockerfile"
   "foreman-agent-claude-api   src/agent-images/claude-api/Dockerfile"
   "foreman-repo-map           src/agent-images/repo-map/Dockerfile"
+  "foreman-qa-fetch           src/agent-images/qa-fetch/Dockerfile"
   "foreman-egress-proxy       src/egress-proxy/Dockerfile"
   "foreman-state-api          src/api/Dockerfile"
   "foreman-github-receiver    src/github-receiver/Dockerfile"
@@ -60,7 +62,11 @@ jq -n --arg commit "$COMMIT" --argjson r "$refs" '{
   } } },
   windmill: {
     agent_images: { opencode: $r["foreman-agent-opencode"], "claude-api": $r["foreman-agent-claude-api"] },
-    agent_run_settings: { proxyImage: $r["foreman-egress-proxy"], repoMapImage: $r["foreman-repo-map"] }
+    agent_run_settings: {
+      proxyImage: $r["foreman-egress-proxy"],
+      fetchImage: $r["foreman-qa-fetch"],
+      repoMapImage: $r["foreman-repo-map"]
+    }
   }
 }' >"$out"
 

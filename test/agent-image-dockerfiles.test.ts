@@ -48,6 +48,7 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
       "claude-api",
       "claude-code",
       "opencode",
+      "qa-fetch",
       "repo-map",
     ]);
   });
@@ -197,13 +198,44 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
     expect(ignoresMajor(entry("npm", "/src/agent-images/repo-map/deps"))).toBe(true);
   });
 
+  it("builds QA's fetch image from Node and the files it imports only, with fetch through the proxy (O-124)", () => {
+    const text = dockerfile("qa-fetch");
+    const instructionsOnly = text
+      .split("\n")
+      .filter((line) => !line.startsWith("#"))
+      .join("\n");
+    // Nothing is installed or run at build time: no package, no git, no model SDK, no shell step.
+    expect(instructionsOnly).not.toMatch(
+      /anthropic|opencode|claude-code|\bgit\b|\bnpm\b/i,
+    );
+    expect(instructionsOnly).not.toMatch(/^RUN\s/m);
+    expect(text).toContain("ENV NODE_USE_ENV_PROXY=1");
+    // Every file it copies is one its entry imports, directly or not, plus package.json, which
+    // tells Node the .ts files are ES modules.
+    const copied = instructions("qa-fetch", "COPY").map(
+      (line) => line.split(/\s+/).at(-2) ?? "",
+    );
+    const imported = new Set<string>();
+    const visit = (file: string) => {
+      if (imported.has(file)) return;
+      imported.add(file);
+      for (const match of readFileSync(file, "utf8").matchAll(
+        /^import\s+(?!type\s)[^;]*?from\s+"(\.[^"]+)";/gms,
+      )) {
+        visit(join(file, "..", match[1] ?? ""));
+      }
+    };
+    visit(join(ROOT, "qa-fetch", "main.ts"));
+    expect(copied.sort()).toEqual(["package.json", ...imported].sort());
+  });
+
   it("copies into each image only folders whose values it imports", () => {
     // An image starts with Node's type stripping, so a value import from a folder its Dockerfile
     // does not copy crashes it at start. `import type` lines are erased and may point anywhere.
     for (const image of images) {
       const copied = instructions(image, "COPY")
         .map((line) => line.split(/\s+/).at(-2) ?? "")
-        .filter((source) => source.startsWith("src/"));
+        .filter((source) => source.startsWith("src/") || source.startsWith("scripts/"));
       const files = readdirSync(join(ROOT, image), {
         recursive: true,
         encoding: "utf8",

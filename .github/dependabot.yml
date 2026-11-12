@@ -136,6 +136,17 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+  # QA's fetch step (O-124): not an agent either, but a job image of the same kind.
+  - package-ecosystem: docker
+    directory: /src/agent-images/qa-fetch
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # The Claude Code CLI pinned for the Claude Code agent image only.
   - package-ecosystem: npm
