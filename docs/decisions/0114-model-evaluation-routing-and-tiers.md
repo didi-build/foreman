@@ -6,7 +6,7 @@
 
 ## Context
 
-Every agent run today names one model, fixed per role in the bot file: Claude Sonnet 5.5 for the Developer, Claude Opus 5.5 for QA (D-185, D-186). Didi's long-term direction is to move off the Claude API toward open models on DeepInfra, because of cost (N-31). On 2026-10-31 Didi set out what he wants:
+Every agent run today names one model, fixed per role in the bot file: Claude Sonnet 5.5 for the Developer, Claude Opus 5.5 for QA (D-185, D-186). Didi's long-term direction is to move off the Claude API toward open models on DeepInfra, because of cost (N-31). On 2026-10-31 Didi set out what they want:
 
 1. A general coding model for the Developer.
 2. A slightly better model of a **different family** for QA.

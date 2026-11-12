@@ -56,10 +56,10 @@ Goal: a clean repo, the risky unknowns checked, and the provider chosen. The Lin
 
 ### M0.4 Spike: Windmill approval pages on a phone (V-03)
 
-- What: build a hello-world flow with an approval step that Didi can open and answer on his phone, and record how it looks and behaves.
+- What: build a hello-world flow with an approval step that Didi can open and answer on their phone, and record how it looks and behaves.
 - Why: approval pages are the primary gate channel.
 - How: a flow that suspends on an approval step and resumes with a typed reply. Capture the answer verbatim.
-- Success: Didi answers it from his phone, the answer is captured verbatim with a timestamp, and the flow resumes. Record rough edges. (Review point: Didi decides whether the channel is good enough.)
+- Success: Didi answers it from their phone, the answer is captured verbatim with a timestamp, and the flow resumes. Record rough edges. (Review point: Didi decides whether the channel is good enough.)
 
 ### M0.5 Choose the managed Postgres provider (O-01)
 
@@ -252,7 +252,7 @@ Verification for M3: in the rehearsal project, one item passes each track to Don
 
 ## Milestone 4: gates, attention list, alerts, daily check
 
-Goal: Didi can act from his phone and nothing waits invisibly.
+Goal: Didi can act from their phone and nothing waits invisibly.
 
 ### M4.1 Gate request lifecycle
 

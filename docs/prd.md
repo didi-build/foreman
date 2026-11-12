@@ -23,7 +23,7 @@ Findings from the Grok setup (details in `docs/grok-mapping.md`):
 
 ## 3. Who it is for
 
-- Didi, the operator. He works in short bursts, often late at night, mostly from his phone. He decides product behaviour, money, permissions, DNS and production deploys himself, and delegates the rest. He prefers verbatim, timestamped records and one question at a time.
+- Didi, the operator. They work in short bursts, often late at night, mostly from their phone. They decide product behaviour, money, permissions, DNS and production deploys themselves, and delegate the rest. They prefer verbatim, timestamped records and one question at a time.
 - The bots and agents, which need clear contracts, a single source of truth, and proof requirements.
 - Later: other people who may use a project's output. Not users of this system in v1.
 
@@ -77,7 +77,7 @@ The principles in `docs/spec.md`, section 1, apply. In short: Didi is the operat
 
 ## 8. Operator workflows
 
-1. Submit an idea. The Council sizes it, interviews Didi one question at a time (depth scales to the size of the idea), records his answers verbatim, and confirms a read-back summary. Then it plans, Triage splits the plan into work items, and the items run in Machine 2.
+1. Submit an idea. The Council sizes it, interviews Didi one question at a time (depth scales to the size of the idea), records their answers verbatim, and confirms a read-back summary. Then it plans, Triage splits the plan into work items, and the items run in Machine 2.
 2. Approve a gate from the phone. A push alert carries a link to a Windmill approval page. Didi answers with a button or typed words. The answer is saved verbatim with a scope. A newer request on the same topic replaces an older one.
 3. Review the daily check. A short summary grouped by project, ordered by what blocks the most work: what moved, what is blocked, staging links to try, questions waiting, and token and money spend. In v1 it includes the production deploy approval (approved on GitHub from the phone).
 4. Be away. Nothing special happens. The Council decides everything not restricted, gates queue up, nothing auto-approves, and unanswered gates show again in the next daily check.
@@ -125,8 +125,8 @@ The release is successful when all of these hold. Each one has a check in `docs/
 3. A full item passes through each track in a rehearsal project: from Ready, through development or design, QA on the preview branch, merge by the runner, staging check, Done. A deliberate failure at each fail path reopens the item and increments the counter, and the third failure reaches the Council.
 4. A missed webhook is caught by the next reconcile loop.
 5. With model usage exhausted, the runner still releases, dispatches (queues) and records state, and nothing is killed mid-transition.
-6. Didi can approve a gate and the production deploy from his phone, and the answer is recorded verbatim.
-7. A privileged-path PR is never merged without his approval, and a repo whose deploy runs on push to main is never merged unless its production environment requires approval.
+6. Didi can approve a gate and the production deploy from their phone, and the answer is recorded verbatim.
+7. A privileged-path PR is never merged without Didi's approval, and a repo whose deploy runs on push to main is never merged unless its production environment requires approval.
 8. Linear mirrors the store within one reconcile cycle, and a mismatch is reported, not silently overwritten.
 9. The kill switch stops all transitions within one cycle and the system restarts cleanly.
 
@@ -139,7 +139,7 @@ The release is successful when all of these hold. Each one has a check in `docs/
 | Linear's API cannot create statuses or let an app act under its own identity | Verify early. The one-time status setup can be done by hand, and the audit trail lives in the state store regardless                     |
 | The Council (Opus) or another model becomes unavailable                      | The model is a setting per bot. Plumbing does not depend on any model                                                                    |
 | Counting failures too eagerly escalates healthy work                         | The counter increments only when a transition guard fails after a bot reports done, not on every red CI run                              |
-| Self-modifying system risk (the system builds itself)                        | Didi's gates stay fully on during bootstrap, production deploys stay with him, and the kill switch exists                                |
+| Self-modifying system risk (the system builds itself)                        | Didi's gates stay fully on during bootstrap, production deploys stay with Didi, and the kill switch exists                               |
 | Spec and contracts drift apart                                               | Contracts are data, and a consistency test compares them with the spec                                                                   |
 
 ## 13. Assumptions and dependencies
