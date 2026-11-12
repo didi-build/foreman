@@ -192,8 +192,8 @@ export interface RepoFolders {
 
 /**
  * The port to CI's screenshot bundles. The adapter reads them as workflow artifacts with the runner
- * App's `actions: read` token (src/adapters/screenshots/github-artifacts.ts, D-267); it refuses on
- * the token until the runner App exists (flows/lib/compose.ts). Tests pass a fake.
+ * App's `actions: read` token (src/adapters/screenshots/github-artifacts.ts, D-267, O-125). Tests
+ * pass a fake.
  */
 export interface ScreenshotBundles {
   read(

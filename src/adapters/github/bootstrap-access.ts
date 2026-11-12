@@ -18,8 +18,8 @@
 //   newest first, with the runner App's read-only `actions` token for that one repository (D-267).
 //
 // A refused mint, a failed call or any other answer is refused, naming the step, and nothing is
-// tried again. Until the runner App exists the token ports refuse with `NotBuiltError`
-// (flows/lib/compose.ts). Tests pass fakes. Nothing here logs, and no token or id is kept.
+// tried again. The runner mints each token with its App's key (flows/lib/compose.ts, O-125).
+// Tests pass fakes. Nothing here logs, and no token or id is kept.
 import {
   BOOTSTRAP_REF,
   BOOTSTRAP_SECRET,

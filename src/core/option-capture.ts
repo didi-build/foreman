@@ -404,7 +404,7 @@ export function createOptionCaptures(options: OptionCaptureOptions) {
     try {
       return await screenshots.read(repo, headSha, "options");
     } catch {
-      // The port refuses until the runner App exists (D-178); any error is kept out of results.
+      // A refused token or read is unreadable; any error is kept out of results.
       return "unreadable";
     }
   }

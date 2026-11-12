@@ -8,8 +8,8 @@
 // `contents` token minted for `didi-build/foreman` only (D-267), the same minting the repo map and
 // the visibility check use. The file holds no secret (runbook step 7).
 //
-// Until the runner App is registered (D-178) the token port refuses with `NotBuiltError`
-// (flows/lib/compose.ts), so the form refuses on the settings. Tests pass fakes.
+// The runner mints the token with its App's key (flows/lib/compose.ts, O-125); a refused token
+// makes the form refuse on the settings. Tests pass fakes.
 import {
   PLATFORM_SETTINGS,
   type ProjectSettings,

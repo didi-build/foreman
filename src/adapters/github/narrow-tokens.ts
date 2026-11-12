@@ -1,7 +1,7 @@
-// One installation token of the runner App, narrowed at creation to the repositories and the
-// permissions of its one step (D-346, D-358): GitHub's `POST /app/installations/<id>/access_tokens`
-// with exactly a `repositories` list and a `permissions` object, signed with the runner App's own
-// key. GitHub's reference ("Create an installation access token for an app", read 2026-11-07)
+// One installation token of a GitHub App, narrowed at creation to the repositories and the
+// permissions of its one step (D-346, D-358) or its one run (O-125): GitHub's
+// `POST /app/installations/<id>/access_tokens` with exactly a `repositories` list and a
+// `permissions` object, signed with that App's own key (./app-jwt.ts). GitHub's reference ("Create an installation access token for an app", read 2026-11-07)
 // says a token asks for fewer repositories or permissions than the App has, and that leaving
 // either out gives all of the installation's.
 //
@@ -12,14 +12,14 @@
 // value are never kept, logged or named in an error.
 import type { GitHubPostHttp } from "./post-http.ts";
 
-/** The runner App's own short-lived signed token (a JWT made with its private key). Never logged. */
+/** An App's own short-lived signed token (a JWT made with its private key). Never logged. */
 export interface GitHubAppJwt {
   sign(): Promise<string>;
 }
 
 export interface NarrowTokenOptions {
   appJwt: GitHubAppJwt;
-  /** The runner App's installation on the `didi-build` organization. */
+  /** The App's installation on the `didi-build` organization. */
   installationId: number;
   http: GitHubPostHttp;
 }

@@ -19,8 +19,8 @@
 // Fields are mapped as GitHub names them (`id`, `path`, `event`, `head_sha`, `head_branch`,
 // `head_repository.full_name`, `status`, `conclusion`). A run missing a field, or with a status or
 // conclusion that is not a short lowercase word, is no run, never guessed at; the core then checks
-// that it is CI's run on main (`isMainBuild`). Until the runner App is registered (D-178) the token
-// port refuses with `NotBuiltError` (flows/lib/compose.ts). Tests pass fakes.
+// that it is CI's run on main (`isMainBuild`). The runner mints the token with its App's key
+// (flows/lib/compose.ts, O-125). Tests pass fakes.
 import {
   STAGING_BUILD_EVENT,
   STAGING_BUILD_WORKFLOW_FILE,

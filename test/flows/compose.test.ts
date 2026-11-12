@@ -1,13 +1,22 @@
 // Seam: the flow layer's composition module and its Windmill binding (unit, build plan M3.1,
-// ADR 0111 section 4). With a fake environment: which secrets and values are read and when, and
-// that every part not built yet refuses with a reason. No database is reached: the pool connects
-// on first use and the test never uses it.
+// ADR 0111 section 4). With a fake environment: which secrets and values are read and when, that
+// every part not built yet refuses with a reason, and that each GitHub App's id and key are read
+// only on that App's first token (O-125). No database is reached: the pool connects on first use
+// and the test never uses it. No network either: `fetch` is replaced by one that records and
+// refuses, and each test checks it was never called; the Apps' tokens are minted against fake
+// HTTP ports with keys generated when the test runs.
 import { checkServerIdentity } from "node:tls";
 
 import pg from "pg";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { GitHubAppJwtError } from "../../src/adapters/github/app-jwt.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
+import { InstallationTokenError } from "../../src/adapters/github/installation-tokens.ts";
+import type { GitHubPostRequest } from "../../src/adapters/github/post-http.ts";
+import type { GitHubGetRequest } from "../../src/adapters/github/runner-app-tokens.ts";
+import { RunnerAppTokenError } from "../../src/adapters/github/runner-read-tokens.ts";
+import { readJwt, testAppKey, type TestAppKey } from "../github-app-key-fixture.ts";
 import { readApprovalReply } from "../../flows/lib/approval.ts";
 import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
 import { storedZip } from "../zip-fixture.ts";
@@ -18,13 +27,9 @@ import {
 } from "../../src/adapters/store-postgres/tls.ts";
 import {
   compose,
-  NotBuiltError,
   unbuiltStagingDeployCredentials,
+  windmillGitHubAppTokens,
   windmillStagingDeployCredentials,
-  unregisteredBootstrapTokens,
-  unregisteredRepositoryCreationTokens,
-  unregisteredRunnerAppTokens,
-  unregisteredInstallationTokens,
   type RunToStart,
 } from "../../flows/lib/compose.ts";
 import {
@@ -68,20 +73,43 @@ const COUNCIL_START = {
   outputSchema: readBotFiles().council.outputSchemas?.escalation,
 } as unknown as RunToStart;
 
+/** The Apps' made-up ids, as Didi stores them: decimal text, here with a trailing newline. */
+const APP_IDS: Record<string, string> = {
+  [VALUE_NAMES.runnerAppId]: "1001\n",
+  [VALUE_NAMES.developerAppId]: "2001",
+  [VALUE_NAMES.designerAppId]: "2002",
+  [VALUE_NAMES.qaAppId]: "2003",
+  [VALUE_NAMES.runnerAppInstallationId]: "4242",
+};
+
+const APP_KEY_PATHS = [
+  SECRET_PATHS.runnerAppPrivateKey,
+  SECRET_PATHS.developerAppPrivateKey,
+  SECRET_PATHS.designerAppPrivateKey,
+  SECRET_PATHS.qaAppPrivateKey,
+] as string[];
+
+/**
+ * Every secret is the same made-up database address, so an App's key read here is not a PEM and
+ * its first token is refused before anything is sent.
+ */
 function fakeEnvironment(values: Record<string, string> = {}) {
   const secretsRead: string[] = [];
+  const valuesRead: string[] = [];
   const env: FlowEnvironment = {
     async secret(path) {
       secretsRead.push(path);
       return "postgresql://runner:not-a-real-password@localhost:1/none";
     },
     async value(name) {
+      valuesRead.push(name);
       const all: Record<string, string> = {
         [VALUE_NAMES.specVersion]: "e".repeat(40),
         [VALUE_NAMES.agentImages]: IMAGES,
         [VALUE_NAMES.developerAppLogin]: "foreman-developer[bot]",
         [VALUE_NAMES.designerAppLogin]: "foreman-designer[bot]",
         [VALUE_NAMES.runnerAppSlug]: "foreman-runner",
+        ...APP_IDS,
         ...values,
       };
       const value = all[name];
@@ -92,11 +120,23 @@ function fakeEnvironment(values: Record<string, string> = {}) {
       return 42;
     },
   };
-  return { env, secretsRead };
+  return { env, secretsRead, valuesRead };
 }
 
+/** What `fetch` was asked for: nothing, in every test. */
+let fetched: string[] = [];
+
 describe("flow composition (unit: flow layer, build plan M3.1)", () => {
+  beforeEach(() => {
+    fetched = [];
+    vi.stubGlobal("fetch", async (url: unknown) => {
+      fetched.push(String(url));
+      throw new Error("no network in tests");
+    });
+  });
   afterEach(() => {
+    expect(fetched).toEqual([]);
+    vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -138,11 +178,17 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     await expect(compose(env)).rejects.toThrow(DatabaseTlsError);
   });
 
-  it("builds the deps from the environment, reading only the database secret up front", async () => {
-    const { env, secretsRead } = fakeEnvironment();
+  it("builds the deps from the environment, reading only the database secret up front, and no App's id or key", async () => {
+    const { env, secretsRead, valuesRead } = fakeEnvironment();
     const deps = await compose(env);
     try {
       expect(secretsRead).toEqual([SECRET_PATHS.database]);
+      expect(valuesRead).toEqual([
+        VALUE_NAMES.specVersion,
+        VALUE_NAMES.developerAppLogin,
+        VALUE_NAMES.designerAppLogin,
+        VALUE_NAMES.runnerAppSlug,
+      ]);
       expect(deps.contracts.version).toBe("e".repeat(40));
       expect(deps.appLogins).toEqual([
         "foreman-developer[bot]",
@@ -173,22 +219,13 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     }
   });
 
-  it("refuses every part that is not built yet, with what it waits on", async () => {
-    const { env } = fakeEnvironment();
+  it("refuses the runner's GitHub reads and merge calls, whose client is not built yet", async () => {
+    const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
     try {
       await expect(deps.github.listOpenPullRequests("didi-build/x")).rejects.toThrow(
         GitHubNotConfiguredError,
       );
-      // The GitHub installation tokens wait on the role's GitHub App (D-178).
-      await expect(
-        unregisteredInstallationTokens().mint({
-          role: "developer",
-          repository: "didi-build/x",
-          access: "write",
-          runId: "r",
-        }),
-      ).rejects.toThrow(NotBuiltError);
       // GitHub's deployments are not read at all (D-356, O-116).
       expect("listDeployments" in deps.github).toBe(false);
       await expect(
@@ -202,48 +239,61 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
           commitSha: "b".repeat(40),
         } as never),
       ).toEqual({ result: "no_result", reason: "unreachable" });
-      // CI's builds wait on the runner App's actions read token (D-267, O-116).
-      await expect(deps.stagingBuilds.getRun("didi-build/x", 1)).rejects.toThrow(
-        NotBuiltError,
-      );
-      await expect(deps.stagingBuilds.latestMainBuild("didi-build/x")).rejects.toThrow(
-        NotBuiltError,
-      );
-      await expect(deps.stagingBuilds.siteArchive("didi-build/x", 1)).rejects.toThrow(
-        NotBuiltError,
-      );
-      // The repo map and the screenshot bundles wait on the runner App's read tokens (D-267).
-      // The repo map's Job (D-275 (2)) refuses on the token, before the cluster is read.
+      // None of them reads an App's key.
+      expect(secretsRead).toEqual([SECRET_PATHS.database]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("reads the runner App's id, key and installation id only on its first token, and refuses a key that is not a PEM before anything is sent (O-125)", async () => {
+    const { env, secretsRead, valuesRead } = fakeEnvironment();
+    const deps = await compose(env);
+    const notPem = new GitHubAppJwtError(
+      "The runner App's private key is not a PEM private key",
+    );
+    try {
       const project = { slug: "x", repo: "didi-build/x" };
-      await expect(deps.repoMaps.read(project, "b".repeat(40))).rejects.toThrow(
-        NotBuiltError,
-      );
-      await expect(deps.repoMaps.read(project)).rejects.toThrow(/runner App/);
-      // The Scanner's stage 1 uses the same Job in scan mode, so it refuses the same way (O-92).
-      await expect(deps.repoScans.scan(project)).rejects.toThrow(NotBuiltError);
-      await expect(
-        deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
-      ).rejects.toThrow(NotBuiltError);
-      // CI's preview check is read with the same actions read token (D-354, O-111).
-      await expect(
-        deps.github.listWorkflowRuns("didi-build/x", "ci.yml", "b".repeat(40)),
-      ).rejects.toThrow(NotBuiltError);
-      await expect(deps.github.listWorkflowJobs("didi-build/x", 1)).rejects.toThrow(
-        NotBuiltError,
-      );
-      await expect(
-        deps.repoFolders.folderId(
-          "didi-build/x",
-          "b".repeat(40),
-          "design/a/b/options/c",
-        ),
-      ).rejects.toThrow(NotBuiltError);
-      await expect(
-        unregisteredRunnerAppTokens().mint({
-          repository: "didi-build/x",
-          permission: "contents",
-        }),
-      ).rejects.toThrow(/contents read and actions read/);
+      const reads: [string, () => Promise<unknown>][] = [
+        // CI's builds and its preview check, with the actions read token (D-267, D-354, O-116).
+        ["staging run", () => deps.stagingBuilds.getRun("didi-build/x", 1)],
+        ["latest build", () => deps.stagingBuilds.latestMainBuild("didi-build/x")],
+        ["site archive", () => deps.stagingBuilds.siteArchive("didi-build/x", 1)],
+        [
+          "workflow runs",
+          () => deps.github.listWorkflowRuns("didi-build/x", "ci.yml", "b".repeat(40)),
+        ],
+        ["workflow jobs", () => deps.github.listWorkflowJobs("didi-build/x", 1)],
+        // The repo map's Job and the scan mint the token before the cluster is read (D-275 (2)).
+        ["repo map at a commit", () => deps.repoMaps.read(project, "b".repeat(40))],
+        ["repo map at the head", () => deps.repoMaps.read(project)],
+        ["scan", () => deps.repoScans.scan(project)],
+        [
+          "screenshots",
+          () => deps.screenshots.read("didi-build/x", "b".repeat(40), "gallery"),
+        ],
+        [
+          "folder id",
+          () =>
+            deps.repoFolders.folderId(
+              "didi-build/x",
+              "b".repeat(40),
+              "design/a/b/options/c",
+            ),
+        ],
+      ];
+      for (const [name, read] of reads) {
+        await expect(read(), name).rejects.toThrow(notPem);
+      }
+      // Only the runner App's: its key, its id and its installation id.
+      expect([...new Set(secretsRead)]).toEqual([
+        SECRET_PATHS.database,
+        SECRET_PATHS.runnerAppPrivateKey,
+      ]);
+      expect([...new Set(valuesRead)].slice(4)).toEqual([
+        VALUE_NAMES.runnerAppInstallationId,
+        VALUE_NAMES.runnerAppId,
+      ]);
     } finally {
       await deps.close();
     }
@@ -302,12 +352,14 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     expect(SECRET_PATHS.cloudflareAccountId).toBe("platform/cloudflare/account-id");
   });
 
-  it("refuses the register-project form's GitHub parts until the runner App exists (D-345, D-346)", async () => {
-    const { env } = fakeEnvironment();
+  it("mints the register-project form's tokens with the runner App, refusing a key that is not a PEM before anything is sent (D-345, D-346, O-125)", async () => {
+    const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
     try {
       // The settings file on main is read with the runner App's contents read token (O-109).
-      await expect(deps.projectSettings.listedSlugs()).rejects.toThrow(NotBuiltError);
+      await expect(deps.projectSettings.listedSlugs()).rejects.toThrow(
+        GitHubAppJwtError,
+      );
       // The create mints the creation token first; refused, nothing is sent and nothing retried.
       expect(
         await deps.projectRepositories.generate({
@@ -315,17 +367,20 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
           description: "A project.",
         }),
       ).toEqual({ kind: "refused", step: "creation_token" });
-      await expect(deps.projectRepositories.read("x")).rejects.toThrow(NotBuiltError);
-      await expect(unregisteredRepositoryCreationTokens().mint()).rejects.toThrow(
-        /Repository creation write/,
+      await expect(deps.projectRepositories.read("x")).rejects.toThrow(
+        GitHubAppJwtError,
       );
+      expect([...new Set(secretsRead)]).toEqual([
+        SECRET_PATHS.database,
+        SECRET_PATHS.runnerAppPrivateKey,
+      ]);
     } finally {
       await deps.close();
     }
   });
 
-  it("refuses BOOTSTRAP_TOKEN's access parts until the runner App exists, sending nothing (D-358, O-114)", async () => {
-    const { env } = fakeEnvironment();
+  it("mints BOOTSTRAP_TOKEN's access tokens with the runner App, refusing a key that is not a PEM before anything is sent (D-358, O-114, O-125)", async () => {
+    const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
     try {
       // Each change mints its own narrow token first; refused, nothing is sent and nothing retried.
@@ -336,21 +391,15 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       ]) {
         expect(change).toEqual({ kind: "refused", step: "token" });
       }
-      await expect(deps.bootstrapAccess.list()).rejects.toThrow(NotBuiltError);
+      await expect(deps.bootstrapAccess.list()).rejects.toThrow(GitHubAppJwtError);
       // Bootstrap's runs are read with the runner App's actions read token (D-267).
       await expect(deps.bootstrapRuns.latestRestart("x")).rejects.toThrow(
-        NotBuiltError,
+        GitHubAppJwtError,
       );
-      const tokens = unregisteredBootstrapTokens();
-      for (const mint of [
-        () => tokens.secretsChange("x"),
-        () => tokens.secretsList(),
-        () => tokens.restart("x"),
-      ]) {
-        await expect(mint()).rejects.toThrow(
-          /Organization secrets write and Actions write/,
-        );
-      }
+      expect([...new Set(secretsRead)]).toEqual([
+        SECRET_PATHS.database,
+        SECRET_PATHS.runnerAppPrivateKey,
+      ]);
     } finally {
       await deps.close();
     }
@@ -426,6 +475,265 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     );
     await expect(env.executionsThisMonth()).rejects.toThrow(WindmillNotConfiguredError);
     await expect(compose(env)).rejects.toThrow(WindmillNotConfiguredError);
+  });
+});
+
+/** Each App's key, generated for this test run only. */
+const KEYS: Record<"runner" | "developer" | "designer" | "qa", TestAppKey> = {
+  runner: testAppKey(),
+  developer: testAppKey(),
+  designer: testAppKey("pkcs8"),
+  qa: testAppKey(),
+};
+
+const KEY_AT: Record<string, TestAppKey> = {
+  [SECRET_PATHS.runnerAppPrivateKey]: KEYS.runner,
+  [SECRET_PATHS.developerAppPrivateKey]: KEYS.developer,
+  [SECRET_PATHS.designerAppPrivateKey]: KEYS.designer,
+  [SECRET_PATHS.qaAppPrivateKey]: KEYS.qa,
+};
+
+/**
+ * The Apps' token ports over a fake environment that holds each App's generated key (as Windmill
+ * gives it back: CRLF line ends and a trailing newline) and its id, and fake HTTP ports that answer
+ * as GitHub documents. Each mint answers with a new token, so a kept token would show.
+ */
+function appTokens(
+  options: { failFirstKeyRead?: boolean; ids?: Record<string, string> } = {},
+) {
+  const secretsRead: string[] = [];
+  const valuesRead: string[] = [];
+  const gets: GitHubGetRequest[] = [];
+  const posts: GitHubPostRequest[] = [];
+  let failNext = options.failFirstKeyRead ?? false;
+  const env: Pick<FlowEnvironment, "secret" | "value"> = {
+    async secret(path) {
+      secretsRead.push(path);
+      const key = KEY_AT[path];
+      if (key === undefined) throw new Error(`${path} is not stored`);
+      if (failNext) {
+        failNext = false;
+        throw new Error("Windmill did not answer the read");
+      }
+      return `${key.privateKeyPem.replace(/\n/g, "\r\n")}\r\n`;
+    },
+    async value(name) {
+      valuesRead.push(name);
+      const value = { ...APP_IDS, ...options.ids }[name];
+      if (value === undefined) throw new Error(`${name} is not set`);
+      return value;
+    },
+  };
+  const tokens = windmillGitHubAppTokens(
+    env,
+    { now: () => new Date(Date.UTC(2026, 10, 12, 9, 30, 0)) },
+    {
+      get: {
+        async get(request) {
+          gets.push(structuredClone(request));
+          const body = { id: 88001, account: { login: "didi-build" } };
+          return { status: 200, body: new TextEncoder().encode(JSON.stringify(body)) };
+        },
+      },
+      post: {
+        async post(request) {
+          posts.push(structuredClone(request));
+          const asked = request.body as {
+            repositories: string[];
+            permissions: Record<string, string>;
+          };
+          const body = {
+            token: `fake-token-${posts.length}-not-real`,
+            permissions: { ...asked.permissions, metadata: "read" },
+            repository_selection: "selected",
+            repositories: asked.repositories.map((name) => ({ name })),
+          };
+          return { status: 201, body: new TextEncoder().encode(JSON.stringify(body)) };
+        },
+      },
+    },
+  );
+  return { tokens, secretsRead, valuesRead, gets, posts };
+}
+
+describe("the GitHub Apps' tokens from the flow environment (unit: flow layer, D-368, D-370, O-125)", () => {
+  it("reads no App's key or id until a token is minted", () => {
+    const f = appTokens();
+    expect(Object.keys(f.tokens).sort()).toEqual([
+      "bootstrap",
+      "installation",
+      "repositoryCreation",
+      "runner",
+    ]);
+    expect([f.secretsRead, f.valuesRead, f.gets, f.posts]).toEqual([[], [], [], []]);
+  });
+
+  it("a runner token reads only the runner App's id, key and installation id, keeps the signer and never the token", async () => {
+    const f = appTokens();
+    const first = await f.tokens.runner.mint({
+      repository: "didi-build/garden-notes",
+      permission: "contents",
+    });
+    const second = await f.tokens.runner.mint({
+      repository: "didi-build/garden-notes",
+      permission: "actions",
+    });
+    // Each mint asks GitHub for a new token.
+    expect([first, second]).toEqual(["fake-token-1-not-real", "fake-token-2-not-real"]);
+    expect(f.posts.map((p) => [p.path, JSON.stringify(p.body)])).toEqual([
+      [
+        "/app/installations/4242/access_tokens",
+        '{"repositories":["garden-notes"],"permissions":{"contents":"read"}}',
+      ],
+      [
+        "/app/installations/4242/access_tokens",
+        '{"repositories":["garden-notes"],"permissions":{"actions":"read"}}',
+      ],
+    ]);
+    for (const post of f.posts) {
+      const jwt = readJwt(post.token);
+      expect(jwt.verifiedBy(KEYS.runner.publicKey)).toBe(true);
+      expect(jwt.claims).toMatchObject({ iss: "1001" });
+    }
+    // Read once, for the whole flow.
+    expect(f.secretsRead).toEqual([SECRET_PATHS.runnerAppPrivateKey]);
+    expect(f.valuesRead).toEqual([
+      VALUE_NAMES.runnerAppInstallationId,
+      VALUE_NAMES.runnerAppId,
+    ]);
+    expect(f.gets).toEqual([]);
+  });
+
+  it("the creation and BOOTSTRAP_TOKEN access tokens use the same runner App, read once", async () => {
+    const f = appTokens();
+    await f.tokens.repositoryCreation.mint();
+    await f.tokens.bootstrap.secretsChange("garden-notes");
+    await f.tokens.bootstrap.secretsList();
+    await f.tokens.bootstrap.restart("garden-notes");
+    expect(f.posts.map((p) => JSON.stringify(p.body))).toEqual([
+      '{"repositories":["launchpad"],"permissions":{"contents":"read","repository_creation":"write"}}',
+      '{"repositories":["garden-notes"],"permissions":{"organization_secrets":"write","metadata":"read"}}',
+      '{"repositories":["foreman"],"permissions":{"organization_secrets":"read"}}',
+      '{"repositories":["garden-notes"],"permissions":{"actions":"write"}}',
+    ]);
+    for (const post of f.posts) {
+      expect(readJwt(post.token).verifiedBy(KEYS.runner.publicKey)).toBe(true);
+    }
+    expect(f.secretsRead).toEqual([SECRET_PATHS.runnerAppPrivateKey]);
+  });
+
+  it.each([
+    [
+      "developer",
+      "write",
+      SECRET_PATHS.developerAppPrivateKey,
+      VALUE_NAMES.developerAppId,
+      "2001",
+    ],
+    [
+      "designer",
+      "write",
+      SECRET_PATHS.designerAppPrivateKey,
+      VALUE_NAMES.designerAppId,
+      "2002",
+    ],
+    ["qa", "read", SECRET_PATHS.qaAppPrivateKey, VALUE_NAMES.qaAppId, "2003"],
+  ] as const)(
+    "a %s run's token reads only that App's id and key, and is signed by that App alone",
+    async (role, access, keyPath, idName, appId) => {
+      const f = appTokens();
+      const request = {
+        role,
+        repository: "didi-build/garden-notes",
+        access,
+        runId: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
+      } as const;
+      expect(await f.tokens.installation.mint(request)).toBe("fake-token-1-not-real");
+      expect(await f.tokens.installation.mint(request)).toBe("fake-token-2-not-real");
+      expect(f.secretsRead).toEqual([keyPath]);
+      expect(f.valuesRead).toEqual([idName]);
+      expect(f.gets.map((g) => g.path)).toEqual([
+        "/repos/didi-build/garden-notes/installation",
+        "/repos/didi-build/garden-notes/installation",
+      ]);
+      expect(f.posts.map((p) => p.path)).toEqual([
+        "/app/installations/88001/access_tokens",
+        "/app/installations/88001/access_tokens",
+      ]);
+      for (const token of [...f.gets, ...f.posts].map((r) => r.token)) {
+        const jwt = readJwt(token);
+        expect(jwt.claims).toMatchObject({ iss: appId });
+        for (const [other, key] of Object.entries(KEYS)) {
+          expect(jwt.verifiedBy(key.publicKey), other).toBe(other === role);
+        }
+      }
+    },
+  );
+
+  it("a refused request reads no key and sends nothing", async () => {
+    const f = appTokens();
+    await expect(
+      f.tokens.installation.mint({
+        role: "qa",
+        repository: "didi-build/garden-notes",
+        access: "write",
+        runId: "r",
+      }),
+    ).rejects.toThrow(InstallationTokenError);
+    await expect(
+      f.tokens.runner.mint({ repository: "octo-org/x", permission: "contents" }),
+    ).rejects.toThrow(RunnerAppTokenError);
+    await expect(f.tokens.bootstrap.restart("a/b")).rejects.toThrow(/repository name/);
+    expect(f.secretsRead).toEqual([]);
+    expect([f.gets, f.posts]).toEqual([[], []]);
+  });
+
+  it("refuses an App id or installation id that is not a number before anything is sent", async () => {
+    const badId = appTokens({ ids: { [VALUE_NAMES.developerAppId]: "20O1" } });
+    await expect(
+      badId.tokens.installation.mint({
+        role: "developer",
+        repository: "didi-build/garden-notes",
+        access: "write",
+        runId: "r",
+      }),
+    ).rejects.toThrow(
+      new GitHubAppJwtError("The Developer App's id is not a positive whole number"),
+    );
+    expect([badId.gets, badId.posts]).toEqual([[], []]);
+    const badInstallation = appTokens({
+      ids: { [VALUE_NAMES.runnerAppInstallationId]: "" },
+    });
+    await expect(badInstallation.tokens.repositoryCreation.mint()).rejects.toThrow(
+      /the installation id is not a positive number/,
+    );
+    expect(badInstallation.secretsRead).toEqual([]);
+    expect(badInstallation.posts).toEqual([]);
+  });
+
+  it("tries a failed key read again on the next token, and keeps the signer once made", async () => {
+    const f = appTokens({ failFirstKeyRead: true });
+    const request = {
+      repository: "didi-build/garden-notes",
+      permission: "contents",
+    } as const;
+    await expect(f.tokens.runner.mint(request)).rejects.toThrow(
+      "Windmill did not answer the read",
+    );
+    expect(f.posts).toEqual([]);
+    expect(await f.tokens.runner.mint(request)).toBe("fake-token-1-not-real");
+    await f.tokens.runner.mint(request);
+    expect(f.secretsRead).toEqual([
+      SECRET_PATHS.runnerAppPrivateKey,
+      SECRET_PATHS.runnerAppPrivateKey,
+    ]);
+  });
+
+  it("lists every App's key path and id name among what the composition reads", () => {
+    expect(Object.values(SECRET_PATHS)).toEqual(expect.arrayContaining(APP_KEY_PATHS));
+    expect(Object.values(VALUE_NAMES)).toEqual(
+      expect.arrayContaining(Object.keys(APP_IDS)),
+    );
   });
 });
 

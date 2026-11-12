@@ -13,8 +13,8 @@
 // that one repository (D-267), the token the visibility check already uses: the creation token is
 // never used for anything but the create.
 //
-// Until the runner App is registered (D-178) both token ports refuse with `NotBuiltError`
-// (flows/lib/compose.ts). Tests pass fakes. Nothing here logs.
+// The runner mints both tokens with its App's key (flows/lib/compose.ts, O-125). Tests pass
+// fakes. Nothing here logs.
 import {
   PROJECT_OWNER,
   PROJECT_SLUG,

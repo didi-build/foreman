@@ -1,8 +1,8 @@
 // Seam: the called flow `f/foreman/register_project` (flow, D-345, D-346, D-348, O-109) on the
 // memory store, through the flow layer's deps (`flowDepsFor`) with the fake settings file and the
-// fake GitHub repository calls; and once with the runner's own GitHub parts, which refuse until
-// the runner App exists. The rules themselves are in test/register-project.test.ts. Synthetic
-// data only; nothing reaches GitHub or Windmill.
+// fake GitHub repository calls; and once with the runner's own GitHub parts and no runner App key
+// stored, so each token is refused before anything is sent. The rules themselves are in
+// test/register-project.test.ts. Synthetic data only; nothing reaches GitHub or Windmill.
 import { describe, expect, it } from "vitest";
 
 import { run as registerProject } from "../../flows/register-project.ts";
@@ -11,7 +11,7 @@ import {
   runnerProjectSettings,
 } from "../../flows/lib/compose.ts";
 import { REGISTER_REFUSALS } from "../../src/core/register-project.ts";
-import { createFlowFixture } from "./flow-fixture.ts";
+import { appTokensWithoutKeys, createFlowFixture } from "./flow-fixture.ts";
 
 const INPUT = {
   slug: "garden-notes",
@@ -69,13 +69,17 @@ describe("Didi's register-project flow (flow, D-345, O-109)", () => {
     }
   });
 
-  it("refuses on the settings read with the runner's own GitHub parts until the runner App exists", async () => {
+  it("refuses on the settings read with the runner's own GitHub parts and no runner App key stored", async () => {
     const f = await createFlowFixture();
     await f.live();
+    const apps = appTokensWithoutKeys();
     const deps = {
       ...f.deps,
-      projectSettings: runnerProjectSettings(),
-      projectRepositories: runnerProjectRepositories(),
+      projectSettings: runnerProjectSettings(apps.runner),
+      projectRepositories: runnerProjectRepositories(
+        apps.repositoryCreation,
+        apps.runner,
+      ),
     };
     expect(await registerProject(deps, INPUT)).toEqual({
       outcome: "refused",
@@ -83,18 +87,27 @@ describe("Didi's register-project flow (flow, D-345, O-109)", () => {
       message: REGISTER_REFUSALS.settings_unreadable,
     });
     expect(await f.store.getProjectBySlug(INPUT.slug)).toBeNull();
+    expect(apps.sent).toEqual([]);
   });
 
-  it("refuses on the creation token with the runner's own repository port, recording nothing", async () => {
+  it("refuses on the creation token with the runner's own repository port and no key, recording nothing", async () => {
     const f = await createFlowFixture();
     await f.live();
     f.projectSettings.listed = [INPUT.slug];
-    const deps = { ...f.deps, projectRepositories: runnerProjectRepositories() };
+    const apps = appTokensWithoutKeys();
+    const deps = {
+      ...f.deps,
+      projectRepositories: runnerProjectRepositories(
+        apps.repositoryCreation,
+        apps.runner,
+      ),
+    };
     expect(await registerProject(deps, INPUT)).toEqual({
       outcome: "refused",
       reason: "creation_token_refused",
       message: REGISTER_REFUSALS.creation_token_refused,
     });
     expect(await f.store.getProjectBySlug(INPUT.slug)).toBeNull();
+    expect(apps.sent).toEqual([]);
   });
 });

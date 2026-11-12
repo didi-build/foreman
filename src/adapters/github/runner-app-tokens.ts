@@ -11,9 +11,9 @@
 // logs it. The repo map's token is the one token that leaves the runner: it goes into the repo map
 // Job's own Secret, deleted when the Job ends (D-275 (2), O-87).
 //
-// The real implementation needs the runner App and its private key, which the runner holds, so
-// until the App is registered through the new-credentials gate (D-178) the runner's port refuses
-// with `NotBuiltError` (flows/lib/compose.ts), and tests pass a fake.
+// The real implementation signs with the runner App's private key, which only the runner holds
+// (./runner-read-tokens.ts, read on first use by flows/lib/compose.ts, O-125); tests pass a fake.
+// It is kept out of this file, which the repo map and QA fetch images copy.
 import { REPOSITORY } from "../../core/github.ts";
 
 /** The two read permissions D-267 adds to the runner App, each minted on its own. */

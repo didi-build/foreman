@@ -11,9 +11,8 @@
 // The manifest is returned as parsed JSON, or null when it is missing or not JSON; the visual
 // comparison checks its shape and every file's SHA-256 strictly.
 //
-// CI's Screenshots workflow makes the bundles (scripts/render-screenshots.ts, O-81); until the
-// runner App is registered (D-178) the token port refuses with `NotBuiltError`
-// (flows/lib/compose.ts). Tests pass fakes.
+// CI's Screenshots workflow makes the bundles (scripts/render-screenshots.ts, O-81); the runner
+// mints the token with its App's key (flows/lib/compose.ts, O-125). Tests pass fakes.
 //
 // The listing of one run's artifacts by name, the choice of the newest unexpired one and the
 // bounded download are shared with the staging deploy's read of CI's `staging-site` build

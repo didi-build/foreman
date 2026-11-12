@@ -1104,10 +1104,6 @@ describe("the Windmill deploy workflow (unit: D-371, O-123)", () => {
     resources: {
       secrets: { path: string; windmill_path?: string }[];
       values: { name: string; windmill_path?: string; written_by?: string }[];
-      github_apps: {
-        secrets: { windmill_path: string }[];
-        values: { windmill_path: string }[];
-      };
     };
   };
   /** The value names the deploy script writes, from its own list. */
@@ -1292,8 +1288,6 @@ describe("the Windmill deploy workflow (unit: D-371, O-123)", () => {
       ...description.resources.values
         .filter((v) => v.written_by !== undefined)
         .map((v) => v.windmill_path),
-      ...description.resources.github_apps.secrets.map((s) => s.windmill_path),
-      ...description.resources.github_apps.values.map((v) => v.windmill_path),
     ];
     for (const name of scriptValues)
       expect(elsewhere).not.toContain(`f/foreman/${name}`);

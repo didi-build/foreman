@@ -1,15 +1,12 @@
 // Seam: unit (flow layer: flows/lib/tasks.ts, ADR 0106 sections 3 and 5, ADR 0107, D-143, D-178,
 // D-187). A run's task is built from the role's real bot file, the run's route and its input, and
 // the Kubernetes runtime's own checks accept it. With a fake installation token port the
-// Developer, Designer and QA tasks build; with the runner's real port they refuse until the
-// GitHub Apps exist. Council and Triage tasks need no token and build fully. No secret value is in
-// the task file or the run's spec: credentials are only in `credentials`, for `start`.
+// Developer, Designer and QA tasks build; with the composition's real port and no App key stored
+// they refuse, sending nothing (O-125). Council and Triage tasks need no token and build fully. No
+// secret value is in the task file or the run's spec: credentials are only in `credentials`, for
+// `start`.
 import { describe, expect, it } from "vitest";
 
-import {
-  NotBuiltError,
-  unregisteredInstallationTokens,
-} from "../../flows/lib/compose.ts";
 import type { RunToStart } from "../../flows/lib/compose.ts";
 import { createTaskSource, PACKAGE_REGISTRIES_SETTING } from "../../flows/lib/tasks.ts";
 import {
@@ -27,6 +24,7 @@ import type {
   InstallationTokens,
 } from "../../src/adapters/github/installation-tokens.ts";
 import type { AgentRole, Json } from "../../src/core/store.ts";
+import { appTokensWithoutKeys } from "./flow-fixture.ts";
 
 const BOTS = readBotFiles();
 const LIMITS = runLimits(BOTS);
@@ -315,11 +313,19 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     );
   });
 
-  it.each(["developer", "designer", "qa"] as const)(
-    "refuses the %s with the runner's real token port until its GitHub App exists",
-    async (role) => {
-      const { tasks } = source({ tokens: unregisteredInstallationTokens() });
-      await expect(tasks.taskFor(startFor(role))).rejects.toThrow(NotBuiltError);
+  it.each([
+    ["developer", "platform/github/developer-app-private-key"],
+    ["designer", "platform/github/designer-app-private-key"],
+    ["qa", "platform/github/qa-app-private-key"],
+  ] as const)(
+    "refuses the %s with the composition's real token port when its App's key is not stored, sending nothing",
+    async (role, keyPath) => {
+      const apps = appTokensWithoutKeys();
+      const { tasks } = source({ tokens: apps.installation });
+      await expect(tasks.taskFor(startFor(role))).rejects.toThrow(
+        `${keyPath} is not stored`,
+      );
+      expect(apps.sent).toEqual([]);
     },
   );
 

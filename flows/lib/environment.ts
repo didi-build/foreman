@@ -31,6 +31,14 @@ export const SECRET_PATHS = {
    * secret as D-361 keeps it in GitHub, never logged (O-116, runbook step 16).
    */
   cloudflareAccountId: "platform/cloudflare/account-id",
+  /**
+   * The four GitHub Apps' private keys, each the PEM GitHub generated (D-368, D-370, runbook step
+   * 15). Each is read only when its App's first token of the flow is minted (O-125).
+   */
+  runnerAppPrivateKey: "platform/github/runner-app-private-key",
+  developerAppPrivateKey: "platform/github/developer-app-private-key",
+  designerAppPrivateKey: "platform/github/designer-app-private-key",
+  qaAppPrivateKey: "platform/github/qa-app-private-key",
 } as const;
 
 /** Every plain value the flows read. `flows/windmill.yaml` lists the same names. */
@@ -50,4 +58,14 @@ export const VALUE_NAMES = {
    * names its kind (contracts/bots/); the digest changes with each image build, so it is a value.
    */
   agentImages: "agent_images",
+  /**
+   * Each GitHub App's id and the runner App's installation id on `didi-build`, decimal numbers,
+   * plain variables beside the keys (D-368, D-370, O-120). Read with the key, on its App's first
+   * token (O-125).
+   */
+  runnerAppId: "platform/github/runner-app-id",
+  developerAppId: "platform/github/developer-app-id",
+  designerAppId: "platform/github/designer-app-id",
+  qaAppId: "platform/github/qa-app-id",
+  runnerAppInstallationId: "platform/github/runner-app-installation-id",
 } as const;

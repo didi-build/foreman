@@ -20,9 +20,9 @@
 //
 // None of these can read a secret's value (GitHub's API never returns one) or delete a
 // repository. A token with "Secrets" organization write could also create, replace or delete an
-// organization secret, which is why it is minted for one call and never kept. Until the runner App
-// is registered through the new-credentials gate (D-178), the runner's port refuses with
-// `NotBuiltError` (flows/lib/compose.ts), and tests pass a fake. Nothing here logs.
+// organization secret, which is why it is minted for one call and never kept. The runner signs each
+// with its App's private key, read on the first token (flows/lib/compose.ts, O-125); tests pass a
+// fake. Nothing here logs.
 import { PLATFORM_SETTINGS } from "../../core/register-project.ts";
 import { isRepositoryName } from "../../core/bootstrap-access.ts";
 import { mintNarrowToken, type NarrowTokenOptions } from "./narrow-tokens.ts";

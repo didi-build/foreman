@@ -2,9 +2,10 @@
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
 // the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task,
-// the staging check, the staging deploy (CI's builds and the deploy adapter's target, O-116) and
-// the ports for `BOOTSTRAP_TOKEN`'s access. Flows take these as `FlowDeps` and hold no rule of
-// their own (architecture section 2.4); tests build `FlowDeps` from fakes.
+// the staging check, the staging deploy (CI's builds and the deploy adapter's target, O-116), the
+// ports for `BOOTSTRAP_TOKEN`'s access, and the GitHub Apps' token ports, each App's key and id read
+// on its first token (O-125). Flows take these as `FlowDeps` and hold no rule of their own
+// (architecture section 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -36,20 +37,43 @@ import {
 } from "../../src/adapters/deploy/cloudflare-staging.ts";
 import { createMarkerStagingChecker } from "../../src/adapters/deploy/staging-checker.ts";
 import {
+  createGitHubAppJwt,
+  parseGitHubId,
+  type GitHubAppRole,
+} from "../../src/adapters/github/app-jwt.ts";
+import {
   createGitHubBootstrapAccess,
   createGitHubBootstrapRuns,
 } from "../../src/adapters/github/bootstrap-access.ts";
-import type { BootstrapTokens } from "../../src/adapters/github/bootstrap-tokens.ts";
+import {
+  createBootstrapTokens,
+  type BootstrapTokens,
+} from "../../src/adapters/github/bootstrap-tokens.ts";
 import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
-import type { InstallationTokens } from "../../src/adapters/github/installation-tokens.ts";
-import { createGitHubPostHttp } from "../../src/adapters/github/post-http.ts";
+import {
+  createInstallationTokens,
+  type InstallationTokens,
+} from "../../src/adapters/github/installation-tokens.ts";
+import type {
+  GitHubAppJwt,
+  NarrowTokenOptions,
+} from "../../src/adapters/github/narrow-tokens.ts";
+import {
+  createGitHubPostHttp,
+  type GitHubPostHttp,
+} from "../../src/adapters/github/post-http.ts";
 import { createGitHubProjectRepositories } from "../../src/adapters/github/project-repositories.ts";
 import { createGitHubProjectSettings } from "../../src/adapters/github/project-settings.ts";
-import type { RepositoryCreationTokens } from "../../src/adapters/github/repository-creation-tokens.ts";
+import {
+  createRepositoryCreationTokens,
+  type RepositoryCreationTokens,
+} from "../../src/adapters/github/repository-creation-tokens.ts";
 import {
   createGitHubHttp,
+  type GitHubHttp,
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
+import { createRunnerAppTokens } from "../../src/adapters/github/runner-read-tokens.ts";
 import { createGitHubStagingBuilds } from "../../src/adapters/github/staging-builds.ts";
 import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
 import { createGitHubWriteHttp } from "../../src/adapters/github/write-http.ts";
@@ -64,6 +88,7 @@ import type {
 import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub, GitHubWorkflowReader } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
+import type { Clock } from "../../src/core/library.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type {
   ProjectRepositories,
@@ -135,8 +160,7 @@ export interface FlowDeps extends ReconcileDeps {
   stagingChecker: StagingChecker;
   /**
    * CI's builds on main and their `staging-site` artifact (D-353, O-116), read with the runner
-   * App's `actions: read` token for one repository (D-267). Refuses until the runner App exists
-   * (D-178).
+   * App's `actions: read` token for one repository (D-267, O-125).
    */
   stagingBuilds: StagingBuilds;
   /**
@@ -148,48 +172,46 @@ export interface FlowDeps extends ReconcileDeps {
   tasks: TaskSource;
   /**
    * CI's screenshot bundles for the visual comparison (D-242), read as workflow artifacts with the
-   * runner App's `actions: read` token (D-267). Refuses until the runner App exists (D-178).
+   * runner App's `actions: read` token (D-267, O-125).
    */
   screenshots: ScreenshotBundles;
   /**
    * The approved option's folder at a commit, for the visual comparison's integrity check (D-281),
-   * read with the runner App's `contents: read` token (D-267). Refuses until the runner App exists.
+   * read with the runner App's `contents: read` token (D-267, O-125).
    */
   repoFolders: RepoFolders;
   /**
    * The repo map per commit for Triage (D-251), built in its own short-lived Job in the project's
    * agent namespace, whose only network is GitHub and which holds only the runner App's
-   * `contents: read` token (D-267, D-275 (2)). Refuses until the runner App exists (D-178).
+   * `contents: read` token (D-267, D-275 (2), O-125).
    */
   repoMaps: RepoMaps;
   /**
    * The Scanner's stage 1 scan of a project's repository (D-300, O-92): the repo map Job in its
-   * scan mode, with the same isolation and the same one `contents: read` token. Refuses until the
-   * runner App exists (D-178).
+   * scan mode, with the same isolation and the same one `contents: read` token.
    */
   repoScans: RepoScans;
   /**
    * Didi's register-project form (D-345, O-109): the slugs in the platform settings file on
    * `didi-build/foreman`'s main, read with the runner App's `contents: read` token for that one
-   * repository (D-267). Refuses until the runner App exists (D-178).
+   * repository (D-267, O-125).
    */
   projectSettings: ProjectSettings;
   /**
    * The form's repository step (D-345, D-346, D-348): the create from `didi-build/launchpad` with
-   * the creation token, and the read of an existing repository with a `contents: read` token.
-   * Refuses until the runner App exists (D-178), so nothing is created or recorded.
+   * the creation token, and the read of an existing repository with a `contents: read` token
+   * (O-125).
    */
   projectRepositories: ProjectRepositories;
   /**
    * `BOOTSTRAP_TOKEN`'s selected repositories (D-358 lock (2), O-114): the form's grant, the
    * removal once Bootstrap's run ends and the reconcile pass's backstop, each with its own token
-   * narrowed to one step ("Organization secrets"). Refuses until the runner App exists (D-178).
+   * narrowed to one step ("Organization secrets", O-125).
    */
   bootstrapAccess: BootstrapAccess;
   /**
    * Bootstrap's restart from the form ("Actions: write", narrowed to the new repository) and its
-   * newest restarted run, read with the runner App's `actions: read` token (D-267, O-114).
-   * Refuses until the runner App exists (D-178).
+   * newest restarted run, read with the runner App's `actions: read` token (D-267, O-114, O-125).
    */
   bootstrapRuns: BootstrapRuns;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
@@ -208,11 +230,12 @@ export class NotBuiltError extends Error {
 }
 
 /**
- * The runner's GitHub reads and merge calls. The runner App is registered at M3 (D-178); until
- * then every call refuses, so nothing is merged. CI's workflow runs and jobs, read for CI's preview
- * check, are built over the runner App's `actions: read` token (D-354, O-111) and refuse on it.
+ * The runner's GitHub reads and merge calls. Their client (src/adapters/github/client.ts) is not
+ * built yet, so every one of them refuses and nothing is merged. CI's workflow runs and jobs, read
+ * for CI's preview check, are built over the runner App's `actions: read` token (D-354, O-111,
+ * O-125).
  */
-function unregisteredGitHub(): GitHub {
+function unregisteredGitHub(tokens: RunnerAppTokens): GitHub {
   const refuse = async (): Promise<never> => {
     throw new GitHubNotConfiguredError();
   };
@@ -221,7 +244,7 @@ function unregisteredGitHub(): GitHub {
     listChangedPaths: refuse,
     listCheckRuns: refuse,
     listOpenPullRequests: refuse,
-    ...runnerWorkflowReads(),
+    ...runnerWorkflowReads(tokens),
     getMergeability: refuse,
     squashMerge: refuse,
     compareCommits: refuse,
@@ -268,57 +291,141 @@ export function runnerStagingTarget(
   return createCloudflareStagingTarget({ credentials, http: createCloudflareHttp() });
 }
 
-/** CI's builds on main and their `staging-site` artifact (O-116); refuses on the token today. */
-export function runnerStagingBuilds(
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
-): StagingBuilds {
-  return createGitHubStagingBuilds({ tokens, http: createGitHubHttp() });
+/** The GitHub Apps' token ports (D-365, D-368, O-125). */
+export interface GitHubAppTokens {
+  /** The runner App's read tokens: one repository, `contents: read` or `actions: read` (D-267). */
+  runner: RunnerAppTokens;
+  /** The runner App's repository creation token (D-346). */
+  repositoryCreation: RepositoryCreationTokens;
+  /** The runner App's tokens for `BOOTSTRAP_TOKEN`'s access (D-358). */
+  bootstrap: BootstrapTokens;
+  /** A Developer, Designer or QA run's token, from that role's own App (D-156, D-159). */
+  installation: InstallationTokens;
+}
+
+/** The two HTTP ports the Apps' tokens use: the installation lookup and the mint. */
+export interface GitHubAppHttp {
+  get: GitHubHttp;
+  post: GitHubPostHttp;
+}
+
+/** Where each App's key and id are read (flows/windmill.yaml, runbook step 15). */
+const GITHUB_APP_VARIABLES: Readonly<
+  Record<GitHubAppRole, { privateKey: string; appId: string }>
+> = {
+  runner: {
+    privateKey: SECRET_PATHS.runnerAppPrivateKey,
+    appId: VALUE_NAMES.runnerAppId,
+  },
+  developer: {
+    privateKey: SECRET_PATHS.developerAppPrivateKey,
+    appId: VALUE_NAMES.developerAppId,
+  },
+  designer: {
+    privateKey: SECRET_PATHS.designerAppPrivateKey,
+    appId: VALUE_NAMES.designerAppId,
+  },
+  qa: { privateKey: SECRET_PATHS.qaAppPrivateKey, appId: VALUE_NAMES.qaAppId },
+};
+
+/**
+ * Made on the first call and kept for the flow. A failed attempt is not kept, so a read that
+ * failed once is tried again on the next call.
+ */
+function onFirstUse<T>(make: () => Promise<T>): () => Promise<T> {
+  let made: Promise<T> | undefined;
+  return () =>
+    (made ??= make().catch((error: unknown) => {
+      made = undefined;
+      throw error;
+    }));
 }
 
 /**
- * The runner App's read-only tokens for the repo map and the screenshot bundles (D-267). The runner
- * App is registered at first hosting through the new-credentials gate (D-178), with `contents:
- * read` and `actions: read`; until then every request refuses, so no repo map is read (no Triage
- * run starts) and no screenshot bundle is read (no visual comparison starts).
+ * The GitHub Apps' token ports over their keys and ids in the flow's environment (D-368, D-370,
+ * O-125). Each App's id and key are read on the first token minted with that App, so a flow that
+ * mints none reads no key; the signer made from them is kept for the life of the flow, and no
+ * token is ever kept. The runner App's installation id is read on its first token too. Each mint
+ * checks its request before it signs, so a refused request reads no key.
  */
-export function unregisteredRunnerAppTokens(): RunnerAppTokens {
+export function windmillGitHubAppTokens(
+  env: Pick<FlowEnvironment, "secret" | "value">,
+  clock: Clock,
+  http: GitHubAppHttp = { get: createGitHubHttp(), post: createGitHubPostHttp() },
+): GitHubAppTokens {
+  const signer = (role: GitHubAppRole): GitHubAppJwt => {
+    const { privateKey, appId } = GITHUB_APP_VARIABLES[role];
+    const made = onFirstUse(async () =>
+      createGitHubAppJwt({
+        role,
+        appId: parseGitHubId(await env.value(appId)),
+        privateKeyPem: await env.secret(privateKey),
+        clock,
+      }),
+    );
+    return { sign: async () => (await made()).sign() };
+  };
+  const runnerJwt = signer("runner");
+  const runnerInstallation = onFirstUse(async () =>
+    parseGitHubId(await env.value(VALUE_NAMES.runnerAppInstallationId)),
+  );
+  const runner = async (): Promise<NarrowTokenOptions> => ({
+    appJwt: runnerJwt,
+    installationId: await runnerInstallation(),
+    http: http.post,
+  });
   return {
-    mint: async () => {
-      throw new NotBuiltError(
-        "The runner App's read-only token needs the runner App, registered at first hosting through the new-credentials gate with contents read and actions read (D-178, D-267)",
-      );
+    runner: {
+      mint: async (request) => createRunnerAppTokens(await runner()).mint(request),
     },
+    repositoryCreation: {
+      mint: async () => createRepositoryCreationTokens(await runner()).mint(),
+    },
+    bootstrap: {
+      secretsChange: async (name) =>
+        createBootstrapTokens(await runner()).secretsChange(name),
+      secretsList: async () => createBootstrapTokens(await runner()).secretsList(),
+      restart: async (name) => createBootstrapTokens(await runner()).restart(name),
+    },
+    installation: createInstallationTokens({
+      apps: {
+        developer: signer("developer"),
+        designer: signer("designer"),
+        qa: signer("qa"),
+      },
+      http: http.get,
+      post: http.post,
+    }),
   };
 }
 
-/** CI's workflow runs and jobs, for its preview check (D-354, D-267); refuses on the token today. */
-export function runnerWorkflowReads(
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
-): GitHubWorkflowReader {
+/** CI's builds on main and their `staging-site` artifact (O-116), with the runner's read tokens. */
+export function runnerStagingBuilds(tokens: RunnerAppTokens): StagingBuilds {
+  return createGitHubStagingBuilds({ tokens, http: createGitHubHttp() });
+}
+
+/** CI's workflow runs and jobs, for its preview check (D-354, D-267). */
+export function runnerWorkflowReads(tokens: RunnerAppTokens): GitHubWorkflowReader {
   return createGitHubWorkflowReads({ tokens, http: createGitHubHttp() });
 }
 
-/** CI's screenshot bundles as workflow artifacts (D-242, D-267); refuses on the token today. */
-export function runnerScreenshotBundles(
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
-): ScreenshotBundles {
+/** CI's screenshot bundles as workflow artifacts (D-242, D-267). */
+export function runnerScreenshotBundles(tokens: RunnerAppTokens): ScreenshotBundles {
   return createGitHubScreenshotBundles({ tokens, http: createGitHubHttp() });
 }
 
-/** A folder's git tree id at a commit (D-281, D-267); refuses on the token today. */
-export function runnerRepoFolders(
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
-): RepoFolders {
+/** A folder's git tree id at a commit (D-281, D-267). */
+export function runnerRepoFolders(tokens: RunnerAppTokens): RepoFolders {
   return createGitHubRepoFolders({ tokens, http: createGitHubHttp() });
 }
 
 /**
- * The repo map from the code at a commit, built in its own Job (D-251, D-267, D-275 (2)); refuses
- * on the token today, before the cluster is read.
+ * The repo map from the code at a commit, built in its own Job (D-251, D-267, D-275 (2)). The
+ * token is minted before the cluster is read.
  */
 export function runnerRepoMaps(
   cluster: () => Promise<RepoMapCluster>,
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+  tokens: RunnerAppTokens,
 ): RepoMaps {
   return createKubernetesRepoMaps({
     tokens,
@@ -330,11 +437,11 @@ export function runnerRepoMaps(
 
 /**
  * The Scanner's stage 1 scan at the default branch's head, in the repo map Job's scan mode (D-300,
- * O-92); refuses on the token today, before the cluster is read.
+ * O-92). The token is minted before the cluster is read.
  */
 export function runnerRepoScans(
   cluster: () => Promise<RepoMapCluster>,
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+  tokens: RunnerAppTokens,
 ): RepoScans {
   return createKubernetesRepoScans({
     tokens,
@@ -344,33 +451,19 @@ export function runnerRepoScans(
   });
 }
 
-/**
- * The register-project form's creation token (D-346): `contents: read` and `repository_creation:
- * write` on `didi-build/launchpad` only. The runner App gains "Repository creation" at first
- * hosting through the new-permissions gate; until then every request refuses, so no repository is
- * created and no project is recorded.
- */
-export function unregisteredRepositoryCreationTokens(): RepositoryCreationTokens {
-  return {
-    mint: async () => {
-      throw new NotBuiltError(
-        "The repository creation token needs the runner App, registered at first hosting through the new-credentials gate with Repository creation write (D-178, D-346)",
-      );
-    },
-  };
-}
-
-/** The settings file's listed slugs on main (D-345, O-109); refuses on the token today. */
-export function runnerProjectSettings(
-  tokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
-): ProjectSettings {
+/** The settings file's listed slugs on main (D-345, O-109). */
+export function runnerProjectSettings(tokens: RunnerAppTokens): ProjectSettings {
   return createGitHubProjectSettings({ tokens, http: createGitHubHttp() });
 }
 
-/** The create from Launchpad and the read of an existing repository; refuses on the tokens today. */
+/**
+ * The create from Launchpad with the creation token (D-346: `contents: read` and
+ * `repository_creation: write` on `didi-build/launchpad` only), and the read of an existing
+ * repository with a `contents: read` token.
+ */
 export function runnerProjectRepositories(
-  creationTokens: RepositoryCreationTokens = unregisteredRepositoryCreationTokens(),
-  readTokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+  creationTokens: RepositoryCreationTokens,
+  readTokens: RunnerAppTokens,
 ): ProjectRepositories {
   return createGitHubProjectRepositories({
     creationTokens,
@@ -381,24 +474,10 @@ export function runnerProjectRepositories(
 }
 
 /**
- * The tokens for `BOOTSTRAP_TOKEN`'s access (D-358, O-114): "Organization secrets" write for one
- * repository's grant or removal, read for the list, and "Actions: write" for one repository's
- * restart. The runner App gains both permissions at first hosting through the new-permissions
- * gate; until then every request refuses, so nothing is granted, started or removed.
+ * The secret's list: grant, removal and list (O-114), each with its own token narrowed to one step
+ * (D-358: "Organization secrets" write for one repository's grant or removal, read for the list).
  */
-export function unregisteredBootstrapTokens(): BootstrapTokens {
-  const refuse = async (): Promise<never> => {
-    throw new NotBuiltError(
-      "The BOOTSTRAP_TOKEN access tokens need the runner App, registered at first hosting through the new-credentials gate with Organization secrets write and Actions write (D-178, D-358)",
-    );
-  };
-  return { secretsChange: refuse, secretsList: refuse, restart: refuse };
-}
-
-/** The secret's list: grant, removal and list (O-114); refuses on the token today. */
-export function runnerBootstrapAccess(
-  tokens: BootstrapTokens = unregisteredBootstrapTokens(),
-): BootstrapAccess {
+export function runnerBootstrapAccess(tokens: BootstrapTokens): BootstrapAccess {
   return createGitHubBootstrapAccess({
     tokens,
     http: createGitHubHttp(),
@@ -406,10 +485,13 @@ export function runnerBootstrapAccess(
   });
 }
 
-/** Bootstrap's restart and newest restarted run (O-114); refuses on the tokens today. */
+/**
+ * Bootstrap's restart ("Actions: write" for the one repository, D-358) and its newest restarted
+ * run, read with an `actions: read` token (O-114).
+ */
 export function runnerBootstrapRuns(
-  tokens: BootstrapTokens = unregisteredBootstrapTokens(),
-  readTokens: RunnerAppTokens = unregisteredRunnerAppTokens(),
+  tokens: BootstrapTokens,
+  readTokens: RunnerAppTokens,
 ): BootstrapRuns {
   return createGitHubBootstrapRuns({
     tokens,
@@ -438,21 +520,6 @@ function jsonValue(name: string, raw: string): unknown {
   } catch {
     throw new Error(`${name} is not valid JSON`);
   }
-}
-
-/**
- * The GitHub installation tokens of the Developer, Designer and QA runs. They come from the role's
- * GitHub App, registered at M3 through the new-credentials gate (D-156, D-178); until then every
- * request refuses, so no Developer, Designer or QA run starts.
- */
-export function unregisteredInstallationTokens(): InstallationTokens {
-  return {
-    mint: async () => {
-      throw new NotBuiltError(
-        "A run's GitHub installation token needs its role's GitHub App, registered at M3 through the new-credentials gate (D-156, D-178)",
-      );
-    },
-  };
 }
 
 /** The agent image references by image kind (`agent_images`). Names the value, never its content. */
@@ -498,6 +565,9 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
   );
   pool.on("error", () => undefined);
   const store = createPostgresStore(pool);
+  const clock: Clock = { now: () => new Date() };
+  // Each App's key and id are read on its first token, so a flow that mints none reads no key.
+  const apps = windmillGitHubAppTokens(env, clock);
   // Read on the first task built, so a flow that starts no agent never needs it.
   let images: Promise<Record<string, string>> | undefined;
   // The cluster client and run settings, built on first use by an agent run or a repo map Job,
@@ -520,9 +590,9 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     store,
     contracts,
     guards: GUARDS,
-    clock: { now: () => new Date() },
+    clock,
     ids: { next: () => randomUUID() },
-    github: unregisteredGitHub(),
+    github: unregisteredGitHub(apps.runner),
     appLogins,
     runnerAppSlug,
     limits: runLimits(botFiles),
@@ -531,16 +601,19 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     taskTypes: checked.taskTypes,
     runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),
     stagingChecker: createMarkerStagingChecker(),
-    stagingBuilds: runnerStagingBuilds(),
+    stagingBuilds: runnerStagingBuilds(apps.runner),
     stagingTarget: runnerStagingTarget(),
-    screenshots: runnerScreenshotBundles(),
-    repoFolders: runnerRepoFolders(),
-    repoMaps: runnerRepoMaps(clusterParts),
-    repoScans: runnerRepoScans(clusterParts),
-    projectSettings: runnerProjectSettings(),
-    projectRepositories: runnerProjectRepositories(),
-    bootstrapAccess: runnerBootstrapAccess(),
-    bootstrapRuns: runnerBootstrapRuns(),
+    screenshots: runnerScreenshotBundles(apps.runner),
+    repoFolders: runnerRepoFolders(apps.runner),
+    repoMaps: runnerRepoMaps(clusterParts, apps.runner),
+    repoScans: runnerRepoScans(clusterParts, apps.runner),
+    projectSettings: runnerProjectSettings(apps.runner),
+    projectRepositories: runnerProjectRepositories(
+      apps.repositoryCreation,
+      apps.runner,
+    ),
+    bootstrapAccess: runnerBootstrapAccess(apps.bootstrap),
+    bootstrapRuns: runnerBootstrapRuns(apps.bootstrap, apps.runner),
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>
@@ -548,7 +621,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
           .value(VALUE_NAMES.agentImages)
           .then((raw) => parseAgentImages(raw))),
       secret: (path) => env.secret(path),
-      githubTokens: unregisteredInstallationTokens(),
+      githubTokens: apps.installation,
       store,
     }),
     // 32 random bytes: far beyond guessing, and inside the API's token pattern (src/api/auth.ts).

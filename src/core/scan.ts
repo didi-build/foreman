@@ -93,7 +93,7 @@ export interface RepoScan {
 /**
  * Where the runner gets a scan (the port): the project's repository at its default branch's head
  * now, scanned in the repo map Job's scan mode (src/adapters/agent-runtime/kubernetes/
- * repo-maps.ts). Refuses with the token port's error until the runner App exists (D-178).
+ * repo-maps.ts). Refuses with the token port's error when the token cannot be minted (O-125).
  */
 export interface RepoScans {
   scan(project: RepoMapProject): Promise<RepoScan>;

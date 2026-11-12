@@ -10,8 +10,7 @@
 // that is the folder, a directory. A missing parent (404) or no such directory is no folder (null),
 // which the comparison refuses. Any other answer throws, so nothing is compared on a failed read.
 //
-// Until the runner App is registered (D-178) the token port refuses with `NotBuiltError`
-// (flows/lib/compose.ts). Tests pass fakes.
+// The runner mints the token with its App's key (flows/lib/compose.ts, O-125). Tests pass fakes.
 import type { RepoFolders } from "../../core/visual-comparison.ts";
 import {
   GitHubReadError,
