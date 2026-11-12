@@ -82,7 +82,18 @@ const committedAgentRuns = () =>
     agentImages: Record<string, string>;
     runSettings: Record<string, unknown>;
   };
-/** The committed agent run settings with made-up digests for the images it leaves empty. */
+/**
+ * The committed agent run settings with every image left empty, as before the Images workflow
+ * built them, so the tests of an unfilled file read no pinned digest.
+ */
+const emptyAgentRuns = () => {
+  const committed = committedAgentRuns();
+  return {
+    agentImages: { opencode: "", "claude-api": "" },
+    runSettings: { ...committed.runSettings, fetchImage: "", repoMapImage: "" },
+  };
+};
+/** The committed agent run settings with made-up digests in place of its images. */
 const filledAgentRuns = () => {
   const committed = committedAgentRuns();
   return {
@@ -98,7 +109,7 @@ const filledAgentRuns = () => {
   };
 };
 const settingsFiles = (
-  agentRuns: unknown = committedAgentRuns(),
+  agentRuns: unknown = emptyAgentRuns(),
   platformSettings: unknown = platform,
 ) => {
   const dir = folder();
@@ -218,12 +229,16 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
     expect(value("agent_images")).toEqual(agentRuns.agentImages);
   });
 
-  it("holds the committed run settings at D-372's sizes and ADR 0106's starting values, with only the images left to fill", () => {
+  it("holds the committed run settings at D-372's sizes and ADR 0106's starting values, each image pinned by digest from this repository's packages", () => {
     const { agentImages, runSettings } = committedAgentRuns();
-    // Every bot file's image kind, and nothing pinned yet (filled from the Images workflow).
-    expect(agentImages).toEqual({ opencode: "", "claude-api": "" });
-    expect(runSettings.fetchImage).toBe("");
-    expect(runSettings.repoMapImage).toBe("");
+    const pinned = (name: string) =>
+      new RegExp(`^ghcr\\.io/didi-build/${name}@sha256:[0-9a-f]{64}$`);
+    // Every bot file's image kind, each the Images workflow's image of that name (D-336, O-124).
+    expect(Object.keys(agentImages).sort()).toEqual(["claude-api", "opencode"]);
+    expect(agentImages.opencode).toMatch(pinned("foreman-agent-opencode"));
+    expect(agentImages["claude-api"]).toMatch(pinned("foreman-agent-claude-api"));
+    expect(runSettings.fetchImage).toMatch(pinned("foreman-qa-fetch"));
+    expect(runSettings.repoMapImage).toMatch(pinned("foreman-repo-map"));
     const sizes = runSettings.resources as Record<
       string,
       { requests: Record<string, string>; limits: Record<string, string> }
