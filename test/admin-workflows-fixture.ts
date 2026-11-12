@@ -1,6 +1,6 @@
 // Shared by the admin workflow tests (D-339, O-105): the committed settings file, with made-up
 // values in place of what first hosting fills in (digests, app logins, the Windmill host and
-// workspace, a project), plus an API server address. Nothing here is a real value: every address
+// workspace, the projects), plus an API server address. Nothing here is a real value: every address
 // is a documentation address (RFC 5737).
 import { readFileSync } from "node:fs";
 
@@ -69,20 +69,23 @@ export const EXAMPLE_PROJECT = {
   },
 };
 
-/** The committed settings with first hosting's values made up and an API address added. */
+/**
+ * The committed settings with first hosting's values made up and an API address added. The
+ * projects are always the one made-up project, whatever the committed file lists, so no test
+ * depends on a real project's slug or quota (D-375).
+ */
 export function filledSettings(
   kubernetesApi: KubernetesApi = RUN_TIME_KUBERNETES_API,
 ): ClusterSettings {
   const settings = fill(committedSettings(), "") as {
     platform: Record<string, unknown>;
-    projects: ClusterSettings["projects"];
   };
   return {
     platform: {
       ...settings.platform,
       kubernetesApi,
     } as unknown as ClusterSettings["platform"],
-    projects: settings.projects.length > 0 ? settings.projects : [EXAMPLE_PROJECT],
+    projects: [EXAMPLE_PROJECT],
   };
 }
 
