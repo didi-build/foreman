@@ -45,7 +45,7 @@ const EXPECTED: Record<TokenRole, { access: "read" | "write"; body: string }> = 
   },
   qa: {
     access: "read",
-    body: '{"repositories":["garden-notes"],"permissions":{"contents":"read"}}',
+    body: '{"repositories":["garden-notes"],"permissions":{"contents":"read","pull_requests":"read"}}',
   },
 };
 
@@ -294,11 +294,17 @@ describe("a run's GitHub installation token (unit with fakes, D-159, D-365, O-12
 
   it("refuses a token granted wider than asked, and does not return it", async () => {
     const wider: [TokenRole, object][] = [
-      // QA asks for contents read only: pull requests read is more than was asked (O-125).
+      // QA asks for the QA App's reads only (D-374): a write, or checks, is more than was asked.
       [
         "qa",
-        { permissions: { contents: "read", pull_requests: "read", metadata: "read" } },
+        {
+          permissions: {
+            ...granted("qa").permissions,
+            checks: "read",
+          },
+        },
       ],
+      ["qa", { permissions: { ...granted("qa").permissions, pull_requests: "write" } }],
       ["qa", { permissions: { contents: "write", metadata: "read" } }],
       [
         "developer",

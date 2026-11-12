@@ -60,15 +60,15 @@ export const TOKEN_ACCESS: Readonly<Record<TokenRole, "read" | "write">> = {
  * Exactly what each role's token asks for (D-365, O-125). The Developer and Designer push their
  * run's branch (contents write, D-235, D-365) and open, comment on and close their own pull
  * requests (pull requests write, D-235, D-318). QA's token is used only by its fetch step, which
- * downloads the head commit's archive (contents read, D-184, O-124); UNCONFIRMED (O-125) whether
- * it should also carry the pull requests read that D-365 gives the QA App.
+ * downloads the head commit's archive (contents read, D-184, O-124), and carries the QA App's
+ * other read, pull requests read, as ADR 0112's "the read permissions" (D-374).
  */
 export const INSTALLATION_TOKEN_PERMISSIONS: Readonly<
   Record<TokenRole, Readonly<Record<string, string>>>
 > = {
   developer: { contents: "write", pull_requests: "write" },
   designer: { contents: "write", pull_requests: "write" },
-  qa: { contents: "read" },
+  qa: { contents: "read", pull_requests: "read" },
 };
 
 /** A request refused, a lookup or a mint GitHub refused. Names the App, never a token. */
