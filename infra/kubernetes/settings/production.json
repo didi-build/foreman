@@ -37,5 +37,17 @@
     },
     "clusterDns": { "namespace": "kube-system", "podLabels": { "k8s-app": "kube-dns" } }
   },
-  "projects": []
+  "projects": [
+    {
+      "slug": "rehearsal-1",
+      "quota": {
+        "pods": 12,
+        "cpu": "6",
+        "memory": "5Gi",
+        "ephemeralStorage": "11Gi",
+        "storage": "3Gi",
+        "persistentVolumeClaims": 3
+      }
+    }
+  ]
 }
