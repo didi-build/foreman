@@ -20,8 +20,8 @@
 #
 #   - each script: one `POST .../scripts/create_snapshot?skip_if_noop=true`, multipart, its JSON
 #     first and then its bundle, as a Bun codebase (`codebase` the bundle's sha256, which runs on
-#     Node as CommonJS) with `auto_parent`, so the first run creates it, a later one adds a version
-#     on top of the current one, and one whose bundle and settings are unchanged adds none;
+#     Node as CommonJS) with `auto_parent`, so the first run creates it and a later one adds a
+#     version on top of the current one (Windmill Cloud adds one even when nothing changed, O-123);
 #   - each schedule: `GET .../schedules/exists/<path>`, then `POST .../schedules/create` (enabled)
 #     or `POST .../schedules/update/<path>` (which leaves a schedule Didi paused paused);
 #   - each value: `GET .../variables/exists/<path>`, then `POST .../variables/create` or
