@@ -3,9 +3,10 @@
 // fake of the secret's list and Bootstrap's runs: the register form's grant and restart, the
 // called flow `f/foreman/remove_bootstrap_access` once Bootstrap's restarted run ends, the
 // reconcile flow's backstop in live mode, in dry run and under the kill switch, and the daily
-// check's failed setup. Once more with the runner's own GitHub parts, which refuse until the runner
-// App exists. The rules themselves are in test/bootstrap-access.test.ts and
-// test/register-project.test.ts. Synthetic data only; nothing reaches GitHub or Windmill.
+// check's failed setup. Once more with the runner's own GitHub parts and no runner App key stored,
+// so each token is refused before anything is sent. The rules themselves are in
+// test/bootstrap-access.test.ts and test/register-project.test.ts. Synthetic data only; nothing
+// reaches GitHub or Windmill.
 import { describe, expect, it } from "vitest";
 
 import { run as dailyCheck } from "../../flows/daily-check.ts";
@@ -19,7 +20,7 @@ import {
   SETUP_WINDOW_MINUTES,
 } from "../../src/core/bootstrap-access.ts";
 import { REGISTER_REFUSALS } from "../../src/core/register-project.ts";
-import { createFlowFixture } from "./flow-fixture.ts";
+import { appTokensWithoutKeys, createFlowFixture } from "./flow-fixture.ts";
 
 const INPUT = {
   slug: "garden-notes",
@@ -149,14 +150,15 @@ describe("BOOTSTRAP_TOKEN's access in the flows (flow, D-358, O-114)", () => {
     expect(after.text).not.toContain("Bootstrap failed");
   });
 
-  it("with the runner's own GitHub parts, the form stops at the grant's token with the project recorded, and nothing else acts", async () => {
+  it("with the runner's own GitHub parts and no runner App key stored, the form stops at the grant's token with the project recorded, and nothing else acts", async () => {
     const f = await createFlowFixture();
     await f.live();
     f.projectSettings.listed = [INPUT.slug];
+    const apps = appTokensWithoutKeys();
     const deps = {
       ...f.deps,
-      bootstrapAccess: runnerBootstrapAccess(),
-      bootstrapRuns: runnerBootstrapRuns(),
+      bootstrapAccess: runnerBootstrapAccess(apps.bootstrap),
+      bootstrapRuns: runnerBootstrapRuns(apps.bootstrap, apps.runner),
     };
     expect(await registerProject(deps, INPUT)).toEqual({
       outcome: "refused",
@@ -177,7 +179,8 @@ describe("BOOTSTRAP_TOKEN's access in the flows (flow, D-358, O-114)", () => {
     expect(pass.bootstrapAccess?.problem).toBe(ACCESS_LIST_UNREADABLE);
     expect(pass.problems).toContain(ACCESS_LIST_UNREADABLE);
     const check = (await dailyCheck(deps)).render_all[1].json;
-    // The fixture's rehearsal project too: neither one's runs can be read yet.
+    // The fixture's rehearsal project too: neither one's runs can be read.
     expect(check.check.projectSetup?.unreadable).toEqual([INPUT.slug, "rehearsal"]);
+    expect(apps.sent).toEqual([]);
   });
 });

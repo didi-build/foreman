@@ -14,9 +14,9 @@
 // (another permission, another level, or all repositories) is refused too, and not used. The
 // mint and that refusal are shared with the Bootstrap access tokens (./narrow-tokens.ts, O-114).
 //
-// The real minting signs with the runner App's private key, which the runner holds; until the App
-// is registered through the new-credentials gate (D-178) the runner's port refuses with
-// `NotBuiltError` (flows/lib/compose.ts), and tests pass a fake. The token is never kept or logged.
+// The real minting signs with the runner App's private key, which only the runner holds, read on
+// the first token (flows/lib/compose.ts, O-125); tests pass a fake. The token is never kept or
+// logged.
 import {
   mintNarrowToken,
   type GitHubAppJwt,

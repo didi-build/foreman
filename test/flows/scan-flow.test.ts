@@ -1,7 +1,7 @@
 // Seam: the scan flow f/foreman/scan (D-299, D-300, O-92) with fake adapters on the memory store.
 // The checks are tested in src/core/scan.test.ts and the filing in test/scan-ideas.test.ts; this
-// covers what the flow adds: every project scanned once, the switches checked before any Job, the
-// runner App's refusal recording nothing, a failure recorded by its step only, and the daily check
+// covers what the flow adds: every project scanned once, the switches checked before any Job, a
+// refused token stopping before any Job, a failure recorded by its step only, and the daily check
 // showing what the scan found. And over two days (D-301, O-93): a new finding folded into an open
 // idea, an idea in Submitted no longer found withdrawn, one further along recorded with the Council
 // asked, and the daily check's lines for each. Synthetic data only; no cluster, network or token.
@@ -14,7 +14,11 @@ import { RepoMapJobError } from "../../src/adapters/agent-runtime/kubernetes/rep
 import { GitHubReadError } from "../../src/adapters/github/runner-app-tokens.ts";
 import { SCAN_CHECKS, ScanResultError, type RepoScan } from "../../src/core/scan.ts";
 import { REPO } from "../reconcile-fixture.ts";
-import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
+import {
+  appTokensWithoutKeys,
+  createFlowFixture,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const SHA = "c".repeat(40);
 
@@ -107,24 +111,30 @@ describe("the scan flow (flow: fake adapters, D-300, O-92)", () => {
     },
   );
 
-  it("until the runner App exists, refuses on the token, reads no cluster, records nothing and says so", async () => {
+  it("with no runner App key stored, refuses on the token before any Job, reads no cluster, and records the failed step only", async () => {
     const f = await createFlowFixture();
     await f.live();
     let clusterReads = 0;
+    const apps = appTokensWithoutKeys();
     const result = await scanFlow({
       ...f.deps,
       repoScans: runnerRepoScans(async () => {
         clusterReads += 1;
         throw new Error("the cluster is not read before a token exists");
-      }),
+      }, apps.runner),
     });
-    expect(result.outcome).toBe("not_built");
-    expect(result.note).toMatch(
-      /nothing was recorded: The runner App's read-only token/,
-    );
-    expect(result.projects).toEqual([]);
+    expect(result).toEqual({
+      outcome: "scanned",
+      note: null,
+      projects: [
+        { slug: "rehearsal", outcome: "failed", failure: "other", recorded: true },
+      ],
+    });
     expect(clusterReads).toBe(0);
-    expect(await f.store.getLatestScan(f.projectId)).toBeNull();
+    expect(apps.sent).toEqual([]);
+    const record = await f.store.getLatestScan(f.projectId);
+    expect(record).toMatchObject({ outcome: "failed", summary: { failure: "other" } });
+    expect(JSON.stringify(record)).not.toContain("not stored");
     expect(await ideasIn(f, f.projectId)).toEqual([]);
   });
 

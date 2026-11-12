@@ -10,10 +10,10 @@
 //
 // Switches: under the kill switch or in dry run the pass reads nothing and starts no Job, as a run
 // start in dry run starts none (./start-run.ts), and the filing step reads both again in its own
-// transaction and writes nothing (src/core/finding-ideas.ts). Until the runner App is registered
-// (D-178) the token port refuses with `NotBuiltError` before any cluster object is made; the pass
-// then records nothing and says so. Any other failure is recorded as the scan's failed step, by a
-// fixed name only, so the daily check shows it; the error's own text is never kept or returned.
+// transaction and writes nothing (src/core/finding-ideas.ts). The scan's token is minted with the
+// runner App's key before any cluster object is made (O-125). Any failure, a token refused
+// included, is recorded as the scan's failed step, by a fixed name only, so the daily check shows
+// it; the error's own text is never kept or returned.
 import { RepoMapJobError } from "../../src/adapters/agent-runtime/kubernetes/repo-maps.ts";
 import { KubernetesApiError } from "../../src/adapters/agent-runtime/kubernetes/client.ts";
 import { GitHubReadError } from "../../src/adapters/github/runner-app-tokens.ts";
@@ -24,7 +24,7 @@ import {
   type ScanSummary,
   type ScanWithdrawal,
 } from "../../src/core/scan-ideas.ts";
-import { NotBuiltError, type FlowDeps } from "./compose.ts";
+import type { FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
 
 /** The scheduled flow that runs this pass (flows/windmill.yaml). */
@@ -44,7 +44,7 @@ export type ProjectScanStep =
   | { slug: string; outcome: "held"; reason: string };
 
 export interface ScanPassResult {
-  outcome: "scanned" | "kill_switch" | "dry_run" | "not_built";
+  outcome: "scanned" | "kill_switch" | "dry_run";
   /** Why nothing was scanned, when nothing was. */
   note: string | null;
   projects: ProjectScanStep[];
@@ -82,13 +82,6 @@ export async function scanPass(deps: FlowDeps): Promise<ScanPassResult> {
     try {
       scan = await deps.repoScans.scan({ slug: project.slug, repo: project.repo });
     } catch (error) {
-      if (error instanceof NotBuiltError) {
-        return {
-          outcome: "not_built",
-          note: `No scan ran and nothing was recorded: ${error.message}`,
-          projects: steps,
-        };
-      }
       const failure = failureOf(error);
       const recorded = await filing.recordFailure(project.id, failure);
       steps.push({

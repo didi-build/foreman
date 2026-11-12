@@ -13,8 +13,8 @@
 // Fields are mapped as GitHub names them (`path`, `event`, `head_sha`, `head_repository.full_name`;
 // `id`, `run_id`, `name`, `head_sha`, `status`, `conclusion`). A run or job missing a field, or
 // with a status or conclusion that is not a short lowercase word, is dropped, never guessed at.
-// The core then picks the one job that counts. Until the runner App is registered (D-178) the
-// token port refuses with `NotBuiltError` (flows/lib/compose.ts). Tests pass fakes.
+// The core then picks the one job that counts. The runner mints the token with its App's key
+// (flows/lib/compose.ts, O-125). Tests pass fakes.
 import type {
   GitHubWorkflowReader,
   WorkflowJob,

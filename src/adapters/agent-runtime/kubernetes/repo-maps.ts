@@ -12,9 +12,9 @@
 //    result.ts): its shape, sizes, paths and commit;
 // 5. deletes every object of the read, whatever happened, Jobs first.
 //
-// Until the runner App is registered (D-178) the token port refuses with `NotBuiltError` before
-// anything else (flows/lib/compose.ts), so no cluster object is made and no cluster token is
-// read. Nothing here logs, and errors name a step, never a token or a value from the Job.
+// The token is minted with the runner App's key before anything else (flows/lib/compose.ts,
+// O-125), so a refused token makes no cluster object and reads no cluster token. Nothing here
+// logs, and errors name a step, never a token or a value from the Job.
 //
 // The Scanner's stage 1 (D-300, O-92) uses the same read with the Job in scan mode
 // (`createKubernetesRepoScans`): the same steps, objects, token and bounds, and the result is

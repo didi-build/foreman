@@ -3,8 +3,9 @@
 // deploy adapter (the file-set check and Cloudflare's three upload calls) behind a fake HTTP port
 // and fake credentials, on a real zip; the same with the composition's credential port, which
 // refuses until Didi creates the token, so nothing is sent, nothing counts and the daily check
-// shows the deploy that did not go through; and with the runner's own GitHub reads, which refuse
-// until the runner App exists. Synthetic data only; nothing reaches GitHub, Cloudflare or Windmill.
+// shows the deploy that did not go through; and with the runner's own GitHub reads and no runner
+// App key stored, so the token is refused before anything is sent. Synthetic data only; nothing
+// reaches GitHub, Cloudflare or Windmill.
 import { describe, expect, it } from "vitest";
 
 import { run as dailyCheck } from "../../flows/daily-check.ts";
@@ -22,7 +23,7 @@ import { mainBuild } from "../../src/adapters/deploy/fake.ts";
 import { REPO } from "../reconcile-fixture.ts";
 import { setupStaging } from "../staging-fixture.ts";
 import { storedZip } from "../zip-fixture.ts";
-import { flowDepsFor } from "./flow-fixture.ts";
+import { appTokensWithoutKeys, flowDepsFor } from "./flow-fixture.ts";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 
@@ -162,10 +163,11 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     );
   });
 
-  it("with the runner's own GitHub reads, refuses on the runner App's token and records nothing", async () => {
+  it("with the runner's own GitHub reads and no runner App key stored, refuses on the runner App's token and records nothing", async () => {
     const t = await setupStaging();
     const parts = flowDepsFor(t.deps, t.checker);
-    const deps = { ...parts.deps, stagingBuilds: runnerStagingBuilds() };
+    const apps = appTokensWithoutKeys();
+    const deps = { ...parts.deps, stagingBuilds: runnerStagingBuilds(apps.runner) };
     expect(await deployStaging(deps, { repo: REPO, runId: 34 })).toMatchObject({
       outcome: "done",
       deploy: { step: "refused_infrastructure", reason: "run_unreadable" },
@@ -173,6 +175,7 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     expect(parts.stagingTarget.deploys).toEqual([]);
     expect(await t.kind("staging_deploy_failed")).toEqual([]);
     expect(await t.kind("staging_deploy")).toEqual([]);
+    expect(apps.sent).toEqual([]);
   });
 
   it("in dry run says what it would deploy, and under the kill switch refuses, uploading nothing either way", async () => {

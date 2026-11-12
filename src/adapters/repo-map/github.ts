@@ -7,8 +7,8 @@
 // commit, is ./head-commit.ts, kept apart so the runner's flows never load the compiler (O-121),
 // and it reads back only the map (./result.ts).
 //
-// Until the runner App is registered (D-178) the runner's token port refuses with `NotBuiltError`
-// (flows/lib/compose.ts), so no map is read and no Triage run starts. Tests pass fakes.
+// The runner mints the token with its App's key (src/adapters/github/runner-read-tokens.ts,
+// flows/lib/compose.ts, O-125). Tests pass fakes.
 import type { RepoMap } from "../../core/repo-map.ts";
 import {
   GitHubReadError,

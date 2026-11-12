@@ -8,7 +8,12 @@ import type {
   AgentRunStatus,
   RunLimits,
 } from "../../src/adapters/agent-runtime/runtime.ts";
-import type { FlowDeps, FlowRuntime, RunToStart } from "../../flows/lib/compose.ts";
+import {
+  windmillGitHubAppTokens,
+  type FlowDeps,
+  type FlowRuntime,
+  type RunToStart,
+} from "../../flows/lib/compose.ts";
 import {
   createFakeStagingBuilds,
   createFakeStagingTarget,
@@ -84,6 +89,39 @@ function createFakeRuntime(): FakeRuntime {
 }
 
 export type FlowFixture = Awaited<ReturnType<typeof createFlowFixture>>;
+
+/**
+ * The composition's real GitHub App token ports (O-125) with no App key stored: each App's first
+ * token fails on reading its key, so nothing is signed or sent. Its HTTP ports refuse and record,
+ * so a test can check that nothing was sent.
+ */
+export function appTokensWithoutKeys() {
+  const sent: string[] = [];
+  const tokens = windmillGitHubAppTokens(
+    {
+      secret: async (path) => {
+        throw new Error(`${path} is not stored`);
+      },
+      value: async () => "1001",
+    },
+    { now: () => new Date(0) },
+    {
+      get: {
+        get: async (request) => {
+          sent.push(request.path);
+          throw new Error("no network in tests");
+        },
+      },
+      post: {
+        post: async (request) => {
+          sent.push(request.path);
+          throw new Error("no network in tests");
+        },
+      },
+    },
+  );
+  return { ...tokens, sent };
+}
 
 /**
  * The flow parts around a fixture's core deps: a fake runtime, a fake task source that keeps

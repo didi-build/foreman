@@ -4,8 +4,8 @@
 //
 // It is kept apart from ./github.ts, whose archive read and TypeScript parse run only inside the
 // repo map Job (src/agent-images/repo-map/), so the runner's flows never load the TypeScript
-// compiler (O-121). Until the runner App is registered (D-178) the runner's token port refuses
-// with `NotBuiltError` (flows/lib/compose.ts), so nothing is read. Tests pass fakes.
+// compiler (O-121). The runner mints the token with its App's key (flows/lib/compose.ts, O-125).
+// Tests pass fakes.
 import {
   GitHubReadError,
   REPOSITORY,

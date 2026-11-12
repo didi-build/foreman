@@ -371,6 +371,11 @@ resources:
   # id (D-353, O-116, step 16), are stored by Didi by hand at first hosting, as secret variables at
   # their `windmill_path`. Until the staging pair is stored the composition's credential port
   # refuses with `NotBuiltError`, so nothing is uploaded.
+  #
+  # The four GitHub Apps' private keys are secret variables too, and their ids plain variables
+  # beside them (D-368, D-370). Didi stores them by hand at first hosting (runbook step 15), with a
+  # copy of each key in Bitwarden. The composition reads an App's id and key only when the flow
+  # mints that App's first token, and the runner App's installation id with them (O-125).
   secrets:
     - path: platform/state-store/runner-database-url
       holds: A login user in the factory_runner role (ADR 0104). New credential at first hosting
@@ -388,6 +393,22 @@ resources:
       holds: The Cloudflare account id of the staging Workers, 32 hex characters, kept as a secret as D-361 keeps it (O-116)
       windmill_path: f/foreman/platform/cloudflare/account-id
       written_by: Didi, by hand (first-hosting runbook step 16)
+    - path: platform/github/runner-app-private-key
+      holds: The runner App's private key, in PEM (D-368)
+      windmill_path: f/foreman/platform/github/runner-app-private-key
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - path: platform/github/developer-app-private-key
+      holds: The Developer App's private key, in PEM (D-368)
+      windmill_path: f/foreman/platform/github/developer-app-private-key
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - path: platform/github/designer-app-private-key
+      holds: The Designer App's private key, in PEM (D-368)
+      windmill_path: f/foreman/platform/github/designer-app-private-key
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - path: platform/github/qa-app-private-key
+      holds: The QA App's private key, in PEM (D-368)
+      windmill_path: f/foreman/platform/github/qa-app-private-key
+      written_by: Didi, by hand (first-hosting runbook step 15)
   # The Windmill deploy writes each value below that has no `written_by`, as a plain variable, and
   # only those (its token's `variables:write` names exactly them): `spec_version` is the deploy's
   # own commit, the App names come from `platform.receiver` in
@@ -415,47 +436,23 @@ resources:
       holds: The Kubernetes run settings as JSON, with no secret in them (ADR 0106), the repo map Job's image, resources and deadline included (D-275 (2))
     - name: agent_images
       holds: The agent image references by image kind as JSON, each pinned by digest. Each bot file (contracts/bots/) names its kind
-  # The four GitHub Apps' private keys, each a secret variable, and their ids, plain variables
-  # beside them (D-368, D-370). Didi stores them by hand at first hosting (runbook step 15), with
-  # a copy of each key in Bitwarden. No flow reads them yet: every GitHub token port refuses
-  # (`NotBuiltError`) until the Apps' token code is written, so they are not among the secrets and
-  # values the composition reads above.
-  github_apps:
-    secrets:
-      - path: platform/github/runner-app-private-key
-        holds: The runner App's private key, in PEM (D-368)
-        windmill_path: f/foreman/platform/github/runner-app-private-key
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - path: platform/github/developer-app-private-key
-        holds: The Developer App's private key, in PEM (D-368)
-        windmill_path: f/foreman/platform/github/developer-app-private-key
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - path: platform/github/designer-app-private-key
-        holds: The Designer App's private key, in PEM (D-368)
-        windmill_path: f/foreman/platform/github/designer-app-private-key
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - path: platform/github/qa-app-private-key
-        holds: The QA App's private key, in PEM (D-368)
-        windmill_path: f/foreman/platform/github/qa-app-private-key
-        written_by: Didi, by hand (first-hosting runbook step 15)
-    values:
-      - name: platform/github/runner-app-id
-        holds: The runner App's id (D-368)
-        windmill_path: f/foreman/platform/github/runner-app-id
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - name: platform/github/developer-app-id
-        holds: The Developer App's id (D-368)
-        windmill_path: f/foreman/platform/github/developer-app-id
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - name: platform/github/designer-app-id
-        holds: The Designer App's id (D-368)
-        windmill_path: f/foreman/platform/github/designer-app-id
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - name: platform/github/qa-app-id
-        holds: The QA App's id (D-368)
-        windmill_path: f/foreman/platform/github/qa-app-id
-        written_by: Didi, by hand (first-hosting runbook step 15)
-      - name: platform/github/runner-app-installation-id
-        holds: The runner App's installation id on didi-build (D-368)
-        windmill_path: f/foreman/platform/github/runner-app-installation-id
-        written_by: Didi, by hand (first-hosting runbook step 15)
+    - name: platform/github/runner-app-id
+      holds: The runner App's id (D-368)
+      windmill_path: f/foreman/platform/github/runner-app-id
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - name: platform/github/developer-app-id
+      holds: The Developer App's id (D-368)
+      windmill_path: f/foreman/platform/github/developer-app-id
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - name: platform/github/designer-app-id
+      holds: The Designer App's id (D-368)
+      windmill_path: f/foreman/platform/github/designer-app-id
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - name: platform/github/qa-app-id
+      holds: The QA App's id (D-368)
+      windmill_path: f/foreman/platform/github/qa-app-id
+      written_by: Didi, by hand (first-hosting runbook step 15)
+    - name: platform/github/runner-app-installation-id
+      holds: The runner App's installation id on didi-build (D-368)
+      windmill_path: f/foreman/platform/github/runner-app-installation-id
+      written_by: Didi, by hand (first-hosting runbook step 15)
