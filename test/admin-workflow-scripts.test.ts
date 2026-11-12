@@ -2573,7 +2573,7 @@ describe.skipIf(process.platform === "win32")(
     });
 
     describe("build-images.sh", () => {
-      it("builds and pushes the seven images by commit tag, with no build argument or secret, and writes their digests", () => {
+      it("builds and pushes the eight images by commit tag, with no build argument or secret, and writes their digests", () => {
         const box = sandbox();
         const commit = "0123456789abcdef0123456789abcdef01234567";
         const out = join(box.root, "images.json");
@@ -2589,6 +2589,7 @@ describe.skipIf(process.platform === "win32")(
           "src/agent-images/opencode/Dockerfile",
           "src/agent-images/claude-api/Dockerfile",
           "src/agent-images/repo-map/Dockerfile",
+          "src/agent-images/qa-fetch/Dockerfile",
           "src/egress-proxy/Dockerfile",
           "src/api/Dockerfile",
           "src/github-receiver/Dockerfile",
@@ -2604,6 +2605,7 @@ describe.skipIf(process.platform === "win32")(
             "foreman-agent-opencode",
             "foreman-agent-claude-api",
             "foreman-repo-map",
+            "foreman-qa-fetch",
             "foreman-egress-proxy",
             "foreman-state-api",
             "foreman-github-receiver",
@@ -2632,6 +2634,7 @@ describe.skipIf(process.platform === "win32")(
           },
           agent_run_settings: {
             proxyImage: digestOf("foreman-egress-proxy"),
+            fetchImage: digestOf("foreman-qa-fetch"),
             repoMapImage: digestOf("foreman-repo-map"),
           },
         });

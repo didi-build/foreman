@@ -77,27 +77,40 @@ const ACCEPT: Record<GitHubGetRequest["accept"], string> = {
 const READ_TIMEOUT_MS = 120_000;
 
 /**
+ * One GET to GitHub's REST API with the token as a bearer token, its body not read yet. A
+ * redirect (the archive and artifact downloads answer with one to a signed address) is followed
+ * by `fetch`, which drops the `Authorization` header when the redirect leaves the API's origin.
+ * `createGitHubHttp` reads the body whole; QA's fetch step reads its archive as it arrives, with
+ * QA's own read token (src/agent-images/qa-fetch/, O-124).
+ */
+export async function githubApiGet(
+  path: string,
+  token: string,
+  accept: GitHubGetRequest["accept"],
+): Promise<Response> {
+  if (!path.startsWith("/"))
+    throw new GitHubReadError("a GitHub path must start with /");
+  return fetch(`https://api.github.com${path}`, {
+    headers: {
+      accept: ACCEPT[accept],
+      authorization: `Bearer ${token}`,
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "foreman-runner",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(READ_TIMEOUT_MS),
+  });
+}
+
+/**
  * The real HTTP port, used by the runner and inside the repo map Job, where `fetch` goes through
- * the Job's egress proxy (NODE_USE_ENV_PROXY, src/agent-images/repo-map/image.ts). GitHub's REST
- * API with the token as a bearer token. A redirect (the archive
- * and artifact downloads answer with one to a signed address) is followed by `fetch`, which drops
- * the `Authorization` header when the redirect leaves the API's origin. Not used in tests.
+ * the Job's egress proxy (NODE_USE_ENV_PROXY, src/agent-images/repo-map/image.ts): one
+ * `githubApiGet` and its body read with a bound. Not used in tests.
  */
 export function createGitHubHttp(): GitHubHttp {
   return {
     async get({ path, token, accept, maxBytes }) {
-      if (!path.startsWith("/"))
-        throw new GitHubReadError("a GitHub path must start with /");
-      const response = await fetch(`https://api.github.com${path}`, {
-        headers: {
-          accept: ACCEPT[accept],
-          authorization: `Bearer ${token}`,
-          "x-github-api-version": "2022-11-28",
-          "user-agent": "foreman-runner",
-        },
-        redirect: "follow",
-        signal: AbortSignal.timeout(READ_TIMEOUT_MS),
-      });
+      const response = await githubApiGet(path, token, accept);
       return {
         status: response.status,
         body: await readBoundedBody(response, maxBytes),

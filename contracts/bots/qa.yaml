@@ -32,8 +32,10 @@ limits:
 # ADR 0106 section 3: QA reaches only its model provider and the state API.
 allowed_hosts: []
 
-# The fetch step's own proxy: the GitHub hosts needed to fetch one commit, nothing else.
-fetch_allowed_hosts: [github.com, codeload.github.com]
+# The fetch step's own proxy: the GitHub hosts needed to fetch one commit, nothing else. The
+# fetch image downloads the commit's archive from GitHub's API, which redirects to the download
+# host (src/agent-images/qa-fetch/, O-124), as the repo map Job does (REPO_MAP_HOSTS).
+fetch_allowed_hosts: [api.github.com, codeload.github.com]
 
 providers:
   - name: anthropic

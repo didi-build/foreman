@@ -98,7 +98,7 @@ export const QA: KubernetesRunSpec = {
   headSha: "0123456789abcdef0123456789abcdef01234567",
   prNumber: 42,
   allowedHosts: [],
-  fetchAllowedHosts: ["github.com", "codeload.github.com"],
+  fetchAllowedHosts: ["api.github.com", "codeload.github.com"],
 };
 
 export const COUNCIL: KubernetesRunSpec = {

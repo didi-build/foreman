@@ -1,10 +1,11 @@
 name: Images
 
-# Builds the seven images first hosting needs from main and pushes them to GitHub Container
+# Builds the eight images first hosting needs from main and pushes them to GitHub Container
 # Registry as public images, ghcr.io/didi-build/foreman-<name>, tagged with the commit (D-336,
-# O-105). The job summary and the artifact `foreman-images` give each image's reference pinned by
-# digest, which a settings pull request copies: the cluster and Windmill pin digests, never tags,
-# so a pushed image changes nothing until Didi merges that pull request and approves its apply.
+# O-105, O-124). The job summary and the artifact `foreman-images` give each image's reference
+# pinned by digest, which a settings pull request copies: the cluster and Windmill pin digests,
+# never tags, so a pushed image changes nothing until Didi merges that pull request and approves
+# its apply.
 #
 # Only this job has `packages: write`, the built-in token's right to push to this repository's
 # packages, and nothing else. No secret goes into a build: the Dockerfiles take no build argument
@@ -54,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
-      - name: Build and push the seven images
+      - name: Build and push the eight images
         run: |
           set -euo pipefail
           .github/scripts/build-images.sh "$RUNNER_TEMP/images.json" >>"$GITHUB_STEP_SUMMARY"

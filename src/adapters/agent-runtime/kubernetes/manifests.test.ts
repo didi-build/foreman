@@ -428,7 +428,7 @@ describe("run network (unit: per-run NetworkPolicies, ADR 0106 section 2, D-195)
     expect(value(qa.proxyJob, "STATE_API_UPSTREAM")).toBe(SETTINGS.stateApi.upstream);
     const fetch = fetchStage(QA, SETTINGS);
     expect(value(fetch.proxyJob, "ALLOWED_HOSTS")).toBe(
-      "github.com,codeload.github.com",
+      "api.github.com,codeload.github.com",
     );
     expect(value(fetch.proxyJob, "MODEL_PROVIDERS")).toBe("[]");
     expect(value(fetch.proxyJob, "STATE_API_UPSTREAM")).toBe("");
