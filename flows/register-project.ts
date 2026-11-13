@@ -27,8 +27,15 @@ export function run(
   return createProjectRegistration(deps).register(input);
 }
 
+/**
+ * Didi's form: one plain field per value, which Windmill shows as its own box (D-376). A type
+ * imported from another file would show as a single resource picker instead (O-121).
+ */
 export async function main(
-  input: RegisterProjectInput,
+  slug: string,
+  description: string,
 ): Promise<RegisterProjectResult> {
-  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+  return withFlowDeps(windmillEnvironment(), (deps) =>
+    run(deps, { slug, description }),
+  );
 }

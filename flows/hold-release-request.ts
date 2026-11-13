@@ -23,8 +23,7 @@ export async function run(
   return createHoldReleaseRequests(deps).requestAgain(input.nodeId);
 }
 
-export async function main(
-  input: HoldReleaseRequestInput,
-): Promise<HoldReleaseRequestStep> {
-  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, input));
+/** Didi's form: the held item's id in its own box (D-376). */
+export async function main(nodeId: string): Promise<HoldReleaseRequestStep> {
+  return withFlowDeps(windmillEnvironment(), (deps) => run(deps, { nodeId }));
 }
