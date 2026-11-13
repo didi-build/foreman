@@ -39,7 +39,7 @@
   },
   "projects": [
     {
-      "slug": "rehearsal-1",
+      "slug": "rehearsal",
       "quota": {
         "pods": 12,
         "cpu": "6",
