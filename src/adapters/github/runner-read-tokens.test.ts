@@ -1,8 +1,9 @@
-// Seam: the runner App's read-only tokens (unit with fakes, D-267, D-365, O-125). The runner App's
-// key is generated when the test runs, and a fake HTTP port stands in for GitHub with synthetic
-// answers. The exact request (one repository of didi-build, exactly one permission at read), the
-// bearer a JWT the runner App's public key verifies, refusals before anything is signed or sent,
-// and the shared mint's refusals after one request. No network, no real key or token.
+// Seam: the runner App's read-only tokens (unit with fakes, D-267, D-365, O-125, D-381). The runner
+// App's key is generated when the test runs, and a fake HTTP port stands in for GitHub with
+// synthetic answers. The exact request (one repository of didi-build, exactly one permission at
+// read: contents, actions, pull_requests or checks), the bearer a JWT the runner App's public key
+// verifies, refusals before anything is signed or sent, and the shared mint's refusals after one
+// request. No network, no real key or token.
 import { describe, expect, it } from "vitest";
 
 import { readJwt, testAppKey } from "../../../test/github-app-key-fixture.ts";
@@ -57,7 +58,7 @@ function fakes(status = 201, answer?: unknown) {
 }
 
 describe("the runner App's read-only tokens (unit with fakes, D-267, O-125)", () => {
-  it.each(["contents", "actions"] as const)(
+  it.each(["contents", "actions", "pull_requests", "checks"] as const)(
     "a %s token asks for the one repository and exactly that permission at read, signed by the runner App",
     async (permission) => {
       const f = fakes(201, granted("garden-notes", permission));
@@ -104,8 +105,16 @@ describe("the runner App's read-only tokens (unit with fakes, D-267, O-125)", ()
     }
   });
 
-  it("refuses any permission but contents or actions, before anything is signed or sent", async () => {
-    for (const permission of ["metadata", "pull_requests", "administration", ""]) {
+  it("refuses any permission but the four reads, before anything is signed or sent", async () => {
+    for (const permission of [
+      "metadata",
+      "administration",
+      "organization_secrets",
+      "repository_creation",
+      "pull_requests:write",
+      "toString",
+      "",
+    ]) {
       const f = fakes();
       await expect(
         f.tokens.mint({
@@ -114,7 +123,7 @@ describe("the runner App's read-only tokens (unit with fakes, D-267, O-125)", ()
         }),
       ).rejects.toThrow(
         new RunnerAppTokenError(
-          "The runner App's read token is only for contents or actions",
+          "The runner App's read token is only for contents, actions, pull_requests or checks",
         ),
       );
       expect(f.requests).toEqual([]);

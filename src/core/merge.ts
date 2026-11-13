@@ -44,6 +44,9 @@ export const PRIVILEGED_GUARD = "privileged_paths_approved";
 
 const ACTOR = { kind: "runner" as const, id: "merge" };
 
+/** The merge pass's reason for a node whose merge threw, with outcome `refused`. */
+export const MERGE_FAILED = "merge_failed";
+
 /** The topic of a node's privileged-path gate request. A new head supersedes the old request. */
 export const privilegedPathTopic = (nodeId: string): string =>
   `privileged-path:${nodeId}`;
@@ -364,7 +367,11 @@ export function createMerges(deps: MergeDeps) {
     /**
      * The reconcile flow's merge pass in live mode: every node in a state with a merge move. It
      * merges a PR QA passed whose report did not lead to the merge, and completes a merge whose
-     * move was not written. The trigger names the node, so a dry-run row is written once.
+     * move was not written. The trigger names the node, so a dry-run row is written once. A call
+     * that throws for one node (GitHub unreachable, an answer it refuses, a failed write) is
+     * reported as `merge_failed` for that node and the pass goes on, as the polling backstop
+     * reports `poll_failed`: the rest of the reconcile pass still runs. A merge GitHub made before
+     * the error is completed by the next pass, which finds the PR merged at the node's head.
      */
     async mergeReady(): Promise<{ nodeId: string; result: MergeResult }[]> {
       const results: { nodeId: string; result: MergeResult }[] = [];
@@ -373,7 +380,11 @@ export function createMerges(deps: MergeDeps) {
         const result = await mergeOnPass(node.id, {
           kind: "reconcile",
           ref: `merge:${node.id}`,
-        });
+        }).catch((): MergeResult => ({
+          outcome: "refused",
+          reason: MERGE_FAILED,
+          failedGuards: [],
+        }));
         results.push({ nodeId: node.id, result });
       }
       return results;

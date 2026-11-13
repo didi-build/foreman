@@ -1,11 +1,12 @@
 // The one composition module of the flow layer (build plan M3.1). It builds everything a flow
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
-// the GitHub reader, the agent runtime, the repo map's Job (and its scan mode), each run's task,
-// the staging check, the staging deploy (CI's builds and the deploy adapter's target, O-116), the
-// ports for `BOOTSTRAP_TOKEN`'s access, and the GitHub Apps' token ports, each App's key and id read
-// on its first token (O-125). Flows take these as `FlowDeps` and hold no rule of their own
-// (architecture section 2.4); tests build `FlowDeps` from fakes.
+// the runner's GitHub client over the runner App's narrow tokens (D-381), the agent runtime, the
+// repo map's Job (and its scan mode), each run's task, the staging check, the staging deploy (CI's
+// builds and the deploy adapter's target, O-116), the ports for `BOOTSTRAP_TOKEN`'s access, and the
+// GitHub Apps' token ports, each App's key and id read on its first token (O-125). Flows take these
+// as `FlowDeps` and hold no rule of their own (architecture section 2.4); tests build `FlowDeps`
+// from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -49,11 +50,14 @@ import {
   createBootstrapTokens,
   type BootstrapTokens,
 } from "../../src/adapters/github/bootstrap-tokens.ts";
-import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import {
   createInstallationTokens,
   type InstallationTokens,
 } from "../../src/adapters/github/installation-tokens.ts";
+import {
+  createRunnerMergeTokens,
+  type RunnerMergeTokens,
+} from "../../src/adapters/github/merge-tokens.ts";
 import type {
   GitHubAppJwt,
   NarrowTokenOptions,
@@ -73,9 +77,9 @@ import {
   type GitHubHttp,
   type RunnerAppTokens,
 } from "../../src/adapters/github/runner-app-tokens.ts";
+import { createRunnerGitHub } from "../../src/adapters/github/runner-github.ts";
 import { createRunnerAppTokens } from "../../src/adapters/github/runner-read-tokens.ts";
 import { createGitHubStagingBuilds } from "../../src/adapters/github/staging-builds.ts";
-import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
 import { createGitHubWriteHttp } from "../../src/adapters/github/write-http.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
@@ -86,7 +90,7 @@ import type {
   BootstrapRuns,
 } from "../../src/core/bootstrap-access.ts";
 import { validateContracts } from "../../src/core/contracts.ts";
-import type { GitHub, GitHubWorkflowReader } from "../../src/core/github.ts";
+import type { GitHub } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { Clock } from "../../src/core/library.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
@@ -230,29 +234,6 @@ export class NotBuiltError extends Error {
 }
 
 /**
- * The runner's GitHub reads and merge calls. Their client (src/adapters/github/client.ts) is not
- * built yet, so every one of them refuses and nothing is merged. CI's workflow runs and jobs, read
- * for CI's preview check, are built over the runner App's `actions: read` token (D-354, O-111,
- * O-125).
- */
-function unregisteredGitHub(tokens: RunnerAppTokens): GitHub {
-  const refuse = async (): Promise<never> => {
-    throw new GitHubNotConfiguredError();
-  };
-  return {
-    getPullRequest: refuse,
-    listChangedPaths: refuse,
-    listCheckRuns: refuse,
-    listOpenPullRequests: refuse,
-    ...runnerWorkflowReads(tokens),
-    getMergeability: refuse,
-    squashMerge: refuse,
-    compareCommits: refuse,
-    getBranchHead: refuse,
-  };
-}
-
-/**
  * The staging deploy token (D-353, O-116): a new credential, Didi's gate. Until Didi has created it
  * and stored it in Windmill (runbook step 16), every read refuses, so nothing is uploaded and each
  * deploy is refused as infrastructure. Once it exists, the composition reads it with
@@ -293,8 +274,13 @@ export function runnerStagingTarget(
 
 /** The GitHub Apps' token ports (D-365, D-368, O-125). */
 export interface GitHubAppTokens {
-  /** The runner App's read tokens: one repository, `contents: read` or `actions: read` (D-267). */
+  /**
+   * The runner App's read tokens: one repository, `contents`, `actions`, `pull_requests` or
+   * `checks` at read (D-267, D-365, D-381).
+   */
   runner: RunnerAppTokens;
+  /** The runner App's merge token: one repository, `contents: write` (D-365, D-381). */
+  merge: RunnerMergeTokens;
   /** The runner App's repository creation token (D-346). */
   repositoryCreation: RepositoryCreationTokens;
   /** The runner App's tokens for `BOOTSTRAP_TOKEN`'s access (D-358). */
@@ -378,6 +364,10 @@ export function windmillGitHubAppTokens(
     runner: {
       mint: async (request) => createRunnerAppTokens(await runner()).mint(request),
     },
+    merge: {
+      mint: async (repository) =>
+        createRunnerMergeTokens(await runner()).mint(repository),
+    },
     repositoryCreation: {
       mint: async () => createRepositoryCreationTokens(await runner()).mint(),
     },
@@ -404,9 +394,21 @@ export function runnerStagingBuilds(tokens: RunnerAppTokens): StagingBuilds {
   return createGitHubStagingBuilds({ tokens, http: createGitHubHttp() });
 }
 
-/** CI's workflow runs and jobs, for its preview check (D-354, D-267). */
-export function runnerWorkflowReads(tokens: RunnerAppTokens): GitHubWorkflowReader {
-  return createGitHubWorkflowReads({ tokens, http: createGitHubHttp() });
+/**
+ * The runner's own GitHub client (D-381, O-127): pull requests, changed files, check runs, CI's
+ * workflow runs and jobs (D-354), the mergeable state, the squash merge, the compare and a
+ * branch's head, each call with its own token for one repository and one permission.
+ */
+export function runnerGitHub(
+  tokens: RunnerAppTokens,
+  mergeTokens: RunnerMergeTokens,
+): GitHub {
+  return createRunnerGitHub({
+    tokens,
+    mergeTokens,
+    http: createGitHubHttp(),
+    write: createGitHubWriteHttp(),
+  });
 }
 
 /** CI's screenshot bundles as workflow artifacts (D-242, D-267). */
@@ -592,7 +594,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     guards: GUARDS,
     clock,
     ids: { next: () => randomUUID() },
-    github: unregisteredGitHub(apps.runner),
+    github: runnerGitHub(apps.runner, apps.merge),
     appLogins,
     runnerAppSlug,
     limits: runLimits(botFiles),
