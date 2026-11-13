@@ -117,7 +117,7 @@ export async function downloadArtifact(
   const download = await http.get({
     path: `/repos/${request.repo}/actions/artifacts/${request.id}/zip`,
     token: request.token,
-    accept: "raw",
+    accept: "download",
     maxBytes: MAX_ARTIFACT_BYTES,
   });
   if (download.status !== 200) {

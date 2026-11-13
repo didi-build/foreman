@@ -79,7 +79,7 @@ describe("the repo map image (unit with fakes, D-275 (2))", () => {
     expect(code).toBe(0);
     expect(lines).toHaveLength(1);
     expect(github.asked.map((a) => [a.path, a.accept, a.token])).toEqual([
-      [`/repos/${REPO}/tarball/${SHA}`, "raw", TOKEN],
+      [`/repos/${REPO}/tarball/${SHA}`, "download", TOKEN],
     ]);
     expect(result?.status).toBe("success");
     const map = decodeRepoMapResult(result?.structured, SHA);
@@ -178,7 +178,7 @@ describe("the image's scan mode (unit with fakes, D-300, O-92)", () => {
     expect(code).toBe(0);
     expect(lines).toHaveLength(1);
     expect(github.asked.map((a) => [a.path, a.accept, a.token])).toEqual([
-      [`/repos/${REPO}/tarball/${SHA}`, "raw", TOKEN],
+      [`/repos/${REPO}/tarball/${SHA}`, "download", TOKEN],
     ]);
     const scan = checkScanResult(result?.structured, SHA);
     expect(scan.findings.map((f) => f.check)).toEqual([
