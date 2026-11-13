@@ -1,10 +1,10 @@
 {
   "platform": {
     "images": {
-      "stateApi": "ghcr.io/didi-build/foreman-state-api@sha256:79b65616442382902bca4e8c6f306404e6dc3803702f30b650bf744198060c33",
-      "receiver": "ghcr.io/didi-build/foreman-github-receiver@sha256:f3429ddd63079174269851ce8e2ced5fafe45f0fcbb953208e60484cafd39edd",
-      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:edc2eecfffad1e8d30fed67bfefc8b87c46a81675866f80a213934a0dcc83052",
-      "runWatcher": "ghcr.io/didi-build/foreman-run-watcher@sha256:f92bd7a5b8a509511af9b448d500456175729b0bc4953e95305f6728e08f99ea"
+      "stateApi": "ghcr.io/didi-build/foreman-state-api@sha256:d5bbd764a251c2f1122e8452497f7f9f981bdf27afabcfa7b1056689ab0cea69",
+      "receiver": "ghcr.io/didi-build/foreman-github-receiver@sha256:5f8b836031394050d5532c43125dda2052c4a4e0ce1a45bc712b2ef05838dc01",
+      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:2d7a128e19ec6df242bad224d0395567fb4ffd4788c55178f28af2f507d3a5b9",
+      "runWatcher": "ghcr.io/didi-build/foreman-run-watcher@sha256:1259694b702aaab58659cfea9445c50ad157cefb5d893d2a51a78c28c937d8cf"
     },
     "serviceUser": 1000,
     "resources": {
