@@ -87,6 +87,11 @@ export type GitHubChange =
        * with selected repositories only. `call`: GitHub refused or failed the call.
        */
       step: "token" | "not_selected" | "call";
+      /**
+       * GitHub's HTTP status when it answered the call with something else than success, so a
+       * refusal says why (O-114). An answer's status only: never its body, a token or an id.
+       */
+      status?: number;
     };
 
 /**
@@ -150,14 +155,17 @@ export type SetupRefusal =
 
 /**
  * The form's setup step, once the project is recorded: the grant, then the restart. Each mints
- * its own token, once, and a refusal stops it; nothing is tried again, wider or not. A refused
+ * its own token, once, and a refusal stops it; nothing is tried again, wider or not, except the
+ * restart's call while GitHub answers 404 for a repository created moments ago (D-380). A refused
  * restart leaves the access for the restart a later run of the form makes, inside the window, or
  * for the backstop to remove.
  */
 export async function startSetup(
   deps: { bootstrapAccess: BootstrapAccess; bootstrapRuns: BootstrapRuns },
   name: string,
-): Promise<{ started: true } | { started: false; reason: SetupRefusal }> {
+): Promise<
+  { started: true } | { started: false; reason: SetupRefusal; githubStatus?: number }
+> {
   const grant = await deps.bootstrapAccess
     .grant(name)
     .catch((): GitHubChange => ({ kind: "refused", step: "call" }));
@@ -176,6 +184,7 @@ export async function startSetup(
     return {
       started: false,
       reason: restart.step === "token" ? "restart_token_refused" : "restart_refused",
+      ...(restart.status === undefined ? {} : { githubStatus: restart.status }),
     };
   }
   return { started: true };

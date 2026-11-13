@@ -10,6 +10,7 @@ import {
   createGitHubBootstrapAccess,
   createGitHubBootstrapRuns,
   newestRunOf,
+  RESTART_RETRY_DELAYS_MS,
 } from "./bootstrap-access.ts";
 import type { BootstrapTokens } from "./bootstrap-tokens.ts";
 import type { GitHubPostHttp, GitHubPostRequest } from "./post-http.ts";
@@ -39,6 +40,9 @@ function fakes(
     writeStatus?: number;
     writeThrows?: boolean;
     postStatus?: number;
+    /** GitHub's answers to the restart, one per try; then `postStatus`. */
+    postStatuses?: number[];
+    postThrows?: boolean;
   } = {},
 ) {
   const mints: string[] = [];
@@ -46,7 +50,9 @@ function fakes(
   const gets: GitHubGetRequest[] = [];
   const writes: GitHubWriteRequest[] = [];
   const posts: GitHubPostRequest[] = [];
+  const waits: number[] = [];
   const answers = [...(options.gets ?? [])];
+  const postStatuses = [...(options.postStatuses ?? [])];
   const mint = (kind: string, token: string) => async (name?: string) => {
     mints.push(name === undefined ? kind : `${kind} ${name}`);
     if (options.refuseMint) throw new Error("GitHub refused the token");
@@ -79,13 +85,26 @@ function fakes(
   const post: GitHubPostHttp = {
     async post(request) {
       posts.push(structuredClone(request));
-      return { status: options.postStatus ?? 204, body: encode("") };
+      if (options.postThrows) throw new Error("the connection dropped");
+      return {
+        status: postStatuses.shift() ?? options.postStatus ?? 204,
+        body: encode(""),
+      };
     },
   };
   return {
     access: createGitHubBootstrapAccess({ tokens, http, write }),
-    runs: createGitHubBootstrapRuns({ tokens, readTokens, http, post }),
+    runs: createGitHubBootstrapRuns({
+      tokens,
+      readTokens,
+      http,
+      post,
+      wait: async (ms) => {
+        waits.push(ms);
+      },
+    }),
     mints,
+    waits,
     readMints,
     gets,
     writes,
@@ -262,19 +281,62 @@ describe("Bootstrap's restart and its newest restarted run (unit with fakes, O-1
     expect(JSON.stringify(f.posts[0]?.body)).toBe('{"ref":"main"}');
   });
 
-  it("refuses a restart GitHub did not answer with 204, or whose token was refused", async () => {
-    for (const status of [200, 404, 422, 500]) {
-      expect(await fakes({ postStatus: status }).runs.restart("garden-notes")).toEqual({
+  it("refuses at once, naming GitHub's status, a restart answered with anything but 204 or 404, and whose token was refused", async () => {
+    for (const status of [200, 401, 403, 422, 500]) {
+      const f = fakes({ postStatus: status });
+      expect(await f.runs.restart("garden-notes")).toEqual({
         kind: "refused",
         step: "call",
+        status,
       });
+      expect([f.posts.length, f.waits]).toEqual([1, []]);
     }
+    const dropped = fakes({ postThrows: true });
+    expect(await dropped.runs.restart("garden-notes")).toEqual({
+      kind: "refused",
+      step: "call",
+    });
+    expect([dropped.posts.length, dropped.waits]).toEqual([1, []]);
     const f = fakes({ refuseMint: true });
     expect(await f.runs.restart("garden-notes")).toEqual({
       kind: "refused",
       step: "token",
     });
     expect(f.posts).toEqual([]);
+  });
+
+  it("tries a restart answered 404 again, with the same token, until GitHub has the new repository's workflow (O-114)", async () => {
+    const f = fakes({ postStatuses: [404, 404, 204] });
+    expect(await f.runs.restart("garden-notes")).toEqual({ kind: "done" });
+    expect(f.waits).toEqual([5_000, 10_000]);
+    expect(f.mints).toEqual(["restart garden-notes"]);
+    expect(f.posts.map((p) => [p.path, p.token, JSON.stringify(p.body)])).toEqual(
+      Array.from({ length: 3 }, () => [
+        "/repos/didi-build/garden-notes/actions/workflows/bootstrap.yml/dispatches",
+        RESTART_TOKEN,
+        '{"ref":"main"}',
+      ]),
+    );
+  });
+
+  it("stops after about a minute of 404s and names the status, and stops at any other answer in between", async () => {
+    const f = fakes({ postStatus: 404 });
+    expect(await f.runs.restart("garden-notes")).toEqual({
+      kind: "refused",
+      step: "call",
+      status: 404,
+    });
+    expect(f.waits).toEqual([...RESTART_RETRY_DELAYS_MS]);
+    expect(f.waits.reduce((a, b) => a + b, 0)).toBe(60_000);
+    expect(f.posts).toHaveLength(RESTART_RETRY_DELAYS_MS.length + 1);
+    expect(f.mints).toEqual(["restart garden-notes"]);
+    const other = fakes({ postStatuses: [404, 422] });
+    expect(await other.runs.restart("garden-notes")).toEqual({
+      kind: "refused",
+      step: "call",
+      status: 422,
+    });
+    expect([other.posts.length, other.waits]).toEqual([2, [5_000]]);
   });
 
   it("reads the newest restarted run with the runner App's actions read token for the one repository", async () => {
