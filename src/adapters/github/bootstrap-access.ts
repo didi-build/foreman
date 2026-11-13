@@ -12,13 +12,17 @@
 //   token.
 // - `restart`: "Create a workflow dispatch event",
 //   `POST /repos/didi-build/<name>/actions/workflows/bootstrap.yml/dispatches` with exactly
-//   `{"ref":"main"}`, which answers 204, with the restart token.
+//   `{"ref":"main"}`, which answers 204, with the restart token. A repository the form created
+//   seconds earlier may not have its workflows yet, and GitHub then answers 404 (2026-11-13,
+//   O-114): that one answer is tried again with the same token after `RESTART_RETRY_DELAYS_MS`,
+//   about a minute in all. A 404 starts no run, so a later 204 is the only start. Any other answer
+//   stops at once.
 // - `latestRestart`: "List workflow runs for a workflow",
 //   `GET /repos/didi-build/<name>/actions/workflows/bootstrap.yml/runs?event=workflow_dispatch&per_page=1`,
 //   newest first, with the runner App's read-only `actions` token for that one repository (D-267).
 //
-// A refused mint, a failed call or any other answer is refused, naming the step, and nothing is
-// tried again. The runner mints each token with its App's key (flows/lib/compose.ts, O-125).
+// A refused mint, a failed call or any other answer is refused, naming the step and, when GitHub
+// answered, its status, and nothing else is tried again. The runner mints each token with its App's key (flows/lib/compose.ts, O-125).
 // Tests pass fakes. Nothing here logs, and no token or id is kept.
 import {
   BOOTSTRAP_REF,
@@ -62,10 +66,24 @@ function json(body: Uint8Array): unknown {
   }
 }
 
-const refused = (step: "token" | "not_selected" | "call"): GitHubChange => ({
+const refused = (
+  step: "token" | "not_selected" | "call",
+  status?: number,
+): GitHubChange => ({
   kind: "refused",
   step,
+  ...(status === undefined ? {} : { status }),
 });
+
+/**
+ * The waits before each further try of Bootstrap's restart while GitHub answers 404 because a
+ * repository created moments ago has no workflows yet (O-114): about a minute in all.
+ */
+export const RESTART_RETRY_DELAYS_MS: readonly number[] = [
+  5_000, 10_000, 15_000, 30_000,
+];
+
+const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 export interface GitHubBootstrapAccessOptions {
   tokens: Pick<BootstrapTokens, "secretsChange" | "secretsList">;
@@ -176,6 +194,9 @@ export interface GitHubBootstrapRunsOptions {
   readTokens: RunnerAppTokens;
   http: GitHubHttp;
   post: GitHubPostHttp;
+  /** The waits between the restart's tries on a 404. Tests pass short ones. */
+  retryDelaysMs?: readonly number[];
+  wait?: (ms: number) => Promise<void>;
 }
 
 /** The run GitHub's answer names first, or null when it names none. Throws on any other shape. */
@@ -201,6 +222,8 @@ export function createGitHubBootstrapRuns({
   readTokens,
   http,
   post,
+  retryDelaysMs = RESTART_RETRY_DELAYS_MS,
+  wait = sleep,
 }: GitHubBootstrapRunsOptions): BootstrapRuns {
   const workflowPath = (name: string) =>
     `/repos/${GITHUB_ORGANIZATION}/${name}/actions/workflows/${BOOTSTRAP_WORKFLOW_FILE}`;
@@ -214,16 +237,23 @@ export function createGitHubBootstrapRuns({
       } catch {
         return refused("token");
       }
-      try {
-        const answer = await post.post({
-          path: `${workflowPath(name)}/dispatches`,
-          token,
-          body: { ref: BOOTSTRAP_REF },
-          maxBytes: MAX_ANSWER_BYTES,
-        });
-        return answer.status === 204 ? { kind: "done" } : refused("call");
-      } catch {
-        return refused("call");
+      for (let attempt = 0; ; attempt += 1) {
+        let status: number;
+        try {
+          const answer = await post.post({
+            path: `${workflowPath(name)}/dispatches`,
+            token,
+            body: { ref: BOOTSTRAP_REF },
+            maxBytes: MAX_ANSWER_BYTES,
+          });
+          status = answer.status;
+        } catch {
+          return refused("call");
+        }
+        if (status === 204) return { kind: "done" };
+        const delay = retryDelaysMs[attempt];
+        if (status !== 404 || delay === undefined) return refused("call", status);
+        await wait(delay);
       }
     },
 

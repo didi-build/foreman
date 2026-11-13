@@ -20,6 +20,8 @@ export interface FakeBootstrap extends BootstrapAccess, BootstrapRuns {
   runs: Map<string, BootstrapRun[]>;
   /** A step each call of that method refuses at, until cleared. */
   refuse: { grant?: Step; remove?: Step; restart?: Step };
+  /** GitHub's status a refused restart call names, when set. */
+  restartStatus?: number;
   /** Makes `list` throw. */
   failList: boolean;
   /** Makes `latestRestart` throw. */
@@ -63,7 +65,10 @@ export function createFakeBootstrap(): FakeBootstrap {
     async restart(name) {
       fake.calls.push(`restart ${name}`);
       const step = fake.refuse.restart;
-      if (step) return { kind: "refused", step };
+      if (step) {
+        const status = fake.restartStatus;
+        return { kind: "refused", step, ...(status === undefined ? {} : { status }) };
+      }
       fake.runs.set(name, [
         ...(fake.runs.get(name) ?? []),
         { event: RESTART_EVENT, status: "queued", conclusion: null },

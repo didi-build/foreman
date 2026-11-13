@@ -516,6 +516,18 @@ describe("the register form's setup step (unit, D-358 lock (2), O-114)", () => {
     }
   });
 
+  it("names GitHub's status beside a refused restart, so the form says why (O-114)", async () => {
+    const f = await setup();
+    f.bootstrap.refuse.restart = "call";
+    f.bootstrap.restartStatus = 404;
+    expect(await f.register()).toEqual({
+      outcome: "refused",
+      reason: "restart_refused",
+      message: REGISTER_REFUSALS.restart_refused,
+      githubStatus: 404,
+    });
+  });
+
   it("treats a port that throws as a refused call, and tries nothing again", async () => {
     const f = await setup();
     const throwing = {

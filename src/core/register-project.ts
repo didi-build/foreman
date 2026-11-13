@@ -181,7 +181,7 @@ export const REGISTER_REFUSALS = {
   restart_token_refused:
     "The project is recorded and its repository has access to BOOTSTRAP_TOKEN, but the token to start Bootstrap was not minted (GitHub refused it, or the runner App is not registered yet): Bootstrap was not started. Run the form again: it picks up where it stopped. The reconcile pass removes the access once the project is an hour old.",
   restart_refused:
-    "The project is recorded and its repository has access to BOOTSTRAP_TOKEN, but GitHub refused or failed starting Bootstrap on main. Run the form again: it picks up where it stopped. The reconcile pass removes the access once the project is an hour old.",
+    "The project is recorded and its repository has access to BOOTSTRAP_TOKEN, but GitHub refused or failed starting Bootstrap on main, after waiting up to a minute for a new repository's workflow to appear (githubStatus, when present, is GitHub's answer). Run the form again: it picks up where it stopped. The reconcile pass removes the access once the project is an hour old.",
   setup_unreadable:
     "The project is already recorded, but Bootstrap's runs on its repository could not be read (the runner App's read token was refused or is not available yet): nothing was granted or started. Run the form again: it picks up where it stopped.",
   bootstrap_running:
@@ -223,12 +223,22 @@ export type RegisterProjectResult =
       wouldGrant: { secret: string; repository: string };
       wouldRestart: { repository: string; workflow: string; ref: string };
     }
-  | { outcome: "refused"; reason: RegisterRefusal; message: string };
+  | {
+      outcome: "refused";
+      reason: RegisterRefusal;
+      message: string;
+      /** GitHub's HTTP status, when a refused call was answered (O-114). Never its body. */
+      githubStatus?: number;
+    };
 
-const refused = (reason: RegisterRefusal): RegisterProjectResult => ({
+const refused = (
+  reason: RegisterRefusal,
+  githubStatus?: number,
+): RegisterProjectResult => ({
   outcome: "refused",
   reason,
   message: REGISTER_REFUSALS[reason],
+  ...(githubStatus === undefined ? {} : { githubStatus }),
 });
 
 /** A line or paragraph break anywhere in the text (after trimming, so inside it). */
@@ -299,7 +309,7 @@ export function createProjectRegistration(deps: RegisterProjectDeps) {
   /** Step 7: the grant, then the restart. Null once both are done. */
   async function setUp(slug: string): Promise<RegisterProjectResult | null> {
     const setup = await startSetup(deps, slug);
-    return setup.started ? null : refused(setup.reason);
+    return setup.started ? null : refused(setup.reason, setup.githubStatus);
   }
 
   /** The form run again on a project already recorded: setup again unless it finished well. */
