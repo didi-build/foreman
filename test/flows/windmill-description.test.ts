@@ -330,7 +330,23 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
   // Windmill reads a script's arguments only from a `main` function declaration (its source,
   // version 1.865.0, windmill-parser-ts): `export const main = (input) => ...` gets none, so
   // `input` would be undefined. A service starts an entry with `{"input": {...}}` (`entryArgs` in
-  // src/adapters/windmill/client.ts), so the one parameter must be called `input`.
+  // src/adapters/windmill/client.ts), so the one parameter must be called `input`. Didi's own
+  // forms, started from their page, take one plain field per value instead (D-376): Windmill
+  // reads a type imported from another file as a resource picker, one box for the whole input
+  // (O-121), but shows a `string` or `boolean` parameter as its own box.
+  const DIDI_FORMS: Record<string, [name: string, type: string, optional: boolean][]> =
+    {
+      "f/foreman/register_project": [
+        ["slug", "string", false],
+        ["description", "string", false],
+      ],
+      "f/foreman/cancel_item": [
+        ["nodeId", "string", false],
+        ["reason", "string", false],
+        ["askCouncil", "boolean", true],
+      ],
+      [HOLD_RELEASE_REQUEST_FLOW_PATH]: [["nodeId", "string", false]],
+    };
   const mainOf = (file: string) => {
     const source = ts.createSourceFile(
       file,
@@ -360,12 +376,17 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
       params: (main?.parameters ?? []).map((p) =>
         ts.isIdentifier(p.name) ? p.name.text : "<pattern>",
       ),
+      fields: (main?.parameters ?? []).map((p): [string, string, boolean] => [
+        ts.isIdentifier(p.name) ? p.name.text : "<pattern>",
+        p.type?.getText(source) ?? "<none>",
+        p.initializer !== undefined || p.questionToken !== undefined,
+      ]),
     };
   };
 
-  it.each(description.flows.map((flow) => [flow.name, flow.entry] as const))(
-    "%s declares `export async function main`, with `input` as its one parameter or none",
-    (_name, entry) => {
+  it.each(description.flows.map((flow) => [flow.name, flow.entry, flow.path] as const))(
+    "%s declares `export async function main`, with `input` as its one parameter or none, or Didi's form's fields",
+    (_name, entry, path) => {
       const main = mainOf(entry);
       expect(main).toMatchObject({
         declarations: 1,
@@ -374,9 +395,24 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
         async: true,
         body: true,
       });
-      expect([[], ["input"]]).toContainEqual(main.params);
+      const form = DIDI_FORMS[path];
+      if (form) expect(main.fields).toEqual(form);
+      else expect([[], ["input"]]).toContainEqual(main.params);
     },
   );
+
+  it("names Didi's three forms, each a called entry no service or schedule starts (D-376)", () => {
+    const started: string[] = [
+      PLAN_APPROVAL_FLOW_PATH,
+      ...RECEIVER_FLOW_PATHS,
+      ...RUN_WATCHER_FLOW_PATHS,
+    ];
+    for (const path of Object.keys(DIDI_FORMS)) {
+      const flow = description.flows.find((f) => f.path === path);
+      expect(flow?.trigger, path).toBe("called");
+      expect(started, path).not.toContain(path);
+    }
+  });
 
   it("takes `input` on every entry a service starts and none on a schedule", () => {
     const started = [
