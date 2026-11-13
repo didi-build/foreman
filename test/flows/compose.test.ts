@@ -1,7 +1,7 @@
 // Seam: the flow layer's composition module and its Windmill binding (unit, build plan M3.1,
 // ADR 0111 section 4). With a fake environment: which secrets and values are read and when, that
 // every part not built yet refuses with a reason, and that each GitHub App's id and key are read
-// only on that App's first token (O-125). No database is reached: the pool connects on first use
+// only on that App's first token (O-125), the runner's GitHub client's included (D-381, O-127). No database is reached: the pool connects on first use
 // and the test never uses it. No network either: `fetch` is replaced by one that records and
 // refuses, and each test checks it was never called; the Apps' tokens are minted against fake
 // HTTP ports with keys generated when the test runs.
@@ -11,7 +11,6 @@ import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GitHubAppJwtError } from "../../src/adapters/github/app-jwt.ts";
-import { GitHubNotConfiguredError } from "../../src/adapters/github/client.ts";
 import { InstallationTokenError } from "../../src/adapters/github/installation-tokens.ts";
 import type { GitHubPostRequest } from "../../src/adapters/github/post-http.ts";
 import type { GitHubGetRequest } from "../../src/adapters/github/runner-app-tokens.ts";
@@ -219,18 +218,19 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     }
   });
 
-  it("refuses the runner's GitHub reads and merge calls, whose client is not built yet", async () => {
+  it("composes the runner's GitHub client without reading an App's key (D-381)", async () => {
     const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
     try {
-      await expect(deps.github.listOpenPullRequests("didi-build/x")).rejects.toThrow(
-        GitHubNotConfiguredError,
-      );
       // GitHub's deployments are not read at all (D-356, O-116).
       expect("listDeployments" in deps.github).toBe(false);
+      // A repository outside didi-build is refused before any token is minted, so no key is read.
+      await expect(deps.github.listOpenPullRequests("octo-org/x")).rejects.toThrow(
+        "not a repository of didi-build",
+      );
       await expect(
-        deps.github.compareCommits("didi-build/x", "b".repeat(40), "c".repeat(40)),
-      ).rejects.toThrow(GitHubNotConfiguredError);
+        deps.github.squashMerge("octo-org/x", 7, "b".repeat(40)),
+      ).rejects.toThrow("not a repository of didi-build");
       // The staging check reads the public marker and needs no credential (O-116); a slug that
       // makes no staging address is no result, with nothing reached.
       expect(
@@ -264,6 +264,19 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
           () => deps.github.listWorkflowRuns("didi-build/x", "ci.yml", "b".repeat(40)),
         ],
         ["workflow jobs", () => deps.github.listWorkflowJobs("didi-build/x", 1)],
+        // The runner's own GitHub client (D-381): each call mints its own token first.
+        ["pull request", () => deps.github.getPullRequest("didi-build/x", 7)],
+        ["changed files", () => deps.github.listChangedPaths("didi-build/x", 7)],
+        ["check runs", () => deps.github.listCheckRuns("didi-build/x", "b".repeat(40))],
+        ["open pull requests", () => deps.github.listOpenPullRequests("didi-build/x")],
+        ["mergeable state", () => deps.github.getMergeability("didi-build/x", 7)],
+        ["merge", () => deps.github.squashMerge("didi-build/x", 7, "b".repeat(40))],
+        [
+          "compare",
+          () =>
+            deps.github.compareCommits("didi-build/x", "b".repeat(40), "c".repeat(40)),
+        ],
+        ["branch head", () => deps.github.getBranchHead("didi-build/x", "main")],
         // The repo map's Job and the scan mint the token before the cluster is read (D-275 (2)).
         ["repo map at a commit", () => deps.repoMaps.read(project, "b".repeat(40))],
         ["repo map at the head", () => deps.repoMaps.read(project)],
@@ -562,6 +575,7 @@ describe("the GitHub Apps' tokens from the flow environment (unit: flow layer, D
     expect(Object.keys(f.tokens).sort()).toEqual([
       "bootstrap",
       "installation",
+      "merge",
       "repositoryCreation",
       "runner",
     ]);
@@ -602,6 +616,45 @@ describe("the GitHub Apps' tokens from the flow environment (unit: flow layer, D
       VALUE_NAMES.runnerAppId,
     ]);
     expect(f.gets).toEqual([]);
+  });
+
+  it("the runner's client reads with pull_requests or checks at read, and merges with contents write alone (D-381)", async () => {
+    const f = appTokens();
+    await f.tokens.runner.mint({
+      repository: "didi-build/garden-notes",
+      permission: "pull_requests",
+    });
+    await f.tokens.runner.mint({
+      repository: "didi-build/garden-notes",
+      permission: "checks",
+    });
+    expect(await f.tokens.merge.mint("didi-build/garden-notes")).toBe(
+      "fake-token-3-not-real",
+    );
+    expect(f.posts.map((p) => [p.path, JSON.stringify(p.body)])).toEqual([
+      [
+        "/app/installations/4242/access_tokens",
+        '{"repositories":["garden-notes"],"permissions":{"pull_requests":"read"}}',
+      ],
+      [
+        "/app/installations/4242/access_tokens",
+        '{"repositories":["garden-notes"],"permissions":{"checks":"read"}}',
+      ],
+      [
+        "/app/installations/4242/access_tokens",
+        '{"repositories":["garden-notes"],"permissions":{"contents":"write"}}',
+      ],
+    ]);
+    for (const post of f.posts) {
+      expect(readJwt(post.token).verifiedBy(KEYS.runner.publicKey)).toBe(true);
+    }
+    expect(f.secretsRead).toEqual([SECRET_PATHS.runnerAppPrivateKey]);
+    // A merge token for a repository outside didi-build reads no key and sends nothing.
+    const refused = appTokens();
+    await expect(refused.tokens.merge.mint("octo-org/x")).rejects.toThrow(
+      "The runner App's merge token is only for a repository of didi-build",
+    );
+    expect([refused.secretsRead, refused.posts]).toEqual([[], []]);
   });
 
   it("the creation and BOOTSTRAP_TOKEN access tokens use the same runner App, read once", async () => {

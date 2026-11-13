@@ -180,6 +180,40 @@ describe("the merge on a QA pass (unit: src/core/merge.ts, M3.3)", () => {
     expect(await t.transitions(t.node.id)).toHaveLength(1);
   });
 
+  it("reports a node whose merge throws and goes on with the pass, so one unreachable PR stops nothing else", async () => {
+    const t = await setup();
+    await t.passedOn(HEAD);
+    // A second item in QA review, with nothing recorded on it yet.
+    const other = await t.addNode("in_qa_review", { ownerRole: "qa", track: "code" });
+    // GitHub cannot be reached for the first item's PR: the real client's fetch throws.
+    const unreachable: GitHub = {
+      ...t.github,
+      getPullRequest: async () => {
+        throw new Error("fetch failed");
+      },
+    };
+    const results = await t.merges(t.store, unreachable).mergeReady();
+    expect(results).toHaveLength(2);
+    expect(results).toContainEqual({
+      nodeId: t.node.id,
+      result: { outcome: "refused", reason: "merge_failed", failedGuards: [] },
+    });
+    expect(results.find((r) => r.nodeId === other.id)?.result).toMatchObject({
+      outcome: "rejected",
+      reason: "no_head",
+    });
+    expect(t.github.merges).toEqual([]);
+    expect(await t.kinds("merge_commit")).toEqual([]);
+    expect(await t.state()).toBe("in_qa_review");
+
+    // The next pass, with GitHub answering again, merges it once.
+    const next = await t.merges().mergeReady();
+    expect(next.find((r) => r.nodeId === t.node.id)?.result).toMatchObject({
+      outcome: "applied",
+    });
+    expect(t.github.merges).toHaveLength(1);
+  });
+
   it("uses the merge commit GitHub ingestion already recorded, under the same key", async () => {
     const t = await setup();
     await t.passedOn(HEAD);

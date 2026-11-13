@@ -4,11 +4,14 @@
 // permission, check a folder's tree id (D-281) and, for Didi's register-project form, read the
 // platform settings file on `didi-build/foreman`'s main and an existing project repository (D-345,
 // O-109), and `actions: read`, so it can download CI's screenshot bundles as workflow artifacts
-// (D-242). Each token the runner mints for these reads names one repository and exactly one of the
-// two permissions, read only (GitHub lets an installation token ask for fewer permissions than the
-// App has), so a token minted for the repo map cannot read artifacts, and neither can write, merge
-// or deploy. GitHub caps a token at one hour; the runner uses it for one read and never keeps or
-// logs it. The repo map's token is the one token that leaves the runner: it goes into the repo map
+// (D-242). The runner's own GitHub client (./runner-github.ts, D-381) reads pull requests with
+// `pull_requests: read` and check runs with `checks: read`, both in D-365's runner App permissions.
+// Each token the runner mints for these reads names one repository and exactly one of the four
+// permissions, read only (GitHub lets an installation token ask for fewer permissions than the App
+// has), so a token minted for the repo map cannot read artifacts or pull requests, and none of them
+// can write, merge or deploy. The merge's `contents: write` has its own port (./merge-tokens.ts).
+// GitHub caps a token at one hour; the runner uses it for one read and never keeps or logs it.
+// The repo map's token is the one token that leaves the runner: it goes into the repo map
 // Job's own Secret, deleted when the Job ends (D-275 (2), O-87).
 //
 // The real implementation signs with the runner App's private key, which only the runner holds
@@ -16,8 +19,11 @@
 // It is kept out of this file, which the repo map and QA fetch images copy.
 import { REPOSITORY } from "../../core/github.ts";
 
-/** The two read permissions D-267 adds to the runner App, each minted on its own. */
-export type RunnerReadPermission = "contents" | "actions";
+/**
+ * The runner App's read permissions, each minted on its own: `contents` and `actions` from D-267,
+ * `pull_requests` and `checks` from D-365 for the runner's own GitHub client (D-381).
+ */
+export type RunnerReadPermission = "contents" | "actions" | "pull_requests" | "checks";
 
 export interface RunnerAppTokenRequest {
   /** `owner/name`: the token works for this repository only. */
