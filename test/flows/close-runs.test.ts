@@ -241,6 +241,17 @@ describe("a cancelled item's pull request closed by its own bot (flow: fake adap
     expect(await closeRunsOf(f, item.id)).toHaveLength(1);
   });
 
+  it("a start that throws is start_failed with its error's kind (D-384)", async () => {
+    const { f, item } = await withPullRequest();
+    f.runtime.failNext.add("start");
+    expect(await cancelItem(f.deps, { nodeId: item.id, reason: "x" })).toMatchObject({
+      closeRuns: [
+        // The fake's plain Error: only its kind is kept, never its message.
+        { nodeId: item.id, outcome: "start_failed", error: { type: "Error" } },
+      ],
+    });
+  });
+
   it("in dry run plans the close run and writes nothing", async () => {
     const { f, item } = await withPullRequest();
     await cancelItem(f.deps, { nodeId: item.id, reason: "x" });
