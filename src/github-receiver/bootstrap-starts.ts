@@ -1,7 +1,9 @@
 // The receiver's one start outside CI's path (D-358 lock (2), O-114): once Bootstrap's restarted
 // run ends, the repository loses access to `BOOTSTRAP_TOKEN`. It runs after the delivery is
-// recorded and after ./flow-starts.ts, and changes neither: ingestion records a `workflow_run`
-// for a commit with no pull request as a delivery only, as before.
+// recorded and after ./ingest-starts.ts, and changes neither: the receiver records a
+// `workflow_run` for a commit with no pull request as a delivery only, as before, and hands it to
+// no flow, since it needs no GitHub read (D-381, O-128). Neither does this start: it reads only
+// the signed payload and the two switches.
 //
 // It starts `f/foreman/remove_bootstrap_access` with the repository when the signed payload is a
 // `workflow_run` `completed` for `.github/workflows/bootstrap.yml` (or that path with `@<ref>`),
@@ -27,7 +29,7 @@ import {
   organizationRepositoryName,
   RESTART_EVENT,
 } from "../core/bootstrap-access.ts";
-import type { IngestResult } from "../core/github-ingest.ts";
+import type { ReceiveResult } from "../core/github-ingest.ts";
 import type { Store } from "../core/store.ts";
 import type { Logger } from "../service-kit/logger.ts";
 
@@ -38,7 +40,7 @@ export interface BootstrapStartOptions {
   logger: Logger;
 }
 
-/** One recorded delivery, as the handler read it, with what ingestion made of it. */
+/** One recorded delivery, as the handler read it. */
 export interface BootstrapDelivery {
   event: string;
   payload: unknown;
@@ -48,7 +50,7 @@ export interface BootstrapDelivery {
 export type BootstrapStarts = (
   deliveryId: string,
   delivery: BootstrapDelivery,
-  result: IngestResult,
+  result: ReceiveResult,
 ) => Promise<void>;
 
 export const BOOTSTRAP_REMOVAL_STARTED = "bootstrap access removal flow started";

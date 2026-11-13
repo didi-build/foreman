@@ -38,9 +38,10 @@
 // `ci_green_on_head`, the evidence section 2.5 step 4 names, except the moves on which the runner
 // merges (guard `qa_verdict_independent_on_head`): those need the merge, so the merge step plans
 // them through src/core/merge.ts, which also records GitHub's mergeable state as a fact. Which
-// moves advance is ./advances.ts, which the GitHub receiver's check and the called flow
-// `f/foreman/advance_item` share, and that flow plans one item with this pass's own step 4
-// (`planAdvance`, D-329 slice 4, O-104). The
+// moves advance is ./advances.ts, which the ingest flow's check after CI's end and one item's
+// advance share (flows/lib/ingest-delivery.ts, `advanceItem` in flows/lib/reconcile-steps.ts),
+// and that advance plans one item with this pass's own step 4 (`planAdvance`, D-329 slice 4,
+// O-104, O-128). The
 // moves a staging check takes (guards `staging_check_on_merge_commit` and `staging_check_failed`)
 // go through src/core/staging.ts, which reads the staging deploy the runner recorded when it made
 // it (./staging-deploy.ts).
@@ -49,8 +50,8 @@
 // and the builder runs pass (flows/reconcile.ts, O-31, O-37, O-41).
 // The pass is the safety net (D-274): a flow whose move makes an item ready starts its first run
 // at once (flows/lib/ready-runs.ts), the run-end flow starts QA's run once a builder's report
-// moves an item into review, and the receiver starts the advance on CI's end, so live mode's
-// dispatch and advance steps find only what an event missed.
+// moves an item into review, and the ingest flow takes the advance once it records CI's end
+// (O-128), so live mode's dispatch and advance steps find only what an event missed.
 import {
   isTerminalState,
   type Contracts,
@@ -485,9 +486,10 @@ function createPlanner(deps: ReconcileDeps, live: boolean) {
 
 /**
  * One item's advance from evidence in live mode, with the pass's own step 4 (`planAdvances`):
- * each advance move due, and QA's dispatch admission would allow. Writes nothing. The called flow
- * `f/foreman/advance_item` acts on it as the reconcile flow acts on the pass's plan
- * (flows/lib/reconcile-steps.ts). Empty for a node with no advance move, or none.
+ * each advance move due, and QA's dispatch admission would allow. Writes nothing. `advanceItem`
+ * (flows/lib/reconcile-steps.ts) acts on it as the reconcile flow acts on the pass's plan, in the
+ * ingest flow and the called flow `f/foreman/advance_item`. Empty for a node with no advance
+ * move, or none.
  */
 export async function planAdvance(
   deps: ReconcileDeps,

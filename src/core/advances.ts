@@ -8,19 +8,18 @@
 // One list of moves and one request, so the event and the pass cannot drift: the reconcile pass
 // plans each such move in its step 4 (./reconcile.ts), the called flow `f/foreman/advance_item`
 // plans one item's advance with the pass's own code and acts on it as the pass does
-// (flows/advance-item.ts), and the GitHub receiver asks `due` after it records CI's end on a PR
-// head, before it starts that flow (src/github-receiver/flow-starts.ts). Every one asks the
-// library with the pass's own trigger and actor, so the guards decide the same way on every path.
+// (`advanceItem` in flows/lib/reconcile-steps.ts), and the ingest flow asks `due` after it
+// records CI's end on a PR head, before it takes that step in its own run
+// (flows/lib/ingest-delivery.ts, O-128). Every one asks the library with the pass's own trigger
+// and actor, so the guards decide the same way on every path.
 //
 // `due` reads the kill switch and dry run first, as every flow reads them, then the node and the
-// move's guards through the library, and writes nothing. The guards of these moves read nodes,
-// runs and evidence, which the receiver's role `factory_ingest` reads (migrations 0002 and 0020),
-// with one exception: on a design item whose head QA already reported on, the guard
-// `no_failed_qa_verdict_on_head` reads Didi's approved option, a decision that role cannot read.
-// The database then refuses the read, the check throws, the receiver starts nothing and the
-// reconcile pass decides (O-104). Such a head is one QA sent back, so its advance is refused in
-// all but the rarest case anyway. No grant is added. Plain logic over an injected store,
-// contracts, guards, clock and id source (D-162).
+// move's guards through the library, and writes nothing. The ingest flow runs it as the runner's
+// role. Until O-128 the receiver ran it as its own role `factory_ingest` (migrations 0002 and
+// 0020), which cannot read decisions: on a design item whose head QA already reported on, the
+// guard `no_failed_qa_verdict_on_head` reads Didi's approved option, so the check threw there and
+// the reconcile pass decided (O-104). The runner reads it, so the same check now decides that case
+// at once. Plain logic over an injected store, contracts, guards, clock and id source (D-162).
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { createLibrary, type Clock, type IdSource, type Trigger } from "./library.ts";
 import { MERGE_MOVE_GUARD } from "./merge.ts";

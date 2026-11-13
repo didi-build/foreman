@@ -141,6 +141,37 @@ flows:
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
 
+  - name: ingest_delivery
+    path: f/foreman/ingest_delivery
+    entry: flows/ingest-delivery.ts
+    # Called by the GitHub receiver (D-381, O-128) for each delivery it has just recorded whose
+    # evidence needs a GitHub read: a pull_request opened, reopened, synchronize or closed with a
+    # merge, and a check_suite or workflow_run completed that names pull requests. The receiver
+    # holds no GitHub token, so it sends only the identifiers ingestion reads GitHub with:
+    # `{"input": {"deliveryId": ..., "event": ..., "action": ..., "repo": ..., "pullRequests":
+    # [...], "headSha": ...}}`, never a title, a body, a branch name, a login or the payload, and
+    # the flow refuses any other input. It reads each pull request, its files, the check runs on
+    # the head and CI's preview check job with the runner App's tokens, each for one repository
+    # and one permission (pull_requests, checks or actions at read, O-127), records the evidence
+    # under the same keys as the reconcile flow's polling backstop (ADR 0113 section 6), so a
+    # delivery and a poll record each fact once, and then, in the same run, takes the steps CI's
+    # end made due: option capture (O-101) and the advance into In QA review with QA's run on the
+    # head (O-104), each when its own due check says so, which the receiver used to start as
+    # option_capture and advance_item. It reads what any flow reads (the runner's database login,
+    # the spec version, the Apps' names, and the runner App's key, id and installation id on its
+    # first token), and for those steps what they read (CI's options bundle; the cluster token,
+    # agent images and run settings, the QA App's key and id and the model key when QA's run
+    # starts). It uses the receiver's Windmill token (the `platform` environment secret
+    # `RECEIVER_WINDMILL_TOKEN`, in the cluster Secret `github-receiver-windmill-token`, runbook
+    # step 15) through the shared Windmill egress proxy (D-328). One run per handed-on delivery
+    # (D-164): the pull request event and each workflow run and check suite that ends on the head,
+    # about 3 to 7 per head of a work item's pull request, and as many for any other pull request
+    # in a repository the runner App is installed on (O-128). A replay and a delivery decided from
+    # its payload alone start nothing. A failed start is caught by the polling backstop within one
+    # reconcile interval.
+    trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
+
   - name: deploy_staging
     path: f/foreman/deploy_staging
     entry: flows/deploy-staging.ts
@@ -171,15 +202,12 @@ flows:
     # is due (architecture section 2.5 step 4, D-329 slice 4, O-104). It takes the reconcile
     # pass's own step 4 for that one item: the move into In QA review through the library with the
     # pass's trigger and guards, then QA's run on the head through the dispatch's start path. It
-    # reads everything again and never trusts the event; under either switch it does nothing. The
-    # GitHub receiver calls it: after it records CI's end on a PR head (a new final `ci_run`), and
-    # only when the shared advance check (src/core/advances.ts) says the move's guards pass now, so
-    # a replay, a pending result, an item not due and the switches start nothing. It uses the
-    # receiver's Windmill token (the `platform` environment secret `RECEIVER_WINDMILL_TOKEN`, in
-    # the cluster Secret `github-receiver-windmill-token`, runbook step 15) through the shared
-    # Windmill egress proxy (D-328), with `{"input": {"nodeId": ...}}`. About one run per
-    # head whose CI ends green with the item's move due (D-164). The reconcile flow's advance step
-    # is the backstop.
+    # reads everything again and never trusts the event; under either switch it does nothing. No
+    # service starts it any more (D-381, O-128): the ingest flow takes the same step in its own
+    # run after it records CI's end on a PR head, when the shared advance check
+    # (src/core/advances.ts) says the move's guards pass now, so the receiver's token no longer
+    # runs this flow. It stays for a start by hand from its page, with `{"nodeId": ...}`, as
+    # dispatch does. The reconcile flow's advance step is the backstop.
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
 
@@ -213,14 +241,12 @@ flows:
     # captures the Designer's exploration options from CI's `options` bundle, opens Didi's
     # visual-approval request and asks again for the Designer report's move into Waiting for
     # Didi. A refusal the Designer caused counts once per head and starts the fix round; the
-    # request links CI's run on any repository (O-89, D-348). The GitHub receiver calls it
-    # (D-291, D-327, O-101): after it records CI's end on a PR head, and only when capture's own
-    # due check says a capture is due, so a replay, a pending result, an item not due and the
-    # switches start nothing. It uses the receiver's Windmill token (the `platform` environment
-    # secret `RECEIVER_WINDMILL_TOKEN`, in the cluster Secret `github-receiver-windmill-token`,
-    # runbook step 15) through the shared Windmill egress proxy (D-328), with
-    # `{"input": {"nodeId": ...}}`. The run-end flow tries the same capture at a
-    # Designer run's end, and the reconcile flow's capture pass is the backstop.
+    # request links CI's run on any repository (O-89, D-348). No service starts it any more
+    # (D-381, O-128): the ingest flow takes the same capture in its own run after it records CI's
+    # end on a PR head, when capture's own due check says a capture is due (D-291, O-101), so the
+    # receiver's token no longer runs this flow. It stays for a start by hand from its page, with
+    # `{"nodeId": ...}`, as dispatch does. The run-end flow tries the same capture at a Designer
+    # run's end, and the reconcile flow's capture pass is the backstop.
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
 
@@ -343,8 +369,9 @@ flows:
           required: false
           enum: ["Yes, a small tweak", "No, not a small tweak"]
 
-# GitHub webhooks go to the receiver service (ADR 0113), not to Windmill, so no flow ingests
-# them and none is listed here.
+# GitHub webhooks go to the receiver service (ADR 0113), not to Windmill: each delivery is
+# checked and recorded there, and only one whose evidence needs a GitHub read starts a flow, the
+# ingest flow above, with the delivery's identifiers and never its payload (D-381, O-128).
 
 resources:
   # Every secret here is a Windmill secret variable, which Windmill encrypts with the workspace's

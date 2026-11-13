@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { checkCompletedEvent, pullRequestEvent } from "../src/adapters/github/fake.ts";
-import { ingestDelivery, pollRepository } from "../src/core/github-ingest.ts";
+import { pollRepository } from "../src/core/github-ingest.ts";
 import type { WorkflowJob, WorkflowRun } from "../src/core/github.ts";
 import { GUARDS } from "../src/core/guards/index.ts";
 import {
@@ -27,6 +27,7 @@ import {
   SHA_B,
   check,
   createIngestFixture,
+  deliverAndIngest,
   passing,
   type IngestFixture,
 } from "./github-fixture.ts";
@@ -67,8 +68,9 @@ function ciFinished(
     f.github.setWorkflowJobs(REPO, Number(id), list);
 }
 
+// The receiver's record and hand-on, then the ingest flow's record (D-381, O-128).
 const deliver = (f: IngestFixture, event: string, payload: unknown) =>
-  ingestDelivery(f.deps, { id: f.nextDeliveryId(), event, payload });
+  deliverAndIngest(f.deps, { id: f.nextDeliveryId(), event, payload });
 
 const checksDone = (f: IngestFixture, sha = SHA_A) =>
   deliver(f, "check_suite", checkCompletedEvent("check_suite", REPO, sha, [PR]));
@@ -139,8 +141,8 @@ describe("CI's preview check to evidence (unit: GitHub ingestion, D-354, O-111)"
     ciFinished(f, [run()], { [RUN_ID]: [job()] });
     const payload = checkCompletedEvent("check_suite", REPO, SHA_A, [PR]);
     const delivery = { id: "preview-delivery-1", event: "check_suite", payload };
-    await ingestDelivery(f.deps, delivery);
-    expect((await ingestDelivery(f.deps, delivery)).outcome).toBe("duplicate");
+    await deliverAndIngest(f.deps, delivery);
+    expect((await deliverAndIngest(f.deps, delivery)).outcome).toBe("duplicate");
     await checksDone(f);
     await pollRepository(f.deps, REPO);
     expect(await previews(f)).toHaveLength(1);

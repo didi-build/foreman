@@ -37,10 +37,10 @@ import {
   windmillPlanApprovalFlow,
 } from "./plan-approval-flow.ts";
 import {
-  ADVANCE_ITEM_FLOW_PATH,
-  OPTION_CAPTURE_FLOW_PATH,
   DEPLOY_STAGING_FLOW_PATH,
+  INGEST_DELIVERY_FLOW_PATH,
   RECEIVER_FLOW_PATHS,
+  REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
   windmillReceiverFlows,
 } from "./receiver-flows.ts";
 import {
@@ -245,22 +245,37 @@ describe("the Windmill start client through the shared proxy (integration: local
     ]);
   });
 
-  it("the receiver's ports start option capture and the advance with the item's id, and the staging deploy with the repository and CI run (O-101, O-104, O-116)", async () => {
+  it("the receiver's ports start the ingest flow with the handed-on delivery's identifiers, the staging deploy with the repository and CI run, and the access removal with the repository (O-114, O-116, O-128)", async () => {
     const flows = windmillReceiverFlows(TOKEN, target(), { ca: cert });
-    await flows.optionCapture.start("node-2");
-    await flows.advanceItem.start("node-3");
+    const sha = "a".repeat(40);
+    // Anything else the object carried is not sent: the port copies the six fields one by one.
+    const handedOn = {
+      deliveryId: "delivery-1",
+      event: "check_suite" as const,
+      action: "completed" as const,
+      repo: "didi-build/rehearsal",
+      pullRequests: [7, 9],
+      headSha: sha,
+      branch: "foreman/never-sent",
+    };
+    await flows.ingestDelivery.start(handedOn);
     await flows.deployStaging.start("didi-build/rehearsal", 4321);
+    await flows.removeBootstrapAccess.start("didi-build/rehearsal");
     expect(seen.map((s) => [s.path, s.authorization, s.body])).toEqual([
       [
-        `/api/w/${WORKSPACE}/jobs/run/p/${OPTION_CAPTURE_FLOW_PATH}`,
+        `/api/w/${WORKSPACE}/jobs/run/p/${INGEST_DELIVERY_FLOW_PATH}`,
         `Bearer ${TOKEN}`,
-        { input: { nodeId: "node-2" } },
-      ],
-      [
-        `/api/w/${WORKSPACE}/jobs/run/p/${ADVANCE_ITEM_FLOW_PATH}`,
-        `Bearer ${TOKEN}`,
-        // flows/advance-item.ts reads `{ nodeId }` as its input.
-        { input: { nodeId: "node-3" } },
+        // flows/ingest-delivery.ts reads the handed-on delivery as its input.
+        {
+          input: {
+            deliveryId: "delivery-1",
+            event: "check_suite",
+            action: "completed",
+            repo: "didi-build/rehearsal",
+            pullRequests: [7, 9],
+            headSha: sha,
+          },
+        },
       ],
       [
         `/api/w/${WORKSPACE}/jobs/run/p/${DEPLOY_STAGING_FLOW_PATH}`,
@@ -268,7 +283,13 @@ describe("the Windmill start client through the shared proxy (integration: local
         // flows/deploy-staging.ts reads `{ repo, runId }` as its input.
         { input: { repo: "didi-build/rehearsal", runId: 4321 } },
       ],
+      [
+        `/api/w/${WORKSPACE}/jobs/run/p/${REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH}`,
+        `Bearer ${TOKEN}`,
+        { input: { repo: "didi-build/rehearsal" } },
+      ],
     ]);
+    expect(JSON.stringify(seen)).not.toContain("never-sent");
   });
 
   it("the run watcher's port starts only the run-end flow, with the run's id (D-330)", async () => {
@@ -290,7 +311,7 @@ describe("the Windmill start client through the shared proxy (integration: local
         target: target({ workspace: REFUSED_WORKSPACE }),
         token: TOKEN,
         ca: cert,
-      }).start(OPTION_CAPTURE_FLOW_PATH, { input: { nodeId: "node-3" } }),
+      }).start(INGEST_DELIVERY_FLOW_PATH, { input: { deliveryId: "delivery-3" } }),
     );
     expect([error.step, error.status]).toEqual(["start", 401]);
     expect(error.message).toBe(
@@ -310,7 +331,7 @@ describe("the Windmill start client through the shared proxy (integration: local
         target: target({ host: "elsewhere.example.com" }),
         token: TOKEN,
         ca: cert,
-      }).start(OPTION_CAPTURE_FLOW_PATH, { input: { nodeId: "node-4" } }),
+      }).start(INGEST_DELIVERY_FLOW_PATH, { input: { deliveryId: "delivery-4" } }),
     );
     expect([error.step, error.status]).toEqual(["tunnel", 403]);
     expect(seen).toEqual([]);
@@ -322,8 +343,8 @@ describe("the Windmill start client through the shared proxy (integration: local
     const proxy = new URL(`http://127.0.0.1:${await closedPort()}`);
     const error = await failure(
       windmillScripts({ target: target({ proxy }), token: TOKEN, ca: cert }).start(
-        OPTION_CAPTURE_FLOW_PATH,
-        { input: { nodeId: "node-5" } },
+        INGEST_DELIVERY_FLOW_PATH,
+        { input: { deliveryId: "delivery-5" } },
       ),
     );
     expect([error.step, error.status]).toEqual(["tunnel", null]);
@@ -333,8 +354,8 @@ describe("the Windmill start client through the shared proxy (integration: local
   it("checks Windmill's certificate with the system's authorities: a certificate they do not trust is refused before anything is sent", async () => {
     const error = await failure(
       windmillScripts({ target: target(), token: TOKEN }).start(
-        OPTION_CAPTURE_FLOW_PATH,
-        { input: { nodeId: "node-6" } },
+        INGEST_DELIVERY_FLOW_PATH,
+        { input: { deliveryId: "delivery-6" } },
       ),
     );
     expect([error.step, error.status]).toEqual(["start", null]);
@@ -349,7 +370,7 @@ describe("the Windmill start client through the shared proxy (integration: local
         token: TOKEN,
         ca: cert,
         timeoutMs: 300,
-      }).start(OPTION_CAPTURE_FLOW_PATH, { input: { nodeId: "node-7" } }),
+      }).start(INGEST_DELIVERY_FLOW_PATH, { input: { deliveryId: "delivery-7" } }),
     );
     expect([error.step, error.status]).toEqual(["start", null]);
     expectNoSecret(error);
@@ -359,14 +380,23 @@ describe("the Windmill start client through the shared proxy (integration: local
     const receiver = windmillReceiverFlows(null, target(), { ca: cert });
     for (const flow of [
       windmillPlanApprovalFlow(null, target(), { ca: cert }),
-      receiver.optionCapture,
-      receiver.advanceItem,
+      receiver.removeBootstrapAccess,
       windmillRunEndFlow(null, target(), { ca: cert }),
     ]) {
       await expect(flow.start("id-1")).rejects.toBeInstanceOf(NotBuiltError);
     }
     await expect(
       receiver.deployStaging.start("didi-build/rehearsal", 4321),
+    ).rejects.toBeInstanceOf(NotBuiltError);
+    await expect(
+      receiver.ingestDelivery.start({
+        deliveryId: "delivery-1",
+        event: "pull_request",
+        action: "closed",
+        repo: "didi-build/rehearsal",
+        pullRequests: [7],
+        headSha: null,
+      }),
     ).rejects.toBeInstanceOf(NotBuiltError);
     expect(seen).toEqual([]);
     expect(connected).toEqual([]);
@@ -459,11 +489,11 @@ describe("the Windmill start's settings and endpoint (unit, O-101)", () => {
     expect(runScope(PLAN_APPROVAL_FLOW_PATH)).toBe(
       "jobs:run:scripts:f/foreman/plan_approval",
     );
-    // The receiver's token starts its four flows and nothing else (D-291, O-104, O-114, O-116):
-    // `verify_staging` is gone with the `deployment_status` start.
+    // The receiver's token starts its three flows and nothing else (D-291, O-114, O-116, O-128):
+    // `verify_staging` is gone with the `deployment_status` start, and option capture and the
+    // advance run inside the ingest flow, so the token no longer starts them.
     expect(RECEIVER_FLOW_PATHS.map(runScope)).toEqual([
-      "jobs:run:scripts:f/foreman/option_capture",
-      "jobs:run:scripts:f/foreman/advance_item",
+      "jobs:run:scripts:f/foreman/ingest_delivery",
       "jobs:run:scripts:f/foreman/deploy_staging",
       "jobs:run:scripts:f/foreman/remove_bootstrap_access",
     ]);
