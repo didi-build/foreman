@@ -18,7 +18,11 @@ import {
   type IdSource,
   type Library,
 } from "../core/library.ts";
-import { createPlanSubmissions, readPlanSubmission } from "../core/plans.ts";
+import {
+  createPlanSubmissions,
+  readPlanSubmission,
+  SUBMIT_REFUSAL_MESSAGES,
+} from "../core/plans.ts";
 import { createPlanningReads, PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
 import { PROJECT_SLUG } from "../core/register-project.ts";
 import { startErrorFields } from "../adapters/windmill/client.ts";
@@ -251,12 +255,9 @@ export const PLANNING_READ_PATH =
   /^\/planning\/projects\/([^/]+)\/(submissions|feedback|accepted)$/;
 
 const SUBMIT_REFUSALS = {
-  no_project: { status: 404, error: "project not found" },
-  no_idea: { status: 404, error: "idea not found" },
-  not_submittable: {
-    status: 409,
-    error: "the idea is not waiting for a plan (Submitted or Council planning)",
-  },
+  no_project: { status: 404, error: SUBMIT_REFUSAL_MESSAGES.no_project },
+  no_idea: { status: 404, error: SUBMIT_REFUSAL_MESSAGES.no_idea },
+  not_submittable: { status: 409, error: SUBMIT_REFUSAL_MESSAGES.not_submittable },
 } as const;
 
 export function createApiHandler({

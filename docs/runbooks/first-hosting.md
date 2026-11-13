@@ -522,6 +522,37 @@ The register-project form (D-345, D-346, D-348, O-109) and `BOOTSTRAP_TOKEN`'s a
 - Bootstrap's token job sees no repository code (D-358 lock 1, O-113): in the new repository's Bootstrap run, the `apply` job runs only `actions/checkout`, `actions/download-artifact` and `node .github/scripts/...`, with no `npm`, `npx` or `setup-node` step, and only its push and settings steps receive the token. Record the result with the date in O-113, with the other checks in `docs/runbooks/bootstrap.md` ("To verify at the first real run").
 - Foreman's pushes stay no-ops: Bootstrap's run on Foreman's next push to `main` ends in the `decide` job (_Already initialized_), with `prepare` and `apply` skipped. Record it in O-113.
 
+### Submitting a plan by hand (D-383)
+
+Until the planning chat has a front end of its own, Didi submits each plan with the form `f/foreman/submit_plan` instead of the chat's connector (D-383, O-129). The form checks and records the plan exactly as `POST /api/plans` would, by the planning chat's identity, and then takes the plan approval step in the same run, as the flow the state API starts would.
+
+1. Draft the plan in the Claude project. Its output gives each field below.
+2. Open `f/foreman/submit_plan` from its page in the Windmill workspace, signed in (never a public or signed-token link), and copy each field into its own box (D-376):
+   - `projectSlug`: the project's slug, for example `rehearsal`.
+   - `title`: the idea's title, on one line.
+   - `plan`: the plan, as written.
+   - `productDirection`: the product direction.
+   - `needsDidi`: pick `yes`, `no` or `unsure`, the Council's call on whether Didi is needed (D-307).
+   - `needsDidiReason`: the reason given for that call.
+   - `answers`: one item per question Didi answered in the planning chat, each with its `question` and `answer`. Leave it empty when there are none.
+   - `ideaId`: leave it empty for a new idea. To resubmit a plan Didi sent back, give the idea's id, from the earlier run's result or from the plan-approval request.
+3. Run it, once per plan. Each run records a new submission, and without `ideaId` a new idea, so running the same plan twice makes two ideas.
+
+The result shows no text from the plan:
+
+- `outcome: recorded`, with the `ideaId` and `created` (true for a new idea, false for a resubmission), and `planApproval`: `taken` with the step (`opened` when Didi's plan-approval request opened; `council_accepted`, with Triage's start, when the call is `no`); `held` with the switch, when the kill switch or dry run is on, and the reconcile pass takes the step once both are off (D-333); or `failed`, and the reconcile pass takes the step later. In each case the submission is recorded.
+- `outcome: refused`, with a fixed sentence and nothing recorded: for a box, the sentence `POST /api/plans` answers with, naming the field; for a submission over 64 KiB, that it is too large. Fix the box and run it again.
+
+The planning chat's address (step 11a) and its token (step 15) stay as they are, for the front end that replaces this form.
+
+To verify at its first real run, and record each result with the date in O-129:
+
+- How Windmill shows the `answers` box (a list whose items each have a question box and an answer box, or one box for JSON), and that an empty one records no answers.
+- That `needsDidi` shows as a dropdown of `yes`, `no` and `unsure`.
+- Whether the `plan` box takes text on several lines and keeps its line breaks as typed: the plan-approval request shows the recorded plan.
+- That an empty `ideaId` box records a new idea.
+- That the run's result shows no text from the plan, and its log shows nothing.
+
 ### A project's staging name and route
 
 Each project's DNS record and Workers route (D-357, O-112) are built and tested with fixture plans, without a real Cloudflare zone or token. To verify at the first project's plan and apply, with no real personal data, and record each result with the date in O-112:

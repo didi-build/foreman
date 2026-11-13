@@ -345,6 +345,17 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
         ["askCouncil", "boolean", true],
       ],
       [HOLD_RELEASE_REQUEST_FLOW_PATH]: [["nodeId", "string", false]],
+      // D-383: the answers' item type written out in the entry, so Windmill can read it (O-121).
+      "f/foreman/submit_plan": [
+        ["projectSlug", "string", false],
+        ["title", "string", false],
+        ["plan", "string", false],
+        ["productDirection", "string", false],
+        ["needsDidi", '"yes" | "no" | "unsure"', false],
+        ["needsDidiReason", "string", false],
+        ["answers", "{ question: string; answer: string }[]", true],
+        ["ideaId", "string", true],
+      ],
     };
   const mainOf = (file: string) => {
     const source = ts.createSourceFile(
@@ -400,7 +411,7 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
     },
   );
 
-  it("names Didi's three forms, each a called entry no service or schedule starts (D-376)", () => {
+  it("names Didi's four forms, each a called entry no service or schedule starts (D-376, D-383)", () => {
     const started: string[] = [
       PLAN_APPROVAL_FLOW_PATH,
       ...RECEIVER_FLOW_PATHS,
@@ -635,6 +646,22 @@ describe("Didi's register-project form (unit: repo guard, D-345, O-109)", () => 
     expect(flow?.trigger).toBe("called");
     expect(flow?.entry).toBe("flows/register-project.ts");
     expect(flow?.schedule).toBeUndefined();
+    expect([
+      PLAN_APPROVAL_FLOW_PATH,
+      ...RECEIVER_FLOW_PATHS,
+      ...RUN_WATCHER_FLOW_PATHS,
+    ]).not.toContain(flow?.path);
+  });
+});
+
+describe("Didi's form to submit a plan by hand (unit: repo guard, D-383, O-129)", () => {
+  it("is a called flow, never on a schedule, that no service's Windmill token can start", () => {
+    const flow = description.flows.find((f) => f.name === "submit_plan");
+    expect(flow?.path).toBe("f/foreman/submit_plan");
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/submit-plan.ts");
+    expect(flow?.schedule).toBeUndefined();
+    expect(flow?.job_token_scopes).toEqual([READ_VARIABLES_SCOPE]);
     expect([
       PLAN_APPROVAL_FLOW_PATH,
       ...RECEIVER_FLOW_PATHS,
