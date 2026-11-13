@@ -1,18 +1,20 @@
 // Seam: the GitHub webhook receiver over real HTTP, in process (build plan M2.3, ADR 0113
-// sections 2 and 8). Signed fake deliveries against the memory store and the fake GitHub: the
-// size cap and signature come before parsing, a bad request stores nothing, a replay records
+// sections 2 and 8, D-381). Signed fake deliveries against the memory store and the fake GitHub:
+// the size cap and signature come before parsing, a bad request stores nothing, a delivery that
+// needs GitHub is recorded and handed to the ingest flow with its identifiers only, while the
+// receiver itself reads nothing from GitHub and records no evidence, a replay records and starts
 // nothing new, and logs carry only ids, event, repository, PR number and outcome.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { checkCompletedEvent, pullRequestEvent } from "../src/adapters/github/fake.ts";
-import { createFakeFlowStart } from "../src/adapters/windmill/fake-flow-start.ts";
-import { GUARDS } from "../src/core/guards/index.ts";
-import { createFlowStarts } from "../src/github-receiver/flow-starts.ts";
+import { createFakeIngestStart } from "../src/adapters/windmill/fake-flow-start.ts";
+import { HANDED_ON } from "../src/core/github-ingest.ts";
 import {
   MAX_BODY_BYTES,
   WEBHOOK_PATH,
   createReceiverHandler,
 } from "../src/github-receiver/handler.ts";
+import { createIngestStarts } from "../src/github-receiver/ingest-starts.ts";
 import { createLogger } from "../src/service-kit/logger.ts";
 import { startService, type RunningService } from "../src/service-kit/server.ts";
 import {
@@ -22,40 +24,29 @@ import {
   REPO,
   SHA_A,
   createIngestFixture,
-  passing,
   type IngestFixture,
 } from "./github-fixture.ts";
-import { machines } from "./reconcile-fixture.ts";
 
 let f: IngestFixture;
 let service: RunningService;
 let url: string;
 const logs: Record<string, unknown>[] = [];
+const ingest = createFakeIngestStart();
 
 beforeAll(async () => {
   f = await createIngestFixture();
   const logger = createLogger("github-receiver", (line) => logs.push(JSON.parse(line)));
-  const { store, clock, ids, appLogins, runnerAppSlug } = f.deps;
-  const flows = createFakeFlowStart();
+  const { store, clock } = f.deps;
   service = await startService({
     name: "github-receiver",
     port: 0,
     logger,
     handle: createReceiverHandler({
       github: f.github,
-      ingest: { store, clock, ids, appLogins, runnerAppSlug },
-      // No `dry_run` setting is stored here, which reads as dry run, so nothing is started
-      // (test/github-receiver-starts.test.ts covers the starts).
-      flowStarts: createFlowStarts({
-        store,
-        contracts: machines(),
-        guards: GUARDS,
-        clock,
-        ids,
-        optionCapture: flows,
-        advanceItem: flows,
-        logger,
-      }),
+      ingest: { store, clock },
+      // test/github-receiver-starts.test.ts covers which deliveries are handed on and a failed
+      // start; test/flows/ingest-delivery-flows.test.ts what the flow then records.
+      ingestStarts: createIngestStarts({ ingestDelivery: ingest, logger }),
       logger,
     }),
   });
@@ -89,7 +80,7 @@ async function send({ event = "pull_request", delivery, body, signature }: Send)
 const openedBody = async () => JSON.stringify(pullRequestEvent("opened", await f.pr()));
 
 describe("GitHub receiver over HTTP (in-process end to end, ADR 0113)", () => {
-  it("rejects a delivery with no signature: 401, nothing parsed, read or stored", async () => {
+  it("rejects a delivery with no signature: 401, nothing parsed, read, stored or started", async () => {
     const body = await openedBody();
     const reads = f.github.reads;
     const result = await send({ delivery: "no-sig", body, signature: null });
@@ -97,6 +88,7 @@ describe("GitHub receiver over HTTP (in-process end to end, ADR 0113)", () => {
     expect(await f.store.getGithubDelivery("no-sig")).toBeNull();
     expect(await f.evidence()).toHaveLength(0);
     expect(f.github.reads).toBe(reads);
+    expect(ingest.started).toEqual([]);
   });
 
   it("rejects a delivery with a wrong signature, or one signed over other bytes", async () => {
@@ -109,6 +101,7 @@ describe("GitHub receiver over HTTP (in-process end to end, ADR 0113)", () => {
     expect(f.github.reads).toBe(reads);
     expect(await f.store.getGithubDelivery("bad-sig")).toBeNull();
     expect(await f.evidence()).toHaveLength(0);
+    expect(ingest.started).toEqual([]);
   });
 
   it("refuses a body over 1 MB unread", async () => {
@@ -122,42 +115,64 @@ describe("GitHub receiver over HTTP (in-process end to end, ADR 0113)", () => {
     expect((await send({ body: await openedBody() })).status).toBe(400);
   });
 
-  it("accepts a signed delivery, records its evidence, and records a replay once", async () => {
+  it("accepts a signed delivery, records it and hands it to the ingest flow once, reading nothing from GitHub; a replay starts nothing", async () => {
     const body = await openedBody();
+    const reads = f.github.reads;
     const first = await send({ delivery: "delivery-1", body });
     expect(first).toEqual({ status: 202, body: { outcome: "recorded" } });
     const replay = await send({ delivery: "delivery-1", body });
     expect(replay).toEqual({ status: 202, body: { outcome: "duplicate" } });
-    const rows = await f.evidence("ci_run");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      commitSha: SHA_A,
-      payload: { conclusion: "pending" },
+    expect(await f.store.getGithubDelivery("delivery-1")).toMatchObject({
+      eventType: "pull_request",
+      repository: REPO,
+      outcome: "recorded",
+      reason: HANDED_ON,
     });
-    expect((await f.store.getGithubDelivery("delivery-1"))?.outcome).toBe("recorded");
+    expect(ingest.started).toEqual([
+      {
+        deliveryId: "delivery-1",
+        event: "pull_request",
+        action: "opened",
+        repo: REPO,
+        pullRequests: [PR],
+        headSha: SHA_A,
+      },
+    ]);
+    // The receiver records no evidence and makes no GitHub read: the flow does both (D-381).
+    expect(await f.evidence()).toEqual([]);
+    expect(f.github.reads).toBe(reads);
   });
 
-  it("records the final result from a check suite completion", async () => {
-    f.github.setCheckRuns(REPO, SHA_A, passing("build"));
+  it("hands a check suite completion on with its head commit and pull requests", async () => {
     const body = JSON.stringify(checkCompletedEvent("check_suite", REPO, SHA_A, [PR]));
     const result = await send({ event: "check_suite", delivery: "delivery-2", body });
     expect(result).toEqual({ status: 202, body: { outcome: "recorded" } });
-    expect((await f.evidence("ci_run")).at(-1)?.payload).toMatchObject({
-      conclusion: "success",
+    expect(ingest.started.at(-1)).toEqual({
+      deliveryId: "delivery-2",
+      event: "check_suite",
+      action: "completed",
+      repo: REPO,
+      pullRequests: [PR],
+      headSha: SHA_A,
     });
+    expect(await f.evidence()).toEqual([]);
   });
 
-  it("answers 202 to an event type it does not read, and stores nothing", async () => {
+  it("answers 202 to an event type it does not read, and stores and starts nothing", async () => {
+    const started = ingest.started.length;
     const body = JSON.stringify({ action: "created", repository: { full_name: REPO } });
     const result = await send({ event: "issue_comment", delivery: "delivery-3", body });
     expect(result).toEqual({ status: 202, body: { outcome: "unhandled" } });
     expect(await f.store.getGithubDelivery("delivery-3")).toBeNull();
+    expect(ingest.started).toHaveLength(started);
   });
 
-  it("answers 400 to a signed body that is not JSON, and records it as rejected", async () => {
+  it("answers 400 to a signed body that is not JSON, records it as rejected and starts nothing", async () => {
+    const started = ingest.started.length;
     const result = await send({ delivery: "delivery-4", body: "not json" });
     expect(result.status).toBe(400);
     expect((await f.store.getGithubDelivery("delivery-4"))?.outcome).toBe("rejected");
+    expect(ingest.started).toHaveLength(started);
   });
 
   it("serves its one webhook path under /api, and answers 404 on the old path and near misses (D-343)", async () => {

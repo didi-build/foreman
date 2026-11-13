@@ -296,11 +296,11 @@ Built (M3.4 and M3.5). A failed staging check, or a failed staging deploy coveri
 
 Columns: key (pk), value jsonb, updated_by, updated_at. Changes to settings are logged.
 
-Roles: the receiver's `factory_ingest` reads only the `kill_switch` and `dry_run` rows, for capture's due check before it starts the option capture flow (migration 0020, O-101), and writes none.
+Roles: the receiver's `factory_ingest` reads only the `kill_switch` and `dry_run` rows (migration 0020, O-101), and writes none. It reads them before it starts the staging deploy (O-116) or the removal of `BOOTSTRAP_TOKEN`'s access (O-114); capture's due check, which it read them for first, runs in the ingest flow since O-128.
 
 ## github_deliveries (append-only, migration 0002)
 
-One row per GitHub webhook delivery the receiver authenticated (ADR 0113 section 3). Never the payload.
+One row per GitHub webhook delivery the receiver authenticated (ADR 0113 section 3). Never the payload. A delivery the receiver hands to the ingest flow, because its evidence needs a GitHub read, is `recorded` with the reason `handed to the ingest flow`; the flow's run result says what evidence it recorded (D-381, O-128).
 
 | Column      | Type        | Notes                                                     |
 | ----------- | ----------- | --------------------------------------------------------- |

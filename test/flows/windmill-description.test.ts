@@ -43,9 +43,8 @@ import {
   WINDMILL_PLAN_APPROVAL_TOKEN_PATH,
 } from "../../src/adapters/windmill/plan-approval-flow.ts";
 import {
-  ADVANCE_ITEM_FLOW_PATH,
   DEPLOY_STAGING_FLOW_PATH,
-  OPTION_CAPTURE_FLOW_PATH,
+  INGEST_DELIVERY_FLOW_PATH,
   RECEIVER_FLOW_PATHS,
   RECEIVER_WINDMILL_TOKEN_PATH,
   REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
@@ -511,11 +510,10 @@ describe("the flow the run watcher starts (unit: repo guard, D-330, O-102)", () 
   });
 });
 
-describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, O-104, O-114, O-116)", () => {
-  it("are the called option capture, advance, staging deploy and access removal flows, at the paths the receiver's ports start, and nothing else", () => {
+describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-114, O-116, D-381, O-128)", () => {
+  it("are the called ingest, staging deploy and access removal flows, at the paths the receiver's ports start, and nothing else", () => {
     expect(RECEIVER_FLOW_PATHS).toEqual([
-      OPTION_CAPTURE_FLOW_PATH,
-      ADVANCE_ITEM_FLOW_PATH,
+      INGEST_DELIVERY_FLOW_PATH,
       DEPLOY_STAGING_FLOW_PATH,
       REMOVE_BOOTSTRAP_ACCESS_FLOW_PATH,
     ]);
@@ -524,17 +522,28 @@ describe("the flows the GitHub receiver starts (unit: repo guard, D-291, O-101, 
     for (const path of RECEIVER_FLOW_PATHS) {
       const flow = description.flows.find((f) => f.path === path);
       expect(flow?.trigger, path).toBe("called");
+      expect(flow?.job_token_scopes, path).toEqual([READ_VARIABLES_SCOPE]);
     }
     expect(
       RECEIVER_FLOW_PATHS.map(
         (path) => description.flows.find((f) => f.path === path)?.entry,
       ),
     ).toEqual([
-      "flows/option-capture.ts",
-      "flows/advance-item.ts",
+      "flows/ingest-delivery.ts",
       "flows/deploy-staging.ts",
       "flows/remove-bootstrap-access.ts",
     ]);
+  });
+
+  it("no longer starts option capture or the advance: the ingest flow takes both in its own run, and the two flows stay for a start by hand (O-128)", () => {
+    for (const name of ["option_capture", "advance_item"]) {
+      const flow = description.flows.find((f) => f.name === name);
+      expect(flow?.trigger, name).toBe("called");
+      expect(RECEIVER_FLOW_PATHS, name).not.toContain(flow?.path);
+    }
+    const ingest = readFileSync("flows/lib/ingest-delivery.ts", "utf8");
+    expect(ingest).toContain("optionCapturePass(deps, [nodeId])");
+    expect(ingest).toContain("advanceItem(deps, nodeId)");
   });
 
   it("the first-hosting runbook creates each token with exactly its flows' run scopes", () => {

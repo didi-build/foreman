@@ -1,8 +1,10 @@
 // The receiver's start of the staging deploy (D-353, D-356, O-116), outside CI's path on a PR head:
 // once CI's build on main has finished, the runner deploys it to the project's staging site. It
-// runs after the delivery is recorded and after ./flow-starts.ts, and changes neither: ingestion
-// records a `workflow_run` for a commit with no pull request as a delivery only, as before. It is
-// built as ./bootstrap-starts.ts is (O-114).
+// runs after the delivery is recorded and after ./ingest-starts.ts, and changes neither: the
+// receiver records a `workflow_run` for a commit with no pull request as a delivery only, as
+// before, and hands it to no flow (D-381, O-128). This start needs no GitHub read either: it reads
+// only the signed payload and the two switches, so it stays in the receiver. It is built as
+// ./bootstrap-starts.ts is (O-114).
 //
 // It starts `f/foreman/deploy_staging` with the repository and the run's id when the signed
 // payload is a `workflow_run` `completed` with conclusion `success` for exactly
@@ -21,7 +23,7 @@
 import type { DeployStagingFlow } from "../adapters/windmill/receiver-flows.ts";
 import { startErrorFields } from "../adapters/windmill/client.ts";
 import { REPOSITORY } from "../core/github.ts";
-import type { IngestResult } from "../core/github-ingest.ts";
+import type { ReceiveResult } from "../core/github-ingest.ts";
 import { STAGING_BUILD_EVENT, STAGING_BUILD_WORKFLOW } from "../core/staging-deploy.ts";
 import type { Store } from "../core/store.ts";
 import type { Logger } from "../service-kit/logger.ts";
@@ -38,7 +40,7 @@ export interface StagingStartOptions {
 export type StagingStarts = (
   deliveryId: string,
   delivery: BootstrapDelivery,
-  result: IngestResult,
+  result: ReceiveResult,
 ) => Promise<void>;
 
 export const STAGING_DEPLOY_STARTED = "staging deploy flow started";

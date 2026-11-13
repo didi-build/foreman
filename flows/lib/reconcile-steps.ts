@@ -19,9 +19,11 @@
 //    builder runs pass, the Council and Triage passes), so each has one path.
 // 4. Advance from evidence: each move guarded by `ci_green_on_head` the plan found `due` (into In
 //    QA review) is asked of the library the same way. Once it is applied, QA's run starts on the
-//    plan's pull request and head commit, when the plan admitted it. The called flow
-//    `f/foreman/advance_item` acts on one item's plan with the same step (`advanceSteps`,
-//    flows/advance-item.ts, D-329 slice 4, O-104), so the event and the pass cannot drift.
+//    plan's pull request and head commit, when the plan admitted it. One item's advance on its
+//    event (`advanceItem`) plans that item with the pass's own code and acts on it with the same
+//    step (`advanceSteps`, D-329 slice 4, O-104): the ingest flow takes it once CI's end is
+//    recorded (./ingest-delivery.ts, D-381, O-128), and the called flow `f/foreman/advance_item`
+//    for a start by hand (flows/advance-item.ts), so the event and the pass cannot drift.
 //
 // Nothing here throws on a refusal or a failed start: each is reported, and the next pass or event
 // tries again. The kill switch and dry run are read by the library and the dispatch, as on every
@@ -30,18 +32,20 @@
 import { ADVANCE_ACTOR, ADVANCE_TRIGGER } from "../../src/core/advances.ts";
 import { createLibrary, type TransitionOutcome } from "../../src/core/library.ts";
 import { createReadyRuns } from "../../src/core/ready-runs.ts";
-import type {
-  AdvancePlan,
-  DispatchPlan,
-  DispatchPlanOutcome,
-  MovePlan,
-  ReconcileReport,
+import {
+  planAdvance,
+  type AdvancePlan,
+  type DispatchPlan,
+  type DispatchPlanOutcome,
+  type MovePlan,
+  type ReconcileReport,
 } from "../../src/core/reconcile.ts";
 import type { AgentRole } from "../../src/core/store.ts";
 import { VISUAL_TASK_TYPE } from "../../src/core/visual-comparison.ts";
 import type { FlowDeps } from "./compose.ts";
 import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { heldBy } from "./switches.ts";
 
 // The pass's own trigger and actor, which the advance check also asks with (O-104).
 const ACTOR = ADVANCE_ACTOR;
@@ -153,7 +157,7 @@ function createSteps(deps: FlowDeps) {
 /**
  * Step 4 on the advances a plan found: each move due, through the library with the pass's
  * trigger and actor, then QA's run on the plan's head once the move is applied. The reconcile
- * flow runs it on the pass's plan, and `f/foreman/advance_item` on one item's (O-104).
+ * flow runs it on the pass's plan, and `advanceItem` on one item's (O-104).
  */
 export async function advanceSteps(
   deps: FlowDeps,
@@ -181,6 +185,28 @@ export async function advanceSteps(
     advances.push(step);
   }
   return advances;
+}
+
+/** One item's advance on its event, or the switch that held it. */
+export type AdvanceItemResult =
+  | { outcome: "refused"; reason: "kill_switch" | "dry_run" }
+  | { outcome: "advanced"; advances: AdvanceStep[] };
+
+/**
+ * One item's advance from evidence (D-329 slice 4, O-104): the pass's own step 4 for that item,
+ * planned with the pass's code (`planAdvance`) and acted on with `advanceSteps`. It reads
+ * everything again and never trusts the event. Under the kill switch or in dry run it does
+ * nothing and says which switch holds it; the pass's dry-run plan covers dry run. A second call,
+ * or the pass at the same time, finds the item moved or QA's run active and does nothing more.
+ */
+export async function advanceItem(
+  deps: FlowDeps,
+  nodeId: string,
+): Promise<AdvanceItemResult> {
+  const held = await heldBy(deps.store);
+  if (held !== null) return { outcome: "refused", reason: held };
+  const plans = await planAdvance(deps, nodeId);
+  return { outcome: "advanced", advances: await advanceSteps(deps, plans) };
 }
 
 /** Acts on the plan of a live pass: steps 2, 3 and 4 in order. */

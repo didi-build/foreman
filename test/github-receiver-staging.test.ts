@@ -12,12 +12,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { deploymentStatusEvent } from "../src/adapters/github/fake.ts";
 import {
   createFakeFlowStart,
+  createFakeIngestStart,
   type FakeFlowStart,
+  type FakeIngestStart,
 } from "../src/adapters/windmill/fake-flow-start.ts";
-import { GUARDS } from "../src/core/guards/index.ts";
 import { createBootstrapStarts } from "../src/github-receiver/bootstrap-starts.ts";
-import { createFlowStarts } from "../src/github-receiver/flow-starts.ts";
 import { WEBHOOK_PATH, createReceiverHandler } from "../src/github-receiver/handler.ts";
+import { createIngestStarts } from "../src/github-receiver/ingest-starts.ts";
 import {
   STAGING_DEPLOY_NOT_STARTED,
   STAGING_DEPLOY_STARTED,
@@ -26,12 +27,7 @@ import {
 } from "../src/github-receiver/staging-starts.ts";
 import { createLogger } from "../src/service-kit/logger.ts";
 import { startService, type RunningService } from "../src/service-kit/server.ts";
-import {
-  DEVELOPER_APP,
-  RUNNER_APP,
-  createReconcileFixture,
-  type ReconcileFixture,
-} from "./reconcile-fixture.ts";
+import { createReconcileFixture, type ReconcileFixture } from "./reconcile-fixture.ts";
 
 let running: RunningService | undefined;
 afterEach(async () => {
@@ -67,6 +63,8 @@ interface Harness {
   f: ReconcileFixture;
   deploy: FakeFlowStart;
   others: FakeFlowStart;
+  /** The ingest start, which a run with no pull request never makes (D-381, O-128). */
+  ingest: FakeIngestStart;
   logs: Record<string, unknown>[];
   send(
     event: string,
@@ -80,6 +78,8 @@ async function setup(): Promise<Harness> {
   await f.setting("dry_run", false);
   const deploy = createFakeFlowStart();
   const others = createFakeFlowStart();
+  // A run with no pull request needs no GitHub read, so it is handed to no flow (D-381, O-128).
+  const ingest = createFakeIngestStart();
   const logs: Record<string, unknown>[] = [];
   const logger = createLogger("github-receiver", (line) => logs.push(JSON.parse(line)));
   running = await startService({
@@ -88,23 +88,8 @@ async function setup(): Promise<Harness> {
     logger,
     handle: createReceiverHandler({
       github: f.github,
-      ingest: {
-        store: f.store,
-        clock: f.clock,
-        ids: f.deps.ids,
-        appLogins: [DEVELOPER_APP],
-        runnerAppSlug: RUNNER_APP,
-      },
-      flowStarts: createFlowStarts({
-        store: f.store,
-        contracts: f.contracts,
-        guards: GUARDS,
-        clock: f.clock,
-        ids: f.deps.ids,
-        optionCapture: others,
-        advanceItem: others,
-        logger,
-      }),
+      ingest: { store: f.store, clock: f.clock },
+      ingestStarts: createIngestStarts({ ingestDelivery: ingest, logger }),
       bootstrapStarts: createBootstrapStarts({
         store: f.store,
         removeBootstrapAccess: others,
@@ -133,18 +118,21 @@ async function setup(): Promise<Harness> {
     });
     return { status: response.status, body: (await response.json()) as unknown };
   }
-  return { f, deploy, others, logs, send };
+  return { f, deploy, others, ingest, logs, send };
 }
 
 describe("the receiver starts the staging deploy when CI's build on main ends (in-process end to end, O-116)", () => {
   it("starts the deploy once, with the repository and the run's id, and answers as before", async () => {
     const h = await setup();
     const answer = await h.send("workflow_run", "s-1", ciEnd());
-    // Ingestion records it as a delivery only, as before: no pull request names the commit.
+    // Recorded as a delivery only, as before: no pull request names the commit, so it needs no
+    // GitHub read and is handed to no flow; the start reads only the payload and the switches.
     expect(answer).toEqual({ status: 202, body: { outcome: "ignored" } });
     expect((await h.f.store.getGithubDelivery("s-1"))?.outcome).toBe("ignored");
     expect(h.deploy.started).toEqual([`${REPO}#4321`]);
     expect(h.others.started).toEqual([]);
+    expect(h.ingest.started).toEqual([]);
+    expect(h.f.github.reads).toBe(0);
     expect(h.logs).toContainEqual(
       expect.objectContaining({ message: STAGING_DEPLOY_STARTED, deliveryId: "s-1" }),
     );

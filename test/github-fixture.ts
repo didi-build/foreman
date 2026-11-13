@@ -1,9 +1,18 @@
 // Test support for GitHub ingestion (ADR 0113): a store with one project and one dispatched node,
 // a fake GitHub holding that node's open PR, and a clock that ticks one second per reading so
-// the newest row is never in doubt. Fake data only (D-178); no network.
+// the newest row is never in doubt. `deliverAndIngest` takes one delivery through both sides as
+// production does (D-381, O-128): the receiver's record and hand-on, then the ingest flow's record.
+// Fake data only (D-178); no network.
 import { createFakeGitHub, type FakeGitHub } from "../src/adapters/github/fake.ts";
 import type { CheckRun, PullRequest } from "../src/core/github.ts";
-import type { IngestDeps } from "../src/core/github-ingest.ts";
+import {
+  ingestHandedOn,
+  receiveDelivery,
+  type Delivery,
+  type HandedOnIngest,
+  type IngestDeps,
+  type ReceiveResult,
+} from "../src/core/github-ingest.ts";
 import { createMemoryStore } from "../src/core/memory-store.ts";
 import type { Evidence, Node, Store } from "../src/core/store.ts";
 
@@ -32,6 +41,45 @@ export const check = (
 
 export const passing = (...names: string[]): CheckRun[] =>
   names.map((name) => check(name, "completed", "success"));
+
+/** One delivery through the receiver and, when it was handed on, the ingest flow's record. */
+export interface Delivered {
+  /** What the receiver recorded and handed on. */
+  received: ReceiveResult;
+  /** What the ingest flow recorded, when the receiver handed the delivery on. */
+  ingested: HandedOnIngest | null;
+  /** The ingest flow's outcome for a delivery handed on, else the receiver's. */
+  outcome: HandedOnIngest["outcome"] | ReceiveResult["outcome"];
+  reason: string | null;
+  repo: string | null;
+  pr: number | null;
+  evidenceIds: string[];
+  finishedCi: HandedOnIngest["finishedCi"];
+}
+
+/**
+ * The receiver's `receiveDelivery`, then, for a delivery it handed on, the ingest flow's
+ * `ingestHandedOn` with exactly what the receiver handed on, sent as JSON as Windmill sends it.
+ */
+export async function deliverAndIngest(
+  deps: IngestDeps,
+  delivery: Delivery,
+): Promise<Delivered> {
+  const received = await receiveDelivery(deps, delivery);
+  const ingested = received.handedOn
+    ? await ingestHandedOn(deps, JSON.parse(JSON.stringify(received.handedOn)))
+    : null;
+  return {
+    received,
+    ingested,
+    outcome: ingested?.outcome ?? received.outcome,
+    reason: ingested ? ingested.reason : received.reason,
+    repo: received.repo,
+    pr: ingested?.pr ?? received.pr,
+    evidenceIds: ingested?.evidenceIds ?? [],
+    finishedCi: ingested?.finishedCi ?? [],
+  };
+}
 
 export interface IngestFixture {
   store: Store;

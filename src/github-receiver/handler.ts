@@ -1,18 +1,25 @@
 // The webhook endpoint (ADR 0113 sections 2 and 8). Order matters: cap the raw body, check the
 // signature over those exact bytes, and only then parse. A request that fails the signature is
-// answered 401 with nothing parsed or stored. Once a delivery is recorded, the flows its new
-// evidence makes due are started (./flow-starts.ts, O-101, O-104), then, apart from CI's path on a
-// PR head, the removal of `BOOTSTRAP_TOKEN`'s access when Bootstrap's restarted run ended
-// (./bootstrap-starts.ts, O-114) and the staging deploy of CI's build on main
-// (./staging-starts.ts, O-116), before the answer, which a failed start never changes.
+// answered 401 with nothing parsed or stored. The receiver reads nothing from GitHub and holds no
+// GitHub token (D-381, O-128): it records the delivery as its signed payload alone decides it
+// (`receiveDelivery`, src/core/github-ingest.ts), and a delivery that needs GitHub is then handed
+// to the ingest flow (./ingest-starts.ts), which reads GitHub with the runner's own client and
+// records the evidence. Then, apart from CI's path on a PR head, the removal of
+// `BOOTSTRAP_TOKEN`'s access when Bootstrap's restarted run ended (./bootstrap-starts.ts, O-114)
+// and the staging deploy of CI's build on main (./staging-starts.ts, O-116), each from the signed
+// payload and the two switches, before the answer, which a failed start never changes.
 import type { IncomingMessage } from "node:http";
 
 import type { GitHubAdapter } from "../adapters/github/adapter.ts";
-import { ingestDelivery, type IngestDeps } from "../core/github-ingest.ts";
+import {
+  DELIVERY_ID,
+  receiveDelivery,
+  type ReceiveDeps,
+} from "../core/github-ingest.ts";
 import type { Logger } from "../service-kit/logger.ts";
 import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
 import type { BootstrapStarts } from "./bootstrap-starts.ts";
-import type { FlowStarts } from "./flow-starts.ts";
+import type { IngestStarts } from "./ingest-starts.ts";
 import type { StagingStarts } from "./staging-starts.ts";
 
 /**
@@ -24,15 +31,16 @@ export const WEBHOOK_PATH = "/api/github/webhook";
 /** The events ingestion reads are far smaller; anything larger is refused unread. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
-/** GitHub's delivery ids and event names. Anything else is not logged or stored. */
-const DELIVERY_ID = /^[A-Za-z0-9-]{1,100}$/;
+/** GitHub's event names. A name or a delivery id outside its pattern is not logged or stored. */
 const EVENT_NAME = /^[a-z_]{1,100}$/;
 
 export interface ReceiverOptions {
-  github: GitHubAdapter;
-  ingest: Omit<IngestDeps, "github">;
-  /** Starts the flows a recorded delivery makes due. Never throws. */
-  flowStarts: FlowStarts;
+  /** Only the webhook signature check: the receiver reads nothing from GitHub (D-381). */
+  github: Pick<GitHubAdapter, "verifyWebhookSignature">;
+  /** The store the deliveries are recorded in, and the clock that dates them. */
+  ingest: ReceiveDeps;
+  /** Hands a recorded delivery that needs GitHub to the ingest flow (O-128). Never throws. */
+  ingestStarts: IngestStarts;
   /** Starts the removal of `BOOTSTRAP_TOKEN`'s access after Bootstrap's restart (O-114). Never throws. */
   bootstrapStarts?: BootstrapStarts;
   /** Starts the staging deploy of CI's build on main (O-116). Never throws. */
@@ -69,7 +77,6 @@ function parse(raw: Buffer): unknown {
 
 export function createReceiverHandler(options: ReceiverOptions): RequestHandler {
   const { github, logger } = options;
-  const deps: IngestDeps = { ...options.ingest, github };
 
   return async (request, response) => {
     if (request.method !== "POST" || pathOnly(request.url) !== WEBHOOK_PATH)
@@ -95,7 +102,7 @@ export function createReceiverHandler(options: ReceiverOptions): RequestHandler 
       return true;
     }
 
-    const result = await ingestDelivery(deps, {
+    const result = await receiveDelivery(options.ingest, {
       id: deliveryId,
       event,
       payload: parse(raw),
@@ -107,7 +114,7 @@ export function createReceiverHandler(options: ReceiverOptions): RequestHandler 
       pr: result.pr,
       outcome: result.outcome,
     });
-    await options.flowStarts(deliveryId, result);
+    await options.ingestStarts(deliveryId, result);
     const delivery = { event, payload: parse(raw) };
     await options.bootstrapStarts?.(deliveryId, delivery, result);
     await options.stagingStarts?.(deliveryId, delivery, result);

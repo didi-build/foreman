@@ -1,13 +1,15 @@
 // Seam: GitHub ingestion against Postgres (build plan M2.3, ADR 0113, migration 0002). The core's
-// ingestion functions on the real Postgres store, connected as the factory_ingest role, so the
-// role's grants and row level security back up the core's rules: it writes only deliveries and
-// ingested evidence kinds under a key, changes nothing, and a replay is a no-op. Migration 0020
-// (O-101): it reads the kill switch and dry run and no other setting, so capture's due check runs
-// as this role before the receiver starts the option capture flow, and before it starts the
-// staging deploy (O-116), which reads nothing else. The advance check runs as this role too
-// (O-104), with no new grant: the one read it could need beyond it, a decision on a design head
-// QA already reported on, is refused, so the check fails closed.
-// Migration 0021 (O-111): it also records CI's preview check, under its key.
+// ingestion functions on the real Postgres store, split as production splits them (D-381, O-128):
+// the receiver's part (`receiveDelivery`) connected as the factory_ingest role, which records the
+// delivery and reads nothing else, and the ingest flow's part (`ingestHandedOn`), like the polling
+// backstop, connected as factory_runner. The role's grants and row level security back up the
+// core's rules: factory_ingest writes only deliveries and ingested evidence kinds under a key,
+// changes nothing, and a replay is a no-op. Migration 0020 (O-101): it reads the kill switch and
+// dry run and no other setting, which the receiver reads before it starts the staging deploy
+// (O-116) or the access removal (O-114). Capture's due check and the advance check now run in the
+// ingest flow as factory_runner (O-128), which also reads the decision the receiver's role was
+// refused (O-104). Migration 0021 (O-111): CI's preview check is recorded under its key.
+// factory_ingest keeps its evidence grants, which the receiver no longer uses (O-128).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -22,9 +24,12 @@ import {
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import {
   ciRunKey,
-  ingestDelivery,
+  HANDED_ON,
+  ingestHandedOn,
   mergeCommitKey,
   pollRepository,
+  receiveDelivery,
+  type Delivery,
   type IngestDeps,
 } from "../../src/core/github-ingest.ts";
 import { createAdvances } from "../../src/core/advances.ts";
@@ -66,7 +71,19 @@ describe.skipIf(!adminUrl)(
     let runner: Store;
     let ingest: Store;
     let f: IngestFixture;
+    /** The receiver's part, as factory_ingest. */
     let deps: IngestDeps;
+    /** The ingest flow's part and the polling backstop, as factory_runner. */
+    let runnerDeps: IngestDeps;
+
+    /** The receiver's record and hand-on, then the flow's record, each as its own role. */
+    async function deliver(delivery: Delivery) {
+      const received = await receiveDelivery(deps, delivery);
+      const ingested = received.handedOn
+        ? await ingestHandedOn(runnerDeps, received.handedOn)
+        : null;
+      return { received, ingested };
+    }
 
     /** A ci_run row the ingest role may write, apart from what the test changes. */
     const ciRun = (overrides: Partial<Evidence> = {}): Evidence => ({
@@ -102,6 +119,7 @@ describe.skipIf(!adminUrl)(
       // The runner sets up the project, node and dispatch record; ingestion runs as its own role.
       f = await createIngestFixture({ store: runner });
       deps = { ...f.deps, store: ingest };
+      runnerDeps = f.deps;
     });
 
     afterAll(async () => {
@@ -125,13 +143,26 @@ describe.skipIf(!adminUrl)(
     it("records one evidence row and one delivery when a delivery is replayed", async () => {
       const payload = pullRequestEvent("opened", await f.pr());
       const delivery = { id: "db-delivery-1", event: "pull_request", payload };
-      expect((await ingestDelivery(deps, delivery)).outcome).toBe("recorded");
-      expect((await ingestDelivery(deps, delivery)).outcome).toBe("duplicate");
+      const first = await deliver(delivery);
+      expect(first.received.outcome).toBe("recorded");
+      expect(first.ingested?.outcome).toBe("recorded");
+      const replay = await deliver(delivery);
+      expect(replay).toEqual({
+        received: {
+          outcome: "duplicate",
+          reason: null,
+          repo: REPO,
+          pr: PR,
+          handedOn: null,
+        },
+        ingested: null,
+      });
       expect(await f.evidence("ci_run")).toHaveLength(1);
       expect(await runner.getGithubDelivery("db-delivery-1")).toMatchObject({
         eventType: "pull_request",
         repository: REPO,
         outcome: "recorded",
+        reason: HANDED_ON,
       });
       const rows = await runnerPool.query(
         "select count(*)::int as n from factory.github_deliveries where delivery_id = 'db-delivery-1'",
@@ -139,7 +170,7 @@ describe.skipIf(!adminUrl)(
       expect(rows.rows[0].n).toBe(1);
     });
 
-    it("lets exactly one of two racing copies of a delivery record anything", async () => {
+    it("lets exactly one of two racing copies of a delivery be recorded and handed on", async () => {
       const finished = passing("build");
       f.github.setCheckRuns(REPO, SHA_A, finished);
       const delivery = {
@@ -148,22 +179,39 @@ describe.skipIf(!adminUrl)(
         payload: checkCompletedEvent("check_suite", REPO, SHA_A, [PR]),
       };
       const outcomes = await Promise.all([
-        ingestDelivery(deps, delivery),
-        ingestDelivery(deps, delivery),
+        receiveDelivery(deps, delivery),
+        receiveDelivery(deps, delivery),
       ]);
       expect(outcomes.map((o) => o.outcome).sort()).toEqual(["duplicate", "recorded"]);
+      const handedOn = outcomes.flatMap((o) => (o.handedOn ? [o.handedOn] : []));
+      expect(handedOn).toHaveLength(1);
+      // Even two flow runs for the same fact record it once, under its key.
+      await Promise.all([
+        ingestHandedOn(runnerDeps, handedOn[0]!),
+        ingestHandedOn(runnerDeps, {
+          ...handedOn[0]!,
+          deliveryId: "db-delivery-other",
+        }),
+      ]);
       expect((await f.evidence("ci_run")).map((e) => e.ref)).toEqual([
         ciRunKey(REPO, PR, SHA_A, "pending"),
         ciRunKey(REPO, PR, SHA_A, "success", finished[0]!.id),
       ]);
     });
 
-    it("adds nothing on a polling pass after the webhooks, then records the merge", async () => {
-      await pollRepository(deps, REPO);
+    it("adds nothing on a polling pass after the webhooks, then records the merge once", async () => {
+      await pollRepository(runnerDeps, REPO);
       expect(await f.evidence()).toHaveLength(2);
       f.github.merge(REPO, PR, MERGE_SHA);
-      await pollRepository(deps, REPO);
-      await pollRepository(deps, REPO);
+      await pollRepository(runnerDeps, REPO);
+      await pollRepository(runnerDeps, REPO);
+      // The merge's delivery afterwards records nothing more.
+      const merged = await deliver({
+        id: "db-delivery-merge",
+        event: "pull_request",
+        payload: pullRequestEvent("closed", await f.pr()),
+      });
+      expect(merged.ingested).toMatchObject({ outcome: "ignored", evidenceIds: [] });
       const merges = await f.evidence("merge_commit");
       expect(merges.map((e) => [e.ref, e.commitSha])).toEqual([
         [mergeCommitKey(REPO, PR), MERGE_SHA],
@@ -294,7 +342,7 @@ describe.skipIf(!adminUrl)(
       await refused(ingestPool, "delete from factory.settings", /permission denied/);
     });
 
-    it("runs capture's due check as factory_ingest, reading only what the role may read (O-101)", async () => {
+    it("runs capture's due check in the ingest flow as factory_runner (O-101, O-128)", async () => {
       const at = deps.clock.now();
       const nodeId = deps.ids.next();
       await runner.insertNode({
@@ -345,13 +393,13 @@ describe.skipIf(!adminUrl)(
         ...testRouteColumns("designer"),
       });
       const head = "d".repeat(40);
-      await ingest.insertEvidenceOnce(
+      await runner.insertEvidenceOnce(
         ciRun({ nodeId, commitSha: head, payload: { conclusion: "success", pr: 8 } }),
         ciRunKey(REPO, 8, head, "success", 1),
       );
       const reads = createCaptureReads(machines());
       // Dry run is seeded on (0001), so nothing is due until it is turned off.
-      expect(await reads.due(ingest, nodeId)).toEqual({
+      expect(await reads.due(runner, nodeId)).toEqual({
         due: false,
         reason: "dry_run",
       });
@@ -364,9 +412,9 @@ describe.skipIf(!adminUrl)(
         });
       await set("dry_run", false);
       try {
-        expect(await reads.due(ingest, nodeId)).toEqual({ due: true, headSha: head });
+        expect(await reads.due(runner, nodeId)).toEqual({ due: true, headSha: head });
         await set("kill_switch", true);
-        expect(await reads.due(ingest, nodeId)).toEqual({
+        expect(await reads.due(runner, nodeId)).toEqual({
           due: false,
           reason: "kill_switch",
         });
@@ -383,7 +431,7 @@ describe.skipIf(!adminUrl)(
           recordedAt: deps.clock.now(),
           supersedesId: null,
         });
-        expect(await reads.due(ingest, nodeId)).toEqual({
+        expect(await reads.due(runner, nodeId)).toEqual({
           due: false,
           reason: "already_captured",
         });
@@ -392,7 +440,7 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("runs the advance check as factory_ingest with no new grant, and a decision read fails closed (O-104)", async () => {
+    it("runs the advance check in the ingest flow as factory_runner, which reads the decision the receiver's role could not (O-104, O-128)", async () => {
       const at = deps.clock.now();
       const node = async (state: string, extra: Partial<Node> = {}): Promise<Node> => {
         const created: Node = {
@@ -441,7 +489,7 @@ describe.skipIf(!adminUrl)(
       const head = "e".repeat(40);
       // A code item In development with CI green on its head and the Developer's docs note.
       const code = await node("in_development");
-      await ingest.insertEvidenceOnce(
+      await runner.insertEvidenceOnce(
         ciRun({
           nodeId: code.id,
           commitSha: head,
@@ -462,7 +510,7 @@ describe.skipIf(!adminUrl)(
         track: "design",
         ownerRole: "designer",
       });
-      await ingest.insertEvidenceOnce(
+      await runner.insertEvidenceOnce(
         ciRun({
           nodeId: design.id,
           commitSha: head,
@@ -502,6 +550,12 @@ describe.skipIf(!adminUrl)(
       });
 
       const advances = createAdvances({
+        ...runnerDeps,
+        contracts: machines(),
+        guards: GUARDS,
+      });
+      // The receiver's role, which ran this check before, cannot read the decision.
+      const asIngest = createAdvances({
         ...deps,
         contracts: machines(),
         guards: GUARDS,
@@ -529,9 +583,10 @@ describe.skipIf(!adminUrl)(
           due: false,
           reason: "no_advance_move",
         });
-        // The role cannot read decisions, and no grant is added: the check throws, and the
-        // receiver starts nothing (src/github-receiver/flow-starts.ts).
-        await expect(advances.due(design.id)).rejects.toThrow(/permission denied/);
+        // The runner reads the decision, so the check is decided now in the ingest flow; the
+        // receiver's role was refused here and left it to the reconcile pass (O-104, O-128).
+        await expect(asIngest.due(design.id)).rejects.toThrow(/permission denied/);
+        expect(await advances.due(design.id)).toMatchObject({ due: false });
         await set("kill_switch", true);
         expect(await advances.due(code.id)).toMatchObject({ reason: "kill_switch" });
       } finally {
@@ -556,7 +611,7 @@ describe.skipIf(!adminUrl)(
       );
     });
 
-    it("records CI's preview check as factory_ingest, once from the webhook and the poll (migration 0021, O-111)", async () => {
+    it("records CI's preview check from the ingest flow as factory_runner, once from the webhook and the poll (migration 0021, O-111, O-128)", async () => {
       const branch = "foreman/preview-check";
       const sha = "f".repeat(40);
       const number = 41;
@@ -598,8 +653,8 @@ describe.skipIf(!adminUrl)(
         event: "check_suite",
         payload: checkCompletedEvent("check_suite", REPO, sha, [number]),
       };
-      expect((await ingestDelivery(deps, delivery)).outcome).toBe("recorded");
-      await pollRepository(deps, REPO);
+      expect((await deliver(delivery)).ingested?.outcome).toBe("recorded");
+      await pollRepository(runnerDeps, REPO);
       const rows = await runner.listEvidence({ nodeId, kind: "preview_check" });
       expect(rows.map((e) => [e.commitSha, e.payload, e.recordedBy])).toEqual([
         [

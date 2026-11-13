@@ -1,9 +1,8 @@
-// The real GitHub client. The runner's GitHub App is registered at M3 (D-178), so until then every
-// read and the merge calls refuse; only signature checking, which needs no network, works. Never
-// used in tests. The real merge is GitHub's `PUT /repos/{owner}/{repo}/pulls/{number}/merge` with
-// `merge_method: "squash"` and `sha` set to the expected head: 200 is merged (its `sha` is the
-// merge commit), 409 is `head_changed`, 405 is `not_mergeable`. It is written and checked against
-// GitHub when the runner App exists, not guessed at here.
+// The receiver's GitHub client: signature checking only, which needs no network. The receiver
+// holds no App key and no GitHub token (ADR 0106, ADR 0112), so every read and the merge calls
+// refuse, and since D-381 the receiver calls none of them: a delivery that needs GitHub is handed
+// to the ingest flow, which reads with the runner's own client over the runner App's narrow tokens
+// (./runner-github.ts, O-127, O-128). Never used in tests.
 import type { GitHubAdapter } from "./adapter.ts";
 import { verifyWebhookSignature } from "./signature.ts";
 

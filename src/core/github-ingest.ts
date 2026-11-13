@@ -2,6 +2,17 @@
 // reader, store, clock and id source: webhooks and the polling backstop both end here, build the
 // same ingest keys for the same facts, and so never record a fact twice.
 //
+// A webhook delivery is read in two places (D-381, O-128). The receiver holds no GitHub token, so
+// it decides from the signed payload alone (`receiveDelivery`): it records the delivery, decides
+// what needs no GitHub read (an action ingestion does not use, a pull request closed without
+// merging, a check event that is not a completion or names no pull request, an event that is not
+// evidence, a payload it cannot read), and for the rest names the identifiers ingestion needs to
+// read GitHub again (`HandedOnDelivery`): the delivery id, the event and action, the repository,
+// the pull request numbers and the head commit the event names, never a title, a body, a branch
+// name, a login or the payload (ADR 0113 section 8). The receiver starts the ingest flow with
+// them, and the flow reads GitHub with the runner's own client and records what it finds
+// (`ingestHandedOn`), through the same functions and keys as the polling backstop.
+//
 // The head rule (D-178, docs/guards.md): a guard takes the head commit from the newest `ci_run`,
 // so a `ci_run` is recorded only for the PR's current head as GitHub reports it at that moment.
 // A late event about an older commit records nothing, and the head never moves back.
@@ -14,7 +25,12 @@
 // A `deployment_status` delivery is still recorded as a delivery only, never as evidence (ADR 0113
 // section 5), and nothing starts on it: the runner deploys staging itself and records that deploy
 // (D-356, O-116), so GitHub's deployments say nothing the runner reads.
-import type { GitHubReader, CheckRun, PullRequest } from "./github.ts";
+import {
+  REPOSITORY,
+  type GitHubReader,
+  type CheckRun,
+  type PullRequest,
+} from "./github.ts";
 import type { Clock, IdSource } from "./library.ts";
 import { previewCheckKey, readPreviewCheck } from "./preview-check.ts";
 import type {
@@ -67,21 +83,100 @@ export interface Delivery {
   payload: unknown;
 }
 
-export interface IngestResult {
+/** GitHub's delivery ids (`X-GitHub-Delivery`): the only form one is stored, logged or handed on. */
+export const DELIVERY_ID = /^[A-Za-z0-9-]{1,100}$/;
+
+/** A full commit id: the only form a head commit is handed to the ingest flow in. */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/** The reason a delivery handed to the ingest flow is recorded with (D-381, O-128). */
+export const HANDED_ON = "handed to the ingest flow";
+
+/**
+ * What the receiver hands the ingest flow for a delivery that needs GitHub (D-381, O-128), and so
+ * what crosses into Windmill: the identifiers ingestion needs to read GitHub again, and nothing
+ * else. Never a title, a body, a branch name, a login or the payload (ADR 0113 section 8).
+ */
+export type HandedOnDelivery =
+  | {
+      deliveryId: string;
+      event: "pull_request";
+      /** New commits on a PR: a pending `ci_run` for the head, while it is still the head. */
+      action: "opened" | "reopened" | "synchronize";
+      /** `owner/name`. */
+      repo: string;
+      /** The one pull request the event is about. */
+      pullRequests: number[];
+      /** The head commit the event names. */
+      headSha: string;
+    }
+  | {
+      deliveryId: string;
+      event: "pull_request";
+      /** A merge (the payload says `merged: true`): GitHub is asked for the merge commit. */
+      action: "closed";
+      repo: string;
+      pullRequests: number[];
+      headSha: null;
+    }
+  | {
+      deliveryId: string;
+      event: "check_suite" | "workflow_run";
+      /** CI's end on a commit: the final `ci_run` for each listed PR whose head it still is. */
+      action: "completed";
+      repo: string;
+      /** The pull requests GitHub lists for the commit, each once. */
+      pullRequests: number[];
+      headSha: string;
+    };
+
+/** What one delivery amounts to from its signed payload alone (D-381, O-128). */
+export type DeliveryDecision =
+  /** An event type ingestion does not read: acknowledged and not stored (ADR 0113 section 2). */
+  | { kind: "unhandled"; repo: string | null }
+  /** A signed payload ingestion cannot read: recorded as `rejected` and answered 400. */
+  | { kind: "rejected"; repo: string | null; reason: "malformed payload" }
+  /** Decided without GitHub: recorded as `ignored`, with a short fixed reason. */
+  | { kind: "ignored"; repo: string; pr: number | null; reason: string }
+  /** Needs GitHub: recorded, and handed to the ingest flow with exactly these identifiers. */
+  | { kind: "handed_on"; repo: string; pr: number; delivery: HandedOnDelivery };
+
+/** What the receiver needs to record a delivery: no GitHub reader, no id source. */
+export interface ReceiveDeps {
+  store: Pick<Store, "recordGithubDelivery">;
+  clock: Clock;
+}
+
+export interface ReceiveResult {
   /**
-   * What was stored for the delivery. `duplicate` (its id was seen before) and `unhandled` (an
+   * What was stored for the delivery: `recorded` for one handed to the ingest flow, `ignored` or
+   * `rejected` for one decided here. `duplicate` (its id was seen before) and `unhandled` (an
    * event type ingestion does not read) store nothing.
    */
   outcome: GithubDeliveryOutcome | "duplicate" | "unhandled";
-  /** A short fixed reason when nothing new was recorded. Never text from the payload. */
+  /** A short fixed reason. Never text from the payload. */
   reason: string | null;
   repo: string | null;
+  pr: number | null;
+  /**
+   * For a delivery recorded now that needs GitHub, what the ingest flow is started with. Null for
+   * everything else, a replay included, so a delivery starts the flow at most once.
+   */
+  handedOn: HandedOnDelivery | null;
+}
+
+/** What the ingest flow recorded for one handed-on delivery. */
+export interface HandedOnIngest {
+  /** `recorded` when it inserted evidence, `ignored` when there was nothing new. */
+  outcome: "recorded" | "ignored";
+  /** A short fixed reason when nothing new was recorded. Never text from GitHub. */
+  reason: string | null;
   pr: number | null;
   evidenceIds: string[];
   /**
    * Each PR head whose CI end this delivery recorded: a newly inserted final `ci_run` (success or
-   * failure), never a pending one. A replay, or a fact another delivery already recorded, names
-   * none, so the receiver starts a flow at most once per CI end (O-101).
+   * failure), never a pending one. A fact another delivery already recorded names none, so the
+   * steps that follow CI's end run at most once per CI end (O-101, O-104).
    */
   finishedCi: FinishedCi[];
 }
@@ -325,54 +420,216 @@ function str(value: unknown): string {
   return value;
 }
 
+const isPullRequestNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1;
+
 function prNumber(value: unknown): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-    throw new MalformedPayload();
+  if (!isPullRequestNumber(value)) throw new MalformedPayload();
   return value;
 }
 
-/** What a handled event amounts to, reading the PR's live state from GitHub. */
-async function examine(
-  deps: IngestDeps,
-  event: string,
-  repo: string,
-  payload: unknown,
-): Promise<Finding[]> {
+/** A commit the ingest flow is handed: a full commit id, or the payload is not read. */
+function fullSha(value: string): string {
+  if (!FULL_SHA.test(value)) throw new MalformedPayload();
+  return value;
+}
+
+/** The delivery's repository, `repository.full_name`, or null when the payload names none. */
+function repositoryOf(payload: unknown): string | null {
+  const name = field(field(payload, "repository"), "full_name");
+  return typeof name === "string" && name !== "" ? name : null;
+}
+
+type Decided = Exclude<DeliveryDecision, { kind: "unhandled" | "rejected" }>;
+
+/**
+ * What a handled event amounts to from its signed payload alone: what ingestion decided without
+ * GitHub before (D-381), or the identifiers it reads GitHub with. Throws `MalformedPayload`.
+ */
+function decide(id: string, event: string, repo: string, payload: unknown): Decided {
+  const ignored = (pr: number | null, reason: string): Decided => ({
+    kind: "ignored",
+    repo,
+    pr,
+    reason,
+  });
+  // The repository a token and an API path are built for (D-267): handed on only in that form.
+  const handedOn = (delivery: HandedOnDelivery): Decided => {
+    if (!REPOSITORY.test(repo)) throw new MalformedPayload();
+    return { kind: "handed_on", repo, pr: delivery.pullRequests[0]!, delivery };
+  };
   const action = field(payload, "action");
   if (event === "pull_request") {
     const pull = field(payload, "pull_request");
     const number = prNumber(field(pull, "number"));
     if (action === "opened" || action === "reopened" || action === "synchronize") {
-      const sha = str(field(field(pull, "head"), "sha"));
-      const pr = await fetchPullRequest(deps, repo, number);
-      return [isFinding(pr) ? pr : await ciRunFinding(deps, pr, sha, "pending")];
+      const sha = fullSha(str(field(field(pull, "head"), "sha")));
+      return handedOn({
+        deliveryId: id,
+        event,
+        action,
+        repo,
+        pullRequests: [number],
+        headSha: sha,
+      });
     }
     if (action === "closed") {
       if (field(pull, "merged") !== true)
-        return [ignore(number, "closed without merging")];
-      const pr = await fetchPullRequest(deps, repo, number);
-      return [isFinding(pr) ? pr : await mergeFinding(deps, pr)];
+        return ignored(number, "closed without merging");
+      return handedOn({
+        deliveryId: id,
+        event,
+        action,
+        repo,
+        pullRequests: [number],
+        headSha: null,
+      });
     }
-    return [ignore(number, "pull request action not used")];
+    return ignored(number, "pull request action not used");
   }
   if (event === "check_suite" || event === "workflow_run") {
-    if (action !== "completed") return [ignore(null, "not a completion")];
+    if (action !== "completed") return ignored(null, "not a completion");
     const subject = field(payload, event);
     const sha = str(field(subject, "head_sha"));
     const pulls = field(subject, "pull_requests");
     if (!Array.isArray(pulls)) throw new MalformedPayload();
     // GitHub lists only PRs whose head is in this repository, so a fork's run lists none.
-    if (pulls.length === 0) return [ignore(null, "no pull request for this commit")];
-    const findings: Finding[] = [];
-    for (const pull of pulls) {
-      const pr = await fetchPullRequest(deps, repo, prNumber(field(pull, "number")));
-      findings.push(isFinding(pr) ? pr : await ciRunFinding(deps, pr, sha, "final"));
-    }
-    return findings;
+    if (pulls.length === 0) return ignored(null, "no pull request for this commit");
+    const numbers = [...new Set(pulls.map((pull) => prNumber(field(pull, "number"))))];
+    return handedOn({
+      deliveryId: id,
+      event,
+      action,
+      repo,
+      pullRequests: numbers,
+      headSha: fullSha(sha),
+    });
   }
   // deployment_status and push: not evidence by themselves; the runner checks staging itself
-  // (ADR 0107). The preview check is CI's own job, read with the CI result above (D-354).
-  return [ignore(null, "not evidence by itself")];
+  // (ADR 0107). The preview check is CI's own job, read with the CI result (D-354).
+  return ignored(null, "not evidence by itself");
+}
+
+/**
+ * What one authenticated delivery amounts to from its signed payload alone, with no GitHub read
+ * and no store (D-381, O-128).
+ */
+export function decideDelivery(delivery: Delivery): DeliveryDecision {
+  const repo = repositoryOf(delivery.payload);
+  if (!HANDLED_EVENTS.has(delivery.event)) return { kind: "unhandled", repo };
+  const rejected = { kind: "rejected", repo, reason: "malformed payload" } as const;
+  if (repo === null) return rejected;
+  try {
+    return decide(delivery.id, delivery.event, repo, delivery.payload);
+  } catch (error) {
+    if (!(error instanceof MalformedPayload)) throw error;
+    return rejected;
+  }
+}
+
+/**
+ * Records one authenticated delivery as the receiver decides it (D-381, O-128): `ignored` or
+ * `rejected` when the payload settles it, `recorded` with the reason `HANDED_ON` when it needs
+ * GitHub, and then names what the ingest flow is started with. A replayed delivery id writes
+ * nothing and names nothing, even when two copies race: the store records an id once.
+ */
+export async function receiveDelivery(
+  deps: ReceiveDeps,
+  delivery: Delivery,
+): Promise<ReceiveResult> {
+  const decision = decideDelivery(delivery);
+  const { repo } = decision;
+  if (decision.kind === "unhandled") {
+    return { outcome: "unhandled", reason: null, repo, pr: null, handedOn: null };
+  }
+  const outcome: GithubDeliveryOutcome =
+    decision.kind === "handed_on" ? "recorded" : decision.kind;
+  const reason = decision.kind === "handed_on" ? HANDED_ON : decision.reason;
+  const pr = decision.kind === "rejected" ? null : decision.pr;
+  const fresh = await deps.store.recordGithubDelivery({
+    deliveryId: delivery.id,
+    eventType: delivery.event,
+    repository: repo,
+    receivedAt: deps.clock.now(),
+    outcome,
+    reason,
+  });
+  if (!fresh) return { outcome: "duplicate", reason: null, repo, pr, handedOn: null };
+  return {
+    outcome,
+    reason,
+    repo,
+    pr,
+    handedOn: decision.kind === "handed_on" ? decision.delivery : null,
+  };
+}
+
+const INPUT_KEYS = new Set([
+  "deliveryId",
+  "event",
+  "action",
+  "repo",
+  "pullRequests",
+  "headSha",
+]);
+
+/**
+ * The ingest flow's input read strictly (D-381, O-128): exactly the fields the receiver hands on,
+ * in the combinations it hands them on in, or null. Any other key, a repository that is not
+ * `owner/name`, a commit that is not a full commit id, or a pull request number that is not a
+ * positive integer is refused.
+ */
+export function readHandedOnDelivery(input: unknown): HandedOnDelivery | null {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  if (Object.keys(input).some((key) => !INPUT_KEYS.has(key))) return null;
+  const deliveryId = field(input, "deliveryId");
+  const event = field(input, "event");
+  const action = field(input, "action");
+  const repo = field(input, "repo");
+  const list = field(input, "pullRequests");
+  const headSha = field(input, "headSha");
+  if (typeof deliveryId !== "string" || !DELIVERY_ID.test(deliveryId)) return null;
+  if (typeof repo !== "string" || !REPOSITORY.test(repo)) return null;
+  if (!Array.isArray(list) || list.length === 0 || !list.every(isPullRequestNumber))
+    return null;
+  const pullRequests = [...(list as number[])];
+  const sha = typeof headSha === "string" && FULL_SHA.test(headSha) ? headSha : null;
+  if (event === "pull_request") {
+    if (pullRequests.length !== 1) return null;
+    if (action === "closed") {
+      return headSha === null
+        ? { deliveryId, event, action, repo, pullRequests, headSha: null }
+        : null;
+    }
+    if (action === "opened" || action === "reopened" || action === "synchronize") {
+      return sha
+        ? { deliveryId, event, action, repo, pullRequests, headSha: sha }
+        : null;
+    }
+    return null;
+  }
+  if ((event === "check_suite" || event === "workflow_run") && action === "completed") {
+    return sha ? { deliveryId, event, action, repo, pullRequests, headSha: sha } : null;
+  }
+  return null;
+}
+
+/** What a handed-on delivery amounts to, reading each PR's live state from GitHub. */
+async function examine(
+  deps: IngestDeps,
+  delivery: HandedOnDelivery,
+): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  for (const number of delivery.pullRequests) {
+    const pr = await fetchPullRequest(deps, delivery.repo, number);
+    if (isFinding(pr)) findings.push(pr);
+    else if (delivery.action === "closed") findings.push(await mergeFinding(deps, pr));
+    else {
+      const mode = delivery.event === "pull_request" ? "pending" : "final";
+      findings.push(await ciRunFinding(deps, pr, delivery.headSha, mode));
+    }
+  }
+  return findings;
 }
 
 /** Inserts each fact unless its key is already recorded. Returns the ids inserted. */
@@ -409,78 +666,28 @@ function finishedCiOf(
     .map((e) => ({ nodeId: e.nodeId, commitSha: e.commitSha as string }));
 }
 
-class DuplicateDelivery extends Error {}
-
 /**
- * Records what one authenticated webhook delivery says. The delivery row and its evidence commit
- * together, so a replayed delivery id writes nothing, even when two copies race.
+ * Records what one handed-on delivery says, as the ingest flow reads it (D-381, O-128): each
+ * PR's live state from GitHub, then each fact under its ingest key in one transaction, so a fact
+ * the polling backstop or another delivery already recorded is not recorded again. The delivery
+ * row is the receiver's, written before the flow started.
  */
-export async function ingestDelivery(
+export async function ingestHandedOn(
   deps: IngestDeps,
-  delivery: Delivery,
-): Promise<IngestResult> {
-  const repository = field(field(delivery.payload, "repository"), "full_name");
-  const repo = typeof repository === "string" && repository !== "" ? repository : null;
-  if (!HANDLED_EVENTS.has(delivery.event)) {
-    return {
-      outcome: "unhandled",
-      reason: null,
-      repo,
-      pr: null,
-      evidenceIds: [],
-      finishedCi: [],
-    };
-  }
-
-  let findings: Finding[] | null = null;
-  if (repo !== null) {
-    try {
-      findings = await examine(deps, delivery.event, repo, delivery.payload);
-    } catch (error) {
-      if (!(error instanceof MalformedPayload)) throw error;
-    }
-  }
-  const pr = findings?.find((f) => f.pr !== null)?.pr ?? null;
-
-  try {
-    return await deps.store.transaction(async (tx) => {
-      const evidenceIds = findings ? await insertFacts(tx, findings) : [];
-      const outcome: GithubDeliveryOutcome =
-        findings === null
-          ? "rejected"
-          : evidenceIds.length > 0
-            ? "recorded"
-            : "ignored";
-      const reason =
-        findings === null
-          ? "malformed payload"
-          : outcome === "recorded"
-            ? null
-            : (findings.find((f) => f.reason !== null)?.reason ?? "already recorded");
-      const fresh = await tx.recordGithubDelivery({
-        deliveryId: delivery.id,
-        eventType: delivery.event,
-        repository: repo,
-        receivedAt: deps.clock.now(),
-        outcome,
-        reason,
-      });
-      // Rolls back any evidence this copy inserted; the first copy owns the result.
-      if (!fresh) throw new DuplicateDelivery();
-      const finishedCi = findings ? finishedCiOf(findings, evidenceIds) : [];
-      return { outcome, reason, repo, pr, evidenceIds, finishedCi };
-    });
-  } catch (error) {
-    if (!(error instanceof DuplicateDelivery)) throw error;
-    return {
-      outcome: "duplicate",
-      reason: null,
-      repo,
-      pr,
-      evidenceIds: [],
-      finishedCi: [],
-    };
-  }
+  delivery: HandedOnDelivery,
+): Promise<HandedOnIngest> {
+  const findings = await examine(deps, delivery);
+  const evidenceIds = await deps.store.transaction((tx) => insertFacts(tx, findings));
+  const recorded = evidenceIds.length > 0;
+  return {
+    outcome: recorded ? "recorded" : "ignored",
+    reason: recorded
+      ? null
+      : (findings.find((f) => f.reason !== null)?.reason ?? "already recorded"),
+    pr: findings.find((f) => f.pr !== null)?.pr ?? null,
+    evidenceIds,
+    finishedCi: finishedCiOf(findings, evidenceIds),
+  };
 }
 
 export interface PollResult {

@@ -278,9 +278,10 @@ export type CaptureDue =
 /**
  * What capture reads first, from settings, nodes, runs and evidence only: the switches, the item
  * in a capture state, its latest Designer run ended `success`, and its PR head. `capture` below
- * starts with `head`, and the GitHub receiver asks `due` before it starts the option capture flow
- * (src/github-receiver/flow-starts.ts, O-101), so the two cannot drift. `due` reads only what the
- * receiver's role `factory_ingest` may read (migration 0020): it takes a head as captured when
+ * starts with `head`, and the ingest flow asks `due` after it records CI's end on a PR head,
+ * before it captures (flows/lib/ingest-delivery.ts, O-101, O-128), so the two cannot drift. `due`
+ * reads only settings, nodes, runs and evidence, which the receiver's role `factory_ingest` may
+ * also read (migration 0020), where it ran before O-128: it takes a head as captured when
  * capture's own screenshots on it exist, which capture writes in the transaction that opens the
  * request for that head, instead of reading the request.
  */
