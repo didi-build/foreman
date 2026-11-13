@@ -17,6 +17,7 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { triagePass } from "../../flows/lib/triage-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import { KubernetesApiError } from "../../src/adapters/agent-runtime/kubernetes/client.ts";
 import { createFakeKubernetes } from "../../src/adapters/agent-runtime/kubernetes/fake.ts";
 import { SETTINGS } from "../../src/adapters/agent-runtime/kubernetes/fixtures.ts";
 import { repoMapNames } from "../../src/adapters/agent-runtime/kubernetes/names.ts";
@@ -786,8 +787,29 @@ describe("Triage's switches and refusals (flow: fake model, D-201)", () => {
       repoMaps: { read: async () => Promise.reject(new Error("not built")) },
     };
     expect(await triagePass(failing, [idea.id])).toMatchObject([
-      { step: "start", result: { outcome: "start_failed" } },
+      // A plain Error's message could hold a value: only its kind is kept (D-384).
+      { step: "start", result: { outcome: "start_failed", error: { type: "Error" } } },
     ]);
+    expect(await f.store.listRuns({ nodeId: idea.id })).toEqual([]);
+  });
+
+  it("names the step of a repo map read that failed, so the result says what broke (D-384)", async () => {
+    const f = await createFlowFixture();
+    const idea = await acceptedIdea(f);
+    const refused = new KubernetesApiError(
+      "create Job in agents-example",
+      403,
+      "Forbidden",
+    );
+    const failing = {
+      ...f.deps,
+      repoMaps: { read: async () => Promise.reject(refused) },
+    };
+    const [step] = await triagePass(failing, [idea.id]);
+    expect(step?.result).toEqual({
+      outcome: "start_failed",
+      error: { type: "KubernetesApiError", message: refused.message },
+    });
     expect(await f.store.listRuns({ nodeId: idea.id })).toEqual([]);
   });
 

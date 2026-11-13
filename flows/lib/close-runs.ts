@@ -14,6 +14,7 @@
 import type { CloseRunStart } from "../../src/core/pr-close.ts";
 import { createPullRequestCloses } from "../../src/core/pr-close.ts";
 import type { FlowDeps } from "./compose.ts";
+import { startError } from "./start-failure.ts";
 import { startRun } from "./start-run.ts";
 
 /**
@@ -45,8 +46,10 @@ export async function closePass(
       if (started.outcome === "started" || started.outcome === "cancelled")
         step.runId = started.runId;
       if ("reason" in started) step.reason = started.reason;
-    } catch {
-      // The run ended `fail` before it started (./start-run.ts); the error is not kept.
+    } catch (error) {
+      // The run ended `fail` before it started (./start-run.ts); its error's kind and step are
+      // kept (D-384).
+      step.error = startError(error);
     }
     steps.push(step);
   }

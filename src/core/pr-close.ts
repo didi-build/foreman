@@ -73,6 +73,8 @@ export interface CloseRunStart {
   outcome: string;
   runId?: string;
   reason?: string;
+  /** With `start_failed`: the error's kind and, for Foreman's own errors, its step (D-384). */
+  error?: { type: string; message?: string };
 }
 
 /** How the daily check shows an item's close (D-318). */

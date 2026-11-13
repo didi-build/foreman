@@ -14,13 +14,14 @@ import { createRunReports, type ReportedMove } from "../../src/core/run-reports.
 import type { AgentRole } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { startFailed, type StartFailed } from "./start-failure.ts";
 
 export interface BuilderRunStart {
   nodeId: string;
   role: AgentRole;
   cause: BuilderRunCause;
-  /** The dispatch's result, or `start_failed` when it threw (the error is not kept). */
-  result: StartRunResult | { outcome: "start_failed" };
+  /** The dispatch's result, or `start_failed` when it threw, with its error's kind and step (D-384). */
+  result: StartRunResult | StartFailed;
 }
 
 /** Starts each due builder run: on the given nodes, or on every node when none are given. */
@@ -39,11 +40,11 @@ export async function startBuilderRuns(
     let result: BuilderRunStart["result"];
     try {
       result = await startRun(deps, { nodeId, role });
-    } catch {
+    } catch (error) {
       // A start that threw has already ended its run `fail` and counted a repeated failure
       // (./start-run.ts). That run never started, so the item stays due and the next trigger
       // tries again, until the escalation is due.
-      result = { outcome: "start_failed" };
+      result = startFailed(error);
     }
     started.push({ nodeId, role, cause, result });
   }

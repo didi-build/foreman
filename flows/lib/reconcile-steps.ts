@@ -45,6 +45,7 @@ import { VISUAL_TASK_TYPE } from "../../src/core/visual-comparison.ts";
 import type { FlowDeps } from "./compose.ts";
 import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { startFailed, type StartFailed } from "./start-failure.ts";
 import { heldBy } from "./switches.ts";
 
 // The pass's own trigger and actor, which the advance check also asks with (O-104).
@@ -60,11 +61,10 @@ export interface StepMove {
 }
 
 /**
- * What a start did: the dispatch's result, `start_failed` when it threw (the error is not kept),
+ * What a start did: the dispatch's result, `start_failed` when it threw, with its error's kind and step (D-384),
  * or `state_changed` when the node left the state the plan saw before it was started.
  */
-export type StepStart =
-  StartRunResult | { outcome: "start_failed" } | { outcome: "state_changed" };
+export type StepStart = StartRunResult | StartFailed | { outcome: "state_changed" };
 
 export interface ReleaseStep {
   nodeId: string;
@@ -145,9 +145,9 @@ function createSteps(deps: FlowDeps) {
             }
           : {}),
       });
-    } catch {
+    } catch (error) {
       // The run ended `fail` before it started (./start-run.ts); the next pass tries again.
-      return { outcome: "start_failed" };
+      return startFailed(error);
     }
   }
 

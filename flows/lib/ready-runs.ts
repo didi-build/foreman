@@ -29,13 +29,14 @@ import type { StagingResult } from "../../src/core/staging.ts";
 import type { AgentRole } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { startFailed, type StartFailed } from "./start-failure.ts";
 import { heldBy } from "./switches.ts";
 
 export interface ReadyRunStart {
   nodeId: string;
   role: AgentRole;
-  /** The dispatch's result, or `start_failed` when it threw (the error is not kept). */
-  result: StartRunResult | { outcome: "start_failed" };
+  /** The dispatch's result, or `start_failed` when it threw, with its error's kind and step (D-384). */
+  result: StartRunResult | StartFailed;
 }
 
 /**
@@ -56,10 +57,10 @@ export async function startReadyRuns(
     let result: ReadyRunStart["result"];
     try {
       result = await startRun(deps, { nodeId, role: check.role });
-    } catch {
+    } catch (error) {
       // A start that threw has already ended its run `fail` and counted a repeated failure
       // (./start-run.ts). The item stays ready, so the next trigger or pass tries again.
-      result = { outcome: "start_failed" };
+      result = startFailed(error);
     }
     started.push({ nodeId, role: check.role, result });
   }
@@ -95,8 +96,8 @@ export interface QaRunStart {
   taskType: string | null;
   prNumber: number;
   headSha: string;
-  /** The dispatch's result, or `start_failed` when it threw (the error is not kept). */
-  result: StartRunResult | { outcome: "start_failed" };
+  /** The dispatch's result, or `start_failed` when it threw, with its error's kind and step (D-384). */
+  result: StartRunResult | StartFailed;
 }
 
 /**
@@ -124,10 +125,10 @@ export async function startQaRuns(
         headSha,
         ...(taskType ? { taskType } : {}),
       });
-    } catch {
+    } catch (error) {
       // The run ended `fail` before it started (./start-run.ts), which QA's check does not count
       // as QA having run, so the next trigger or pass tries again.
-      result = { outcome: "start_failed" };
+      result = startFailed(error);
     }
     started.push({ nodeId, taskType, prNumber, headSha, result });
   }

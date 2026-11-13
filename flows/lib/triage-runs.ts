@@ -23,14 +23,15 @@ import type { Run } from "../../src/core/store.ts";
 import type { FlowDeps } from "./compose.ts";
 import { councilPass, type CouncilPassStep } from "./council-runs.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { startFailed, type StartFailed } from "./start-failure.ts";
 
 export interface TriagePassStep {
   ideaId: string;
   /** For an idea in Plan accepted: the move to Triage. */
   toTriage?: { outcome: string; reason?: string };
   step: TriageNext["step"];
-  /** With `start`: the dispatch's result, or `start_failed` when it threw (the error is not kept). */
-  result?: StartRunResult | { outcome: "start_failed" };
+  /** With `start`: the dispatch's result, or `start_failed` when it threw, with its error's kind and step (D-384). */
+  result?: StartRunResult | StartFailed;
   /** With `escalate`: the escalation, and the Council's run for it. */
   escalation?: TriageEscalation;
   councilRuns?: CouncilPassStep[];
@@ -52,10 +53,10 @@ export async function triagePass(
     if (next.step === "start") {
       try {
         step.result = await startRun(deps, { nodeId: ideaId, role: "triage" });
-      } catch {
+      } catch (error) {
         // The repo map could not be read, or the run ended `fail` before it started
         // (./start-run.ts). Either way the next pass tries again.
-        step.result = { outcome: "start_failed" };
+        step.result = startFailed(error);
       }
     }
     if (next.step === "escalate") {

@@ -151,6 +151,7 @@ import { countedRefusal } from "./option-capture.ts";
 import type { FlowDeps } from "./compose.ts";
 import { heldBy } from "./switches.ts";
 import { startRun, type StartRunResult } from "./start-run.ts";
+import { startFailed, type StartFailed } from "./start-failure.ts";
 import { recordTriageAnswer, triagePass, type TriagePassStep } from "./triage-runs.ts";
 import type { TriageRecord } from "../../src/core/triage.ts";
 import { createPlanApprovals, type PlanApprovalStep } from "../../src/core/plans.ts";
@@ -159,8 +160,8 @@ export interface CouncilPassStep {
   topicKey: string;
   kind: CouncilQuestion["kind"];
   step: CouncilNext["step"];
-  /** With `start`: the dispatch's result, or `start_failed` when it threw (the error is not kept). */
-  result?: StartRunResult | { outcome: "start_failed" };
+  /** With `start`: the dispatch's result, or `start_failed` when it threw, with its error's kind and step (D-384). */
+  result?: StartRunResult | StartFailed;
   /**
    * With `to_didi`: the escalation's move to Didi, or the gate request for Didi of a reversal or
    * a scanner idea that is no longer found (D-301).
@@ -196,10 +197,10 @@ export async function councilPass(
           role: "council",
           questionTopic: question.topicKey,
         });
-      } catch {
+      } catch (error) {
         // The run ended `fail` before it started (./start-run.ts). It counts as one of the
         // question's runs, so a start that always fails reaches Didi after the re-run.
-        step.result = { outcome: "start_failed" };
+        step.result = startFailed(error);
       }
     }
     if (next.step === "to_didi") {
@@ -488,8 +489,8 @@ export type AfterRunEnd = AfterReport &
 /** The one more visual run after a `cannot_tell`, when it was due (D-252). */
 export interface VisualRerunStart {
   nodeId: string;
-  /** The dispatch's result, or `start_failed` when it threw (the error is not kept). */
-  result: StartRunResult | { outcome: "start_failed" };
+  /** The dispatch's result, or `start_failed` when it threw, with its error's kind and step (D-384). */
+  result: StartRunResult | StartFailed;
 }
 
 /**
@@ -515,9 +516,9 @@ export async function visualRerun(
         taskType: VISUAL_TASK_TYPE,
       }),
     };
-  } catch {
+  } catch (error) {
     // The run ended `fail` before it started (./start-run.ts); the next QA run's end asks again.
-    return { nodeId, result: { outcome: "start_failed" } };
+    return { nodeId, result: startFailed(error) };
   }
 }
 
