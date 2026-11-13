@@ -111,7 +111,7 @@ export interface ArchiveHttp {
 export function createArchiveHttp(): ArchiveHttp {
   return {
     async get(path, token) {
-      const response = await githubApiGet(path, token, "raw");
+      const response = await githubApiGet(path, token, "download");
       const length = response.headers.get("content-length");
       return {
         status: response.status,

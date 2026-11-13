@@ -118,7 +118,7 @@ describe("CI's builds for the staging deploy (unit, fake GitHub, O-116)", () => 
     expect(await builds.siteArchive(REPO, 77)).toEqual(ZIP);
     expect(asked.map((a) => [a.path, a.accept])).toEqual([
       [ARTIFACTS_PATH, "json"],
-      [`/repos/${REPO}/actions/artifacts/5/zip`, "raw"],
+      [`/repos/${REPO}/actions/artifacts/5/zip`, "download"],
     ]);
     expect(asked[1]?.maxBytes).toBe(100 * 1024 * 1024);
     const none = fakes({

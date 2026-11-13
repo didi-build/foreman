@@ -81,7 +81,7 @@ describe("the map at a commit, built inside the Job (unit with fakes, D-275 (2))
     const f = fakeHttp();
     const map = await readRepoMapAt(f.http, REPO, SHA, TOKEN);
     expect(f.asked.map((a) => [a.path, a.accept])).toEqual([
-      [`/repos/${REPO}/tarball/${SHA}`, "raw"],
+      [`/repos/${REPO}/tarball/${SHA}`, "download"],
     ]);
     expect(map.commitSha).toBe(SHA);
     expect(map.files.map((file) => file.path)).toEqual([

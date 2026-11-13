@@ -42,7 +42,7 @@ export async function readArchiveAt(
   const archive = await http.get({
     path: `/repos/${repo}/tarball/${commitSha}`,
     token,
-    accept: "raw",
+    accept: "download",
     maxBytes: MAX_ARCHIVE_BYTES,
   });
   if (archive.status !== 200) {

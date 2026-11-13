@@ -181,7 +181,10 @@ describe("the screenshot bundles from CI's workflow artifacts (unit with fakes, 
         "json",
       ]),
     );
-    expect(paths.at(-1)).toEqual([`/repos/${REPO}/actions/artifacts/2/zip`, "raw"]);
+    expect(paths.at(-1)).toEqual([
+      `/repos/${REPO}/actions/artifacts/2/zip`,
+      "download",
+    ]);
     expect(bundle?.manifest).toEqual(MANIFEST_JSON);
     // The workflow run whose listing named the artifact read, for the approval link (O-89).
     expect(bundle?.workflowRunId).toBe(20);

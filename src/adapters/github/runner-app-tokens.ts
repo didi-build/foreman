@@ -45,8 +45,11 @@ export interface GitHubGetRequest {
   /** A path on `api.github.com`, starting with `/`, with its query. Never a full URL. */
   path: string;
   token: string;
-  /** The `Accept` header: JSON by default, the commit sha, or the raw bytes of an archive. */
-  accept: "json" | "sha" | "raw";
+  /**
+   * The `Accept` header: JSON, the commit sha, or a download (an archive or an artifact), which
+   * GitHub answers with a redirect to the file itself.
+   */
+  accept: "json" | "sha" | "download";
   /** The most bytes the body may have; a longer body is refused. */
   maxBytes: number;
 }
@@ -73,10 +76,16 @@ export class GitHubReadError extends Error {
   }
 }
 
-const ACCEPT: Record<GitHubGetRequest["accept"], string> = {
+/**
+ * The `Accept` header for each kind of read. A download asks for GitHub's own JSON type: the
+ * tarball and artifact routes answer it with a 302 to the file, which `fetch` follows, and refuse
+ * `application/octet-stream` with 415 (checked against api.github.com on 2026-11-13, O-131: the
+ * rehearsal's first repo map read failed so).
+ */
+export const GITHUB_ACCEPT: Readonly<Record<GitHubGetRequest["accept"], string>> = {
   json: "application/vnd.github+json",
   sha: "application/vnd.github.sha",
-  raw: "application/octet-stream",
+  download: "application/vnd.github+json",
 };
 
 /** The time one read may take before it is abandoned. */
@@ -98,7 +107,7 @@ export async function githubApiGet(
     throw new GitHubReadError("a GitHub path must start with /");
   return fetch(`https://api.github.com${path}`, {
     headers: {
-      accept: ACCEPT[accept],
+      accept: GITHUB_ACCEPT[accept],
       authorization: `Bearer ${token}`,
       "x-github-api-version": "2022-11-28",
       "user-agent": "foreman-runner",
