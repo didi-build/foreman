@@ -292,6 +292,26 @@ flows:
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
 
+  - name: submit_plan
+    path: f/foreman/submit_plan
+    entry: flows/submit-plan.ts
+    # Didi's form to submit a plan by hand (D-383, O-129), until the planning chat has a front end
+    # of its own. Didi drafts the plan in a Claude project and copies its fields into the form's
+    # boxes, once per plan (D-376): projectSlug, title, plan, productDirection, needsDidi (yes, no
+    # or unsure), needsDidiReason, answers (a list of question and answer) and, only to resubmit
+    # an idea's plan, ideaId. Didi starts it from its page in the Windmill workspace, signed in, as
+    # register_project (D-295). Never a public or signed-token link; no service's Windmill token,
+    # schedule, pass or other flow starts it. It checks the boxes as POST /plans checks the
+    # planning chat's body, records the submission with the same core code and the planning
+    # chat's identity, then takes the plan approval step in this same run, as the plan_approval
+    # flow the state API starts would, so it adds no other run (D-164). Under the kill switch or
+    # dry run it records the submission and takes no step (D-333); the reconcile pass takes it
+    # later. It reads what plan_approval reads: the runner's database login and the spec
+    # version, and, when the Council accepts the plan and Triage starts, what that start reads.
+    # No new secret, value, bundle file or credential.
+    trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
+
   - name: remove_bootstrap_access
     path: f/foreman/remove_bootstrap_access
     entry: flows/remove-bootstrap-access.ts

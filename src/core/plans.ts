@@ -289,6 +289,16 @@ export type SubmitResult =
   | { recorded: true; ideaId: string; created: boolean }
   | { recorded: false; reason: SubmitRefusal };
 
+/**
+ * The fixed sentence for each refusal: `POST /plans` answers with it (src/api/routes.ts), and so
+ * does Didi's form to submit a plan by hand (D-383, flows/lib/submit-plan.ts).
+ */
+export const SUBMIT_REFUSAL_MESSAGES: Readonly<Record<SubmitRefusal, string>> = {
+  no_project: "project not found",
+  no_idea: "idea not found",
+  not_submittable: "the idea is not waiting for a plan (Submitted or Council planning)",
+};
+
 /** A submission's record: the `agent_report` the planning chat's identity writes. */
 export function isPlanSubmission(evidence: Evidence): boolean {
   return (
