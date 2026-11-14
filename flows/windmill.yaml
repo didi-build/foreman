@@ -416,8 +416,8 @@ resources:
   #
   # The runner's database login (step 15), and the staging deploy token and the Cloudflare account
   # id (D-353, O-116, step 16), are stored by Didi by hand at first hosting, as secret variables at
-  # their `windmill_path`. Until the staging pair is stored the composition's credential port
-  # refuses with `NotBuiltError`, so nothing is uploaded.
+  # their `windmill_path`. Until the staging pair is stored, the composition's read of it fails
+  # and each deploy is refused as `credential_unavailable` (O-138), so nothing is uploaded.
   #
   # The four GitHub Apps' private keys are secret variables too, and their ids plain variables
   # beside them (D-368, D-370). Didi stores them by hand at first hosting (runbook step 15), with a
