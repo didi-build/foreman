@@ -7,6 +7,7 @@
 import type {
   CheckRun,
   CommitRelation,
+  ComparedPaths,
   PullRequest,
   WorkflowJob,
   WorkflowRun,
@@ -43,6 +44,17 @@ export interface FakeGitHub extends GitHubAdapter {
   putCommit(repo: string, sha: string, parents: string[]): void;
   /** Points a branch at a commit. A branch never set does not exist. */
   setBranchHead(repo: string, branch: string, sha: string): void;
+  /**
+   * The files GitHub's compare lists from `base` to `head` (D-388), and whether that list is
+   * complete. A pair never set lists no file.
+   */
+  setComparedPaths(
+    repo: string,
+    base: string,
+    head: string,
+    paths: string[],
+    complete?: boolean,
+  ): void;
   /** Squash merges the fake performed, in order. A refused merge is not listed. */
   readonly merges: readonly { repo: string; number: number; headSha: string }[];
   /** Signs a body with the fake's webhook secret, as GitHub would. */
@@ -63,7 +75,15 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const merges: { repo: string; number: number; headSha: string }[] = [];
   const parentsOf = new Map<string, string[]>();
   const branchHeads = new Map<string, string>();
+  const compared = new Map<string, { paths: string[]; complete: boolean }>();
   let reads = 0;
+
+  function relation(repo: string, base: string, head: string): CommitRelation {
+    if (base === head) return "identical";
+    if (reaches(repo, head, base)) return "ahead";
+    if (reaches(repo, base, head)) return "behind";
+    return "diverged";
+  }
 
   /** Whether `ancestor` is reachable from `sha` through the parents the fake was given. */
   function reaches(repo: string, sha: string, ancestor: string): boolean {
@@ -130,10 +150,16 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     async compareCommits(repo, base, head): Promise<CommitRelation> {
       reads++;
-      if (base === head) return "identical";
-      if (reaches(repo, head, base)) return "ahead";
-      if (reaches(repo, base, head)) return "behind";
-      return "diverged";
+      return relation(repo, base, head);
+    },
+    async listComparedPaths(repo, base, head): Promise<ComparedPaths> {
+      reads++;
+      const listed = compared.get(`${repo}:${base}...${head}`);
+      return {
+        relation: relation(repo, base, head),
+        paths: [...(listed?.paths ?? [])],
+        complete: listed?.complete ?? true,
+      };
     },
 
     async getMergeability(repo, number) {
@@ -196,6 +222,9 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     setBranchHead(repo, branch, sha) {
       branchHeads.set(`${repo}#${branch}`, sha);
+    },
+    setComparedPaths(repo, base, head, list, complete = true) {
+      compared.set(`${repo}:${base}...${head}`, { paths: [...list], complete });
     },
   };
 }

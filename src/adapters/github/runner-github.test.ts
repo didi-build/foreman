@@ -703,6 +703,75 @@ describe("the runner's GitHub client: commits and branches (unit with fakes, D-3
     }
   });
 
+  it("lists the paths a compare changed, renames' old paths too, from the same call (D-388)", async () => {
+    const f = fakes(() => ({
+      status: 200,
+      body: {
+        status: "ahead",
+        ahead_by: 2,
+        behind_by: 0,
+        files: [
+          {
+            filename: ".github/workflows/ci.yml",
+            status: "modified",
+            patch: BODY_TEXT,
+          },
+          {
+            filename: "docs/new.md",
+            previous_filename: "docs/old.md",
+            status: "renamed",
+          },
+          { filename: ".github/workflows/ci.yml", status: "modified" },
+        ],
+      },
+    }));
+    expect(await f.github.listComparedPaths(REPO, BASE, HEAD)).toEqual({
+      relation: "ahead",
+      paths: [".github/workflows/ci.yml", "docs/new.md", "docs/old.md"],
+      complete: true,
+    });
+    expect(f.minted).toEqual([{ repository: REPO, permission: "contents" }]);
+    expect(f.gets.map((g) => g.path)).toEqual([
+      `/repos/${REPO}/compare/${BASE}...${HEAD}?per_page=1`,
+    ]);
+  });
+
+  it("reports a compare that lists 300 files as possibly cut, never as complete", async () => {
+    const files = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ filename: `src/f${i}.ts` }));
+    for (const [n, complete] of [
+      [299, true],
+      [300, false],
+    ] as const) {
+      const f = fakes(() => ({
+        status: 200,
+        body: { status: "ahead", files: files(n) },
+      }));
+      const listed = await f.github.listComparedPaths(REPO, BASE, HEAD);
+      expect([listed.paths.length, listed.complete]).toEqual([n, complete]);
+    }
+  });
+
+  it("refuses a compare with no files list, a file it cannot read or a failed answer", async () => {
+    for (const body of [
+      { status: "ahead" },
+      { status: "ahead", files: {} },
+      { status: "ahead", files: [{ status: "added" }] },
+      { status: "ahead", files: [{ filename: "a.ts", previous_filename: 7 }] },
+      { files: [] },
+    ]) {
+      const f = fakes(() => ({ status: 200, body }));
+      const error = await failure(() => f.github.listComparedPaths(REPO, BASE, HEAD));
+      expect(error.message).toMatch(
+        /^the (compare answer has no (files|relation) the runner reads|changed files answer is malformed)$/,
+      );
+    }
+    const f = fakes(() => ({ status: 500, body: BODY_TEXT }));
+    expect(await failure(() => f.github.listComparedPaths(REPO, BASE, HEAD))).toEqual(
+      new GitHubReadError("comparing the commits failed with 500"),
+    );
+  });
+
   it("reads a branch's head with one contents read token, the name encoded, and null when there is none", async () => {
     for (const [branch, encoded] of [
       ["main", "main"],
@@ -793,6 +862,7 @@ describe("the runner's GitHub client: refusals and errors (unit with fakes, D-38
     () => f.github.listOpenPullRequests(repo),
     () => f.github.getMergeability(repo, 7),
     () => f.github.compareCommits(repo, BASE, HEAD),
+    () => f.github.listComparedPaths(repo, BASE, HEAD),
     () => f.github.getBranchHead(repo, "main"),
   ];
 

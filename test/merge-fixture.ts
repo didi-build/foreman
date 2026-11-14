@@ -55,8 +55,15 @@ export async function setupMerge(
     author: DEVELOPER_APP,
   });
 
-  /** Everything QA's pass needs on a head commit, as the runner and the state API record it. */
-  async function passedOn(sha: string, paths = options.paths ?? ["src/a.ts"]) {
+  /**
+   * Everything QA's pass needs on a head commit, as the runner and the state API record it.
+   * `docsNote: false` leaves the builder's docs note out, as on a head no builder run pushed.
+   */
+  async function passedOn(
+    sha: string,
+    paths = options.paths ?? ["src/a.ts"],
+    { docsNote = true }: { docsNote?: boolean } = {},
+  ) {
     const ciId = await f.evidence(
       node.id,
       "ci_run",
@@ -72,7 +79,9 @@ export async function setupMerge(
         { commitSha: sha },
       );
     }
-    await f.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: sha });
+    if (docsNote) {
+      await f.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: sha });
+    }
     const qa = await f.run(node.id, "qa", 5, { model: QA_MODEL, headSha: sha });
     await f.store.endRun(qa.id, {
       endedAt: f.clock.now(),

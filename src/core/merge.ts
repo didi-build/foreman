@@ -6,10 +6,13 @@
 //
 // Order, because a merge on GitHub cannot be undone and transitions are append-only (O-31):
 // 1. Check the move's guards. Only the two the runner settles here may still fail: no merge
-//    conflict (step 2 records the evidence it reads) and privileged paths (step 3 asks Didi).
+//    conflict (step 2 records the evidence it reads) and privileged paths (step 3 asks Didi). So
+//    may `docs_updated_or_none`, when a docs note names an earlier head of the same PR (D-388).
 // 2. Read the PR and its mergeable state from GitHub, and record that state as `merge_check`
 //    evidence on the head commit: a fact the runner read itself (essential 6), recorded even in
-//    dry run, like the polling backstop. Then check every guard again.
+//    dry run, like the polling backstop. When step 1 let the docs guard through, carry the earlier
+//    note over if the newer head only brought the base branch in (./docs-carry.ts), also recorded
+//    in dry run, as `merge_check` is. Then check every guard again.
 // 3. A privileged-path PR without Didi's approval for this head opens one `privileged_path` gate
 //    request for the head and waits. Nothing is merged.
 // 4. Squash-merge with the head the guards checked as GitHub's expected `sha`, so a commit pushed
@@ -25,6 +28,12 @@ import type { GitHub, MergeRefusal, PullRequest } from "./github.ts";
 import { mergeCommitKey } from "./github-ingest.ts";
 import { latest, readCiRun } from "./guards/evidence.ts";
 import { privilegedPathsTouched } from "./guards/review.ts";
+import {
+  carryDocsNote,
+  DOCS_GUARD,
+  earlierDocsNote,
+  type DocsCarryOutcome,
+} from "./docs-carry.ts";
 import {
   createLibrary,
   type Clock,
@@ -78,6 +87,8 @@ export interface MergeResult {
   mergeRefusal?: MergeRefusal;
   /** The privileged-path gate request the merge waits on. */
   gateRequestId?: string;
+  /** What carrying an earlier head's docs note over did, when the merge tried it (D-388). */
+  docsNote?: DocsCarryOutcome;
 }
 
 /** What the merge works on: the node's move, its PR and the head the guards read. */
@@ -92,7 +103,13 @@ interface Target {
 /** Either a result to stop with, or the PR as GitHub reports it and the guards after step 2. */
 export type Inspection =
   | { stop: MergeResult }
-  | { stop: null; target: Target; pull: PullRequest; check: TransitionCheck | null };
+  | {
+      stop: null;
+      target: Target;
+      pull: PullRequest;
+      check: TransitionCheck | null;
+      docsNote?: DocsCarryOutcome;
+    };
 
 const failed = (check: { guardReport: { name: string; pass: boolean }[] }): string[] =>
   check.guardReport.filter((c) => !c.pass).map((c) => c.name);
@@ -158,8 +175,20 @@ export function createMerges(deps: MergeDeps) {
     if (pre.outcome === "rejected" && pre.reason !== "guard_failed") {
       return stop("rejected", pre.reason ?? "rejected");
     }
+    const carry = {
+      nodeId,
+      repo,
+      pr: target.pr,
+      headSha: target.headSha,
+    };
+    const carryable =
+      failed(pre).includes(DOCS_GUARD) &&
+      (await earlierDocsNote(store, carry)) !== null;
     const blocking = failed(pre).filter(
-      (name) => name !== NO_CONFLICT_GUARD && name !== PRIVILEGED_GUARD,
+      (name) =>
+        name !== NO_CONFLICT_GUARD &&
+        name !== PRIVILEGED_GUARD &&
+        !(carryable && name === DOCS_GUARD),
     );
     if (blocking.length > 0) return stop("rejected", "guard_failed", failed(pre));
 
@@ -187,7 +216,14 @@ export function createMerges(deps: MergeDeps) {
       recordedAt: clock.now(),
       supersedesId: null,
     });
-    return { stop: null, target, pull, check: await library.checkTransition(probe) };
+    const docsNote = carryable ? await carryDocsNote(deps, carry) : undefined;
+    return {
+      stop: null,
+      target,
+      pull,
+      check: await library.checkTransition(probe),
+      ...(docsNote ? { docsNote } : {}),
+    };
   }
 
   /** Step 3: one open gate request per head; a request for an older head is superseded. */
@@ -288,6 +324,15 @@ export function createMerges(deps: MergeDeps) {
     }
     const inspected = await inspect(nodeId);
     if (inspected.stop) return inspected.stop;
+    const result = await mergeInspected(inspected, trigger);
+    return inspected.docsNote ? { ...result, docsNote: inspected.docsNote } : result;
+  }
+
+  /** Steps 3 to 5 once the guards have been read again after step 2. */
+  async function mergeInspected(
+    inspected: Extract<Inspection, { stop: null }>,
+    trigger: Trigger,
+  ): Promise<MergeResult> {
     const { target, pull, check } = inspected;
     const dryRun = (await store.getSetting("dry_run"))?.value !== false;
 

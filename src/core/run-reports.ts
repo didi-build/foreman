@@ -77,6 +77,7 @@ import {
 import { createFailures, type FailureCount } from "./failures.ts";
 import { REDO_GUARD } from "./guards/council.ts";
 import { headCommit, readCiRun, readVisualComparison } from "./guards/evidence.ts";
+import type { DocsCarryOutcome } from "./docs-carry.ts";
 import { createMerges, MERGE_MOVE_GUARD } from "./merge.ts";
 import { OPTIONS_GUARD } from "./option-capture.ts";
 import { DISPATCH_GUARD } from "./run-start.ts";
@@ -136,6 +137,8 @@ export type ReportedMove =
       mergeCommitSha?: string;
       /** The privileged-path gate request a merge waits on. */
       gateRequestId?: string;
+      /** What carrying an earlier head's docs note over did, when the merge tried it (D-388). */
+      docsNote?: DocsCarryOutcome;
       /** After QA's fail: the escalation asked for (O-41). */
       escalation?: ReportedEscalation;
       /** A refused done report, counted toward `failure` (P-03, O-43). */
@@ -455,7 +458,11 @@ export function createRunReports(options: RunReportsOptions) {
       const failedGuards: string[] = [];
       let last: ReportedMove | undefined;
       // What the merge left, kept on the result even when a later move is the last asked for.
-      let mergeFacts: { mergeCommitSha?: string; gateRequestId?: string } = {};
+      let mergeFacts: {
+        mergeCommitSha?: string;
+        gateRequestId?: string;
+        docsNote?: DocsCarryOutcome;
+      } = {};
       for (const move of moves) {
         if (move.guards.includes(MERGE_MOVE_GUARD)) {
           const merged = await merges.mergeOnPass(node.id, trigger);
@@ -463,6 +470,7 @@ export function createRunReports(options: RunReportsOptions) {
           mergeFacts = {
             ...(merged.mergeCommitSha ? { mergeCommitSha: merged.mergeCommitSha } : {}),
             ...(merged.gateRequestId ? { gateRequestId: merged.gateRequestId } : {}),
+            ...(merged.docsNote ? { docsNote: merged.docsNote } : {}),
           };
           last = {
             requested: true,

@@ -31,6 +31,7 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
     getMergeability: refuse,
     squashMerge: refuse,
     compareCommits: refuse,
+    listComparedPaths: refuse,
     getBranchHead: refuse,
   };
 }
