@@ -68,7 +68,12 @@ import {
   type TransitionOutcome,
 } from "./library.ts";
 import { CANCEL_GUARD } from "./cancel.ts";
-import { createEscalations, type EscalationMove } from "./escalations.ts";
+import { isCloseTaskType } from "./task-types.ts";
+import {
+  createEscalations,
+  type EscalationMove,
+  type EscalationStep,
+} from "./escalations.ts";
 import { createFailures, type FailureCount } from "./failures.ts";
 import { REDO_GUARD } from "./guards/council.ts";
 import { headCommit, readCiRun, readVisualComparison } from "./guards/evidence.ts";
@@ -135,6 +140,8 @@ export type ReportedMove =
       escalation?: ReportedEscalation;
       /** A refused done report, counted toward `failure` (P-03, O-43). */
       failureCount?: FailureCount;
+      /** A builder's third stop in a row: the item's move on to Didi (D-386). */
+      didi?: EscalationStep;
     };
 
 /** The longest reason a builder's stop may give (the runtime checks the same bound). */
@@ -151,6 +158,13 @@ export const VISUAL_CANNOT_TELL_REASON =
 /** The runner's own reason on the escalation move; the bot's words stay in its report. */
 export const NEEDS_DECISION_ESCALATION_REASON =
   "the builder stopped: the item needs a product decision or a new feature";
+
+/**
+ * A builder's stops for a decision in a row, with no builder run that ended otherwise in success
+ * between them, at which the item goes on to Didi instead of a third Council answer (D-386): the
+ * Council has returned it twice.
+ */
+export const BUILDER_STOPS_BEFORE_DIDI = 3;
 
 /** What `recordNeedsDecision` did. */
 export type NeedsDecisionRecord =
@@ -263,6 +277,35 @@ export function createRunReports(options: RunReportsOptions) {
     return (await store.listEvidence({ nodeId: node.id, kind: "agent_report" })).find(
       (e) => e.runId === run.id && e.ref === ref,
     );
+  }
+
+  /**
+   * The builder's stops for a decision in a row on the node, this run's included (D-386): its
+   * ended builder runs, newest first, each counted when it stopped for a decision, until one
+   * that ended `success` without stopping (progress). A run that failed or was cancelled neither
+   * counts nor breaks the row: the failure counter handles those.
+   */
+  async function stopsInARow(node: Node, run: Run): Promise<number> {
+    const stopped = new Set(
+      (await store.listEvidence({ nodeId: node.id, kind: "agent_report" }))
+        .filter((e) => e.runId !== null && e.ref === needsDecisionRef(e.runId))
+        .map((e) => e.runId),
+    );
+    const builds = (await store.listRuns({ nodeId: node.id }))
+      .filter(
+        (r) =>
+          r.bot === run.bot &&
+          !isCloseTaskType(r.taskType) &&
+          (r.endedAt !== null || r.id === run.id) &&
+          r.startedAt.getTime() <= run.startedAt.getTime(),
+      )
+      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+    let count = 0;
+    for (const r of builds) {
+      if (stopped.has(r.id)) count += 1;
+      else if (r.outcome === "success") break;
+    }
+    return count;
   }
 
   /** Whether this run is a visual comparison whose recorded outcome is `cannot_tell` (D-252). */
@@ -388,6 +431,13 @@ export function createRunReports(options: RunReportsOptions) {
           NEEDS_DECISION_ESCALATION_REASON,
         );
         if (!escalation) return { requested: false, reason: "no_move" };
+        // The Council has returned the item twice with no progress: Didi, not a third answer.
+        const stops =
+          escalation.outcome === "applied" ? await stopsInARow(node, run) : 0;
+        const didi =
+          stops >= BUILDER_STOPS_BEFORE_DIDI
+            ? await escalations.builderStoppedAgain(node.id, run.id, stops)
+            : undefined;
         return {
           requested: true,
           outcome: escalation.outcome,
@@ -396,6 +446,7 @@ export function createRunReports(options: RunReportsOptions) {
           ...(escalation.transitionId ? { transitionId: escalation.transitionId } : {}),
           failedGuards: escalation.failedGuards,
           escalation,
+          ...(didi ? { didi } : {}),
         };
       }
       const moves = reportMoves(node, run.bot);

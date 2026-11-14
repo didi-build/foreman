@@ -51,6 +51,11 @@ export const COUNCIL_TRIGGER = "council_decision:";
 export const DIDI_TRIGGER = "didi_answer:";
 /** The trigger ref prefix of the move to Didi when the Council gave no usable answer, then a run id. */
 export const COUNCIL_UNANSWERED_TRIGGER = "council_unanswered:";
+/**
+ * The trigger ref prefix of the move to Didi when a builder stopped for a decision again after
+ * the Council had returned its item twice (D-386), then the stopping run's id.
+ */
+export const BUILDER_STOPS_TRIGGER = "builder_stops_again:";
 
 export interface EscalationsOptions {
   store: Store;
@@ -231,7 +236,7 @@ export function createEscalations(options: EscalationsOptions) {
       nodeId: node.id,
       toState: state,
       blockedReason:
-        "Waiting on Didi: the Council could not resolve it, or it needs him",
+        "Waiting on Didi: the Council could not resolve it, or it needs Didi",
       trigger,
       actor: ACTOR,
       reason,
@@ -299,10 +304,41 @@ export function createEscalations(options: EscalationsOptions) {
     );
   }
 
+  /**
+   * A builder stopped for a decision again after the Council had returned its item twice with no
+   * progress in between (D-386): the item, already moved to the Council by this stop, goes on to
+   * Didi with one `escalation` gate request on its topic and the move to Escalated to Didi
+   * (trigger `builder_stops_again:<run id>`), so the Council is not asked a third time.
+   */
+  async function builderStoppedAgain(
+    nodeId: string,
+    runId: string,
+    stops: number,
+  ): Promise<EscalationStep> {
+    const node = await store.getNode(nodeId);
+    if (!node) return { nodeId, step: "no_node" };
+    if (!councilState || node.state !== councilState || !didiState) {
+      return { nodeId, step: "not_escalated" };
+    }
+    return toDidi(
+      node,
+      {
+        question:
+          "The item's builder stopped for a decision again after the Council had returned it twice.",
+        reason: `${stops} stops in a row with no progress in between; the last run's reason is on the item`,
+        lastBuilderRunId: runId,
+        returnState: (await library.returnState(node.id)) ?? "",
+      },
+      { kind: "event", ref: `${BUILDER_STOPS_TRIGGER}${runId}` },
+      "the builder stopped again after the Council returned the item twice",
+    );
+  }
+
   return {
     escalate,
     resolve,
     councilUnanswered,
+    builderStoppedAgain,
     /** The state an item waits in for the Council, from the contracts. */
     councilState,
 
