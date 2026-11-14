@@ -61,6 +61,8 @@ export interface VolumeMount {
   name: string;
   mountPath: string;
   readOnly: boolean;
+  /** A folder inside the volume to mount instead of its root (D-389). */
+  subPath?: string;
 }
 
 export type Volume =

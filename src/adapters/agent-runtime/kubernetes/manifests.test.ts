@@ -217,7 +217,10 @@ describe("run credentials (unit: mounted only where needed, ADR 0106 section 5)"
       name: "workspace",
       mountPath: "/workspace",
       readOnly: true,
+      subPath: "repo",
     });
+    // QA reads the tree where it is mounted (D-389).
+    expect(value(qaJob, "FOREMAN_WORKSPACE")).toBe("/workspace");
   });
 
   it("gives the GitHub token to the fetch pod, which writes the tree", () => {
@@ -228,6 +231,8 @@ describe("run credentials (unit: mounted only where needed, ADR 0106 section 5)"
       mountPath: "/workspace",
       readOnly: false,
     });
+    // The fetch step writes the tree into its own folder in the volume, which it makes (D-389).
+    expect(value(fetchJob, "FOREMAN_WORKSPACE")).toBe("/workspace/repo");
   });
 
   it("gives the Developer its GitHub and state API tokens, and Council only the state token", () => {
