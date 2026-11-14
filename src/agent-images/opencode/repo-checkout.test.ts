@@ -19,6 +19,7 @@ import {
   CHECKOUT_FAILED,
   CREDENTIAL_HELPER,
   checkoutRepository,
+  execGit,
   type GitRunner,
 } from "./repo-checkout.ts";
 
@@ -142,6 +143,72 @@ describe("the builder's checkout (integration: real git, a local repository, O-1
       });
     expect(answer("get")).toBe(`username=x-access-token\npassword=${TOKEN}\n`);
     expect(answer("store")).toBe("");
+  });
+
+  it("works when the work folder belongs to another user, as the pod's volume does (O-135)", async () => {
+    // Git's own switch for "this folder's owner is not you", as on the cluster, where the
+    // emptyDir belongs to root and the run's user is 1000.
+    const otherOwner = { GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
+    // The switch applies to the local stand-in for GitHub too, which github.com never would:
+    // the stand-in alone is listed safe in the run's global config before the checkout.
+    execFileSync("git", ["config", "--global", "--add", "safe.directory", remote], {
+      cwd: work,
+      env: { ...CLEAN_ENV, HOME: work },
+    });
+    const asInThePod: GitRunner = (args, options) =>
+      execGit(args, { ...options, env: { ...options.env, ...otherOwner } });
+    await checkoutRepository({
+      workDir: work,
+      repository: REPOSITORY,
+      branch: BRANCH,
+      role: "developer",
+      env: { ...CLEAN_ENV, GITHUB_TOKEN: TOKEN },
+      remoteUrl: `file://${remote}`,
+      git: asInThePod,
+    });
+    // The agent's own git runs with the same HOME, so it reads the same safe folder.
+    const agentEnv = { ...CLEAN_ENV, HOME: work, ...otherOwner };
+    writeFileSync(join(work, "README.md"), "# Example\n\nA rehearsal line.\n");
+    execFileSync("git", ["commit", "--quiet", "-am", "Add a rehearsal line"], {
+      cwd: work,
+      env: agentEnv,
+    });
+    execFileSync("git", ["push", "--quiet"], { cwd: work, env: agentEnv });
+    expect(git(remote, "rev-parse", BRANCH)).toBe(
+      execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: work,
+        env: agentEnv,
+        encoding: "utf8",
+      }).trim(),
+    );
+    // Git's global config sits in the work folder and is never committed.
+    expect(existsSync(join(work, ".gitconfig"))).toBe(true);
+    expect(
+      execFileSync("git", ["status", "--porcelain"], {
+        cwd: work,
+        env: agentEnv,
+        encoding: "utf8",
+      }),
+    ).toBe("");
+  });
+
+  it("fails at the init step's neighbour without the safe folder, which is what the cluster showed (O-135)", async () => {
+    const otherOwner = { GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
+    const withoutSafeFolder: GitRunner = (args, options) =>
+      args[0] === "config" && args[1] === "--global"
+        ? Promise.resolve({ code: 0, stdout: "" })
+        : execGit(args, { ...options, env: { ...options.env, ...otherOwner } });
+    await expect(
+      checkoutRepository({
+        workDir: work,
+        repository: REPOSITORY,
+        branch: BRANCH,
+        role: "developer",
+        env: CLEAN_ENV,
+        remoteUrl: `file://${remote}`,
+        git: withoutSafeFolder,
+      }),
+    ).rejects.toThrow(`${CHECKOUT_FAILED}: git config failed`);
   });
 
   it("lets the agent's plain git push send the run branch to the same name on the remote", async () => {
