@@ -15,6 +15,8 @@ The runner records this job's conclusion as `preview_check` on the PR's head com
 
 To run it locally, run `npm run build`, then the three commands above with any 40-character commit.
 
+Every project carries the same job and the same two scripts (D-387): the Launchpad template has them, so a new project starts with them, and a project made before has them added in its own pull request. Foreman reads them from the project as it does here, so the job's name, `.github/workflows/ci.yml`, `foreman-commit.txt` and `staging-site` stay as they are; a project without the job can pass CI and QA and still never merge. Each project records this as its own ADR (0006 in the rehearsal repository).
+
 Production deploy for your app is still project-specific; see below.
 
 ## Preconditions
