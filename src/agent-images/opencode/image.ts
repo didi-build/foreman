@@ -27,6 +27,7 @@ import { readTask } from "../shared/task.ts";
 import { CLOSE_MODE } from "../../adapters/agent-runtime/kubernetes/task.ts";
 import { closePullRequest, closeResult } from "./close.ts";
 import { refuseRepositoryConfig } from "./checkout.ts";
+import { checkoutRepository, type CheckoutOptions } from "./repo-checkout.ts";
 import { openCodeCommand } from "./command.ts";
 import { capTier, openCodeConfig } from "./config.ts";
 import { EMPTY_TALLY, addEventLine, type RunTally } from "./events.ts";
@@ -52,6 +53,8 @@ export interface OpenCodeImageDeps {
   secureTunnel?: SecureTunnel;
   /** The wait for the run's egress proxy (O-133). Tests may pass their own. */
   waitForProxy?: (urlOnProxy: string) => Promise<void>;
+  /** The checkout of the run's repository into the work folder (O-134). Tests pass their own. */
+  checkout?: (options: CheckoutOptions) => Promise<unknown>;
 }
 
 export async function runOpenCodeImage(
@@ -87,6 +90,14 @@ export async function runOpenCodeImage(
       printResult(result, secrets, deps.write);
       return exitCode(result);
     }
+    // The run's repository on the run's branch, before anything reads the work folder (O-134).
+    await (deps.checkout ?? checkoutRepository)({
+      workDir: settings.workDir,
+      repository: settings.repository,
+      branch,
+      role: settings.role === "designer" ? "designer" : "developer",
+      env,
+    });
     refuseRepositoryConfig(settings.workDir);
     const tmpDir = env.TMPDIR ?? "/tmp";
     // The config and instructions live outside the repository, readable by this user only. The
