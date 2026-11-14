@@ -17,7 +17,8 @@
 // branch has it: the newer commits only brought the base in. Anything else, or a fact that cannot
 // be read, carries nothing and the guard stays failed, as before. The carried note is a
 // `docs_note` on B written by the runner, with the earlier note's impact and words and
-// `carriedFrom` naming that note and A, under one key per PR and head, so it is written once.
+// `carriedFrom` naming that note and A, its `ref` naming the PR and B. It is written when B has
+// no carried note yet; once it has, the guard passes and the merge carries nothing again.
 import type { ComparedPaths, GitHubCommitReader } from "./github.ts";
 import { latest, readCiRun, readDocsNote } from "./guards/evidence.ts";
 import type { Clock, IdSource } from "./library.ts";
@@ -51,7 +52,7 @@ export interface DocsCarryTarget {
   headSha: string;
 }
 
-/** The key of the carried note: one per PR and head. */
+/** The `ref` of the carried note: one per PR and head. */
 export const carriedDocsNoteKey = (repo: string, pr: number, headSha: string): string =>
   `runner:docs_note_carried:${repo}#${pr}:${headSha}`;
 
@@ -116,22 +117,29 @@ export async function carryDocsNote(
   if (!compared.complete) return "compare_cut";
   if (compared.paths.some((path) => prPaths.has(path))) return "pr_files_touched";
 
-  const key = carriedDocsNoteKey(target.repo, target.pr, target.headSha);
-  await store.insertEvidenceOnce(
-    {
+  // The note's ref names the PR and head. It is not an ingest key: the database allows those on
+  // GitHub's own facts only (migration 0021), so the note is written as `merge_check` is, and
+  // only when this head has none yet.
+  const ref = carriedDocsNoteKey(target.repo, target.pr, target.headSha);
+  const onHead = await store.listEvidence({
+    nodeId: target.nodeId,
+    commitSha: target.headSha,
+    kind: "docs_note",
+  });
+  if (!onHead.some((e) => e.ref === ref)) {
+    await store.insertEvidence({
       id: deps.ids.next(),
       nodeId: target.nodeId,
       runId: null,
       kind: "docs_note",
-      ref: key,
+      ref,
       commitSha: target.headSha,
       payload: carriedPayload(note, from),
       recordedBy: "runner",
       recordedAt: deps.clock.now(),
       supersedesId: null,
-    },
-    key,
-  );
+    });
+  }
   return "carried";
 }
 
