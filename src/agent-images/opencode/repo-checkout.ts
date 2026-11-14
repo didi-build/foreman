@@ -14,6 +14,12 @@
 // against their patterns first. Git's output is never printed or kept: a failed step throws one
 // of the fixed sentences D-385 keeps, naming the step only. OpenCode's own folders in the work
 // folder are excluded from git, so they are never committed.
+//
+// The work folder is the pod's emptyDir volume, owned by root, while the run's user is another:
+// git refuses a repository in a folder another user owns ("dubious ownership"), so every
+// command after `git init` failed on the cluster (O-135). The first step therefore marks the work
+// folder safe in git's global config, which is `.gitconfig` in HOME, the work folder itself, so
+// the agent's own git commands, which run with the same HOME, read it too.
 import { execFile } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +30,7 @@ export const CHECKOUT_FAILED = "the repository could not be checked out";
 
 /** The git steps a failure can name. */
 export type CheckoutStep =
-  "init" | "config" | "remote" | "ls-remote" | "fetch" | "checkout";
+  "safe-directory" | "init" | "config" | "remote" | "ls-remote" | "fetch" | "checkout";
 
 /**
  * The credential helper, for github.com only: it reads git's request, and on `get` answers with
@@ -34,8 +40,8 @@ export type CheckoutStep =
 export const CREDENTIAL_HELPER =
   '!f() { cat >/dev/null; test "$1" = get || exit 0; echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f';
 
-/** OpenCode's own folders in the work folder (HOME), never committed. */
-export const EXCLUDED = [".cache/", ".local/", ".config/"];
+/** OpenCode's own folders and git's global config in the work folder (HOME), never committed. */
+export const EXCLUDED = [".cache/", ".local/", ".config/", ".gitconfig"];
 
 /** History fetched for the branch the run starts from. */
 export const FETCH_DEPTH = 50;
@@ -77,7 +83,8 @@ export interface CheckoutResult {
   defaultBranch: string;
 }
 
-const execGit: GitRunner = (args, { cwd, env }) =>
+/** The real runner: git with fixed arguments, no shell, bounded. */
+export const execGit: GitRunner = (args, { cwd, env }) =>
   new Promise((resolve) => {
     execFile(
       "git",
@@ -112,6 +119,14 @@ export async function checkoutRepository(
     return result.stdout;
   };
 
+  // The work folder's owner is not the run's user (O-135): git works there only once it is safe.
+  await run("safe-directory", [
+    "config",
+    "--global",
+    "--add",
+    "safe.directory",
+    workDir,
+  ]);
   await run("init", ["init", "--quiet"]);
   for (const [key, value] of [
     ["credential.https://github.com.helper", CREDENTIAL_HELPER],
