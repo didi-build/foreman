@@ -39,6 +39,8 @@ export interface FakeProxy {
   proxyUrl: string;
   /** The `host:port` of each CONNECT request, in order. */
   connectTargets: string[];
+  /** How many times `GET /health` was asked (O-133). */
+  healthChecks: number;
   close(): Promise<void>;
 }
 
@@ -117,6 +119,7 @@ export async function startFakeProxy(github?: FakeGitHub): Promise<FakeProxy> {
         body: { evidenceId: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b" },
       },
       connectTargets: [],
+      healthChecks: 0,
     };
   const server: Server = createServer((request, response) => {
     void (async () => {
@@ -127,7 +130,14 @@ export async function startFakeProxy(github?: FakeGitHub): Promise<FakeProxy> {
         body: await readJson(request),
       };
       let out: FakeReply;
-      if (recorded.path === "/anthropic/v1/messages" && recorded.method === "POST") {
+      if (recorded.path === "/health" && recorded.method === "GET") {
+        // The real proxy's readiness check, which each agent image waits for (O-133).
+        state.healthChecks += 1;
+        out = { status: 200, body: { status: "ok" } };
+      } else if (
+        recorded.path === "/anthropic/v1/messages" &&
+        recorded.method === "POST"
+      ) {
         state.modelRequests.push(recorded);
         out =
           state.replies.shift() ?? reply.error(500, "api_error", "no scripted reply");

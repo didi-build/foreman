@@ -1,6 +1,7 @@
 // The Claude Code image's run (Developer and Designer, ADR 0106 and 0107): read the settings and
 // the task, run the pinned CLI once, and print one result line. Any failure before or around
 // the CLI is still one result line with status `error`, so the runner always reads an end.
+import { waitForProxy } from "../shared/proxy-ready.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -20,6 +21,8 @@ import { runCli } from "./run.ts";
 export async function runClaudeCodeImage(
   env: NodeJS.ProcessEnv,
   write?: (line: string) => void,
+  /** The wait for the run's egress proxy (O-133). Tests pass their own. */
+  proxyReady: (urlOnProxy: string) => Promise<void> = waitForProxy,
 ): Promise<number> {
   let secrets: string[] = [];
   let result: AgentResult;
@@ -27,6 +30,8 @@ export async function runClaudeCodeImage(
     const settings = readImageSettings("claude-code", env);
     secrets = secretValues(settings, env);
     const task = readTask(settings.role, settings.taskFile);
+    // The proxy may not answer yet when this pod starts (O-133).
+    await proxyReady(settings.modelBaseUrl);
     const config = mcpConfig(settings.role, { url: env.FOREMAN_MAGICPATH_URL });
     const configPath = join(env.TMPDIR ?? "/tmp", `foreman-mcp-${settings.runId}.json`);
     writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });

@@ -5,6 +5,7 @@
 // with images is the visual comparison (D-242): no tools, the images in the first message, and
 // structured output only, which the runner checks and records; it posts nothing. A Council task
 // with images is its call on a visual approval (D-270): the same, through the structured run.
+import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 
 import type { ServiceTier } from "../../core/store.ts";
@@ -131,6 +132,8 @@ export interface ApiImageDeps {
   write?: (line: string) => void;
   /** The capacity waits' clock. Tests pass a fake one. */
   clock?: LoopClock;
+  /** The wait for the run's egress proxy (O-133). Tests may pass their own. */
+  waitForProxy?: (urlOnProxy: string) => Promise<void>;
 }
 
 function sdkClient(settings: ImageSettings): MessagesClient {
@@ -316,6 +319,8 @@ export async function runClaudeApiImage(
     secrets = secretValues(settings, env);
     const common = readCommon(env);
     const task = readTask(settings.role, settings.taskFile);
+    // The proxy may not answer yet when this pod starts (O-133).
+    await (deps.waitForProxy ?? waitForProxy)(settings.modelBaseUrl);
     const client = (deps.client ?? sdkClient)(settings);
     result =
       settings.role === "qa" && task.images !== undefined

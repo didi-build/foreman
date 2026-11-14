@@ -12,6 +12,7 @@
 // settings and the task are read, the wrapper closes the one pull request its input names with
 // the run's GitHub token (./close.ts) and prints that as its result line. Nothing is written to
 // disk and the checkout is not read.
+import { waitForProxy } from "../shared/proxy-ready.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -49,6 +50,8 @@ export interface OpenCodeImageDeps {
    * The image always speaks TLS to api.github.com inside the tunnel.
    */
   secureTunnel?: SecureTunnel;
+  /** The wait for the run's egress proxy (O-133). Tests may pass their own. */
+  waitForProxy?: (urlOnProxy: string) => Promise<void>;
 }
 
 export async function runOpenCodeImage(
@@ -61,6 +64,8 @@ export async function runOpenCodeImage(
     const settings = readOpenCodeSettings(env);
     secrets = secretValues(settings, env);
     const task = readTask(settings.role, settings.taskFile);
+    // The proxy may not answer yet when this pod starts (O-133).
+    await (deps.waitForProxy ?? waitForProxy)(settings.egressProxyUrl);
     // The task file check already refused a Developer or Designer task without these.
     const nodeId = task.nodeId as string;
     const branch = task.branch as string;
