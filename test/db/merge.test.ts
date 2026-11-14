@@ -2,7 +2,9 @@
 // Postgres store, as the factory_runner role: the `merge_check` row migration 0010 allows, the
 // `merge_commit` under the ingest key GitHub ingestion uses, the move, and a failure after the
 // merge recovered by the merge pass without a second merge, evidence row or move, and QA's report
-// on a design PR that keeps an unpicked option folder taking QA's fail move, counted once (D-259).
+// on a design PR that keeps an unpicked option folder taking QA's fail move, counted once (D-259),
+// and the builder's docs note carried over an update from main (D-388), whose row the database
+// must accept.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -158,5 +160,48 @@ describe.skipIf(!adminUrl)("the merge on Postgres (database integration, M3.3)",
     expect(await store.getCounter(t.node.id, "failure")).toBe(1);
     expect(await t.transitions(t.node.id)).toHaveLength(1);
     expect(t.github.merges).toEqual([]);
+  });
+
+  it("carries the docs note over an update from main and merges, as factory_runner (D-388)", async () => {
+    const t = await setupMerge({
+      store,
+      idPrefix: "64000000-0000-4000-8000",
+      slug: "d",
+      pr: 10,
+      paths: ["README.md"],
+    });
+    await t.evidence(
+      t.node.id,
+      "ci_run",
+      { conclusion: "success", pr: 10, changedPaths: ["README.md"] },
+      { commitSha: HEAD },
+    );
+    const noteId = await t.evidence(
+      t.node.id,
+      "docs_note",
+      { impact: "none" },
+      { commitSha: HEAD },
+    );
+    t.github.pushHead(REPO, 10, NEW);
+    t.github.putCommit(REPO, NEW, [HEAD, "a".repeat(40)]);
+    t.github.setComparedPaths(REPO, HEAD, NEW, [".github/workflows/ci.yml"]);
+    await t.passedOn(NEW, ["README.md"], { docsNote: false });
+
+    const result = await t.merges().mergeOnPass(t.node.id, t.trigger);
+
+    expect(result).toMatchObject({ outcome: "applied", docsNote: "carried" });
+    const carried = (
+      await store.listEvidence({ nodeId: t.node.id, kind: "docs_note" })
+    ).filter((e) => e.commitSha === NEW);
+    expect(carried).toMatchObject([
+      {
+        recordedBy: "runner",
+        payload: {
+          impact: "none",
+          carriedFrom: { evidenceId: noteId, commitSha: HEAD },
+        },
+      },
+    ]);
+    expect(t.github.merges).toEqual([{ repo: REPO, number: 10, headSha: NEW }]);
   });
 });
