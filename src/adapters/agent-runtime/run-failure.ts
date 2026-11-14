@@ -46,6 +46,7 @@ export const FIXED_RUN_ERRORS: readonly RegExp[] = [
   /^OpenCode exited with (a signal|code \d{1,3})( before any model step)?$/,
   /^OpenCode printed no model step$/,
   /^the run's egress proxy did not become ready$/,
+  /^the repository could not be checked out: (git (init|config|remote|ls-remote|fetch|checkout) failed|not a repository name|not a run branch)$/,
   // The settings reader names each setting and its fixed problem, never the value it read.
   /^Invalid configuration: [A-Z][A-Z0-9_]{1,63} [a-z][a-z0-9 ,.()/'-]{0,119}(; [A-Z][A-Z0-9_]{1,63} [a-z][a-z0-9 ,.()/'-]{0,119}){0,9}$/,
   new RegExp(`^${CEILING_MESSAGE.replace(/[.]/g, "\\.")}$`),

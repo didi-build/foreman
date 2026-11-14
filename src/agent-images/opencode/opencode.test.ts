@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { CheckoutOptions } from "./repo-checkout.ts";
 
 import {
   mapRunEnd,
@@ -611,6 +612,7 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
   let env: Record<string, string>;
   let github: FakeGitHub;
   let proxy: FakeProxy;
+  let checkouts: CheckoutOptions[];
 
   const writeTask = (input: string, extra: Record<string, unknown> = {}) => {
     const file = join(dir, "task.json");
@@ -648,6 +650,11 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       now: () => NOW,
       // The fake proxy tunnels to a plain HTTP fake GitHub: no TLS in tests.
       secureTunnel: (socket) => socket,
+      // The real checkout runs git against github.com; it is tested on a local repository in
+      // repo-checkout.test.ts (O-134).
+      checkout: async (options) => {
+        checkouts.push(options);
+      },
     });
     return { code, result: parseAgentResult(lines.join("\n")) };
   };
@@ -657,6 +664,7 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
   });
 
   beforeEach(async () => {
+    checkouts = [];
     github = createFakeGitHub(REPOSITORY);
     github.branches.set(BRANCH, HEAD_SHA);
     proxy = await startFakeProxy(github);
@@ -689,6 +697,36 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       FOREMAN_OPENCODE_CLI: cli,
       FOREMAN_OPENCODE_CONFIG_HOME: join(dir, "xdg-config"),
     };
+  });
+
+  it("checks out the run's repository on its branch before OpenCode starts (O-134)", async () => {
+    writeTask("scenario=success");
+    const { code } = await run();
+    expect(code).toBe(0);
+    expect(checkouts).toHaveLength(1);
+    expect(checkouts[0]).toMatchObject({
+      workDir: work,
+      repository: REPOSITORY,
+      branch: BRANCH,
+      role: "developer",
+    });
+  });
+
+  it("starts no OpenCode when the checkout fails, and the result names the step (O-134)", async () => {
+    writeTask("scenario=success");
+    lines = [];
+    const code = await runOpenCodeImage(env, {
+      write: (l) => lines.push(l),
+      checkout: () =>
+        Promise.reject(
+          new Error("the repository could not be checked out: git fetch failed"),
+        ),
+    });
+    expect(code).toBe(1);
+    expect(parseAgentResult(lines.join("\n"))?.errorText).toBe(
+      "the repository could not be checked out: git fetch failed",
+    );
+    expect(existsSync(join(work, "fake-opencode-call.json"))).toBe(false);
   });
 
   it("runs OpenCode by its path with the prompt on stdin, sums its steps and prints one result line", async () => {

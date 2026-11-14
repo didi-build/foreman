@@ -46,6 +46,9 @@ describe("a failed run's cause (unit: run-failure.ts, D-385)", () => {
     "the run reached its dollar cap; OpenCode was stopped",
     "OpenCode exited with a signal before any model step",
     "OpenCode printed no model step",
+    "the run's egress proxy did not become ready",
+    "the repository could not be checked out: git fetch failed",
+    "the repository could not be checked out: not a run branch",
     CEILING_MESSAGE,
     REJECTED_CEILING_MESSAGE,
   ])("keeps the fixed sentence %j whole", (sentence) => {
