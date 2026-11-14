@@ -12,6 +12,7 @@ import {
   REJECTED_CEILING_MESSAGE,
 } from "../../../egress-proxy/proxy.ts";
 import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-error.ts";
+import { runFailure } from "../run-failure.ts";
 import type { AgentRunResult } from "../runtime.ts";
 import type { JobStatus } from "./objects.ts";
 
@@ -219,7 +220,7 @@ export function usageCause(
  * Complete Job with a well-formed `needs_decision` result is `success` with detail
  * `needs_decision` and its reason (O-63); anything else, bad output included, is `fail`. What the runtime measured about the route is passed on.
  */
-export function mapRunEnd(
+function mapOutcome(
   state: "complete" | "deadline" | "failed",
   job: JobStatus | null,
   result: AgentResult | null,
@@ -288,6 +289,24 @@ export function mapRunEnd(
     outcome: "fail",
     detail: state === "complete" ? "agent_error" : "job_failed",
   };
+}
+
+/**
+ * How a run ended (`mapOutcome` above), and for a run that did not succeed, what can be kept of
+ * its cause: the provider's status and error type, and the agent's error only when it is one of
+ * the images' fixed sentences (D-385, ../run-failure.ts).
+ */
+export function mapRunEnd(
+  state: "complete" | "deadline" | "failed",
+  job: JobStatus | null,
+  result: AgentResult | null,
+  model: string,
+  tier: ServiceTier = "standard",
+): AgentRunResult {
+  const mapped = mapOutcome(state, job, result, model, tier);
+  if (mapped.outcome === "success" || result === null) return mapped;
+  const failure = runFailure(result.errorText, result.providerError);
+  return Object.keys(failure).length === 0 ? mapped : { ...mapped, failure };
 }
 
 /** The route measurements of a result, only those it has. */

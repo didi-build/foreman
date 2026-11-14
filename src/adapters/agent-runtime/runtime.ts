@@ -1,6 +1,7 @@
 // The agent runtime interface (ADR 0107). One implementation per runtime; the runner sees only
 // this. `start` returns at once, `poll` reports, `cancel` stops. Kubernetes reports and the runner
 // decides (ADR 0106, essential 1): nothing here records a run or writes to the store.
+import type { RunFailure } from "./run-failure.ts";
 import type { RunLimits, RunTokens } from "../../core/runs.ts";
 import type {
   AgentRole,
@@ -58,6 +59,11 @@ export interface AgentRunResult {
   capacityRetries?: number;
   capacityWaitSeconds?: number;
   firstTokenMs?: number;
+  /**
+   * Only on a run that did not succeed: what can be kept of its cause (D-385, ./run-failure.ts),
+   * never the agent's own words.
+   */
+  failure?: RunFailure;
 }
 
 export type { AgentRole, RunLimits };
