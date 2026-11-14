@@ -26,6 +26,9 @@
 // - `compareCommits`: `GET /repos/{repo}/compare/{base}...{head}?per_page=1`, `contents: read`,
 //   GitHub's `status` as the relation. One commit per page keeps the answer small; the status is
 //   for the whole comparison.
+// - `listComparedPaths` (D-388): the same call, its relation and its `files`, each file's path
+//   and a renamed file's old path, as `listChangedPaths` reads them. GitHub gives `files` on the
+//   first page, at most 300; a list of 300 is reported as possibly cut, never as complete.
 // - `getBranchHead`: `GET /repos/{repo}/branches/{branch}` with the name encoded,
 //   `contents: read`, the branch's `commit.sha`. 404 is null.
 //
@@ -42,6 +45,7 @@ import {
   organizationRepositoryName,
 } from "../../core/bootstrap-access.ts";
 import {
+  COMPARE_FILE_CAP,
   REPOSITORY,
   type CheckRun,
   type CommitRelation,
@@ -326,6 +330,34 @@ export function createRunnerGitHub({
     return read;
   }
 
+  /** GitHub's compare of `base...head`, first page: its relation and the whole answer. */
+  async function compare(
+    repo: string,
+    base: string,
+    head: string,
+  ): Promise<{ relation: CommitRelation; answer: unknown }> {
+    const name = repository(repo, readFail);
+    commit(base, readFail);
+    commit(head, readFail);
+    const token = await tokens.mint({ repository: name, permission: "contents" });
+    const answer = await http.get({
+      path: `/repos/${name}/compare/${base}...${head}?per_page=1`,
+      token,
+      accept: "json",
+      maxBytes: MAX_PAGE_BYTES,
+    });
+    if (answer.status !== 200) {
+      throw new GitHubReadError(`comparing the commits failed with ${answer.status}`);
+    }
+    const parsed = parseJson(answer.body, "compare");
+    const status = isObject(parsed) ? parsed.status : undefined;
+    const relation = RELATIONS.find((r) => r === status);
+    if (relation === undefined) {
+      throw new GitHubReadError("the compare answer has no relation the runner reads");
+    }
+    return { relation, answer: parsed };
+  }
+
   return {
     ...createGitHubWorkflowReads({ tokens, http }),
 
@@ -423,28 +455,17 @@ export function createRunnerGitHub({
     },
 
     async compareCommits(repo, base, head) {
-      const name = repository(repo, readFail);
-      commit(base, readFail);
-      commit(head, readFail);
-      const token = await tokens.mint({ repository: name, permission: "contents" });
-      const answer = await http.get({
-        path: `/repos/${name}/compare/${base}...${head}?per_page=1`,
-        token,
-        accept: "json",
-        maxBytes: MAX_PAGE_BYTES,
-      });
-      if (answer.status !== 200) {
-        throw new GitHubReadError(`comparing the commits failed with ${answer.status}`);
+      return (await compare(repo, base, head)).relation;
+    },
+
+    async listComparedPaths(repo, base, head) {
+      const { relation, answer } = await compare(repo, base, head);
+      const files = isObject(answer) ? answer.files : undefined;
+      if (!Array.isArray(files)) {
+        throw new GitHubReadError("the compare answer has no files the runner reads");
       }
-      const parsed = parseJson(answer.body, "compare");
-      const status = isObject(parsed) ? parsed.status : undefined;
-      const relation = RELATIONS.find((r) => r === status);
-      if (relation === undefined) {
-        throw new GitHubReadError(
-          "the compare answer has no relation the runner reads",
-        );
-      }
-      return relation;
+      const paths = [...new Set(files.flatMap(readFilePaths))];
+      return { relation, paths, complete: files.length < COMPARE_FILE_CAP };
     },
 
     async getBranchHead(repo, branch) {

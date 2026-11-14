@@ -138,6 +138,20 @@ export interface GitHubMerger {
  */
 export type CommitRelation = "ahead" | "identical" | "behind" | "diverged";
 
+/** GitHub's compare lists at most this many files, so a list this long may have been cut. */
+export const COMPARE_FILE_CAP = 300;
+
+/**
+ * The files that changed from `base` to `head`, as GitHub's compare (`base...head`) lists them, with
+ * the relation of the two commits. A renamed file gives its new and its old path. `complete` is
+ * false when GitHub listed `COMPARE_FILE_CAP` files, since the list may then have been cut.
+ */
+export interface ComparedPaths {
+  relation: CommitRelation;
+  paths: string[];
+  complete: boolean;
+}
+
 /**
  * What the runner reads about commits (D-225): whether one commit contains another, and the
  * commit a branch points at now. The staging check and the staging deploy use it to tell which
@@ -146,6 +160,11 @@ export type CommitRelation = "ahead" | "identical" | "behind" | "diverged";
  */
 export interface GitHubCommitReader {
   compareCommits(repo: string, base: string, head: string): Promise<CommitRelation>;
+  /**
+   * The paths that changed from `base` to `head` (D-388): the merge reads it to tell whether a
+   * newer head of a PR only brought the base branch in (./docs-carry.ts).
+   */
+  listComparedPaths(repo: string, base: string, head: string): Promise<ComparedPaths>;
   /** The commit `branch` points at now, or null when GitHub has no such branch. */
   getBranchHead(repo: string, branch: string): Promise<string | null>;
 }
