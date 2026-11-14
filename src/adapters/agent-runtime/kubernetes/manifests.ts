@@ -467,7 +467,8 @@ export function fetchStage(
             FOREMAN_REPOSITORY: spec.repository ?? "",
             FOREMAN_HEAD_SHA: spec.headSha ?? "",
             FOREMAN_PR_NUMBER: String(spec.prNumber ?? ""),
-            FOREMAN_WORKSPACE: "/workspace",
+            // The tree's own folder in the volume, which the fetch step makes (D-389).
+            FOREMAN_WORKSPACE: `${WORKSPACE_PATH}/${QA_TREE_FOLDER}`,
             HOME: "/work",
             TMPDIR: "/tmp",
           }),
@@ -484,11 +485,21 @@ export function fetchStage(
         ],
         volumeMounts: [
           ...scratchMounts(),
-          { name: "workspace", mountPath: "/workspace", readOnly: false },
+          { name: "workspace", mountPath: WORKSPACE_PATH, readOnly: false },
         ],
       }),
   });
 }
+
+/** Where the fetch step and QA's pod mount the run's volume. */
+export const WORKSPACE_PATH = "/workspace";
+
+/**
+ * The folder in the run's volume that holds the fetched tree (D-389, O-137). The fetch step makes
+ * it and unpacks into it; QA's pod mounts only this folder, so a new volume's `lost+found`, at
+ * the volume's root, is never in QA's view.
+ */
+export const QA_TREE_FOLDER = "repo";
 
 /**
  * The hosts the repo map Job's proxy allows (D-275 (2)): GitHub's API, and the host its archive
@@ -778,7 +789,7 @@ function agentEnv(
   if (spec.role === "qa") {
     plain.FOREMAN_HEAD_SHA = spec.headSha ?? "";
     plain.FOREMAN_PR_NUMBER = String(spec.prNumber ?? "");
-    if (hasFetchStep(spec)) plain.FOREMAN_WORKSPACE = "/workspace";
+    if (hasFetchStep(spec)) plain.FOREMAN_WORKSPACE = WORKSPACE_PATH;
   }
   for (const provider of spec.providers) {
     if (provider.baseUrlEnv)
@@ -838,7 +849,13 @@ function agentVolumes(
     volumeMounts: [
       ...scratchMounts(),
       taskMount,
-      { name: "workspace", mountPath: "/workspace", readOnly: true },
+      // Only the tree's folder, never the volume's root and its lost+found (D-389).
+      {
+        name: "workspace",
+        mountPath: WORKSPACE_PATH,
+        readOnly: true,
+        subPath: QA_TREE_FOLDER,
+      },
     ],
   };
 }
