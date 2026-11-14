@@ -45,6 +45,7 @@ export const FIXED_RUN_ERRORS: readonly RegExp[] = [
   /^OpenCode was stopped before it finished$/,
   /^OpenCode exited with (a signal|code \d{1,3})( before any model step)?$/,
   /^OpenCode printed no model step$/,
+  /^the run's egress proxy did not become ready$/,
   // The settings reader names each setting and its fixed problem, never the value it read.
   /^Invalid configuration: [A-Z][A-Z0-9_]{1,63} [a-z][a-z0-9 ,.()/'-]{0,119}(; [A-Z][A-Z0-9_]{1,63} [a-z][a-z0-9 ,.()/'-]{0,119}){0,9}$/,
   new RegExp(`^${CEILING_MESSAGE.replace(/[.]/g, "\\.")}$`),

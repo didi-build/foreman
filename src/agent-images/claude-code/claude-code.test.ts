@@ -298,7 +298,12 @@ describe("Claude Code image (integration: a fake claude executable, no network)"
     };
   const run = async () => {
     lines = [];
-    const code = await runClaudeCodeImage(env, (line) => lines.push(line));
+    // Its proxy address has no listener here; the wait itself is tested in shared (O-133).
+    const code = await runClaudeCodeImage(
+      env,
+      (line) => lines.push(line),
+      async () => {},
+    );
     return { code, result: parseAgentResult(lines.join("\n")) };
   };
 

@@ -165,6 +165,13 @@ describe("QA run (integration: tool loop over the fetched tree, ADR 0112)", () =
     expect(posted?.body).toEqual({ nodeId: NODE_ID, commitSha: HEAD_SHA, ...VERDICT });
   });
 
+  it("waits for its egress proxy's /health before the first model request (O-133)", async () => {
+    proxy.replies.push(reply.text(JSON.stringify(VERDICT)));
+    await run(envFor("qa", qaTask));
+    expect(proxy.healthChecks).toBe(1);
+    expect(proxy.modelRequests.length).toBeGreaterThan(0);
+  });
+
   it("marks the stable prefix for caching and keeps it byte for byte across turns (D-185)", async () => {
     proxy.replies.push(
       reply.toolUse("list_files", { path: "." }, "toolu_1"),
