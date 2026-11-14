@@ -4,7 +4,7 @@
     "claude-api": "ghcr.io/didi-build/foreman-agent-claude-api@sha256:9ccce416e66efb62b7302ab9ba19c12b0e135f2a1224b57947d2ec406e578bbe"
   },
   "runSettings": {
-    "fetchImage": "ghcr.io/didi-build/foreman-qa-fetch@sha256:1e2e5d4903922518ab5e911f7385e09d01fb2ecbe9ad9eaeba61d194caab1b6f",
+    "fetchImage": "ghcr.io/didi-build/foreman-qa-fetch@sha256:9c5f6e6da938bda1fe568aa91257cdd6e1cbe16f58e968fa0543e472e88e2a87",
     "repoMapImage": "ghcr.io/didi-build/foreman-repo-map@sha256:502484006a20c3a6462ad8d38f6480a1994f3be51ae710c0d9513485398deaaa",
     "proxyPort": 8080,
     "runAsUser": 1000,
