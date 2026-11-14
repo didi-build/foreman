@@ -14,7 +14,7 @@
 import { createRuns, type RunReport } from "../src/core/runs.ts";
 import { runEndSteps, type AfterRunEnd } from "./lib/council-runs.ts";
 import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
-import { runReport } from "./lib/runs.ts";
+import { failureOf, runReport, type RunEndFailure } from "./lib/runs.ts";
 import { dryRunOn, killSwitchOn } from "./lib/switches.ts";
 import { windmillEnvironment } from "./lib/windmill.ts";
 
@@ -27,7 +27,7 @@ export type RecordRunEndResult =
   | { outcome: "no_run" | "no_handle" | "running" }
   | ({ outcome: "already_recorded" } & AfterRunEnd)
   | { outcome: "would_record"; report: RunReport }
-  | ({ outcome: "recorded"; report: RunReport } & AfterRunEnd);
+  | ({ outcome: "recorded"; report: RunReport; failure?: RunEndFailure } & AfterRunEnd);
 
 export async function run(
   deps: FlowDeps,
@@ -44,14 +44,14 @@ export async function run(
   if (handle === null) return { outcome: "no_handle" };
   const status = await deps.runtime.poll(handle);
   if (status.state === "running") return { outcome: "running" };
-  const measured = runReport(status.result);
+  const [measured, failure] = [runReport(status.result), failureOf(status.result)]; // D-385
   if (await dryRunOn(deps.store)) return { outcome: "would_record", report: measured };
   const report = await steps.record(status.result, measured);
   const recorded = await createRuns(deps).recordEnd(input.runId, report);
   await deps.runtime.cleanup?.(handle);
   const after = await steps.after();
   return recorded
-    ? { outcome: "recorded", report, ...after }
+    ? { outcome: "recorded", report, ...failure, ...after }
     : { outcome: "already_recorded", ...after };
 }
 

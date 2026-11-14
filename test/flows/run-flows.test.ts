@@ -478,6 +478,43 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
     expect(f.runtime.cleaned).toEqual([handle]);
   });
 
+  it("names a failed run's cause in its result, and nothing for a success (D-385)", async () => {
+    const { f, input } = await activeRun();
+    const failed = {
+      ...RESULT,
+      outcome: "fail" as const,
+      detail: "job_failed",
+      turns: 0,
+      finalText: "",
+      failure: {
+        providerStatus: 401,
+        providerType: "authentication_error",
+        error: "the model provider answered 401",
+      },
+    };
+    f.runtime.status.set(input.runId, { state: "finished", result: failed });
+    const result = await recordRunEnd(f.deps, input);
+    expect(result).toMatchObject({
+      outcome: "recorded",
+      report: { outcome: "fail", turns: 0 },
+      failure: {
+        outcome: "fail",
+        detail: "job_failed",
+        providerStatus: 401,
+        providerType: "authentication_error",
+        error: "the model provider answered 401",
+      },
+    });
+    // Nothing of the cause is stored on the run.
+    expect(JSON.stringify(await f.store.getRun(input.runId))).not.toContain(
+      "authentication_error",
+    );
+
+    const next = await activeRun();
+    next.f.runtime.status.set(next.input.runId, { state: "finished", result: RESULT });
+    expect(await recordRunEnd(next.f.deps, next.input)).not.toHaveProperty("failure");
+  });
+
   it("does not poll a run with no handle kept", async () => {
     const { f } = await activeRun();
     const run = await f.run((await f.node("in_development")).id, "developer");

@@ -382,3 +382,37 @@ describe("mapRunEnd (unit: outcome mapping, ADR 0106 section 6)", () => {
     expect(NEEDS_DECISION_MAX_REASON).toBe(NEEDS_DECISION_REASON_CHARS);
   });
 });
+
+describe("mapRunEnd keeps a failed run's cause (unit: D-385, ../run-failure.ts)", () => {
+  const parse = (fields: Record<string, unknown>) => parseAgentResult(line(fields));
+
+  it("keeps the provider's status and type and the image's fixed sentence, not the provider's message", () => {
+    const fields = {
+      status: "error",
+      errorText: "the model provider answered 401",
+      providerError: {
+        status: 401,
+        type: "authentication_error",
+        message: "made-up message",
+      },
+    };
+    const result = mapRunEnd("failed", JOB, parse(fields), "m");
+    expect(result).toMatchObject({ outcome: "fail", detail: "job_failed" });
+    expect(result.failure).toEqual({
+      providerStatus: 401,
+      providerType: "authentication_error",
+      error: "the model provider answered 401",
+    });
+  });
+
+  it("keeps no text the image did not fix: the model's words or a library's message", () => {
+    const fields = { status: "error", errorText: "made-up words from the model" };
+    expect(mapRunEnd("complete", JOB, parse(fields), "m").failure).toBeUndefined();
+  });
+
+  it("adds nothing to a success, and nothing when there was no result line", () => {
+    const success = { status: "success", errorText: "the model declined the request" };
+    expect(mapRunEnd("complete", JOB, parse(success), "m").failure).toBeUndefined();
+    expect(mapRunEnd("failed", JOB, null, "m").failure).toBeUndefined();
+  });
+});
