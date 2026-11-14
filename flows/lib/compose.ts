@@ -234,10 +234,8 @@ export class NotBuiltError extends Error {
 }
 
 /**
- * The staging deploy token (D-353, O-116): a new credential, Didi's gate. Until Didi has created it
- * and stored it in Windmill (runbook step 16), every read refuses, so nothing is uploaded and each
- * deploy is refused as infrastructure. Once it exists, the composition reads it with
- * `windmillStagingDeployCredentials`.
+ * A staging deploy credential port that always refuses (D-353, O-116), as the composition had
+ * before it read Windmill (O-138); tests use it for a deploy that must reach no network.
  */
 export function unbuiltStagingDeployCredentials(): StagingDeployCredentials {
   return {
@@ -252,7 +250,9 @@ export function unbuiltStagingDeployCredentials(): StagingDeployCredentials {
 /**
  * The staging deploy token and the account id, read by path from the flow's environment (Windmill
  * secret variables, D-370, ADR 0111 section 4) each time a deploy needs them, and never kept or
- * logged.
+ * logged. The token is a new credential, Didi's gate (runbook step 16): until both variables
+ * exist, the read throws, the target refuses the deploy as `credential_unavailable`, nothing is
+ * uploaded and no failure is counted, so the composition reads them from the start (O-138).
  */
 export function windmillStagingDeployCredentials(
   env: Pick<FlowEnvironment, "secret">,
@@ -265,9 +265,9 @@ export function windmillStagingDeployCredentials(
   };
 }
 
-/** The deploy adapter's Cloudflare target (O-116); refuses on its credential today. */
+/** The deploy adapter's Cloudflare target (O-116), with the credential port it reads. */
 export function runnerStagingTarget(
-  credentials: StagingDeployCredentials = unbuiltStagingDeployCredentials(),
+  credentials: StagingDeployCredentials,
 ): StagingTarget {
   return createCloudflareStagingTarget({ credentials, http: createCloudflareHttp() });
 }
@@ -604,7 +604,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),
     stagingChecker: createMarkerStagingChecker(),
     stagingBuilds: runnerStagingBuilds(apps.runner),
-    stagingTarget: runnerStagingTarget(),
+    stagingTarget: runnerStagingTarget(windmillStagingDeployCredentials(env)),
     screenshots: runnerScreenshotBundles(apps.runner),
     repoFolders: runnerRepoFolders(apps.runner),
     repoMaps: runnerRepoMaps(clusterParts, apps.runner),
