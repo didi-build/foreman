@@ -352,6 +352,49 @@ describe("QA's fetch image unpacks the head commit (unit with fakes, O-124)", ()
   });
 });
 
+describe("QA's fetch image unpacks into a folder of its own in a new volume (unit with fakes, D-389)", () => {
+  it("makes the workspace folder in a new volume's root, so lost+found stays outside the tree", async () => {
+    const root = workspace();
+    mkdirSync(join(root, "lost+found"), { mode: 0o700 });
+    const github = fakeGitHub(() => ({ body: archive(GOOD_ENTRIES) }));
+    const { code, result } = await run(withWorkspace(join(root, "repo")), github.http);
+    expect(code).toBe(0);
+    expect(result).toMatchObject({ status: "success" });
+    expect(readdirSync(root).sort()).toEqual(["lost+found", "repo"]);
+    expect(listTree(join(root, "repo"))).toEqual(GOOD_TREE);
+    expect((lstatSync(join(root, "repo")).mode & 0o777).toString(8)).toBe("755");
+  });
+
+  it("makes it in an empty volume root too", async () => {
+    const root = workspace();
+    const github = fakeGitHub(() => ({ body: archive(GOOD_ENTRIES) }));
+    const { code } = await run(withWorkspace(join(root, "repo")), github.http);
+    expect(code).toBe(0);
+    expect(listTree(join(root, "repo"))).toEqual(GOOD_TREE);
+  });
+
+  it("makes nothing when the parent is not a new volume's root, is missing or is a link", async () => {
+    const used = workspace();
+    writeFileSync(join(used, "stale.txt"), "old tree");
+    const fresh = workspace();
+    const link = join(workspace(), "link");
+    symlinkSync(fresh, link);
+    for (const path of [
+      join(used, "repo"),
+      join(workspace(), "missing", "repo"),
+      join(link, "repo"),
+    ]) {
+      const github = fakeGitHub(() => ({ body: archive(GOOD_ENTRIES) }));
+      const { code, result } = await run(withWorkspace(path), github.http);
+      expect(code).toBe(1);
+      expect(result?.errorText).toBe("the workspace is not a folder");
+      expect(github.asked).toEqual([]);
+    }
+    expect(readdirSync(used)).toEqual(["stale.txt"]);
+    expect(readdirSync(fresh)).toEqual([]);
+  });
+});
+
 describe("QA's fetch image refuses a bad archive and leaves the workspace as it was (unit with fakes, O-124)", () => {
   const file = (name: string | Buffer, more: Partial<Entry> = {}): Entry => ({
     name,

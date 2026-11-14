@@ -4,8 +4,11 @@
 // run's head commit from GitHub's API (`/repos/{owner}/{repo}/tarball/{sha}`, which redirects to
 // codeload.github.com) through its own egress proxy, which allows only the GitHub hosts in QA's
 // bot file, and unpacks it into the run's volume (./unpack.ts). QA's pod then mounts that volume
-// read-only at the same path and reads the commit from its own settings, so nothing else is
-// written: no marker file.
+// read-only and reads the commit from its own settings, so nothing else is written: no marker
+// file. A new volume's root holds a `lost+found` folder, which QA once reported as a stray folder
+// in the repository (D-389), so the workspace may be a folder this step makes in that root: when
+// it does not exist yet and its parent is a new volume's root, it is made, and QA's pod mounts
+// only that folder.
 //
 // The token is never logged, never written to disk and never a process argument: it goes only
 // into the request's Authorization header, which `fetch` drops when GitHub's answer redirects to
@@ -19,7 +22,8 @@
 // before GitHub answers (the proxy not ready yet) is tried again a few times (../shared/
 // job-kit.ts); an answer GitHub gave is never retried.
 import type { Dirent } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import {
   MIN_SECRET_LENGTH,
@@ -150,19 +154,41 @@ const DOWNLOAD_FAILED = "the archive could not be downloaded";
 const WORKSPACE_NOT_FOLDER = "the workspace is not a folder";
 const WORKSPACE_NOT_EMPTY = "the workspace is not empty";
 
-/** The workspace must be a folder, not a link, holding nothing but a new volume's lost+found. */
-async function checkWorkspace(path: string): Promise<void> {
-  let entries: Dirent[] | undefined;
+/** A real folder's entries; `missing` when nothing is there; null for anything else. */
+async function entriesOf(path: string): Promise<Dirent[] | "missing" | null> {
   try {
     const info = await lstat(path);
-    if (info.isDirectory()) entries = await readdir(path, { withFileTypes: true });
-  } catch {
-    entries = undefined;
+    return info.isDirectory() ? await readdir(path, { withFileTypes: true }) : null;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : null;
   }
-  if (entries === undefined) throw new FetchRefusal(WORKSPACE_NOT_FOLDER);
-  if (entries.some((e) => e.name !== LOST_AND_FOUND || !e.isDirectory())) {
-    throw new FetchRefusal(WORKSPACE_NOT_EMPTY);
+}
+
+/** Nothing, or only a new volume's lost+found folder. */
+const asNew = (entries: Dirent[]): boolean =>
+  entries.every((e) => e.name === LOST_AND_FOUND && e.isDirectory());
+
+/**
+ * The workspace must be a folder, not a link, holding nothing but a new volume's lost+found. When
+ * it does not exist and its parent is such a folder, a new volume's root, it is made there
+ * (D-389); a parent that is missing, a link or not new refuses, and nothing is made.
+ */
+async function prepareWorkspace(path: string): Promise<void> {
+  let entries = await entriesOf(path);
+  if (entries === "missing") {
+    const parent = await entriesOf(dirname(path));
+    if (!Array.isArray(parent) || !asNew(parent)) {
+      throw new FetchRefusal(WORKSPACE_NOT_FOLDER);
+    }
+    try {
+      await mkdir(path, { mode: 0o755 });
+    } catch {
+      throw new FetchRefusal(WORKSPACE_NOT_FOLDER);
+    }
+    entries = await entriesOf(path);
   }
+  if (!Array.isArray(entries)) throw new FetchRefusal(WORKSPACE_NOT_FOLDER);
+  if (!asNew(entries)) throw new FetchRefusal(WORKSPACE_NOT_EMPTY);
 }
 
 /** Runs the Job; returns its exit code. The result line is the last thing written. */
@@ -184,7 +210,7 @@ export async function runQaFetchImage(
   const { headSha, githubToken: token } = settings;
   let result: AgentResult;
   try {
-    await checkWorkspace(settings.workspace);
+    await prepareWorkspace(settings.workspace);
     const http = deps.http ?? createArchiveHttp();
     const path = `/repos/${settings.repository}/tarball/${headSha}`;
     let answer: ArchiveAnswer;
