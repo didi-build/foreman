@@ -92,13 +92,19 @@ const APP_KEY_PATHS = [
  * Every secret is the same made-up database address, so an App's key read here is not a PEM and
  * its first token is refused before anything is sent.
  */
-function fakeEnvironment(values: Record<string, string> = {}) {
+function fakeEnvironment(
+  values: Record<string, string> = {},
+  /** Secret variables set to their own value; a path given `null` does not exist. */
+  secrets: Record<string, string | null> = {},
+) {
   const secretsRead: string[] = [];
   const valuesRead: string[] = [];
   const env: FlowEnvironment = {
     async secret(path) {
       secretsRead.push(path);
-      return "postgresql://runner:not-a-real-password@localhost:1/none";
+      const set = secrets[path];
+      if (set === null) throw new Error(`${path} is not set`);
+      return set ?? "postgresql://runner:not-a-real-password@localhost:1/none";
     },
     async value(name) {
       valuesRead.push(name);
@@ -312,8 +318,14 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     }
   });
 
-  it("refuses the staging deploy on its credential until Didi creates it, uploading nothing (D-353, O-116)", async () => {
-    const { env, secretsRead } = fakeEnvironment();
+  it("refuses the staging deploy on its credential until Didi stores it, uploading nothing (D-353, O-116, O-138)", async () => {
+    const { env, secretsRead } = fakeEnvironment(
+      {},
+      {
+        [SECRET_PATHS.cloudflareAccountId]: null,
+        [SECRET_PATHS.stagingDeployToken]: null,
+      },
+    );
     const deps = await compose(env);
     try {
       // A site that passes the file-set check still reaches no network: the credential refuses.
@@ -334,8 +346,50 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(unbuiltStagingDeployCredentials().read()).rejects.toThrow(
         /Workers Scripts Edit only/,
       );
-      // Nothing beyond the database secret was read.
-      expect(secretsRead).toEqual([SECRET_PATHS.database]);
+      // The composition asked Windmill for the credential, and reached no network.
+      expect(secretsRead).toEqual([
+        SECRET_PATHS.database,
+        SECRET_PATHS.cloudflareAccountId,
+      ]);
+      expect(fetched).toEqual([]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("reads both stored values from Windmill on each deploy and checks their shape (O-138)", async () => {
+    // Stored, but not an account id: the target reads both paths and refuses before any network.
+    const { env, secretsRead } = fakeEnvironment(
+      {},
+      {
+        [SECRET_PATHS.cloudflareAccountId]: "not-an-account-id",
+        [SECRET_PATHS.stagingDeployToken]: "fake-token-for-tests-only-0123456789",
+      },
+    );
+    const deps = await compose(env);
+    try {
+      const commit = "b".repeat(40);
+      const archive = storedZip([{ name: "foreman-commit.txt", data: `${commit}\n` }]);
+      const deploy = () =>
+        deps.stagingTarget.deploy({
+          project: { slug: "x", repo: "didi-build/x" } as never,
+          commitSha: commit,
+          archive,
+        });
+      expect(await deploy()).toMatchObject({
+        outcome: "refused",
+        cause: "infrastructure",
+        reason: "credential_malformed",
+      });
+      await deploy();
+      // Read again on each deploy, never kept.
+      expect(secretsRead.slice(1)).toEqual([
+        SECRET_PATHS.cloudflareAccountId,
+        SECRET_PATHS.stagingDeployToken,
+        SECRET_PATHS.cloudflareAccountId,
+        SECRET_PATHS.stagingDeployToken,
+      ]);
+      expect(fetched).toEqual([]);
     } finally {
       await deps.close();
     }
