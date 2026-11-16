@@ -295,15 +295,63 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
       ["throw", "cloudflare_unreachable"],
     ] as const) {
       const { result, sent } = await deploy([answer]);
-      expect(result, reason).toEqual({
+      expect(result, reason).toMatchObject({
         outcome: "refused",
         cause: "infrastructure",
         reason,
         text: CLOUDFLARE_REFUSALS[reason],
       });
+      // The refusal names the call it came from, with Cloudflare's status and numeric codes
+      // when it answered (O-139).
+      const detail = result.outcome === "refused" ? result.detail : undefined;
+      expect(detail?.call, reason).toBe("upload_session");
+      if (answer === "throw") expect(detail).toEqual({ call: "upload_session" });
+      else expect(detail?.status, reason).toBe(answer.status);
+      if (answer !== "throw" && answer.body === message) {
+        expect(detail?.codes).toEqual([10000]);
+      }
       expect(sent).toHaveLength(1);
       // Cloudflare's own message is never kept.
       expect(JSON.stringify(result)).not.toContain("says no");
+    }
+  });
+
+  it("names the refused call, its status and Cloudflare's numeric codes, never its words (O-139)", async () => {
+    const denied = (code: unknown) => ({
+      status: 403,
+      body: { success: false, errors: [{ code, message: "account 0123 says no" }] },
+    });
+    const session = ok({ jwt: SESSION_JWT, buckets: [[HASHES.index]] });
+    const upload = await deploy([session, denied(10001)]);
+    expect(upload.result).toMatchObject({
+      reason: "credential_refused",
+      detail: { call: "asset_upload", status: 403, codes: [10001] },
+    });
+    const worker = await deploy([ok({ jwt: SESSION_JWT, buckets: [] }), denied(10000)]);
+    expect(worker.result).toMatchObject({
+      reason: "credential_refused",
+      detail: { call: "worker_upload", status: 403, codes: [10000] },
+    });
+    // Codes that are not whole numbers are left out; at most five are kept.
+    const odd = await deploy([
+      {
+        status: 401,
+        body: {
+          errors: [
+            { code: "10000" },
+            { code: 1.5 },
+            { code: -1 },
+            ...[1, 2, 3, 4, 5, 6].map((code) => ({ code })),
+          ],
+        },
+      },
+    ]);
+    expect(odd.result).toMatchObject({
+      detail: { call: "upload_session", status: 401, codes: [1, 2, 3, 4, 5] },
+    });
+    for (const { result } of [upload, worker, odd]) {
+      expect(JSON.stringify(result)).not.toContain("says no");
+      expect(JSON.stringify(result)).not.toContain("0123");
     }
   });
 

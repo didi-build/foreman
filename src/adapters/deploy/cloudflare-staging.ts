@@ -41,15 +41,21 @@
 //
 // Every refusal is infrastructure, with fixed text: the credential missing or malformed, Cloudflare
 // refusing the token (401 or 403), refusing the request (another 4xx), failing (429 or 5xx), not
-// answering, or answering in a shape the docs do not give. Cloudflare's own error messages are
-// never kept, logged or returned, since they can name ids. The token and the JWTs are never logged
-// or returned.
+// answering, or answering in a shape the docs do not give. A refusal by Cloudflare also names the
+// call it came from (`upload_session`, `asset_upload` or `worker_upload`), the HTTP status and
+// Cloudflare's numeric error codes (`errors[].code`), so a refusal can be told apart without
+// guessing (O-139). Cloudflare's own error messages are never kept, logged or returned, since they
+// can name ids. The token and the JWTs are never logged or returned.
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
 import { PROJECT_SLUG } from "../../core/register-project.ts";
 import type { Project } from "../../core/store.ts";
-import type { StagingTarget, StagingUpload } from "../../core/staging-deploy.ts";
+import type {
+  DeployRefusalDetail,
+  StagingTarget,
+  StagingUpload,
+} from "../../core/staging-deploy.ts";
 import { readSiteFiles, type SiteFile } from "./site-files.ts";
 
 /** Cloudflare's API, under which every path below is sent. */
@@ -159,13 +165,37 @@ export const CLOUDFLARE_REFUSALS = {
 
 export type CloudflareRefusal = keyof typeof CLOUDFLARE_REFUSALS;
 
+/** The three calls, by the fixed names a refusal reports (O-139). */
+export type CloudflareCall = "upload_session" | "asset_upload" | "worker_upload";
+
+/** The most of Cloudflare's numeric error codes a refusal keeps. */
+const MAX_ERROR_CODES = 5;
+
 class Refused extends Error {
   readonly reason: CloudflareRefusal;
-  constructor(reason: CloudflareRefusal) {
+  readonly detail: DeployRefusalDetail | undefined;
+  constructor(reason: CloudflareRefusal, detail?: DeployRefusalDetail) {
     super(CLOUDFLARE_REFUSALS[reason]);
     this.name = "Refused";
     this.reason = reason;
+    this.detail = detail;
   }
+}
+
+/** Cloudflare's numeric error codes from its answer, never its messages. */
+function errorCodes(body: unknown): number[] {
+  if (!isRecord(body) || !Array.isArray(body.errors)) return [];
+  return body.errors
+    .flatMap((error) => {
+      const code = isRecord(error) ? error.code : undefined;
+      return typeof code === "number" &&
+        Number.isInteger(code) &&
+        code >= 0 &&
+        code <= 9_999_999
+        ? [code]
+        : [];
+    })
+    .slice(0, MAX_ERROR_CODES);
 }
 
 /** The types Cloudflare attaches when it serves a file, by extension; text types are UTF-8. */
@@ -220,15 +250,32 @@ export function assetHash(file: SiteFile): string {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** The answer's `result`, when Cloudflare says it succeeded; a refusal otherwise. */
-function resultOf(answer: CloudflareAnswer, accepted: readonly number[]): unknown {
+/** The answer's `result`, when Cloudflare says it succeeded; a refusal naming the call otherwise. */
+function resultOf(
+  call: CloudflareCall,
+  answer: CloudflareAnswer,
+  accepted: readonly number[],
+): unknown {
   const { status, body } = answer;
-  if (status === 401 || status === 403) throw new Refused("credential_refused");
-  if (status === 429 || status >= 500) throw new Refused("cloudflare_unavailable");
-  if (!accepted.includes(status)) {
-    throw new Refused(status >= 400 ? "cloudflare_refused" : "unexpected_answer");
+  const codes = errorCodes(body);
+  const detail: DeployRefusalDetail = {
+    call,
+    status,
+    ...(codes.length ? { codes } : {}),
+  };
+  if (status === 401 || status === 403) throw new Refused("credential_refused", detail);
+  if (status === 429 || status >= 500) {
+    throw new Refused("cloudflare_unavailable", detail);
   }
-  if (!isRecord(body) || body.success !== true) throw new Refused("unexpected_answer");
+  if (!accepted.includes(status)) {
+    throw new Refused(
+      status >= 400 ? "cloudflare_refused" : "unexpected_answer",
+      detail,
+    );
+  }
+  if (!isRecord(body) || body.success !== true) {
+    throw new Refused("unexpected_answer", detail);
+  }
   return body.result;
 }
 
@@ -250,12 +297,15 @@ export function createCloudflareStagingTarget({
   http,
 }: CloudflareStagingTargetOptions): StagingTarget {
   /** Sends one request after checking it is one of the three this adapter may send. */
-  async function send(request: CloudflareRequest): Promise<CloudflareAnswer> {
+  async function send(
+    call: CloudflareCall,
+    request: CloudflareRequest,
+  ): Promise<CloudflareAnswer> {
     assertAllowedCall(request);
     try {
       return await http.send(request);
     } catch {
-      throw new Refused("cloudflare_unreachable");
+      throw new Refused("cloudflare_unreachable", { call });
     }
   }
 
@@ -284,15 +334,13 @@ export function createCloudflareStagingTarget({
     }
 
     // 1. The upload session.
-    const session = resultOf(
-      await send({
-        method: "POST",
-        path: `${account}/workers/scripts/${worker}/assets-upload-session`,
-        bearer: token,
-        json: { manifest },
-      }),
-      [200, 201],
-    );
+    const sessionAnswer = await send("upload_session", {
+      method: "POST",
+      path: `${account}/workers/scripts/${worker}/assets-upload-session`,
+      bearer: token,
+      json: { manifest },
+    });
+    const session = resultOf("upload_session", sessionAnswer, [200, 201]);
     const sessionJwt = jwtOf(session);
     const buckets = isRecord(session) ? (session.buckets ?? []) : null;
     if (
@@ -305,13 +353,16 @@ export function createCloudflareStagingTarget({
           b.every((h) => typeof h === "string" && HASH.test(h) && byHash.has(h)),
       )
     ) {
-      throw new Refused("unexpected_answer");
+      throw new Refused("unexpected_answer", {
+        call: "upload_session",
+        status: sessionAnswer.status,
+      });
     }
 
     // 2. The buckets. With none, the session's JWT is already the completion token.
     let completion: string | null = buckets.length === 0 ? sessionJwt : null;
     for (const bucket of buckets as string[][]) {
-      const answer = await send({
+      const answer = await send("asset_upload", {
         method: "POST",
         path: `${account}/workers/assets/upload?base64=true`,
         bearer: sessionJwt,
@@ -325,13 +376,17 @@ export function createCloudflareStagingTarget({
           };
         }),
       });
-      completion = jwtOf(resultOf(answer, [200, 201, 202])) ?? completion;
+      completion =
+        jwtOf(resultOf("asset_upload", answer, [200, 201, 202])) ?? completion;
     }
-    if (completion === null) throw new Refused("unexpected_answer");
+    if (completion === null) {
+      throw new Refused("unexpected_answer", { call: "asset_upload" });
+    }
 
     // 3. The Worker: the assets and their config, and no code module.
     resultOf(
-      await send({
+      "worker_upload",
+      await send("worker_upload", {
         method: "PUT",
         path: `${account}/workers/scripts/${worker}`,
         bearer: token,
@@ -388,6 +443,7 @@ export function createCloudflareStagingTarget({
           cause: "infrastructure",
           reason: error.reason,
           text: CLOUDFLARE_REFUSALS[error.reason],
+          ...(error.detail ? { detail: error.detail } : {}),
         };
       }
       return { outcome: "deployed", files: set.files.length };
