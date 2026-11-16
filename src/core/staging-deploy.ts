@@ -98,6 +98,17 @@ export interface StagingBuilds {
 /** `file_set`: the build is not a site the runner uploads. `infrastructure`: see the header. */
 export type DeployRefusalCause = "file_set" | typeof INFRASTRUCTURE_CAUSE;
 
+/**
+ * Where a target's refusal came from, for diagnosis (O-139): the fixed name of the call that was
+ * refused, the HTTP status when the provider answered, and the provider's numeric error codes.
+ * A fixed name and numbers only: never a message, an id or a value.
+ */
+export interface DeployRefusalDetail {
+  call: string;
+  status?: number;
+  codes?: number[];
+}
+
 export type StagingUpload =
   | { outcome: "deployed"; files: number }
   | {
@@ -107,6 +118,7 @@ export type StagingUpload =
       reason: string;
       /** Fixed text: never a path, a value or a word from the build or from Cloudflare. */
       text: string;
+      detail?: DeployRefusalDetail;
     };
 
 /**
@@ -193,9 +205,10 @@ export interface StagingDeployResult {
   step: StagingDeployStep;
   /** The run's head commit, which was deployed or would be. */
   commitSha?: string;
-  /** For a refusal: its fixed code and text. */
+  /** For a refusal: its fixed code and text, and where the target's refusal came from. */
   reason?: string;
   text?: string;
+  detail?: DeployRefusalDetail;
   /** For a deploy: how many files the site has. */
   files?: number;
   /** The items in Verifying on staging whose merge commit the deployed commit counts for. */
@@ -440,6 +453,7 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
             commitSha,
             reason: outcome.reason,
             text: outcome.text,
+            ...(outcome.detail ? { detail: outcome.detail } : {}),
           };
     let recorded;
     try {

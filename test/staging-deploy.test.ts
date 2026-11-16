@@ -267,6 +267,25 @@ describe("a refused staging deploy (unit: D-225 rule 2, O-116, N-103)", () => {
     expect(t.checker.calls).toEqual([]);
   });
 
+  it("passes on where the target's refusal came from, so it can be told apart (O-139)", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.answers.push({
+      outcome: "refused",
+      cause: "infrastructure",
+      reason: "credential_refused",
+      text: "Cloudflare refused the staging deploy credential",
+      detail: { call: "asset_upload", status: 401, codes: [10001] },
+    });
+    const result = await t.deploys().deployRun(REPO, runId);
+    expect(result).toMatchObject({
+      step: "refused_infrastructure",
+      reason: "credential_refused",
+      detail: { call: "asset_upload", status: 401, codes: [10001] },
+    });
+    expect(await t.counter("failure")).toBe(0);
+  });
+
   it("refuses as infrastructure, with fixed text, when GitHub's run, its artifact or the target fails", async () => {
     for (const [label, prepare, reason] of [
       ["run unreadable", (t: T) => t.builds.failNext.add("getRun"), "run_unreadable"],
