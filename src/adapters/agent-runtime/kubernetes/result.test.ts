@@ -13,6 +13,7 @@ import {
   mapRunEnd,
   NEEDS_DECISION_MAX_REASON,
   parseAgentResult,
+  withProxyServedTier,
 } from "./result.ts";
 
 // Unit: the agent's result line and the outcome mapping (ADR 0106 section 6, ADR 0107).
@@ -453,4 +454,41 @@ describe("mapRunEnd shows the pod's end beside bad_output (unit: D-415, ./pod-en
     expect(badStop).toMatchObject({ outcome: "fail", detail: "bad_output" });
     expect(badStop.failure).toBeUndefined();
   });
+});
+
+describe("withProxyServedTier (unit: the proxy's tally only fills a gap, D-423)", () => {
+  const endWith = (fields: Record<string, unknown> = {}) =>
+    mapRunEnd(
+      "complete",
+      JOB,
+      parseAgentResult(line({ status: "success", ...fields })),
+      "m",
+      "flex",
+    );
+
+  it("fills the tier when the agent reported none", () => {
+    const end = endWith();
+    expect(end.serviceTierServed).toBeUndefined();
+    expect(withProxyServedTier(end, "flex")).toEqual({
+      ...end,
+      serviceTierServed: "flex",
+    });
+    expect(withProxyServedTier(end, "mixed").serviceTierServed).toBe("mixed");
+  });
+
+  it("leaves the end as it is when the proxy counted no tier", () => {
+    const end = endWith();
+    expect(withProxyServedTier(end, null)).toBe(end);
+  });
+
+  it.each(["standard", "flex", "priority", "mixed"] as const)(
+    "never replaces a tier the agent reported (%s)",
+    (reported) => {
+      const own = endWith({ serviceTierServed: reported });
+      expect(own.serviceTierServed).toBe(reported);
+      for (const proxyTier of ["standard", "flex", "priority", "mixed"] as const) {
+        expect(withProxyServedTier(own, proxyTier)).toBe(own);
+      }
+    },
+  );
 });

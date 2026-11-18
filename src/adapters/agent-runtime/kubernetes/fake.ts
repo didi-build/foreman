@@ -1,7 +1,8 @@
 // An in-memory Kubernetes for tests (ADR 0106). It implements the same client interface, keeps
 // the same namespace rule, and records every call in order. Jobs never run by themselves: a test
 // moves a Job to its end with `finishJob`, which also makes its pod and log, as the Job
-// controller and the kubelet would.
+// controller and the kubelet would. `startPod` gives a Job that is still running, such as a run's
+// egress proxy, its pod and log so far.
 import {
   KubernetesApiError,
   checkName,
@@ -55,6 +56,8 @@ export interface FakeKubernetes extends KubernetesClient {
   ): T | undefined;
   /** Moves a Job to its end and gives it its pods: by default one, with the given log. */
   finishJob(namespace: string, name: string, end: JobEnd): void;
+  /** Gives a running Job a pod (phase `Running` unless given) and its log so far. */
+  startPod(namespace: string, name: string, pod?: FakePod): void;
   /** Marks a Job as being deleted, as a Foreground delete does while its pods stop. */
   markDeleting(namespace: string, name: string): void;
   /** Makes the next create of this kind fail with the given status. */
@@ -76,6 +79,35 @@ export function createFakeKubernetes(): FakeKubernetes {
   const failures = new Map<RunObjectKind, { status: number; reason: string }>();
   const calls: string[] = [];
   let nextAddress = 10;
+
+  /** Makes a Job's pods with its template's labels, as the Job controller does. */
+  const addPods = (
+    namespace: string,
+    name: string,
+    made: readonly FakePod[],
+    phase: string,
+    log: string,
+  ): void => {
+    const job = objects.get(key("Job", namespace, name));
+    if (!job || job.kind !== "Job") throw new Error(`fake has no Job ${name}`);
+    for (const pod of made) {
+      const podName = pod.name ?? `${name}-abcde`;
+      pods.set(`${namespace}/${podName}`, {
+        pod: {
+          metadata: {
+            name: podName,
+            namespace,
+            labels: { ...job.spec.template.metadata.labels, "job-name": name },
+            ...(pod.creationTimestamp === undefined
+              ? {}
+              : { creationTimestamp: pod.creationTimestamp }),
+          },
+          status: pod.status ?? { phase },
+        },
+        log: pod.log ?? log,
+      });
+    }
+  };
 
   const jobView = (namespace: string, name: string): JobStatus | null => {
     const object = objects.get(key("Job", namespace, name));
@@ -197,23 +229,11 @@ export function createFakeKubernetes(): FakeKubernetes {
         completionTime: end.completionTime ?? "2026-10-30T12:10:00Z",
       });
       const phase = end.condition === "Complete" ? "Succeeded" : "Failed";
-      for (const made of end.pods ?? [{}]) {
-        const podName = made.name ?? `${name}-abcde`;
-        pods.set(`${namespace}/${podName}`, {
-          pod: {
-            metadata: {
-              name: podName,
-              namespace,
-              labels: { ...job.spec.template.metadata.labels, "job-name": name },
-              ...(made.creationTimestamp === undefined
-                ? {}
-                : { creationTimestamp: made.creationTimestamp }),
-            },
-            status: made.status ?? { phase },
-          },
-          log: made.log ?? end.log ?? "",
-        });
-      }
+      addPods(namespace, name, end.pods ?? [{}], phase, end.log ?? "");
+    },
+
+    startPod(namespace, name, pod = {}) {
+      addPods(namespace, name, [pod], "Running", "");
     },
 
     markDeleting(namespace, name) {
