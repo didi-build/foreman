@@ -1,6 +1,6 @@
 {
   "agentImages": {
-    "opencode": "ghcr.io/didi-build/foreman-agent-opencode@sha256:db55616cd0f2d5d67710bb3bd4bc838b95c4b8bb4c6d23e25039f3c07e7d76a0",
+    "opencode": "ghcr.io/didi-build/foreman-agent-opencode@sha256:507f11b1103b16ed1e4dbeb474cc9c55f86d9b78f7947e1919b82afe996cb104",
     "claude-api": "ghcr.io/didi-build/foreman-agent-claude-api@sha256:9ccce416e66efb62b7302ab9ba19c12b0e135f2a1224b57947d2ec406e578bbe"
   },
   "runSettings": {
