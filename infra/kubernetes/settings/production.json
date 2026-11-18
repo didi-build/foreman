@@ -3,7 +3,7 @@
     "images": {
       "stateApi": "ghcr.io/didi-build/foreman-state-api@sha256:d5bbd764a251c2f1122e8452497f7f9f981bdf27afabcfa7b1056689ab0cea69",
       "receiver": "ghcr.io/didi-build/foreman-github-receiver@sha256:5f8b836031394050d5532c43125dda2052c4a4e0ce1a45bc712b2ef05838dc01",
-      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:2d7a128e19ec6df242bad224d0395567fb4ffd4788c55178f28af2f507d3a5b9",
+      "egressProxy": "ghcr.io/didi-build/foreman-egress-proxy@sha256:9b1cf146adaa50cf2eef89594d784fb31c6e81811ef767b778e7daf166eeb64b",
       "runWatcher": "ghcr.io/didi-build/foreman-run-watcher@sha256:1259694b702aaab58659cfea9445c50ad157cefb5d893d2a51a78c28c937d8cf"
     },
     "serviceUser": 1000,
