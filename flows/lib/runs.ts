@@ -23,7 +23,10 @@ export function runReport(result: AgentRunResult): RunReport {
   };
 }
 
-/** What the run-end flow's result shows of a run that did not succeed (D-385). */
+/**
+ * What the run-end flow's result shows of a run that did not succeed (D-385), with, for a run
+ * that left no readable result, its pod's end reason and exit code (D-415).
+ */
 export interface RunEndFailure extends RunFailure {
   outcome: RunReport["outcome"];
   /** The runtime's fixed reason code, for example `agent_error` or `bad_output`. */
@@ -32,8 +35,9 @@ export interface RunEndFailure extends RunFailure {
 
 /**
  * For a run that did not succeed, `failure`: its outcome, the runtime's fixed reason code, and
- * what the runtime kept of the cause (src/adapters/agent-runtime/run-failure.ts); for a success,
- * nothing. Shown in the run-end flow's result only; nothing of it is stored (D-385).
+ * what the runtime kept of the cause (src/adapters/agent-runtime/run-failure.ts), the pod's end
+ * reason and exit code included (D-415); for a success, nothing. Shown in the run-end flow's
+ * result only; nothing of it is stored (D-385).
  */
 export function failureOf(result: AgentRunResult): { failure?: RunEndFailure } {
   if (result.outcome === "success") return {};

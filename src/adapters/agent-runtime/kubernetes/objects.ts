@@ -11,6 +11,8 @@ export interface ObjectMeta {
   /** Read only: the API server sets them. The run watcher keys a Job by its uid (D-330). */
   uid?: string;
   resourceVersion?: string;
+  /** Read only. The runtime picks the newest of a Job's pods by it (D-415, ./pod-end.ts). */
+  creationTimestamp?: string;
 }
 
 export interface LabelSelector {
@@ -195,10 +197,24 @@ export interface JobStatus {
   };
 }
 
-/** What `poll` reads from a Pod. */
+/**
+ * What `poll` reads from a Pod: its phase and how it ended (D-415, ./pod-end.ts). Kubernetes'
+ * free-text `message` fields are left out on purpose, so nothing here reads or keeps them.
+ */
 export interface PodStatus {
   metadata: ObjectMeta;
-  status?: { phase?: string };
+  status?: {
+    phase?: string;
+    /** Set when the kubelet ended or refused the pod itself, for example `Evicted`. */
+    reason?: string;
+    containerStatuses?: ContainerStatus[];
+  };
+}
+
+/** What `poll` reads of one container in a Pod's status: how it terminated, if it did. */
+export interface ContainerStatus {
+  name: string;
+  state?: { terminated?: { reason?: string; exitCode?: number } };
 }
 
 // Namespace-level objects. Infrastructure code applies them (ADR 0106 section 1); the runner

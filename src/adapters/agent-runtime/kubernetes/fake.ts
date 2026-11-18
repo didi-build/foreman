@@ -25,6 +25,21 @@ export interface JobEnd {
   log?: string;
   startTime?: string;
   completionTime?: string;
+  /**
+   * The Job's pods as the kubelet left them (D-415). Default: one pod named `<job>-abcde` with
+   * `log` and the phase of `condition`. `[]` for a Job whose pod is gone.
+   */
+  pods?: FakePod[];
+}
+
+export interface FakePod {
+  /** Default `<job>-abcde`. */
+  name?: string;
+  creationTimestamp?: string;
+  /** Default: the phase of the Job's condition. */
+  status?: PodStatus["status"];
+  /** The container's log. Default: the Job end's `log`. */
+  log?: string;
 }
 
 export interface FakeKubernetes extends KubernetesClient {
@@ -38,7 +53,7 @@ export interface FakeKubernetes extends KubernetesClient {
     namespace: string,
     name: string,
   ): T | undefined;
-  /** Moves a Job to its end and gives it one pod with the given log. */
+  /** Moves a Job to its end and gives it its pods: by default one, with the given log. */
   finishJob(namespace: string, name: string, end: JobEnd): void;
   /** Marks a Job as being deleted, as a Foreground delete does while its pods stop. */
   markDeleting(namespace: string, name: string): void;
@@ -181,18 +196,24 @@ export function createFakeKubernetes(): FakeKubernetes {
         startTime: end.startTime ?? "2026-10-30T12:00:00Z",
         completionTime: end.completionTime ?? "2026-10-30T12:10:00Z",
       });
-      const podName = `${name}-abcde`;
-      pods.set(`${namespace}/${podName}`, {
-        pod: {
-          metadata: {
-            name: podName,
-            namespace,
-            labels: { ...job.spec.template.metadata.labels, "job-name": name },
+      const phase = end.condition === "Complete" ? "Succeeded" : "Failed";
+      for (const made of end.pods ?? [{}]) {
+        const podName = made.name ?? `${name}-abcde`;
+        pods.set(`${namespace}/${podName}`, {
+          pod: {
+            metadata: {
+              name: podName,
+              namespace,
+              labels: { ...job.spec.template.metadata.labels, "job-name": name },
+              ...(made.creationTimestamp === undefined
+                ? {}
+                : { creationTimestamp: made.creationTimestamp }),
+            },
+            status: made.status ?? { phase },
           },
-          status: { phase: end.condition === "Complete" ? "Succeeded" : "Failed" },
-        },
-        log: end.log ?? "",
-      });
+          log: made.log ?? end.log ?? "",
+        });
+      }
     },
 
     markDeleting(namespace, name) {

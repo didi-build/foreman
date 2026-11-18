@@ -515,6 +515,34 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
     expect(await recordRunEnd(next.f.deps, next.input)).not.toHaveProperty("failure");
   });
 
+  it("shows the pod's end reason and exit code beside bad_output, and stores neither (D-415)", async () => {
+    const { f, input } = await activeRun();
+    const noResult = {
+      ...RESULT,
+      outcome: "fail" as const,
+      detail: "bad_output",
+      turns: null,
+      tokens: null,
+      costUsd: null,
+      finalText: "",
+      failure: { podReason: "OOMKilled", exitCode: 137 },
+    };
+    f.runtime.status.set(input.runId, { state: "finished", result: noResult });
+    expect(await recordRunEnd(f.deps, input)).toMatchObject({
+      outcome: "recorded",
+      report: { outcome: "fail" },
+      failure: {
+        outcome: "fail",
+        detail: "bad_output",
+        podReason: "OOMKilled",
+        exitCode: 137,
+      },
+    });
+    const stored = JSON.stringify(await f.store.getRun(input.runId));
+    expect(stored).not.toContain("OOMKilled");
+    expect(stored).not.toContain("exitCode");
+  });
+
   it("does not poll a run with no handle kept", async () => {
     const { f } = await activeRun();
     const run = await f.run((await f.node("in_development")).id, "developer");

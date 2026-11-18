@@ -416,3 +416,41 @@ describe("mapRunEnd keeps a failed run's cause (unit: D-385, ../run-failure.ts)"
     expect(mapRunEnd("failed", JOB, null, "m").failure).toBeUndefined();
   });
 });
+
+describe("mapRunEnd shows the pod's end beside bad_output (unit: D-415, ./pod-end.ts)", () => {
+  const parse = (fields: Record<string, unknown>) => parseAgentResult(line(fields));
+  const OOM = { podReason: "OOMKilled" as const, exitCode: 137 };
+
+  it("adds the pod's end reason and exit code to a run that left no result line", () => {
+    const result = mapRunEnd("failed", JOB, null, "m", "standard", OOM);
+    expect(result).toMatchObject({ outcome: "fail", detail: "bad_output" });
+    expect(result.failure).toEqual({ podReason: "OOMKilled", exitCode: 137 });
+    expect(
+      mapRunEnd("complete", JOB, null, "m", "standard", {
+        podReason: "Completed",
+        exitCode: 0,
+      }).failure,
+    ).toEqual({ podReason: "Completed", exitCode: 0 });
+    expect(
+      mapRunEnd("failed", JOB, null, "m", "standard", null).failure,
+    ).toBeUndefined();
+  });
+
+  it("adds nothing to a timeout, or to a run whose result line was read", () => {
+    expect(
+      mapRunEnd("deadline", JOB, null, "m", "standard", OOM).failure,
+    ).toBeUndefined();
+    const error = parse({
+      status: "error",
+      errorText: "the model declined the request",
+    });
+    expect(mapRunEnd("failed", JOB, error, "m", "standard", OOM).failure).toEqual({
+      error: "the model declined the request",
+    });
+    // A needs_decision result of the wrong shape is bad output, but a result was read.
+    const stop = parse({ status: "needs_decision", structured: { stopped: "maybe" } });
+    const badStop = mapRunEnd("complete", JOB, stop, "m", "standard", OOM);
+    expect(badStop).toMatchObject({ outcome: "fail", detail: "bad_output" });
+    expect(badStop.failure).toBeUndefined();
+  });
+});

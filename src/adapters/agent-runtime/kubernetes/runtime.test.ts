@@ -403,9 +403,135 @@ describe("poll (adapter contract: outcome mapping, ADR 0106 section 6)", () => {
       condition: "Failed",
       reason: "BackoffLimitExceeded",
     });
-    expect(await finished(handle)).toMatchObject({
-      outcome: "fail",
-      detail: "bad_output",
+    const end = await finished(handle);
+    expect(end).toMatchObject({ outcome: "fail", detail: "bad_output" });
+    // The pod says only that it failed: no end reason or exit code to show.
+    expect(end.failure).toBeUndefined();
+  });
+
+  describe("the pod's end beside bad_output (D-415)", () => {
+    const MESSAGE = "made-up kubelet message naming node-7";
+    const agentEnded = (reason: string, exitCode: number) => ({
+      name: "agent",
+      state: { terminated: { reason, exitCode, message: MESSAGE } },
+    });
+
+    it("shows an out-of-memory kill and its exit code, never the kubelet's message", async () => {
+      fake.finishJob(NS, n.agentJob, {
+        condition: "Failed",
+        reason: "BackoffLimitExceeded",
+        pods: [
+          {
+            status: {
+              phase: "Failed",
+              containerStatuses: [agentEnded("OOMKilled", 137)],
+            },
+          },
+        ],
+      });
+      const end = await finished(handle);
+      expect(end).toMatchObject({ outcome: "fail", detail: "bad_output" });
+      expect(end.failure).toEqual({ podReason: "OOMKilled", exitCode: 137 });
+      expect(JSON.stringify(end)).not.toContain("node-7");
+      // Polling again reads the same end from the kept Job's pod.
+      expect(await finished(handle)).toEqual(end);
+    });
+
+    it("shows an eviction by the pod's own reason", async () => {
+      fake.finishJob(NS, n.agentJob, {
+        condition: "Failed",
+        reason: "BackoffLimitExceeded",
+        pods: [
+          {
+            status: {
+              phase: "Failed",
+              reason: "Evicted",
+              containerStatuses: [agentEnded("ContainerStatusUnknown", 137)],
+            },
+          },
+        ],
+      });
+      expect((await finished(handle)).failure).toEqual({
+        podReason: "Evicted",
+        exitCode: 137,
+      });
+    });
+
+    it("gives no detail and no error when the Job's pod is gone", async () => {
+      fake.finishJob(NS, n.agentJob, {
+        condition: "Failed",
+        reason: "BackoffLimitExceeded",
+        pods: [],
+      });
+      const end = await finished(handle);
+      expect(end).toMatchObject({ outcome: "fail", detail: "bad_output" });
+      expect(end.failure).toBeUndefined();
+      expect(fake.calls.filter((c) => c.startsWith("log "))).toEqual([]);
+    });
+
+    it("reads the log and the end of the newest pod that ended", async () => {
+      fake.finishJob(NS, n.agentJob, {
+        condition: "Failed",
+        reason: "BackoffLimitExceeded",
+        pods: [
+          {
+            name: "run-x-agent-aaaaa",
+            creationTimestamp: "2026-11-18T10:00:00Z",
+            status: { phase: "Failed", containerStatuses: [agentEnded("Error", 1)] },
+            log: result({
+              status: "error",
+              errorText: "the model declined the request",
+            }),
+          },
+          {
+            name: "run-x-agent-bbbbb",
+            creationTimestamp: "2026-11-18T10:05:00Z",
+            status: {
+              phase: "Failed",
+              containerStatuses: [agentEnded("OOMKilled", 137)],
+            },
+            log: "panic: out of memory",
+          },
+        ],
+      });
+      const end = await finished(handle);
+      expect(fake.calls).toContain("log Pod/run-x-agent-bbbbb");
+      expect(fake.calls).not.toContain("log Pod/run-x-agent-aaaaa");
+      expect(end).toMatchObject({ outcome: "fail", detail: "bad_output" });
+      expect(end.failure).toEqual({ podReason: "OOMKilled", exitCode: 137 });
+    });
+
+    it("adds nothing when the agent's result line was read", async () => {
+      fake.finishJob(NS, n.agentJob, {
+        condition: "Failed",
+        reason: "BackoffLimitExceeded",
+        pods: [
+          { status: { phase: "Failed", containerStatuses: [agentEnded("Error", 1)] } },
+        ],
+        log: result({ status: "error", errorText: "the model declined the request" }),
+      });
+      expect(await finished(handle)).toMatchObject({
+        outcome: "fail",
+        detail: "job_failed",
+        failure: { error: "the model declined the request" },
+      });
+      expect((await finished(handle)).failure).not.toHaveProperty("podReason");
+    });
+
+    it("reads no pod for a run past its deadline", async () => {
+      fake.finishJob(NS, n.agentJob, {
+        condition: "Failed",
+        reason: "DeadlineExceeded",
+        pods: [
+          {
+            status: { phase: "Failed", containerStatuses: [agentEnded("Error", 137)] },
+          },
+        ],
+      });
+      const end = await finished(handle);
+      expect(end).toMatchObject({ outcome: "timeout", detail: "deadline_exceeded" });
+      expect(end.failure).toBeUndefined();
+      expect(fake.calls).not.toContain("list Pod");
     });
   });
 
