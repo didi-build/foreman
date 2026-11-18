@@ -26,7 +26,8 @@
 // The check is strict: no block, two blocks, text that is not one of those objects, a mix of the
 // two forms, an unknown field, or a field of the wrong shape is a problem the run fails on.
 // Nothing is guessed or filled in. The rest of the final message, without the block, becomes the
-// PR's description; a stopped run opens no PR.
+// PR's description; when nothing is left, the wrapper writes one from the branch instead
+// (./description.ts, O-148). A stopped run opens no PR.
 import {
   OUT_OF_SCOPE_FINDINGS,
   readOutOfScopeFindings,

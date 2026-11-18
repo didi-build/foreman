@@ -16,6 +16,7 @@ import {
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
   firstRunPrice,
+  seededRunPrice,
   QWEN_CODER,
   qwenCoderRunPrice,
   SEEDED_MODEL_CATALOG,
@@ -136,7 +137,7 @@ describe("the first policy (ADR 0114 section 5, D-185, D-186)", () => {
   });
 });
 
-describe("the seeded policy (migrations 0019 and 0024, D-324, D-421)", () => {
+describe("the seeded policy (migrations 0019, 0024 and 0025, D-324, D-421, O-150)", () => {
   const seeded = (
     role: AgentRole,
     taskType: string,
@@ -156,7 +157,7 @@ describe("the seeded policy (migrations 0019 and 0024, D-324, D-421)", () => {
     failFast: false,
     onCapacity: "wait",
     policyVersion: "2026-11-18.1",
-    catalogVersion: "2026-11-18.1",
+    catalogVersion: "2026-11-18.2",
   };
 
   it.each([
@@ -194,7 +195,8 @@ describe("the seeded policy (migrations 0019 and 0024, D-324, D-421)", () => {
         family: "claude",
         tier: "standard",
         ...versions,
-        price: firstRunPrice(model),
+        // Sonnet at the cache read price migration 0025 set (O-150).
+        price: seededRunPrice(model),
       });
     },
   );

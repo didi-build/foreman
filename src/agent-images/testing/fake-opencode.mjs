@@ -4,8 +4,10 @@
 // fake-opencode-call.json in its working folder, then prints `--format json` event lines in the
 // shape OpenCode 1.19.5 prints them (docs/spikes/opencode-runtime.md, check 1), chosen by
 // `scenario=<name>` in the prompt. The success scenario's final message is a short summary and a
-// `foreman-report` block (N-44), or the base64 text after `final64=` in the prompt. It never
-// calls a model and never uses the network.
+// `foreman-report` block (N-44), or the base64 text after `final64=` in the prompt. The
+// `block-only` and `split-final` scenarios print parts with every field OpenCode gives them, its
+// message ids included, to check how the final message is read (O-148). It never calls a model
+// and never uses the network.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -65,6 +67,50 @@ const tokens = (input, output, reasoning, read, write) => ({
 });
 const stepFinish = (reason, t) =>
   emit("step_finish", { part: { type: "step-finish", reason, tokens: t, cost: 0 } });
+
+// Parts with every field OpenCode 1.19.5 gives them (`session/processor.ts`): a part id, the
+// assistant message it belongs to (one per model request) and the session. Text parts are
+// printed once they have ended, so they carry `time.end`.
+let partCount = 0;
+const part = (messageID, type, fields) => ({
+  id: `prt_fake${String((partCount += 1)).padStart(4, "0")}`,
+  messageID,
+  sessionID,
+  type,
+  ...fields,
+});
+const realText = (messageID, text) =>
+  emit("text", {
+    part: part(messageID, "text", { text, time: { start: clock, end: clock + 1 } }),
+  });
+const realStep = (messageID, reason, t) => {
+  emit("step_finish", {
+    part: part(messageID, "step-finish", {
+      reason,
+      snapshot: "fake",
+      tokens: t,
+      cost: 0,
+    }),
+  });
+};
+const realStart = (messageID) =>
+  emit("step_start", { part: part(messageID, "step-start", { snapshot: "fake" }) });
+const realBash = (messageID, command, output) => {
+  emit("tool_use", {
+    part: part(messageID, "tool", {
+      callID: `call_${messageID}`,
+      tool: "bash",
+      state: {
+        status: "completed",
+        input: { command, description: "fake" },
+        output,
+        title: command,
+        metadata: { exit: 0 },
+        time: { start: clock, end: clock + 1 },
+      },
+    }),
+  });
+};
 const apiError = (statusCode, body, headers = {}, isRetryable = false, message = "") =>
   emit("error", {
     error: {
@@ -98,6 +144,49 @@ const scenarios = {
     emit("step_start", { part: { type: "step-start" } });
     emit("text", { part: { type: "text", text: finalText } });
     stepFinish("stop", tokens(12, 80, 20, 5400, 100));
+    return 0;
+  },
+  // The first Developer run on DeepInfra (didi-build/rehearsal#7, O-148), as an OpenAI-compatible
+  // route prints it: one text part at most per message. Its prose came with a tool call in an
+  // earlier message, and its final message is the report block alone (or `final64`'s text).
+  "block-only": () => {
+    realStart("msg_fake1");
+    realBash(
+      "msg_fake1",
+      "git commit -m 'Add the helper'",
+      "[branch abc1234] Add the helper",
+    );
+    realStep("msg_fake1", "tool-calls", tokens(900, 30, 0, 4000, 0));
+    realStart("msg_fake2");
+    realText("msg_fake2", "Now I will push the branch.");
+    realBash("msg_fake2", "git push", "branch pushed");
+    realStep("msg_fake2", "tool-calls", tokens(50, 20, 0, 4900, 0));
+    realStart("msg_fake3");
+    realText(
+      "msg_fake3",
+      final64 === undefined ? DEFAULT_FINAL.split("\n").slice(2).join("\n") : finalText,
+    );
+    realStep("msg_fake3", "stop", tokens(40, 45, 0, 4950, 0));
+    return 0;
+  },
+  // A final message in two text parts, as Anthropic's text blocks give it, with an empty part
+  // after them and the same part printed twice: the summary is the first part, the block the
+  // second (O-148).
+  "split-final": () => {
+    realStart("msg_fake1");
+    realBash("msg_fake1", "git push", "branch pushed");
+    realStep("msg_fake1", "tool-calls", tokens(900, 30, 0, 4000, 0));
+    realStart("msg_fake2");
+    realText("msg_fake2", "Done: the helper and its tests, pushed.");
+    const block = DEFAULT_FINAL.split("\n").slice(2).join("\n");
+    const blockPart = part("msg_fake2", "text", {
+      text: block,
+      time: { start: clock, end: clock + 1 },
+    });
+    emit("text", { part: blockPart });
+    emit("text", { part: blockPart });
+    realText("msg_fake2", "");
+    realStep("msg_fake2", "stop", tokens(40, 45, 0, 4950, 0));
     return 0;
   },
   "not-final": () => {

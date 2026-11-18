@@ -1,9 +1,16 @@
 // Reads `opencode run --format json`: one JSON object per line (docs/spikes/opencode-runtime.md,
 // check 1). Each has `type`, `timestamp`, `sessionID` and a `part` or an `error`. The wrapper
 // keeps a running tally: one turn per `step_finish` (one per model request), the tokens and the
-// cost summed over the steps, the last text and the last error. There is no final summary event,
-// so the result is built from this tally. Checked against OpenCode 1.19.5, the version the image
-// pins. Pure: no clock and no I/O.
+// cost summed over the steps, the final message and the last error. There is no final summary
+// event, so the result is built from this tally. Checked against OpenCode 1.19.5, the version the
+// image pins. Pure: no clock and no I/O.
+//
+// The final message (O-148). OpenCode makes each model request its own assistant message
+// (`session/prompt.ts`) and prints one `text` event per text part once the part has ended
+// (`cli/cmd/run.ts`); each part names its message in `part.messageID`. A message can have more
+// than one text part (Anthropic's text blocks), so the final message is every non-empty text
+// part of the latest message that had one, in order, joined by a blank line. An empty part, or a
+// synthetic one OpenCode wrote itself, never replaces it. Until O-148 only the last part was kept.
 import type { RunTokens } from "../../core/runs.ts";
 import type { ServiceTier } from "../../core/store.ts";
 import { requestCostUsd, type RunPrice } from "../shared/price.ts";
@@ -23,11 +30,21 @@ export interface RunTally {
   lastStepCostUsd: number;
   /** The latest `step_finish` reason; `stop` means the model gave its final answer. */
   lastReason: string | null;
+  /** The final message so far: `finalParts`' texts joined by a blank line, capped. */
   finalText: string;
+  /** The message `finalText` comes from (null: the event named none), and its text parts. */
+  finalMessageId: string | null;
+  finalParts: FinalPart[];
   /** The latest `error` event, if any. */
   error: TallyError | null;
   /** Each step's reported tier, in order (null: none reported). */
   tiers: (ServiceTier | null)[];
+}
+
+/** One non-empty text part of the final message, by its part id (null: the event named none). */
+export interface FinalPart {
+  id: string | null;
+  text: string;
 }
 
 export interface TallyError {
@@ -46,6 +63,8 @@ export const EMPTY_TALLY: RunTally = {
   lastStepCostUsd: 0,
   lastReason: null,
   finalText: "",
+  finalMessageId: null,
+  finalParts: [],
   error: null,
   tiers: [],
 };
@@ -78,6 +97,41 @@ function headerReader(headers: unknown): { get(name: string): string | null } {
       const found = entries.find(([key]) => key.toLowerCase() === name.toLowerCase());
       return typeof found?.[1] === "string" ? found[1] : null;
     },
+  };
+}
+
+/**
+ * The tally after one `text` event's part: `{ id, messageID, type: "text", text, time, ... }`.
+ * A part of the final message's own message is added, or replaces its earlier copy if OpenCode
+ * printed the same part again; a part of a later message starts a new final message.
+ */
+function addText(tally: RunTally, part: Record<string, unknown>): RunTally {
+  if (
+    typeof part.text !== "string" ||
+    part.text.trim() === "" ||
+    part.synthetic === true
+  ) {
+    return tally;
+  }
+  const text = part.text.slice(0, MAX_TEXT);
+  const id = typeof part.id === "string" ? part.id : null;
+  const messageId = typeof part.messageID === "string" ? part.messageID : null;
+  const sameMessage = messageId !== null && messageId === tally.finalMessageId;
+  let parts: FinalPart[] = [{ id, text }];
+  if (sameMessage) {
+    const known = id !== null && tally.finalParts.some((p) => p.id === id);
+    parts = known
+      ? tally.finalParts.map((p) => (p.id === id ? { id, text } : p))
+      : [...tally.finalParts, { id, text }];
+  }
+  return {
+    ...tally,
+    finalText: parts
+      .map((p) => p.text)
+      .join("\n\n")
+      .slice(0, MAX_TEXT),
+    finalMessageId: messageId,
+    finalParts: parts,
   };
 }
 
@@ -164,9 +218,7 @@ export function addEventLine(
       };
     }
     case "text":
-      return typeof part.text === "string"
-        ? { ...tally, finalText: part.text.slice(0, MAX_TEXT) }
-        : tally;
+      return addText(tally, part);
     case "error":
       return { ...tally, error: readError(event.error, now) };
     default:

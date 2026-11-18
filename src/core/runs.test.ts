@@ -16,7 +16,7 @@ import {
   SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
-  firstRunPrice,
+  seededRunPrice,
   qwenCoderRunPrice,
   seedRoutingSettings,
   TEST_TASK_TYPES,
@@ -519,7 +519,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     provider: "anthropic",
     modelFamily: "claude",
     serviceTierRequested: "standard",
-    modelPrice: firstRunPrice(model),
+    modelPrice: seededRunPrice(model),
   });
   it.each([
     ["developer", "developer:code", onDeepInfraFlex],

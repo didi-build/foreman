@@ -1,6 +1,7 @@
 // Test helper: an in-memory stand-in for the few GitHub REST endpoints the OpenCode wrapper uses
-// (N-44): read a branch, list a branch's pull requests, read the repository, open a pull request,
-// and for the close-only mode (D-318) read one pull request, comment on it and close it.
+// (N-44): read a branch, list a branch's pull requests, read the repository, compare the default
+// branch with a branch for a description the wrapper writes (O-148), open a pull request, and for
+// the close-only mode (D-318) read one pull request, comment on it and close it.
 // It is a plain HTTP request handler, never bound to a port of its own: the fake egress proxy
 // hands it each CONNECT tunnel (./fake-proxy.ts). No real GitHub and no network.
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -31,6 +32,11 @@ export interface FakeGitHub {
   pulls: FakePull[];
   /** Comments posted on a pull request, by its number. */
   comments: { number: number; body: string }[];
+  /**
+   * GitHub's compare answers, by `base...head` as the path names them (segments decoded). A
+   * compare not listed here answers 404.
+   */
+  comparisons: Map<string, unknown>;
   calls: GitHubCall[];
   /** A status to answer instead, by `METHOD /path` with the query left out. */
   failures: Map<string, number>;
@@ -54,6 +60,7 @@ export function createFakeGitHub(repository: string): FakeGitHub {
     branches: new Map(),
     pulls: [],
     comments: [],
+    comparisons: new Map(),
     calls: [],
     failures: new Map(),
   };
@@ -93,6 +100,14 @@ export function createFakeGitHub(repository: string): FakeGitHub {
               `${owner}:${p.head.ref}` === head,
           ),
         );
+      }
+      if (call.method === "GET" && url.pathname.startsWith(`${repo}/compare/`)) {
+        const basehead = decodeURIComponent(
+          url.pathname.slice(`${repo}/compare/`.length),
+        );
+        return state.comparisons.has(basehead)
+          ? send(200, state.comparisons.get(basehead))
+          : send(404, { message: "Not Found" });
       }
       if (call.method === "GET" && url.pathname === repo) {
         return send(200, {

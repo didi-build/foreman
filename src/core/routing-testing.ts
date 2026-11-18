@@ -1,6 +1,6 @@
-// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019 and 0024
-// seed, the task types in contracts/task-types.yaml and the bot files, and the route columns of a
-// run on an Anthropic route. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
+// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019, 0024 and
+// 0025 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
+// of a run on an Anthropic route. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
 import { ROUTING_SETTINGS, type RunPrice } from "./routing.ts";
@@ -127,9 +127,31 @@ const QWEN_CODER_ENTRY = {
 };
 
 /** The model catalog as migration 0024 leaves the first one: Qwen3 Coder added, a new version. */
-export const SEEDED_MODEL_CATALOG = {
+export const DEEPINFRA_MODEL_CATALOG = {
   version: "2026-11-18.1",
   models: { ...FIRST_MODEL_CATALOG.models, [QWEN_CODER]: QWEN_CODER_ENTRY },
+} satisfies Json;
+
+/**
+ * The model catalog as migration 0025 leaves it (O-150): Claude Sonnet 5.5's cache read price at
+ * its list price since 2026-11-06, 0.10, and nothing else changed but the version. This is what a
+ * migrated store holds, so the tests seed it; test/db/runs.test.ts and test/db/schema.test.ts
+ * check it is equal.
+ */
+export const SEEDED_MODEL_CATALOG = {
+  version: "2026-11-18.2",
+  models: {
+    ...DEEPINFRA_MODEL_CATALOG.models,
+    [SONNET]: {
+      ...FIRST_MODEL_CATALOG.models[SONNET],
+      pricePerMTok: {
+        standard: {
+          ...FIRST_MODEL_CATALOG.models[SONNET].pricePerMTok.standard,
+          cachedInput: 0.1,
+        },
+      },
+    },
+  },
 } satisfies Json;
 
 export const SEEDED_OUTPUT_TOKEN_NEEDS = {
@@ -138,7 +160,7 @@ export const SEEDED_OUTPUT_TOKEN_NEEDS = {
   "designer:close": FIRST_OUTPUT_TOKEN_NEEDS.designer,
 } satisfies Json;
 
-/** Seeds the four routing settings as migrations 0005, 0019 and 0024 leave them. */
+/** Seeds the four routing settings as migrations 0005, 0019, 0024 and 0025 leave them. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
     [ROUTING_SETTINGS.policy, SEEDED_ROUTING_POLICY],
@@ -204,6 +226,21 @@ export function firstRunPrice(model: string): RunPrice {
     model === OPUS
       ? FIRST_MODEL_CATALOG.models[OPUS]
       : FIRST_MODEL_CATALOG.models[SONNET];
+  return {
+    tiers: ["standard"],
+    pricePerMTok: { standard: { ...entry.pricePerMTok.standard } },
+  };
+}
+
+/**
+ * The price a run routed on the seeded settings records for `model` (Sonnet or Opus 5.5): Sonnet
+ * at the cache read price migration 0025 set (O-150), Opus as 0005 seeded it.
+ */
+export function seededRunPrice(model: string): RunPrice {
+  const entry =
+    model === OPUS
+      ? SEEDED_MODEL_CATALOG.models[OPUS]
+      : SEEDED_MODEL_CATALOG.models[SONNET];
   return {
     tiers: ["standard"],
     pricePerMTok: { standard: { ...entry.pricePerMTok.standard } },

@@ -4,7 +4,9 @@
 //    commit from there;
 // 2. reuses the open pull request whose head is that branch, if there is one: a fix round or a
 //    resumed run continues the same branch, so it continues the same PR (O-41, `runBranch`);
-// 3. otherwise opens one into the repository's default branch, with the run's GitHub token.
+// 3. otherwise opens one into the repository's default branch, with the run's GitHub token. Its
+//    description is written only then, once the default branch is known (./description.ts,
+//    O-148).
 // The runner links the PR to the item from GitHub's own events, by its branch and its App author
 // (src/core/github-ingest.ts), never from what this code reports. A merged or closed PR is never
 // reused: after a merge the item's next round needs a new PR from the same branch.
@@ -43,7 +45,7 @@ const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 /** A branch as path segments: each segment encoded, the `/` between them kept. */
-const branchPath = (branch: string): string =>
+export const branchPath = (branch: string): string =>
   branch.split("/").map(encodeURIComponent).join("/");
 
 const fail = (
@@ -89,7 +91,8 @@ export async function openOrReusePullRequest(options: {
   repository: string;
   branch: string;
   title: string;
-  body: string;
+  /** Writes the description of a new PR, given the default branch. Not called on a reuse. */
+  body: (defaultBranch: string) => Promise<string>;
 }): Promise<PullRequestOutcome> {
   const { github, repository, branch } = options;
   const [owner] = repository.split("/");
@@ -154,11 +157,12 @@ export async function openOrReusePullRequest(options: {
       "GitHub's answer for the repository has no default branch",
     );
   }
+  const body = await options.body(base);
   const created = await github("POST", `${repo}/pulls`, {
     title: options.title.slice(0, MAX_TITLE),
     head: branch,
     base,
-    body: options.body.slice(0, MAX_BODY),
+    body: body.slice(0, MAX_BODY),
   });
   if (created.status === 201) {
     const number = isObject(created.body) ? created.body.number : null;
