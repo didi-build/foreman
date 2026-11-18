@@ -1,6 +1,6 @@
 # Cost sheet
 
-Status: planning figures, 2026-10-31; fixed costs and Anthropic prices read again 2026-11-06. Fixed costs are the amounts Didi accepted for planning. DeepInfra prices are read from deepinfra.com/pricing and deepinfra.com/models on 2026-10-31. Anthropic prices are Anthropic's list prices. **A price is read again on the provider's own page before a model is added to the model catalog.** Once agent runs exist, this sheet is updated from the model scorecard ([ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) section 4) and the M4.5 spend roll-up, and real cost per finished task replaces the estimates below.
+Status: planning figures, 2026-10-31; fixed costs and Anthropic prices read again 2026-11-06; the planning chat's estimate added 2026-11-18. Fixed costs are the amounts Didi accepted for planning. DeepInfra prices are read from deepinfra.com/pricing and deepinfra.com/models on 2026-10-31. Anthropic prices are Anthropic's list prices. **A price is read again on the provider's own page before a model is added to the model catalog.** Once agent runs exist, this sheet is updated from the model scorecard ([ADR 0114](./decisions/0114-model-evaluation-routing-and-tiers.md) section 4) and the M4.5 spend roll-up, and real cost per finished task replaces the estimates below.
 
 All amounts are US dollars.
 
@@ -311,7 +311,23 @@ Paste each record into this section with the date. The routing policy gets a `qa
 - Guessed: tokens per image for every model except Claude and Qwen3-VL.
 - Almost every benchmark is vendor-reported. No candidate on the shortlist has a published UI-difference score, so the test set decides.
 
-## 8. Caveats
+## 8. The planning chat (D-400, D-409)
+
+The planning chat runs on Claude Sonnet 5.5 (D-400). Prices read 2026-11-18 from Anthropic's pricing page: input 2, cache write 2.50 with a five-minute lifetime or 4 with a one-hour lifetime, cache read 0.10, output 10, per million tokens. The chat caches with the one-hour lifetime (ADR 0116), so most of each call's input is a cache read.
+
+A typical chat: about 30 model calls (20 of Didi's turns and 10 rounds of reading code), starting at about 20,000 tokens (instructions, tools and the planning reads) and ending near 90,000.
+
+| Chat      | Cache writes      | Cache reads                   | Output            | Total      |
+| --------- | ----------------- | ----------------------------- | ----------------- | ---------- |
+| Light     | 40K x 4/M = 0.16  | 10 calls, 0.3M x 0.10 = 0.03  | 10K x 10/M = 0.10 | about 0.30 |
+| Typical   | 90K x 4/M = 0.36  | 30 calls, 1.65M x 0.10 = 0.17 | 25K x 10/M = 0.25 | about 0.80 |
+| Very long | 180K x 4/M = 0.72 | 60 calls, 5.4M x 0.10 = 0.54  | 60K x 10/M = 0.60 | about 1.90 |
+
+The typical row also counts about 0.02 for the notes file written at the end (D-404); the very long row counts about 0.05 for one automatic summary (D-405). Writes and output drive the bill, not reads. At 20 to 40 chats a month, chats cost about 16 to 32 a month, which section 5's totals do not include yet.
+
+Nothing stops a chat for cost (D-011). Each chat shows its running cost, the Council mentions it once past 3, and chat spending counts toward the daily spend call (D-117). These are estimates: the output and thinking volume is a guess, and each chat's recorded usage replaces it once the chat is built.
+
+## 9. Caveats
 
 - **Cost per finished task is what counts**, not price per token. A cheaper model that needs more fix rounds, fails QA more often or escalates more can cost more per finished item. The scorecard measures this (ADR 0114 section 3).
 - **Cache hit rates drive the totals.** Most input is cached in the workload model. With worse cache hit rates, Qwen3 Coder could cost about 180 a quiet month instead of about 80. Prompt caching is required (D-185), and each run records cached and uncached tokens.
