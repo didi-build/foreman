@@ -7,12 +7,18 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { runCostUsd } from "../../src/core/run-cost.ts";
 import { chooseRoute } from "../../src/core/routing.ts";
 import {
+  CLOSE_ROUTES_POLICY,
+  FIRST_ROUTING_POLICY,
+  QWEN_CODER,
+  qwenCoderRunPrice,
+  SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
 } from "../../src/core/routing-testing.ts";
-import type { Json } from "../../src/core/store.ts";
+import type { AgentRole, Json } from "../../src/core/store.ts";
 import {
   adminUrl,
   createTestDatabase,
@@ -260,55 +266,76 @@ describe.skipIf(!adminUrl)(
       }
     });
 
+    const ROUTING_KEYS =
+      "'model_routing_policy', 'model_catalog', 'model_providers_approved', 'model_output_token_needs'";
+    /** The four routing settings as the store holds them. */
+    const settings = (): Record<string, Json> => {
+      const read = sql(
+        `select json_object_agg(key, value) from factory.settings where key in (${ROUTING_KEYS});`,
+      );
+      expect(read.ok, read.err).toBe(true);
+      return JSON.parse(read.out) as Record<string, Json>;
+    };
+    /** The route the stored settings give, or `policy` in place of the stored policy. */
+    const route = (role: AgentRole, taskType: string, policy?: Json) => {
+      const s = settings();
+      return chooseRoute({
+        role,
+        taskType,
+        earlierRuns: [],
+        settings: {
+          policy: policy ?? s.model_routing_policy ?? null,
+          catalog: s.model_catalog ?? null,
+          providers: s.model_providers_approved ?? null,
+          outputNeeds: s.model_output_token_needs ?? null,
+        },
+      });
+    };
+    /** Each migration change of a setting, as `old version>new version`, oldest first. */
+    const versionsLogged = (key: string): string =>
+      sql(
+        `select string_agg((old_value ->> 'version') || '>' || (new_value ->> 'version'), ',' order by id) from factory.settings_log where key = '${key}' and changed_by = 'migration' and old_value is not null;`,
+      ).out;
+
     describe("the close runs' routes (migration 0019, D-318, D-324)", () => {
       const CLOSE_ROUTES = "db/migrations/0019_close_routes.sql";
-      const ROUTING_KEYS =
-        "'model_routing_policy', 'model_catalog', 'model_providers_approved', 'model_output_token_needs'";
-      const settings = (): Record<string, Json> => {
-        const read = sql(
-          `select json_object_agg(key, value) from factory.settings where key in (${ROUTING_KEYS});`,
-        );
-        expect(read.ok, read.err).toBe(true);
-        return JSON.parse(read.out) as Record<string, Json>;
-      };
       const logged = (): string =>
         sql(
           "select count(*) from factory.settings_log where key in ('model_routing_policy', 'model_output_token_needs');",
         ).out;
-      const route = (role: "developer" | "designer", taskType: string) => {
-        const s = settings();
-        return chooseRoute({
-          role,
-          taskType,
-          earlierRuns: [],
-          settings: {
-            policy: s.model_routing_policy ?? null,
-            catalog: s.model_catalog ?? null,
-            providers: s.model_providers_approved ?? null,
-            outputNeeds: s.model_output_token_needs ?? null,
-          },
-        });
-      };
 
       it("gives both close task types their role's own route, logged, under a new policy version", () => {
+        // The policy as 0019 wrote it, from its log row. 0024 has since moved the roles' own task
+        // types to DeepInfra (D-421) and left the close task types as 0019 made them.
+        const written = sql(
+          "select new_value from factory.settings_log where key = 'model_routing_policy' and changed_by = 'migration' and new_value ->> 'version' = '2026-11-04.1';",
+        );
+        expect(written.ok, written.err).toBe(true);
+        const policy0019 = JSON.parse(written.out) as Json;
         for (const [role, closeType, own] of [
           ["developer", "developer:close", "developer:code"],
           ["designer", "designer:close", "designer"],
         ] as const) {
-          const close = route(role, closeType);
-          const theirs = route(role, own);
+          const close = route(role, closeType, policy0019);
+          const theirs = route(role, own, policy0019);
           if (!close.routed || !theirs.routed) throw new Error("no route");
           expect(close.route).toEqual({ ...theirs.route, taskType: closeType });
           expect(close.route.policyVersion).toBe("2026-11-04.1");
+          // Today's policy routes the close task type the same way.
+          const today = route(role, closeType);
+          if (!today.routed) throw new Error("no route");
+          expect(today.route).toEqual({
+            ...close.route,
+            policyVersion: SEEDED_ROUTING_POLICY.version,
+          });
         }
         const s = settings();
         expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
         expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
-        expect(
-          sql(
-            "select count(*) from factory.settings_log where key = 'model_routing_policy' and changed_by = 'migration' and old_value is not null;",
-          ).out,
-        ).toBe("1");
+        // 0019's change, then 0024's.
+        expect(versionsLogged("model_routing_policy")).toBe(
+          "2026-10-31.1>2026-11-04.1,2026-11-04.1>2026-11-18.1",
+        );
       });
 
       it("changes nothing when it runs again", () => {
@@ -358,6 +385,177 @@ describe.skipIf(!adminUrl)(
            update factory.settings set value = '${JSON.stringify(before.model_output_token_needs)}'::jsonb where key = 'model_output_token_needs';`,
         );
         expect(restored.ok, restored.err).toBe(true);
+      });
+    });
+
+    describe("the Developer and the Designer on Qwen3 Coder at DeepInfra Flex (migration 0024, D-421)", () => {
+      const MOVE = "db/migrations/0024_developer_designer_deepinfra.sql";
+      const logged = (): string =>
+        sql(
+          "select count(*) from factory.settings_log where key in ('model_routing_policy', 'model_catalog');",
+        ).out;
+      /** Sets a routing setting by hand, as an operator would. */
+      const setByHand = (key: string, value: Json) => {
+        const done = sql(
+          `update factory.settings set value = '${JSON.stringify(value)}'::jsonb, updated_by = 'didi', updated_at = ${AT} where key = '${key}';`,
+        );
+        expect(done.ok, done.err).toBe(true);
+      };
+      /** Runs the migration again; returns what psql printed on stderr (the NOTICEs). */
+      const migrate = (): string => {
+        const again = sql(readFileSync(MOVE, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        return again.err;
+      };
+      type Policy = { version: string; taskTypes: Record<string, Json> };
+      type Catalog = { version: string; models: Record<string, Record<string, Json>> };
+      const MOVED = ["developer:code", "developer:infra", "designer"] as const;
+
+      it("routes the three task types to Qwen3 Coder at Flex, priced at Flex, logged under new versions", () => {
+        for (const [role, taskType] of [
+          ["developer", "developer:code"],
+          ["developer", "developer:infra"],
+          ["designer", "designer"],
+        ] as const) {
+          const choice = route(role, taskType);
+          if (!choice.routed) throw new Error(JSON.stringify(choice.noRoute));
+          expect(choice.route).toEqual({
+            taskType,
+            provider: "deepinfra",
+            model: QWEN_CODER,
+            family: "qwen",
+            tier: "flex",
+            failFast: false,
+            onCapacity: "wait",
+            policyVersion: "2026-11-18.1",
+            catalogVersion: "2026-11-18.1",
+            price: qwenCoderRunPrice(),
+          });
+          // A million of each token served at Flex: 0.24 + 0.08 + 0.24 (a cache write at the
+          // input rate, as DeepInfra lists no cache-write price) + 0.80.
+          const million = {
+            uncachedInput: 1_000_000,
+            cachedInput: 1_000_000,
+            cacheWriteInput: 1_000_000,
+            output: 1_000_000,
+          };
+          expect(runCostUsd(choice.route.price, million, "flex")).toBe(1.36);
+        }
+        const s = settings();
+        const policy = s.model_routing_policy as Policy;
+        // The close runs never call the model (D-324); QA, the Council and Triage stay on
+        // Anthropic until the Messages API image reaches DeepInfra (D-342, D-400).
+        for (const taskType of [
+          "developer:close",
+          "designer:close",
+          "qa:review",
+          "council",
+          "triage",
+        ] as const) {
+          expect(policy.taskTypes[taskType]).toEqual(
+            CLOSE_ROUTES_POLICY.taskTypes[taskType],
+          );
+        }
+        expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
+        expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
+        // Unchanged: 16000 for each task type, below the model's cap of 16,384.
+        expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
+        expect(versionsLogged("model_catalog")).toBe("2026-10-31.1>2026-11-18.1");
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = settings();
+        const count = logged();
+        expect(migrate()).not.toContain("NOTICE");
+        expect(settings()).toEqual(before);
+        expect(logged()).toBe(count);
+      });
+
+      it("moves only the entries 0005 seeded, names the others, and keeps an operator's catalog entry", () => {
+        const before = settings();
+        const policy = before.model_routing_policy as Policy;
+        const catalog = before.model_catalog as Catalog;
+        const own = {
+          candidates: [
+            { provider: "anthropic", model: "claude-opus-5-5", tier: "standard" },
+          ],
+          onCapacity: "wait",
+        };
+        // developer:code is back to the entry 0005 seeded, designer is the operator's own, and
+        // developer:infra was removed.
+        const kept = Object.fromEntries(
+          Object.entries(policy.taskTypes).filter(([t]) => t !== "developer:infra"),
+        );
+        const byHand = {
+          ...policy,
+          version: "operator.1",
+          taskTypes: {
+            ...kept,
+            "developer:code": FIRST_ROUTING_POLICY.taskTypes["developer:code"],
+            designer: own,
+          },
+        };
+        const qwen = catalog.models[QWEN_CODER] ?? {};
+        const ownCatalog = {
+          version: "operator.cat",
+          models: {
+            ...catalog.models,
+            [QWEN_CODER]: {
+              ...qwen,
+              pricePerMTok: {
+                standard: { input: 0.5, cachedInput: 0.2, output: 2 },
+                flex: { input: 0.4, cachedInput: 0.16, output: 1.6 },
+              },
+            },
+          },
+        };
+        try {
+          setByHand("model_routing_policy", byHand);
+          setByHand("model_catalog", ownCatalog);
+          const notices = migrate();
+          expect(settings().model_catalog).toEqual(ownCatalog);
+          expect(settings().model_routing_policy).toEqual({
+            ...byHand,
+            version: "operator.1+d421",
+            taskTypes: {
+              ...byHand.taskTypes,
+              "developer:code": SEEDED_ROUTING_POLICY.taskTypes["developer:code"],
+            },
+          });
+          expect(notices).toContain("model_routing_policy.taskTypes.developer:infra");
+          expect(notices).toContain("model_routing_policy.taskTypes.designer");
+          expect(notices).not.toContain("developer:code");
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+          setByHand("model_catalog", before.model_catalog ?? null);
+        }
+      });
+
+      it("moves no task type while the catalog does not list the model under DeepInfra", () => {
+        const before = settings();
+        const policy = before.model_routing_policy as Policy;
+        const catalog = before.model_catalog as Catalog;
+        const seeded = Object.fromEntries(
+          MOVED.map((t) => [t, FIRST_ROUTING_POLICY.taskTypes[t]]),
+        );
+        const onSeeded = { ...policy, taskTypes: { ...policy.taskTypes, ...seeded } };
+        const elsewhere = {
+          ...catalog,
+          models: {
+            ...catalog.models,
+            [QWEN_CODER]: { ...(catalog.models[QWEN_CODER] ?? {}), provider: "other" },
+          },
+        };
+        try {
+          setByHand("model_routing_policy", onSeeded);
+          setByHand("model_catalog", elsewhere);
+          expect(migrate()).toContain("0024 moved no task type");
+          expect(settings().model_routing_policy).toEqual(onSeeded);
+          expect(settings().model_catalog).toEqual(elsewhere);
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+          setByHand("model_catalog", before.model_catalog ?? null);
+        }
       });
     });
 

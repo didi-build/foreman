@@ -16,6 +16,11 @@ import {
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
   firstRunPrice,
+  QWEN_CODER,
+  qwenCoderRunPrice,
+  SEEDED_MODEL_CATALOG,
+  SEEDED_OUTPUT_TOKEN_NEEDS,
+  SEEDED_ROUTING_POLICY,
 } from "./routing-testing.ts";
 import type { AgentRole, Json } from "./store.ts";
 
@@ -128,6 +133,80 @@ describe("the first policy (ADR 0114 section 5, D-185, D-186)", () => {
     const two = structuredClone(one);
     expect(chooseRoute(one)).toEqual(chooseRoute(two));
     expect(routeInputHash(one)).toBe(routeInputHash(two));
+  });
+});
+
+describe("the seeded policy (migrations 0019 and 0024, D-324, D-421)", () => {
+  const seeded = (
+    role: AgentRole,
+    taskType: string,
+    earlierRuns: EarlierRun[] = [],
+  ): RouteInput =>
+    input({
+      role,
+      taskType,
+      earlierRuns,
+      settings: {
+        policy: SEEDED_ROUTING_POLICY,
+        catalog: SEEDED_MODEL_CATALOG,
+        outputNeeds: SEEDED_OUTPUT_TOKEN_NEEDS,
+      },
+    });
+  const versions = {
+    failFast: false,
+    onCapacity: "wait",
+    policyVersion: "2026-11-18.1",
+    catalogVersion: "2026-11-18.1",
+  };
+
+  it.each([
+    ["developer", "developer:code"],
+    ["developer", "developer:infra"],
+    ["designer", "designer"],
+  ] as const)(
+    "routes %s (%s) to Qwen3 Coder on DeepInfra at Flex, which passes every hard rule",
+    (role, taskType) => {
+      expect(routed(chooseRoute(seeded(role, taskType)))).toEqual({
+        taskType,
+        provider: "deepinfra",
+        model: QWEN_CODER,
+        family: "qwen",
+        tier: "flex",
+        ...versions,
+        price: qwenCoderRunPrice(),
+      });
+    },
+  );
+
+  it.each([
+    ["developer", "developer:close", "claude-sonnet-5-5"],
+    ["designer", "designer:close", "claude-sonnet-5-5"],
+    ["qa", "qa:review", "claude-opus-5-5"],
+    ["council", "council", "claude-sonnet-5-5"],
+    ["triage", "triage", "claude-sonnet-5-5"],
+  ] as const)(
+    "keeps %s (%s) on %s on Anthropic at Standard",
+    (role, taskType, model) => {
+      expect(routed(chooseRoute(seeded(role, taskType)))).toEqual({
+        taskType,
+        provider: "anthropic",
+        model,
+        family: "claude",
+        tier: "standard",
+        ...versions,
+        price: firstRunPrice(model),
+      });
+    },
+  );
+
+  it("routes QA after a Qwen3 Coder Developer run and a Sonnet close run to Opus 5.5 (model id independence)", () => {
+    const choice = chooseRoute(
+      seeded("qa", "qa:review", [
+        developerRun(QWEN_CODER, "qwen"),
+        developerRun("claude-sonnet-5-5", "claude"),
+      ]),
+    );
+    expect(routed(choice).model).toBe("claude-opus-5-5");
   });
 });
 
