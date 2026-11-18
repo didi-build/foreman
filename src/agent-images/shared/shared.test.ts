@@ -460,6 +460,13 @@ describe("served tier (unit: ADR 0114 section 8)", () => {
     expect(reportedTier(null)).toBeNull();
   });
 
+  it("reads DeepInfra's and OpenAI's default as Standard, in usage or at the top level (D-423, O-152)", () => {
+    expect(reportedTier({ usage: { service_tier: "default" } })).toBe("standard");
+    expect(reportedTier({ service_tier: "default" })).toBe("standard");
+    expect(reportedTier({ usage: { service_tier: "standard" } })).toBe("standard");
+    expect(reportedTier({ usage: { service_tier: "auto" } })).toBeNull();
+  });
+
   it("is one tier when every response reported it, mixed otherwise, null when none did", () => {
     expect(servedTier(["flex", "flex"])).toBe("flex");
     expect(servedTier(["standard"])).toBe("standard");

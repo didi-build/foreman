@@ -723,6 +723,94 @@ describe("run objects (unit: labels, names and determinism)", () => {
     ]);
   });
 
+  it("gives the Messages API image DeepInfra's settings only when the bot file asks, and an Anthropic run the same variables as before (O-152)", () => {
+    const agentEnv = (spec: KubernetesRunSpec) => [
+      ...envOf(agentStage(spec, QA_LIMITS, SETTINGS).clientJob(PROXY_IP)).values(),
+    ];
+    const withProvider = (
+      provider: KubernetesRunSpec["providers"][number],
+      model = QA.model,
+    ): KubernetesRunSpec => ({ ...QA, model, providers: [provider] });
+    // QA's Anthropic entry as its bot file gives it (no API, no Messages API settings).
+    const anthropicEntry = {
+      name: "anthropic",
+      upstream: "https://api.anthropic.com",
+      credential: "x-api-key" as const,
+      secretPath: MODEL_SECRET_PATH,
+      baseUrlEnv: "ANTHROPIC_BASE_URL",
+    };
+    const anthropic = agentEnv(withProvider(anthropicEntry));
+    const names = (env: EnvVar[]) => env.map((e) => e.name);
+    expect(names(anthropic)).not.toContain("FOREMAN_ANSWER_VIA");
+    expect(names(anthropic)).not.toContain("FOREMAN_PROMPT_CACHE_KEY");
+    // The defaults written out give the same variables as no setting at all.
+    expect(
+      agentEnv(
+        withProvider({
+          ...anthropicEntry,
+          messagesApi: { answer: "schema", promptCacheKey: false },
+        }),
+      ),
+    ).toEqual(anthropic);
+    // Each setting alone sets only its own variable.
+    const added = (messagesApi: {
+      answer: "schema" | "tool";
+      promptCacheKey: boolean;
+    }) =>
+      names(agentEnv(withProvider({ ...anthropicEntry, messagesApi }))).filter(
+        (name) => !names(anthropic).includes(name),
+      );
+    expect(added({ answer: "tool", promptCacheKey: false })).toEqual([
+      "FOREMAN_ANSWER_VIA",
+    ]);
+    expect(added({ answer: "schema", promptCacheKey: true })).toEqual([
+      "FOREMAN_PROMPT_CACHE_KEY",
+    ]);
+
+    // The bot files' DeepInfra entry.
+    const deepInfra = withProvider(
+      {
+        name: "deepinfra",
+        upstream: "https://api.deepinfra.com/anthropic",
+        credential: "x-api-key",
+        secretPath: "projects/rehearsal/models/deepinfra",
+        baseUrlEnv: "ANTHROPIC_BASE_URL",
+        messagesApi: { answer: "tool", promptCacheKey: true },
+      },
+      "test-org/open-model-1",
+    );
+    expect(() => checkRunSpec(deepInfra, QA_LIMITS)).not.toThrow();
+    const stage = agentStage(deepInfra, QA_LIMITS, SETTINGS);
+    const agent = stage.clientJob(PROXY_IP);
+    expect(value(agent, "FOREMAN_ANSWER_VIA")).toBe("tool");
+    expect(value(agent, "FOREMAN_PROMPT_CACHE_KEY")).toBe("true");
+    expect(value(agent, "ANTHROPIC_BASE_URL")).toBe(
+      `http://${PROXY_IP}:8080/deepinfra`,
+    );
+    expect(value(agent, "FOREMAN_MODEL")).toBe("test-org/open-model-1");
+    // Nothing else differs from the Anthropic run.
+    const rest = (env: EnvVar[]) =>
+      env.filter(
+        (e) =>
+          ![
+            "FOREMAN_ANSWER_VIA",
+            "FOREMAN_PROMPT_CACHE_KEY",
+            "FOREMAN_MODEL",
+            "ANTHROPIC_BASE_URL",
+          ].includes(e.name),
+      );
+    expect(rest(agentEnv(deepInfra))).toEqual(rest(anthropic));
+    // The proxy reads only the address, the credential style and the secret path.
+    expect(JSON.parse(value(stage.proxyJob, "MODEL_PROVIDERS") ?? "")).toEqual([
+      {
+        name: "deepinfra",
+        upstream: "https://api.deepinfra.com/anthropic",
+        credential: "x-api-key",
+        secretPath: "projects/rehearsal/models/deepinfra",
+      },
+    ]);
+  });
+
   it("gives the same objects for the same input", () => {
     expect(everything()).toEqual(everything());
   });
@@ -867,6 +955,45 @@ describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
         serviceTier: "flex",
       },
       /price has no price for the requested tier/,
+    ],
+    [
+      "Messages API settings on an OpenCode run (O-152)",
+      {
+        ...DEVELOPER,
+        providers: [
+          {
+            ...DEVELOPER.providers[0]!,
+            messagesApi: { answer: "tool", promptCacheKey: false },
+          },
+        ],
+      },
+      /invalid Messages API settings/,
+    ],
+    [
+      "an unknown answer mode",
+      {
+        ...COUNCIL,
+        providers: [
+          {
+            ...COUNCIL.providers[0]!,
+            messagesApi: { answer: "json" as never, promptCacheKey: false },
+          },
+        ],
+      },
+      /invalid Messages API settings/,
+    ],
+    [
+      "a prompt cache key setting that is not true or false",
+      {
+        ...COUNCIL,
+        providers: [
+          {
+            ...COUNCIL.providers[0]!,
+            messagesApi: { answer: "tool", promptCacheKey: "yes" as never },
+          },
+        ],
+      },
+      /invalid Messages API settings/,
     ],
     [
       "a provider named state-api",

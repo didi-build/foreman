@@ -333,12 +333,42 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     const { tasks, secretsRead, minted } = source();
     await expect(
       tasks.taskFor(
-        startFor("council", { provider: "deepinfra", outputSchema: COUNCIL_SCHEMA }),
+        startFor("council", { provider: "openrouter", outputSchema: COUNCIL_SCHEMA }),
       ),
     ).rejects.toThrow("the council bot file has no entry for the run's provider");
     expect(secretsRead).toEqual([]);
     expect(minted).toEqual([]);
   });
+
+  it.each(["qa", "council", "triage"] as const)(
+    "builds a %s task on DeepInfra's Anthropic endpoint with its Messages API settings (O-152)",
+    async (role) => {
+      const { tasks, secretsRead } = source();
+      const task = (await tasks.taskFor(
+        startFor(role, {
+          provider: "deepinfra",
+          ...(role === "council" ? { outputSchema: COUNCIL_SCHEMA } : {}),
+        }),
+      )) as KubernetesAgentTask;
+      const { spec, credentials } = acceptedByRuntime(role, task);
+      expect(spec.image).toBe(IMAGES["claude-api"]);
+      // Only the route's provider, and only its key.
+      expect(spec.providers).toEqual([
+        {
+          name: "deepinfra",
+          upstream: "https://api.deepinfra.com/anthropic",
+          credential: "x-api-key",
+          secretPath: "projects/rehearsal/models/deepinfra",
+          baseUrlEnv: "ANTHROPIC_BASE_URL",
+          messagesApi: { answer: "tool", promptCacheKey: true },
+        },
+      ]);
+      expect(secretsRead).toEqual(["projects/rehearsal/models/deepinfra"]);
+      expect(Object.keys(credentials.models)).toEqual([
+        "projects/rehearsal/models/deepinfra",
+      ]);
+    },
+  );
 
   it("reads each project's key at its own path", async () => {
     const { tasks, secretsRead } = source();

@@ -24,8 +24,10 @@ import { parse, YAMLParseError } from "yaml";
 
 import { MAGICPATH_TOOL } from "../../agent-images/opencode/permissions.ts";
 import {
+  ANSWER_VIA,
   MODEL_APIS,
   ROLES_BY_IMAGE,
+  type AnswerVia,
   type ImageKind,
   type ModelApi,
 } from "../../agent-images/shared/settings.ts";
@@ -38,6 +40,7 @@ import { canonicalHost } from "../../egress-proxy/hosts.ts";
 import { CREDENTIAL_STYLES, parseProviders } from "../../egress-proxy/providers.ts";
 import {
   API_PATH,
+  type MessagesApiSetting,
   type ModelProviderSetting,
 } from "../agent-runtime/kubernetes/manifests.ts";
 import { TOOL } from "../agent-runtime/kubernetes/task.ts";
@@ -242,6 +245,40 @@ function checkLimits(
     : undefined;
 }
 
+/**
+ * A provider's `messages_api` (O-152): how the Messages API image asks this provider for a
+ * structured answer, and whether it sends the run's id as `prompt_cache_key`. Each key is
+ * optional, with Anthropic's way as the default.
+ */
+function checkMessagesApi(
+  raw: unknown,
+  fail: (problem: string) => void,
+): MessagesApiSetting | undefined {
+  if (!isRecord(raw)) {
+    fail(".messages_api must be a mapping of answer and prompt_cache_key");
+    return undefined;
+  }
+  let ok = true;
+  for (const key of Object.keys(raw)) {
+    if (key !== "answer" && key !== "prompt_cache_key") {
+      fail(`.messages_api: unknown field ${key}`);
+      ok = false;
+    }
+  }
+  const { answer = "schema", prompt_cache_key: promptCacheKey = false } = raw;
+  if (!ANSWER_VIA.includes(answer as AnswerVia)) {
+    fail(`.messages_api.answer must be ${ANSWER_VIA.join(" or ")}`);
+    ok = false;
+  }
+  if (typeof promptCacheKey !== "boolean") {
+    fail(".messages_api.prompt_cache_key must be true or false");
+    ok = false;
+  }
+  return ok
+    ? { answer: answer as AnswerVia, promptCacheKey: promptCacheKey as boolean }
+    : undefined;
+}
+
 function checkProviders(
   image: ImageKind | undefined,
   raw: unknown,
@@ -268,6 +305,7 @@ function checkProviders(
         "secret_path",
         "base_url_env",
         "api",
+        "messages_api",
       ];
       if (!known.includes(key)) fail(`: unknown field ${key}`);
     }
@@ -278,6 +316,7 @@ function checkProviders(
       secret_path: path,
       base_url_env: env,
       api,
+      messages_api: messagesApi,
     } = entry;
     const provider: ModelProviderSetting = {
       name: name as string,
@@ -321,6 +360,12 @@ function checkProviders(
       fail(
         ".base_url_env must be ANTHROPIC_BASE_URL, with no api, for the Messages API image",
       );
+    }
+    if (messagesApi !== undefined) {
+      const checked = checkMessagesApi(messagesApi, fail);
+      if (image !== "claude-api") {
+        fail(".messages_api is only for the Messages API image (claude-api)");
+      } else if (checked) provider.messagesApi = checked;
     }
     providers.push(provider);
   });

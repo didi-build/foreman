@@ -22,6 +22,15 @@ export const MODEL_APIS = ["anthropic", "openai-compatible"] as const;
 export type ModelApi = (typeof MODEL_APIS)[number];
 
 /**
+ * How the Messages API image asks for a structured answer (O-152): `schema`, Anthropic's
+ * structured outputs (`output_config.format`), or `tool`, an `answer` tool the model must call,
+ * for a provider whose endpoint has no `output_config.format` (DeepInfra). The bot file's
+ * `messages_api.answer` sets it per provider; the image reads it from FOREMAN_ANSWER_VIA.
+ */
+export const ANSWER_VIA = ["schema", "tool"] as const;
+export type AnswerVia = (typeof ANSWER_VIA)[number];
+
+/**
  * What the agent holds instead of a model credential (ADR 0106 section 5). The egress proxy
  * removes it and adds the real one, so this value never reaches a provider. It is still treated
  * as a secret: it is never printed.

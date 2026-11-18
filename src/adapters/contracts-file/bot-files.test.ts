@@ -106,6 +106,32 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
     expect(Object.keys(bots.triage.outputSchemas ?? {})).toEqual(["answer"]);
   });
 
+  it("give QA, Council and Triage DeepInfra's Anthropic endpoint beside Anthropic, Anthropic as before (O-152)", () => {
+    const bots = readBotFiles();
+    for (const role of ["qa", "council", "triage"] as const) {
+      expect(bots[role].providers).toEqual([
+        {
+          name: "anthropic",
+          upstream: "https://api.anthropic.com",
+          credential: "x-api-key",
+          secretPath: "projects/{project}/models/anthropic",
+          baseUrlEnv: "ANTHROPIC_BASE_URL",
+        },
+        {
+          name: "deepinfra",
+          upstream: "https://api.deepinfra.com/anthropic",
+          credential: "x-api-key",
+          secretPath: "projects/{project}/models/deepinfra",
+          baseUrlEnv: "ANTHROPIC_BASE_URL",
+          messagesApi: { answer: "tool", promptCacheKey: true },
+        },
+      ]);
+    }
+    for (const role of ["developer", "designer"] as const) {
+      expect(bots[role].providers.some((p) => p.messagesApi !== undefined)).toBe(false);
+    }
+  });
+
   it("tell the Designer to mark option components and to delete the options Didi did not pick (D-255, D-253)", () => {
     const text = readBotFiles().designer.instructions.replace(/\s+/g, " ");
     expect(text).toContain(
@@ -289,6 +315,50 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(openCode.problems).toEqual([
       "designer.yaml: providers[0].api is needed: the OpenCode image reads the provider's API",
     ]);
+  });
+
+  it("takes messages_api with its defaults on a Messages API provider only, and refuses a bad one by field (O-152)", () => {
+    const council = (messagesApi: unknown, at = 0) =>
+      validateBotFiles(
+        withData("council", (d) => {
+          (d.providers as Record<string, unknown>[])[at].messages_api = messagesApi;
+        }),
+      );
+    // Each key is optional: the answer defaults to structured outputs, the key to off.
+    expect(council({}).bots?.council.providers[0]?.messagesApi).toEqual({
+      answer: "schema",
+      promptCacheKey: false,
+    });
+    expect(
+      council({ prompt_cache_key: true }).bots?.council.providers[0]?.messagesApi,
+    ).toEqual({ answer: "schema", promptCacheKey: true });
+    expect(council({ answer: "tool" }).bots?.council.providers[0]?.messagesApi).toEqual(
+      {
+        answer: "tool",
+        promptCacheKey: false,
+      },
+    );
+    expect(council({ answer: "json", prompt_cache_key: "yes" }).problems).toEqual([
+      "council.yaml: providers[0].messages_api.answer must be schema or tool",
+      "council.yaml: providers[0].messages_api.prompt_cache_key must be true or false",
+    ]);
+    expect(council({ answer: "tool", format: PASTED_KEY }, 1).problems).toEqual([
+      "council.yaml: providers[1].messages_api: unknown field format",
+    ]);
+    expect(council("tool").problems).toEqual([
+      "council.yaml: providers[0].messages_api must be a mapping of answer and prompt_cache_key",
+    ]);
+    const openCode = validateBotFiles(
+      withData("developer", (d) => {
+        (d.providers as Record<string, unknown>[])[1].messages_api = { answer: "tool" };
+      }),
+    );
+    expect(openCode.problems).toEqual([
+      "developer.yaml: providers[1].messages_api is only for the Messages API image (claude-api)",
+    ]);
+    for (const { problems } of [council({ answer: PASTED_KEY }), openCode]) {
+      expect(problems.join("\n")).not.toContain("sk-ant");
+    }
   });
 
   it("keeps MagicPath off, tools off the Messages API roles, and each role's hosts and schemas", () => {

@@ -20,10 +20,19 @@
 // minutes. The waits count against the run's minute limit: a wait that would reach it is not
 // started, and the run ends on the rejection, so the runner records `usage_exhausted` with cause
 // `capacity` instead of a deadline.
+//
+// The answer (O-152). By default the final answer follows its schema through structured outputs
+// (`output_config.format`). A provider whose endpoint has none (DeepInfra) gets an `answer` tool
+// instead, whose input schema is the answer's schema: it is the last tool, so the cached prefix
+// stays fixed, and `tool_choice: any` makes every turn a tool call, so the run ends through it.
+// Its input, as JSON, is the run's final text. A provider that takes `prompt_cache_key` gets the
+// run's id on every request. Neither changes a default request, which is sent byte for byte as
+// before.
 import Anthropic from "@anthropic-ai/sdk";
 
 import type { RunTokens } from "../../core/runs.ts";
 import type { ServiceTier } from "../../core/store.ts";
+import type { AnswerVia } from "../shared/settings.ts";
 import {
   isFlexCapacityRejection,
   providerErrorFromHttp,
@@ -93,12 +102,52 @@ export interface LoopOptions {
    * after its label. Base64 PNGs.
    */
   images?: readonly { label: string; mediaType: "image/png"; data: string }[];
-  /** The JSON schema the final answer must follow (structured outputs). */
+  /** The JSON schema the final answer must follow. */
   outputSchema?: Record<string, unknown>;
+  /** How the answer follows its schema (O-152). Structured outputs unless `tool`. */
+  answerVia?: AnswerVia;
+  /** Sent as `prompt_cache_key` on every request when set: the run's id (O-152). */
+  promptCacheKey?: string;
   runTool?: (name: string, input: unknown) => Promise<ToolOutput>;
 }
 
-/** How the loop ended. `result.finalText` is the model's last text. */
+/** The tool a run in tool mode ends with (O-152). */
+export const ANSWER_TOOL = "answer";
+
+/** Whether the answer comes through the answer tool: tool mode, with a schema to give it. */
+const answersByTool = (
+  options: Pick<LoopOptions, "answerVia" | "outputSchema">,
+): options is { answerVia: "tool"; outputSchema: Record<string, unknown> } =>
+  options.answerVia === "tool" && options.outputSchema !== undefined;
+
+function answerTool(schema: Record<string, unknown>): Anthropic.Tool {
+  return {
+    name: ANSWER_TOOL,
+    description:
+      "Give your final answer by calling this tool once, when you are done. The run ends with this call.",
+    input_schema: schema as Anthropic.Tool.InputSchema,
+  };
+}
+
+/** The stop reasons of a finished reply, whose answer tool call ends the run. */
+const ANSWERED: readonly (Anthropic.StopReason | null)[] = [
+  "end_turn",
+  "stop_sequence",
+  "tool_use",
+];
+
+/** The input of the reply's answer tool call, as JSON, if it has one. */
+function answerOf(message: Anthropic.Message): string | undefined {
+  const call = message.content.find(
+    (block) => block.type === "tool_use" && block.name === ANSWER_TOOL,
+  );
+  return call?.type === "tool_use" ? JSON.stringify(call.input) : undefined;
+}
+
+/**
+ * How the loop ended. `result.finalText` is the model's last text, or in tool mode the answer
+ * tool's input as JSON (O-152).
+ */
 export interface LoopEnd {
   result: AgentResult;
 }
@@ -129,9 +178,10 @@ export function buildRequest(
   options: LoopOptions,
   messages: Anthropic.MessageParam[],
 ): Anthropic.MessageCreateParamsNonStreaming {
+  const byTool = answersByTool(options);
   const outputConfig: Anthropic.OutputConfig = {
     ...(options.effort ? { effort: options.effort } : {}),
-    ...(options.outputSchema
+    ...(options.outputSchema && !byTool
       ? { format: { type: "json_schema", schema: options.outputSchema } }
       : {}),
   };
@@ -144,14 +194,25 @@ export function buildRequest(
           Anthropic.MessageCreateParamsNonStreaming,
           "service_tier"
         >);
+  // Not in the SDK's type: DeepInfra's endpoint takes it (O-152).
+  const cacheKey: object =
+    options.promptCacheKey === undefined
+      ? {}
+      : { prompt_cache_key: options.promptCacheKey };
+  // The answer tool goes after the role's own tools, so the order is the same on every turn.
+  const tools = byTool
+    ? [...options.tools, answerTool(options.outputSchema)]
+    : options.tools;
   return {
     model: options.model,
     ...tier,
+    ...cacheKey,
     max_tokens: options.maxOutputTokens,
     system: [
       { type: "text", text: options.system, cache_control: { type: "ephemeral" } },
     ],
-    ...(options.tools.length > 0 ? { tools: options.tools } : {}),
+    ...(tools.length > 0 ? { tools } : {}),
+    ...(byTool ? { tool_choice: { type: "any" } } : {}),
     messages,
     cache_control: { type: "ephemeral" },
     ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
@@ -244,6 +305,13 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
     lastText = textOf(response) || lastText;
     // The reply goes back exactly as it came, thinking blocks included.
     messages.push({ role: "assistant", content: response.content });
+    // In tool mode the answer tool's call ends the run, and no other tool of that reply is run.
+    // A reply cut at the output limit or refused ends as it would without it.
+    const answer = answersByTool(options) ? answerOf(response) : undefined;
+    if (answer !== undefined && ANSWERED.includes(response.stop_reason)) {
+      lastText = answer;
+      return end("success");
+    }
 
     switch (response.stop_reason) {
       case "end_turn":

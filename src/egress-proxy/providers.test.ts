@@ -126,6 +126,28 @@ describe("routeToProvider (unit: egress proxy model routes)", () => {
     expect(route?.upstreamPath).toBe(path);
   });
 
+  it("routes the Messages API image's DeepInfra entry to DeepInfra's Anthropic endpoint with its x-api-key style (O-152)", () => {
+    const [deepinfra] = parseProviders(
+      JSON.stringify([
+        {
+          name: "deepinfra",
+          upstream: "https://api.deepinfra.com/anthropic",
+          credential: "x-api-key",
+          secretPath: "projects/rehearsal/models/deepinfra",
+        },
+      ]),
+    );
+    const route = routeToProvider(
+      "/deepinfra/v1/messages",
+      deepinfra ? [deepinfra] : [],
+    );
+    expect(route?.provider.credential).toBe("x-api-key");
+    expect(route?.provider.secretPath).toBe("projects/rehearsal/models/deepinfra");
+    expect(new URL(route?.upstreamPath ?? "", route?.provider.upstream).href).toBe(
+      "https://api.deepinfra.com/anthropic/v1/messages",
+    );
+  });
+
   it.each([
     "/anthropicx/v1",
     "/",

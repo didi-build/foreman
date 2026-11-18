@@ -1,7 +1,7 @@
 # Triage's bot file (ADR 0107, ADR 0114 section 1, docs/bot-files.md). Loaded and checked at the
 # spec version by src/adapters/contracts-file/bot-files.ts; a run records this file's content
 # hash as its bot_version. No model here: each run's route names it (ADR 0114). No credential
-# here: the provider names its key's secret path (D-143), and `{project}` is the run's project
+# here: each provider names its key's secret path (D-143), and `{project}` is the run's project
 # slug.
 
 role: triage
@@ -28,6 +28,14 @@ providers:
     credential: x-api-key
     secret_path: projects/{project}/models/anthropic
     base_url_env: ANTHROPIC_BASE_URL
+  # DeepInfra's Anthropic-compatible endpoint (O-152). It has no structured outputs, so the image
+  # asks for the answer through an answer tool, and it sends the run's id as prompt_cache_key.
+  - name: deepinfra
+    upstream: https://api.deepinfra.com/anthropic
+    credential: x-api-key
+    secret_path: projects/{project}/models/deepinfra
+    base_url_env: ANTHROPIC_BASE_URL
+    messages_api: { answer: tool, prompt_cache_key: true }
 
 # What Triage returns (D-262, D-264, D-265; no longer a draft, D-239). The runner checks every
 # answer against this schema and then against the repo map and the plan's rules before it creates
