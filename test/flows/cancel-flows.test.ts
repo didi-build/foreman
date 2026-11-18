@@ -6,7 +6,8 @@
 // Approve through the approval resume flow cancels. Through the merge path: QA's pass merges an
 // item, and the run-end flow asks the Council about the older item touching the same design
 // feature folder and starts its run. And the called flow `f/foreman/cancel_item`, cancelling or
-// asking the Council. The rules themselves are in test/cancel.test.ts and
+// asking the Council, and withdrawing an idea with no work items (D-412) or refusing one with
+// work items. The rules themselves are in test/cancel.test.ts and
 // test/still-needed.test.ts. Synthetic data only.
 import { describe, expect, it } from "vitest";
 
@@ -16,7 +17,11 @@ import { runEndSteps } from "../../flows/lib/council-runs.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
-import { cancelRequestTopic, stillNeededTopic } from "../../src/core/cancel.ts";
+import {
+  cancelRequestTopic,
+  stillNeededTopic,
+  WITHDRAW_REFUSALS,
+} from "../../src/core/cancel.ts";
 import { scannerGoneTopic } from "../../src/core/scan-ideas.ts";
 import { setupMerge } from "../merge-fixture.ts";
 import { HEAD } from "../reconcile-fixture.ts";
@@ -298,6 +303,72 @@ describe("the called flow f/foreman/cancel_item (flow: fake adapters, D-308 (2))
     });
     expect((await f.store.getNode(other.id))?.state).toBe("ready_for_dev");
     expect(await f.store.listDecisionsForNode(other.id)).toEqual([]);
+  });
+
+  it("withdraws an idea with no work items from Escalated to Didi with no run started, and refuses an idea with work items (D-412)", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const idea = await f.node("escalated_to_didi", {
+      type: "idea",
+      track: null,
+      ownerRole: "operator",
+      title: "Rehearsal plan, early copy",
+      blockedReason: "the Council gave no usable answer",
+    });
+    const question = await f.openGate(idea.id, `escalation:${idea.id}`, {
+      kind: "escalation",
+      owner: "didi",
+      blocking: false,
+    });
+    expect(
+      await cancelItem(f.deps, { nodeId: idea.id, reason: "An early copy." }),
+    ).toMatchObject({
+      mode: "cancel",
+      cancel: {
+        recorded: true,
+        step: {
+          nodeId: idea.id,
+          step: "acted",
+          items: [],
+          idea: { outcome: "applied" },
+        },
+      },
+      closeRuns: [],
+    });
+    expect((await f.store.getNode(idea.id))?.state).toBe("rejected");
+    expect((await f.store.getGateRequest(question.id))?.status).toBe("cancelled");
+    // Nothing is planned or started for the idea, then or on the next reconcile pass.
+    await reconcileFlow(f.deps);
+    expect(f.tasksFor).toEqual([]);
+    expect(await f.store.listRuns({ nodeId: idea.id })).toEqual([]);
+
+    const planned = await f.node("handed_off", {
+      type: "idea",
+      track: null,
+      ownerRole: "runner",
+      title: "Planned idea",
+    });
+    const item = await f.node("ready_for_dev", { agentReady: false });
+    await f.store.insertEdge({
+      id: f.deps.ids.next(),
+      fromNode: planned.id,
+      toNode: item.id,
+      type: "split_into",
+      createdAt: f.clock.now(),
+    });
+    expect(
+      await cancelItem(f.deps, { nodeId: planned.id, reason: "Drop it." }),
+    ).toEqual({
+      mode: "cancel",
+      cancel: {
+        recorded: false,
+        reason: "has_work_items",
+        message: WITHDRAW_REFUSALS.has_work_items,
+      },
+      closeRuns: [],
+    });
+    expect((await f.store.getNode(planned.id))?.state).toBe("handed_off");
+    expect((await f.store.getNode(item.id))?.state).toBe("ready_for_dev");
   });
 
   it("writes nothing under the kill switch", async () => {

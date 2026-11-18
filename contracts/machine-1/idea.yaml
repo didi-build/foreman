@@ -10,9 +10,10 @@
 # a resubmission, into Plan accepted; Reject or Request changes moves an idea in Submitted back to
 # Council planning, where the chat can submit again. These three moves are runner_only: only the
 # plan approval step applies them, and the move into Plan accepted records `plan_accepted` in its
-# transaction (D-230). No move out of Interview or Needs Didi exists, and the automated Interview
-# is the next release. Parking or rejecting an idea is Didi's and has no move yet either, with
-# one exception (D-301): the runner withdraws an idea the Scanner filed, while it is still in
+# transaction (D-230). No move out of Interview, Needs Didi or Parked exists: no move leads into
+# them yet, and the automated Interview is the next release. Parking an idea is Didi's and has no
+# move yet. Rejecting has no move of Didi's own either; the runner takes it in three cases. The
+# first (D-301): the runner withdraws an idea the Scanner filed, while it is still in
 # Submitted, once the latest scan of its project no longer finds any of its findings. That move,
 # Submitted to Rejected, is runner_only: only the scan's filing step takes it
 # (src/core/scan-ideas.ts), guarded by scanner_finding_gone, with the trigger naming the scan.
@@ -24,12 +25,25 @@
 # council_plan_accepted, and records plan_accepted with acceptedBy council in its transaction.
 # These two moves share their states with Didi's approval moves; the contracts allow that only
 # for runner-only moves with different guards, and the step names the guard of the way it takes.
-# A second exception (D-308): when an idea's work items are all Done or Cancelled after a cancel,
-# at least one of them Cancelled, or when the Council's stop of a scanner idea with no work items
-# yet stands, the runner moves the idea to Rejected from Council planning, Plan accepted, Triage
-# or Handed off. These moves are runner_only: only the cancel step takes them
+# The second rejection (D-308): when an idea's work items are all Done or Cancelled after a
+# cancel, at least one of them Cancelled, or when the Council's stop of a scanner idea with no
+# work items yet stands, the runner moves the idea to Rejected from Council planning, Plan
+# accepted, Triage or Handed off. These moves are runner_only: only the cancel step takes them
 # (src/core/cancel.ts), last, guarded by cancel_recorded, with the trigger naming the cancel's
 # decision. Handed off stays an end state: its only way out leads to another end state.
+# The third rejection (D-412): Didi withdraws an idea that has no work items with the cancel form
+# (f/foreman/cancel_item), Didi's reason kept verbatim. The cancel step moves it to Rejected from
+# Submitted, Council planning, Plan accepted, Triage, Escalated to Council or Escalated to Didi,
+# once no run is active on it, with its open gate requests cancelled in the move's transaction.
+# These are the same cancel moves, runner_only and guarded by cancel_recorded, with the trigger
+# `cancel:<decision id>` naming Didi's cancel decision; any cancel that stands on an idea with no
+# work items takes them. Submitted to Rejected is then two runner-only ways in with different
+# guards (scanner_finding_gone and cancel_recorded), and each step names its own guard. The moves
+# out of the two escalated states live here, not in escalation.yaml, because Rejected is this
+# machine's state and Machine 2's files are also loaded on their own. They name no tracks, as no
+# move here does, so they would also match a work item in those states: only the cancel step
+# takes them, and only for an idea. Interview, Needs Didi and Parked get no move: no idea can be
+# in them yet.
 #
 # Triage to Handed off is runner_only: only the Triage handoff step applies it, in the one
 # transaction that creates the work items from Triage's checked answer (src/core/triage.ts).
@@ -139,7 +153,7 @@ states:
   rejected:
     label: Rejected
     owner: Operator
-    purpose: Didi drops the idea. The runner also withdraws a scanner idea no longer found (D-301), or an idea whose work was cancelled (D-308), with the reason recorded on the move.
+    purpose: Didi drops the idea. The runner also withdraws a scanner idea no longer found (D-301), an idea whose work was cancelled (D-308), or an idea Didi withdrew before it had work items (D-412), with the reason recorded on the move.
     input: Didi's word, or the scan's record or the cancel's.
     output: Nothing.
     evidence_to_exit: Not applicable.
@@ -222,7 +236,7 @@ transitions:
 
   - from: council_planning
     to: rejected
-    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or a cancel of the idea with no work items stands, the Council's stop of a scanner idea (D-308) or Didi's withdrawal with the cancel form (D-412). The runner first cancels every work item it can.
     guards: [cancel_recorded]
     runner_only: true
     evidence: []
@@ -231,7 +245,7 @@ transitions:
 
   - from: plan_accepted
     to: rejected
-    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or a cancel of the idea with no work items stands, the Council's stop of a scanner idea (D-308) or Didi's withdrawal with the cancel form (D-412). The runner first cancels every work item it can.
     guards: [cancel_recorded]
     runner_only: true
     evidence: []
@@ -240,7 +254,7 @@ transitions:
 
   - from: triage
     to: rejected
-    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or the Council's stop of a scanner idea with no work items stands (D-308). The runner first cancels every work item it can.
+    trigger: Every work item of the idea is Done or Cancelled after a cancel, at least one Cancelled, or a cancel of the idea with no work items stands, the Council's stop of a scanner idea (D-308) or Didi's withdrawal with the cancel form (D-412). The runner first cancels every work item it can.
     guards: [cancel_recorded]
     runner_only: true
     evidence: []
@@ -255,3 +269,30 @@ transitions:
     evidence: []
     timeout: None. It waits for every work item to finish and for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
     fallback: The idea stays here. A Council stop on a plan Didi approved waits for Didi's Approve on the cancel request.
+
+  - from: submitted
+    to: rejected
+    trigger: Didi withdraws the idea with the cancel form before it has work items (D-412), or the Council's stop of a scanner idea with no work items stands (D-308). The trigger `cancel:<decision id>` names the decision. The runner cancels the idea's open gate requests in the same transaction.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays in Submitted. A Council stop that needs Didi waits for Didi's Approve on the cancel request.
+
+  - from: escalated_to_council
+    to: rejected
+    trigger: Didi withdraws the idea with the cancel form before it has work items (D-412), or another cancel of the idea stands while it has none (D-308). The trigger `cancel:<decision id>` names the decision. The runner cancels the idea's open gate requests in the same transaction.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays in Escalated to Council. A Council stop that needs Didi waits for Didi's Approve on the cancel request.
+
+  - from: escalated_to_didi
+    to: rejected
+    trigger: Didi withdraws the idea with the cancel form before it has work items (D-412), or another cancel of the idea stands while it has none (D-308). The trigger `cancel:<decision id>` names the decision. The runner cancels the idea's open gate requests, its escalation question among them, in the same transaction.
+    guards: [cancel_recorded]
+    runner_only: true
+    evidence: []
+    timeout: None. It waits for no run to be active on the idea; the run-end flow or the next reconcile pass tries again.
+    fallback: The idea stays in Escalated to Didi, and its escalation question stays open. A Council stop waits for Didi's Approve on the cancel request.

@@ -65,8 +65,10 @@
 //   its state (a merged one finishes normally), the pull request the store records for each item
 //   with its close (D-318, ./pr-close.ts: closed until the item is cancelled, no close run yet,
 //   the close run in progress, or its outcome), the idea's move to Rejected, and that reopening
-//   comes with the attention list (D-314). A Council stop waiting for Didi's confirmation shows
-//   under questions, as Didi's open request.
+//   comes with the attention list (D-314). An idea with no work items is withdrawn whole: Didi's
+//   withdrawal of its plan (D-412) shows as one, and the line says when it moved to Rejected, or
+//   that it is still being withdrawn. A Council stop waiting for Didi's confirmation shows under
+//   questions, as Didi's open request.
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
@@ -349,7 +351,7 @@ export interface CancelEntry {
   how: CancelHow;
   /** The Council's note, or Didi's reason, verbatim (data). */
   note: string;
-  /** True once every item it covers is finished. */
+  /** True once every item it covers is finished; for an idea with no work items, once it moved. */
   finished: boolean;
   /** The idea, when the cancel moved it to Rejected, and when. */
   ideaRejected: { nodeId: string; title: string; at: Date } | null;
@@ -542,7 +544,6 @@ async function cancelSection(
     const { cancel } = on;
     const ref = `${CANCEL_TRIGGER_PREFIX}${cancel.decisionId}`;
     const covered = node.type === "idea" ? await workItemsOf(store, node.id) : [node];
-    const finished = covered.every((i) => ITEM_END_STATES.includes(i.state));
     const moves: Transition[] = [];
     for (const n of [...covered, ...(idea ? [idea] : [])]) {
       moves.push(
@@ -554,6 +555,12 @@ async function cancelSection(
     const rejected = idea
       ? moves.find((t) => t.nodeId === idea.id && t.toState === CANCELLED_IDEA_STATE)
       : undefined;
+    // An idea with no work items, withdrawn whole (D-412, or a scanner idea's stop, D-308), is
+    // finished once its own move is taken; until then it is still being acted on.
+    const finished =
+      covered.length === 0
+        ? rejected !== undefined
+        : covered.every((i) => ITEM_END_STATES.includes(i.state));
     const lastAt = moves
       .map((t) => t.at)
       .sort((a, b) => a.getTime() - b.getTime())

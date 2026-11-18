@@ -1,14 +1,27 @@
-// How a work item is cancelled (D-308, O-97; first built for scanner ideas by D-305, O-95). One
-// Cancelled end state for work items, whatever the item's source. Plain logic over an injected
-// store, contracts, guards, clock and id source (D-162).
+// How a work item is cancelled (D-308, O-97; first built for scanner ideas by D-305, O-95), and
+// how Didi withdraws a plan that has no work items yet (D-412, O-141). One Cancelled end state for
+// work items, whatever the item's source. Plain logic over an injected store, contracts, guards,
+// clock and id source (D-162).
 //
 // What can stand as a cancel on a node (`readCancelOn`):
 // - the Council's stop: its latest answer on the node's "is this still needed?" question is an
 //   active `stop`. For an idea that is the scanner question (`scanner-gone:<idea id>`, D-301),
 //   which covers every work item of the idea; for a work item it is its own question
 //   (`still-needed:<item id>`, ./still-needed.ts).
-// - Didi's own cancel: an active `answer` by Didi on the item with `scope.kind` `cancel`, which
-//   the called flow `f/foreman/cancel_item` records with Didi's reason (`cancelByDidi`).
+// - Didi's own cancel: an active `answer` by Didi on the node with `scope.kind` `cancel`, which
+//   the called flow `f/foreman/cancel_item` records with Didi's reason (`cancelByDidi`): on a
+//   work item, or on an idea with no work items, which is Didi's withdrawal of its plan (D-412).
+//
+// Didi's withdrawal (D-412): the same form, given an idea. It refuses an idea with work items,
+// which is still cancelled through its items (`has_work_items`), an idea in a state with no move
+// to Rejected (`no_withdraw_move`), and an idea with a run active on it, since the run's answer
+// would plan or split it further (`run_in_progress`); each refusal is fixed text in
+// `WITHDRAW_REFUSALS`. Otherwise it records Didi's reason verbatim and takes the step, which
+// moves the idea to Rejected with its open gate requests (its plan-approval request, its
+// escalation question) cancelled in the same transaction. Nothing is dispatched: no Council,
+// Triage or builder run is started. The move's guard still waits for runs, so a run that starts
+// in between is never stopped, and the run-end flow or the next reconcile pass takes the step
+// after it.
 //
 // Who may cancel follows who approved the plan (`cancelAuthority`, one pure function): Didi's
 // cancel always stands. The Council's stop stands on its own only when the plan of the item's
@@ -25,14 +38,16 @@
 // including Escalated to Council and Escalated to Didi. Verifying on staging has none: a merged
 // item finishes normally (D-308 (6)), and the step reports it as finishing. The idea moves to
 // Rejected from Council planning, Plan accepted, Triage or Handed off once every work item is Done
-// or Cancelled and at least one is Cancelled, or, for a scanner idea with no work items yet, once
-// the Council's stop on it stands. Every move is guarded by `cancel_recorded`
-// (./guards/cancel.ts) and taken only here. The trigger is `cancel:<decision id>`, kind `event`,
-// naming the decision that lets the cancel stand (the Council's stop, Didi's Approve, or Didi's
-// own cancel), so a repeat writes one row, and an idea Didi reopens is not rejected again for the
-// same cancel. Each item's move cancels the item's open gate requests in the same transaction. A
-// run in progress is never stopped: the item waits, and the run-end flow or the next reconcile
-// pass takes the step again (flows/lib/council-runs.ts).
+// or Cancelled and at least one is Cancelled, or, for an idea with no work items yet, once a
+// cancel on it stands (the Council's stop of a scanner idea, or Didi's withdrawal); with no work
+// items it also moves from Submitted, Escalated to Council and Escalated to Didi (D-412). Every
+// move is guarded by `cancel_recorded` (./guards/cancel.ts) and taken only here. The trigger is
+// `cancel:<decision id>`, kind `event`, naming the decision that lets the cancel stand (the
+// Council's stop, Didi's Approve, or Didi's own cancel), so a repeat writes one row, and an idea
+// Didi reopens is not rejected again for the same cancel. Each move, an item's or the idea's,
+// cancels that node's open gate requests in the same transaction. A run in progress is never
+// stopped: the item or idea waits, and the run-end flow or the next reconcile pass takes the step
+// again (flows/lib/council-runs.ts).
 //
 // Pull requests: the step reports the pull request the store records for each item. Once the item
 // is Cancelled, that pull request is closed by the item's own bot in a close-only run with no
@@ -106,6 +121,21 @@ export const CANCEL_REASONS = {
     "Didi approved the Council's recommendation to cancel this work, on a plan Didi approved (D-308).",
   didi: "Didi cancelled this work (D-308).",
 } as const;
+
+/** The reason on the idea's move when Didi withdraws it before it has work items (D-412). */
+export const IDEA_WITHDRAWN_REASON =
+  "Didi withdrew this idea before it had work items (D-412).";
+
+/** Why the form refuses Didi's withdrawal of an idea (D-412), as fixed text with no ids. */
+export const WITHDRAW_REFUSALS = {
+  has_work_items:
+    "This idea already has work items, so it is cancelled through them: cancel each work item with this form, and the idea moves to Rejected once every item is finished.",
+  no_withdraw_move:
+    "This idea is in a state with no move to Rejected, so it cannot be withdrawn from there.",
+  run_in_progress:
+    "A run is in progress on this idea, and a run is never stopped. Withdraw the idea again once the run has ended.",
+} as const;
+export type WithdrawRefusal = keyof typeof WITHDRAW_REFUSALS;
 
 /** Who approved the plan the work comes from, or null when no accepted plan is recorded. */
 export type PlanApprover = "council" | "didi";
@@ -369,9 +399,9 @@ const hasActiveRun = (runs: readonly Run[]): boolean =>
 
 /**
  * Whether the idea's move to Rejected is due, and the decision it names (D-308 (5)): every work
- * item is Done or Cancelled and at least one is Cancelled, or the idea has no work items and the
- * Council's stop on it stands as a cancel; and no run is active on the idea. The decision named
- * is the idea's own cancel, else the latest item cancel's.
+ * item is Done or Cancelled and at least one is Cancelled, or the idea has no work items and a
+ * cancel on it stands (the Council's stop, or Didi's withdrawal, D-412); and no run is active on
+ * the idea. The decision named is the idea's own cancel, else the latest item cancel's.
  */
 export async function ideaRejectionDue(
   store: CancelReads & Pick<StoreOps, "listTransitions">,
@@ -523,7 +553,7 @@ export interface CancelDeps {
   ids: IdSource;
 }
 
-/** What `cancelByDidi` did with Didi's cancel. */
+/** What `cancelByDidi` did with Didi's cancel, of a work item or of an idea (D-412). */
 export type DidiCancel =
   | { recorded: true | "already_recorded"; decisionId: string; step: CancelStep }
   | {
@@ -532,14 +562,15 @@ export type DidiCancel =
         | "kill_switch"
         | "dry_run"
         | "no_node"
-        | "not_a_work_item"
         | "finished"
         /** Merged and in Verifying on staging: it finishes normally (D-308 (6)). */
         | "finishes_normally"
         | "no_reason";
-      /** In dry run: what the cancel would do. */
+      /** In dry run: what the cancel would do (for an idea, `would_cancel` is its withdrawal). */
       plan?: CancelItemStep;
-    };
+    }
+  /** An idea the form does not withdraw, with the fixed text that says why (D-412). */
+  | { recorded: false; reason: WithdrawRefusal; message: string };
 
 const failedGuards = (report: { name: string; pass: boolean }[]): string[] =>
   report.filter((c) => !c.pass).map((c) => c.name);
@@ -658,7 +689,17 @@ export function createCancels(deps: CancelDeps) {
       if (ideaOn) stands = true;
       if (await notAsked(ideaOn)) work = true;
       if (items.some((i) => i.state === CANCELLED_STATE)) stands = true;
-      if ((await rejectionStep(idea)) === "due") work = true;
+      const rejection = await rejectionStep(idea);
+      if (rejection === "due") work = true;
+      // An idea with no work items whose cancel stands waits only for the run on it (D-412):
+      // still work to do, as for an item waiting on its run.
+      if (
+        rejection === "waits" &&
+        items.length === 0 &&
+        ideaOn?.status === "cancel" &&
+        hasCancelMove(idea, CANCELLED_IDEA_STATE)
+      )
+        work = true;
     }
     if (!stands) return { nodeId: root.id, step: "not_due", why: "nothing_stands" };
     if (!work) return { nodeId: root.id, step: "not_due", why: "finished" };
@@ -680,6 +721,21 @@ export function createCancels(deps: CancelDeps) {
     return hasCancelMove(idea, CANCELLED_IDEA_STATE) ? "due" : "no_move";
   }
 
+  /**
+   * The node's open requests end with its move, in the move's transaction: nobody needs to answer
+   * them now. For an idea that is its plan-approval request and its escalation question (D-412).
+   */
+  const cancelOpenRequests =
+    (nodeId: string) =>
+    async (tx: StoreOps): Promise<null> => {
+      const at = clock.now();
+      for (const gate of await tx.listGateRequestsForNode(nodeId)) {
+        if (gate.status === "open")
+          await tx.closeGateRequest(gate.id, { status: "cancelled", at });
+      }
+      return null;
+    };
+
   async function cancelItem(
     item: Node,
     cancel: StandingCancel,
@@ -694,15 +750,7 @@ export function createCancels(deps: CancelDeps) {
         runnerOnly: true,
         guardedBy: CANCEL_GUARD,
       },
-      async (tx) => {
-        // The item's open requests end with it: nobody needs to answer them now.
-        const at = clock.now();
-        for (const gate of await tx.listGateRequestsForNode(item.id)) {
-          if (gate.status === "open")
-            await tx.closeGateRequest(gate.id, { status: "cancelled", at });
-        }
-        return null;
-      },
+      cancelOpenRequests(item.id),
     );
     const moved = result.outcome === "applied" || result.outcome === "noop";
     return {
@@ -851,15 +899,23 @@ export function createCancels(deps: CancelDeps) {
         };
       }
       const how = await howOf(check.decisionId);
-      const moved = await library.requestTransitionOnce({
-        nodeId: fresh.id,
-        toState: CANCELLED_IDEA_STATE,
-        trigger: { kind: "event", ref: `${CANCEL_TRIGGER_PREFIX}${check.decisionId}` },
-        actor: CANCEL_ACTOR,
-        reason: CANCEL_REASONS[how],
-        runnerOnly: true,
-        guardedBy: CANCEL_GUARD,
-      });
+      // With no work items, Didi's own cancel on the idea is the withdrawal of its plan (D-412).
+      const withdrawn = how === "didi" && items.length === 0;
+      const moved = await library.requestTransitionOnce(
+        {
+          nodeId: fresh.id,
+          toState: CANCELLED_IDEA_STATE,
+          trigger: {
+            kind: "event",
+            ref: `${CANCEL_TRIGGER_PREFIX}${check.decisionId}`,
+          },
+          actor: CANCEL_ACTOR,
+          reason: withdrawn ? IDEA_WITHDRAWN_REASON : CANCEL_REASONS[how],
+          runnerOnly: true,
+          guardedBy: CANCEL_GUARD,
+        },
+        cancelOpenRequests(fresh.id),
+      );
       return {
         nodeId: root.id,
         step: "acted",
@@ -874,23 +930,22 @@ export function createCancels(deps: CancelDeps) {
     },
 
     /**
-     * Didi's own cancel of a work item (D-308 (2)), from the called flow `f/foreman/cancel_item`:
-     * records Didi's reason as an `answer` by Didi on the item, once while it stands, then takes
-     * the step. An item already finished, a merged item in Verifying on staging (it finishes
-     * normally), or a blank reason, records nothing. Under the kill
-     * switch nothing is written; in dry run nothing is written and the result says what it would
-     * do.
+     * Didi's own cancel (D-308 (2)), from the called flow `f/foreman/cancel_item`: of a work item,
+     * or of an idea with no work items, which withdraws its plan (D-412). Records Didi's reason as
+     * an `answer` by Didi on the node, once while it stands, then takes the step. An item already
+     * finished, a merged item in Verifying on staging (it finishes normally), an idea already
+     * Rejected, an idea the form does not withdraw (`WITHDRAW_REFUSALS`), or a blank reason,
+     * records nothing. Under the kill switch nothing is written; in dry run nothing is written and
+     * the result says what it would do.
      */
     async cancelByDidi(nodeId: string, reason: string): Promise<DidiCancel> {
       const held = await switches();
       if (held === "kill_switch") return { recorded: false, reason: held };
       const node = await store.getNode(nodeId);
       if (!node) return { recorded: false, reason: "no_node" };
-      if (node.type !== "work_item")
-        return { recorded: false, reason: "not_a_work_item" };
-      if (isFinished(node)) return { recorded: false, reason: "finished" };
-      if (!hasCancelMove(node, CANCELLED_STATE))
-        return { recorded: false, reason: "finishes_normally" };
+      const refused =
+        node.type === "idea" ? await withdrawRefusal(node) : itemRefusal(node);
+      if (refused) return refused;
       const text = reason.trim();
       if (text === "") return { recorded: false, reason: "no_reason" };
       if (held === "dry_run") {
@@ -899,7 +954,8 @@ export function createCancels(deps: CancelDeps) {
           reason: held,
           plan: {
             nodeId,
-            result: (await before(node)) ?? "would_cancel",
+            result:
+              (node.type === "idea" ? null : await before(node)) ?? "would_cancel",
             how: "didi",
             pullRequest: await recordedPullRequest(store, nodeId),
           },
@@ -926,6 +982,34 @@ export function createCancels(deps: CancelDeps) {
       return { ...written, step: await cancels.step(nodeId) };
     },
   };
+
+  /** Why Didi's cancel of a work item records nothing, or null when it is recorded. */
+  function itemRefusal(item: Node): DidiCancel | null {
+    if (isFinished(item)) return { recorded: false, reason: "finished" };
+    if (!hasCancelMove(item, CANCELLED_STATE))
+      return { recorded: false, reason: "finishes_normally" };
+    return null;
+  }
+
+  /**
+   * Why Didi's withdrawal of an idea records nothing (D-412), or null when it is recorded: it is
+   * already Rejected, it has work items (they are cancelled one by one), its state has no move to
+   * Rejected, or a run is active on it, whose answer would plan or split it further.
+   */
+  async function withdrawRefusal(idea: Node): Promise<DidiCancel | null> {
+    const refuse = (reason: WithdrawRefusal): DidiCancel => ({
+      recorded: false,
+      reason,
+      message: WITHDRAW_REFUSALS[reason],
+    });
+    if (idea.state === CANCELLED_IDEA_STATE)
+      return { recorded: false, reason: "finished" };
+    if ((await workItemsOf(store, idea.id)).length > 0) return refuse("has_work_items");
+    if (!hasCancelMove(idea, CANCELLED_IDEA_STATE)) return refuse("no_withdraw_move");
+    if (hasActiveRun(await store.listRuns({ nodeId: idea.id })))
+      return refuse("run_in_progress");
+    return null;
+  }
 
   /** How a decision a move names let the cancel stand, from the decision itself. */
   async function howOf(decisionId: string): Promise<CancelHow> {

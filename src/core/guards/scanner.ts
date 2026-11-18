@@ -9,10 +9,15 @@
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import { IDEA_ENTRY } from "../ideas.ts";
 import { scanFoundNone } from "../scan.ts";
-import { isScannerIdea, readScanSummary, scannerIdeaKeys } from "../scan-ideas.ts";
+import {
+  isScannerIdea,
+  readScanSummary,
+  SCANNER_GONE_GUARD,
+  scannerIdeaKeys,
+} from "../scan-ideas.ts";
 import { result } from "./evidence.ts";
 
-export const SCANNER_GONE_GUARD = "scanner_finding_gone";
+export { SCANNER_GONE_GUARD };
 
 /** The idea's findings are no longer found by the latest scan that ran (D-301 (3)). */
 export async function scannerFindingGone(ctx: GuardContext): Promise<GuardCheck> {
