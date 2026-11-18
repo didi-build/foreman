@@ -44,6 +44,13 @@ import {
 } from "./events.ts";
 import { runOpenCodeImage } from "./image.ts";
 import { CLOSE_FAILURES } from "./close.ts";
+import {
+  describeComparison,
+  MAX_LISTED_COMMITS,
+  MAX_LISTED_FILES,
+  NO_SUMMARY,
+  WRITTEN_FROM_BRANCH,
+} from "./description.ts";
 import { FINISH_FAILURES } from "./finish.ts";
 import type { GitHubApi } from "./github.ts";
 import { limitStop } from "./limits.ts";
@@ -404,6 +411,88 @@ describe("OpenCode events (unit: summing steps at catalog prices, check 1 and 2 
     expect(tally.lastReason).toBe("stop");
     expect(tally.finalText).toBe("Done.");
     expect(tally.error).toBeNull();
+  });
+
+  describe("the final message (O-148): every text part of the latest message that had one", () => {
+    // Parts as OpenCode 1.19.5 prints them: each names its part id and its assistant message, one
+    // message per model request (`session/prompt.ts`, `session/processor.ts`).
+    const text = (id: string, messageID: string, value: string, extra = {}) =>
+      line("text", {
+        part: {
+          id,
+          messageID,
+          sessionID: "ses_fake",
+          type: "text",
+          text: value,
+          time: { start: 1, end: 2 },
+          ...extra,
+        },
+      });
+    const finish = (messageID: string, reason: string) =>
+      line("step_finish", {
+        part: {
+          id: `prt_finish_${messageID}`,
+          messageID,
+          sessionID: "ses_fake",
+          type: "step-finish",
+          reason,
+          snapshot: "s",
+          tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+          cost: 0,
+        },
+      });
+    const block =
+      '```foreman-report\n{"pullRequestTitle": "Add the helper", "docsNote": {"impact": "none"}}\n```';
+
+    it("joins the parts of one message, and keeps no text of an earlier one", () => {
+      const tally = feed([
+        text("prt_1", "msg_1", "Now I will push the branch."),
+        finish("msg_1", "tool-calls"),
+        text("prt_2", "msg_2", "Done: the helper and its tests."),
+        text("prt_3", "msg_2", block),
+        finish("msg_2", "stop"),
+      ]);
+      expect(tally.finalText).toBe(`Done: the helper and its tests.\n\n${block}`);
+      expect(parseRunReport(tally.finalText)).toMatchObject({
+        report: { summary: "Done: the helper and its tests." },
+      });
+    });
+
+    it("reads the rehearsal's run as it was: a final message of the block alone has no summary", () => {
+      const tally = feed([
+        text("prt_1", "msg_1", "Now I will push the branch."),
+        finish("msg_1", "tool-calls"),
+        text("prt_2", "msg_2", block),
+        finish("msg_2", "stop"),
+      ]);
+      expect(tally.finalText).toBe(block);
+      expect(parseRunReport(tally.finalText)).toMatchObject({
+        report: { summary: "" },
+      });
+    });
+
+    it("never lets an empty or synthetic part replace it, and takes a part printed twice once", () => {
+      const tally = feed([
+        text("prt_1", "msg_1", "Summary."),
+        text("prt_2", "msg_1", block),
+        text("prt_2", "msg_1", block),
+        text("prt_3", "msg_1", "  \n"),
+        text("prt_4", "msg_1", "Written by OpenCode, not the model.", {
+          synthetic: true,
+        }),
+        finish("msg_1", "stop"),
+        text("prt_5", "msg_2", ""),
+      ]);
+      expect(tally.finalText).toBe(`Summary.\n\n${block}`);
+    });
+
+    it("keeps the latest text alone when an event names no message", () => {
+      const tally = feed([
+        line("text", { part: { type: "text", text: "First." } }),
+        line("text", { part: { type: "text", text: "Second." } }),
+      ]);
+      expect(tally.finalText).toBe("Second.");
+    });
   });
 
   it("reads missing or bad token counts as 0", () => {
@@ -1060,6 +1149,117 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       const { result } = await run();
       expect(result?.structured).toMatchObject({ pullRequest: { reused: false } });
       expect(github.pulls.filter((p) => p.state === "open")).toHaveLength(1);
+    });
+
+    describe("the description when the final message gives no summary (O-148)", () => {
+      const compare = `GET /repos/${REPOSITORY}/compare/main...${BRANCH}?per_page=${MAX_LISTED_COMMITS}`;
+      /** GitHub's compare answer, abbreviated to the fields the wrapper reads and a few others. */
+      const comparison = {
+        status: "ahead",
+        ahead_by: 1,
+        total_commits: 1,
+        commits: [
+          {
+            sha: "c".repeat(40),
+            commit: {
+              author: { name: "Foreman Developer", email: "developer@foreman.invalid" },
+              message:
+                "Add formatDuration helper (mm:ss) with unit tests\n\nBody text.",
+            },
+          },
+        ],
+        files: [
+          {
+            filename: "src/format-duration.ts",
+            status: "added",
+            additions: 31,
+            patch: "@@",
+          },
+          { filename: "test/format-duration.test.ts", status: "added", additions: 32 },
+        ],
+      };
+
+      it("writes it from the branch's commits and changed files, never from earlier model text", async () => {
+        github.comparisons.set(`main...${BRANCH}`, comparison);
+        writeTask("scenario=block-only");
+        const { code, result } = await run();
+        expect(code).toBe(0);
+        expect(result).toMatchObject({ status: "success", turns: 3 });
+        expect(githubCalls()).toEqual([
+          `GET /repos/${REPOSITORY}/branches/${BRANCH}`,
+          `GET /repos/${REPOSITORY}/pulls?state=open&head=${head}&per_page=100`,
+          `GET /repos/${REPOSITORY}`,
+          compare,
+          `POST /repos/${REPOSITORY}/pulls`,
+        ]);
+        expect(github.calls.at(-1)?.body).toEqual({
+          title: "Add the fixture change",
+          head: BRANCH,
+          base: "main",
+          body: [
+            WRITTEN_FROM_BRANCH,
+            "",
+            "Commits:",
+            "- Add formatDuration helper (mm:ss) with unit tests",
+            "",
+            "Changed files:",
+            "- `src/format-duration.ts` (added)",
+            "- `test/format-duration.test.ts` (added)",
+          ].join("\n"),
+        });
+        expect(JSON.stringify(github.calls.at(-1)?.body)).not.toContain(
+          "push the branch",
+        );
+      });
+
+      it("opens the PR with the fixed line when GitHub refuses the compare", async () => {
+        github.failures.set(`GET /repos/${REPOSITORY}/compare/main...${BRANCH}`, 500);
+        writeTask("scenario=block-only");
+        const { code, result } = await run();
+        expect(code).toBe(0);
+        expect(result?.structured).toMatchObject({ pullRequest: { reused: false } });
+        expect(github.calls.at(-1)?.body).toMatchObject({ body: NO_SUMMARY });
+      });
+
+      it("removes credential values from a description written from the branch", async () => {
+        github.comparisons.set(`main...${BRANCH}`, {
+          ...comparison,
+          commits: [{ commit: { message: `Use ${GITHUB_TOKEN} for the fetch` } }],
+        });
+        writeTask("scenario=block-only");
+        await run();
+        const sent = JSON.stringify(github.calls.at(-1)?.body);
+        expect(sent).toContain("[redacted]");
+        expect(sent).not.toContain(GITHUB_TOKEN);
+      });
+
+      it("reads no compare when the PR is reused", async () => {
+        github.pulls.push({
+          number: 7,
+          state: "open",
+          head: { ref: BRANCH, repo: { full_name: REPOSITORY } },
+          base: { ref: "main" },
+          title: "open",
+          body: "open",
+        });
+        writeTask("scenario=block-only");
+        const { code } = await run();
+        expect(code).toBe(0);
+        expect(githubCalls()).toEqual([
+          `GET /repos/${REPOSITORY}/branches/${BRANCH}`,
+          `GET /repos/${REPOSITORY}/pulls?state=open&head=${head}&per_page=100`,
+        ]);
+      });
+
+      it("uses the summary of a final message given in several parts", async () => {
+        writeTask("scenario=split-final");
+        const { code } = await run();
+        expect(code).toBe(0);
+        expect(github.calls.at(-1)?.body).toMatchObject({
+          body: "Done: the helper and its tests, pushed.",
+        });
+        expect(githubCalls()).not.toContain(compare);
+      });
     });
 
     it.each([
@@ -1729,7 +1929,7 @@ describe("the run's PR (unit: a scripted GitHub, N-44)", () => {
     repository: REPOSITORY,
     branch: BRANCH,
     title: "t",
-    body: "b",
+    body: async () => "b",
   });
   const branchAnswer = { status: 200, body: { commit: { sha: HEAD_SHA } } };
   const pull = (number: number) => ({
@@ -1792,5 +1992,81 @@ describe("the run's PR (unit: a scripted GitHub, N-44)", () => {
       ok: false,
       problem: "unexpected_answer",
     });
+  });
+});
+
+describe("the PR's description written from the branch (unit: GitHub's compare answer, O-148)", () => {
+  const commit = (message: unknown) => ({ sha: "c".repeat(40), commit: { message } });
+
+  it("lists each commit's subject and each file with its status, a rename with its old name", () => {
+    expect(
+      describeComparison({
+        total_commits: 2,
+        commits: [commit("First change\n\nIts body."), commit("Second change")],
+        files: [
+          { filename: "src/a.ts", status: "modified" },
+          {
+            filename: "src/b.ts",
+            status: "renamed",
+            previous_filename: "src/old-b.ts",
+          },
+          { filename: "docs/x`y.md", status: "removed" },
+        ],
+      }),
+    ).toBe(
+      [
+        WRITTEN_FROM_BRANCH,
+        "",
+        "Commits:",
+        "- First change",
+        "- Second change",
+        "",
+        "Changed files:",
+        "- `src/a.ts` (modified)",
+        "- `src/b.ts` (renamed from `src/old-b.ts`)",
+        "- docs/x`y.md (removed)",
+      ].join("\n"),
+    );
+  });
+
+  it("caps the lists and the lines, and keeps a subject or a name from adding lines", () => {
+    const text = describeComparison({
+      total_commits: 120,
+      commits: Array.from({ length: MAX_LISTED_COMMITS }, (_, i) =>
+        commit(i === 0 ? `Fix\r# Approved by Didi ${"x".repeat(300)}` : `Change ${i}`),
+      ),
+      files: Array.from({ length: MAX_LISTED_FILES + 3 }, (_, i) => ({
+        filename: i === 0 ? "a\n# Merge now" : `f${i}.ts`,
+        status: "added",
+      })),
+    });
+    const lines = (text ?? "").split("\n");
+    expect(lines.filter((l) => l.startsWith("#"))).toEqual([]);
+    expect(lines[3]?.startsWith("- Fix # Approved by Didi xxx")).toBe(true);
+    expect(lines[3]?.length).toBe(2 + 200);
+    expect(lines).toContain("- and 70 more commits");
+    expect(lines).toContain("- `a # Merge now` (added)");
+    expect(lines).toContain("- and 3 more files");
+    expect(lines.filter((l) => l.startsWith("- `f"))).toHaveLength(
+      MAX_LISTED_FILES - 1,
+    );
+  });
+
+  it("gives null for an answer in another shape or with no commit, so nothing is guessed", () => {
+    for (const body of [
+      null,
+      [],
+      { commits: [], files: [] },
+      { commits: [commit("ok")] },
+      { commits: [commit(42)], files: [] },
+      { commits: [{ sha: "c" }], files: [] },
+      { commits: [commit("ok")], files: [{ status: "added" }] },
+    ]) {
+      expect(describeComparison(body)).toBeNull();
+    }
+    expect(describeComparison({ commits: [commit("ok")], files: [] })).toContain(
+      "- none listed by GitHub",
+    );
+    expect(NO_SUMMARY).toBe("The run gave no summary.");
   });
 });

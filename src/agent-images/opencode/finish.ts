@@ -10,10 +10,13 @@
 // the reason in `structured`, and the runner asks for the escalation (O-63). Commits the model
 // pushed, if any, stay on the branch as they are. A success result also carries the bugs the run
 // noticed outside its item, with credential values removed (D-244, O-65): the runner submits each
-// as a new idea; the wrapper itself sends them nowhere.
+// as a new idea; the wrapper itself sends them nowhere. A new PR's description is the report's
+// summary, or, when the final message has none, one the wrapper writes from the branch's commits
+// and changed files (./description.ts, O-148); credential values are removed from either.
 import { withinFindingBounds } from "../../core/out-of-scope-findings.ts";
 import type { AgentResult } from "../shared/result.ts";
 import { redact } from "../shared/result.ts";
+import { describeBranch } from "./description.ts";
 import type { GitHubApi } from "./github.ts";
 import { openOrReusePullRequest } from "./pull-request.ts";
 import { MAX_STOP_REASON, parseRunReport, postDocsNote } from "./report.ts";
@@ -73,10 +76,18 @@ export async function finishRun(
     repository: context.repository,
     branch: context.branch,
     title: redact(report.pullRequestTitle, context.secrets),
-    body: redact(
-      report.summary === "" ? "The run gave no summary." : report.summary,
-      context.secrets,
-    ),
+    body: async (base) =>
+      redact(
+        report.summary !== ""
+          ? report.summary
+          : await describeBranch({
+              github: context.github,
+              repository: context.repository,
+              base,
+              branch: context.branch,
+            }),
+        context.secrets,
+      ),
   });
   if (!opened.ok) {
     return failed(result, `${FINISH_FAILURES.pullRequest}: ${opened.text}`);
