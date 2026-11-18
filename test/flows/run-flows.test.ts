@@ -12,6 +12,7 @@ import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
+import { QWEN_CODER } from "../../src/core/routing-testing.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import type { Store } from "../../src/core/store.ts";
 import { createFlowFixture, HEAD, type FlowFixture } from "./flow-fixture.ts";
@@ -24,7 +25,8 @@ const RESULT: AgentRunResult = {
   costUsd: 0.4,
   minutes: 6,
   tokens: { uncachedInput: 100, cachedInput: 900, output: 50 },
-  model: "claude-sonnet-5-5",
+  // The Developer's seeded route (migration 0024, D-421).
+  model: QWEN_CODER,
 };
 
 async function readyItem(f: FlowFixture) {
@@ -63,13 +65,14 @@ describe("dispatch flow (flow: fake adapters, build plan M3.1 and M3.2)", () => 
     const [run] = after.runs;
     if (!run || result.outcome !== "started") throw new Error("not started");
 
-    // Started once, with the route's model and provider and the run's own token.
+    // Started once, with the route's model and provider and the run's own token: the Developer's
+    // seeded route is Qwen3 Coder on DeepInfra (migration 0024, D-421).
     expect(f.runtime.started).toEqual([
       {
         task: {
           runId: run.id,
-          model: "claude-sonnet-5-5",
-          provider: "anthropic",
+          model: QWEN_CODER,
+          provider: "deepinfra",
           stateApiToken: f.tokens[0],
         },
         limits: f.deps.limits.developer,
@@ -468,8 +471,9 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
       outcome: "success",
       turns: 12,
       minutes: 6,
-      // The core's figure, at the run's recorded Sonnet 5.5 price: 100 x 2 + 900 x 0.2 + 50 x 10.
-      costUsd: 0.00088,
+      // The core's figure, at the run's recorded Qwen3 Coder price, Standard since the result
+      // reports no served tier: 100 x 0.3 + 900 x 0.1 + 50 x 1, per million.
+      costUsd: 0.00017,
       reportedCostUsd: 0.4,
     });
     expect(ended?.tokens).toEqual(RESULT.tokens);
@@ -601,16 +605,17 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
       state: "finished",
       result: {
         ...RESULT,
-        serviceTierServed: "standard",
+        serviceTierServed: "flex",
         capacityRetries: 0,
         capacityWaitSeconds: 0,
       },
     });
     await recordRunEnd(f.deps, input);
     expect(await f.store.getRun(input.runId)).toMatchObject({
-      costUsd: 0.00088,
+      // At the recorded Flex price: 100 x 0.24 + 900 x 0.08 + 50 x 0.8, per million.
+      costUsd: 0.000136,
       reportedCostUsd: 0.4,
-      serviceTierServed: "standard",
+      serviceTierServed: "flex",
       capacityRetries: 0,
       capacityWaitSeconds: 0,
       firstTokenMs: null,

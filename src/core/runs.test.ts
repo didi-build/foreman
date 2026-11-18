@@ -12,9 +12,12 @@ import {
   FIRST_APPROVED_PROVIDERS,
   FIRST_MODEL_CATALOG,
   FIRST_ROUTING_POLICY,
+  QWEN_CODER,
+  SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
   firstRunPrice,
+  qwenCoderRunPrice,
   seedRoutingSettings,
   TEST_TASK_TYPES,
 } from "./routing-testing.ts";
@@ -504,31 +507,41 @@ describe("dry-run dispatch evaluation (build plan M2.4)", () => {
 });
 
 describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
+  const onDeepInfraFlex = {
+    model: QWEN_CODER,
+    provider: "deepinfra",
+    modelFamily: "qwen",
+    serviceTierRequested: "flex",
+    modelPrice: qwenCoderRunPrice(),
+  } as const;
+  const onAnthropic = (model: string) => ({
+    model,
+    provider: "anthropic",
+    modelFamily: "claude",
+    serviceTierRequested: "standard",
+    modelPrice: firstRunPrice(model),
+  });
   it.each([
-    ["developer", "developer:code", "claude-sonnet-5-5"],
-    ["designer", "designer", "claude-sonnet-5-5"],
-    ["qa", "qa:review", "claude-opus-5-5"],
-    ["council", "council", "claude-sonnet-5-5"],
-    ["triage", "triage", "claude-sonnet-5-5"],
+    ["developer", "developer:code", onDeepInfraFlex],
+    ["designer", "designer", onDeepInfraFlex],
+    ["qa", "qa:review", onAnthropic("claude-opus-5-5")],
+    ["council", "council", onAnthropic("claude-sonnet-5-5")],
+    ["triage", "triage", onAnthropic("claude-sonnet-5-5")],
   ] as const)(
-    "records the first policy's route on a %s run: today's model (D-185, D-186)",
-    async (role, taskType, model) => {
+    "records the seeded policy's route on a %s run: Qwen3 Coder on DeepInfra Flex for the builders (D-421), Claude for the rest (D-185, D-186)",
+    async (role, taskType, route) => {
       const t = await setup();
       const runId = await t.started(t.request(await t.item(), role));
       expect(await t.store.getRun(runId)).toMatchObject({
-        model,
+        ...route,
         taskType,
-        provider: "anthropic",
-        modelFamily: "claude",
-        serviceTierRequested: "standard",
         serviceTierServed: null,
         routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
-        modelCatalogVersion: FIRST_MODEL_CATALOG.version,
+        modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         capacityRetries: null,
         capacityWaitSeconds: null,
         firstTokenMs: null,
         reportedCostUsd: null,
-        modelPrice: firstRunPrice(model),
       });
     },
   );
@@ -549,12 +562,12 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
       output: {
         runId,
         taskType: "developer:code",
-        provider: "anthropic",
-        model: "claude-sonnet-5-5",
-        family: "claude",
-        tier: "standard",
+        provider: "deepinfra",
+        model: QWEN_CODER,
+        family: "qwen",
+        tier: "flex",
         policyVersion: SEEDED_ROUTING_POLICY.version,
-        catalogVersion: FIRST_MODEL_CATALOG.version,
+        catalogVersion: SEEDED_MODEL_CATALOG.version,
       },
     });
     // The hash covers what the rule read: the role, the task type and the settings.
@@ -565,7 +578,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
         earlierRuns: [],
         settings: {
           policy: SEEDED_ROUTING_POLICY,
-          catalog: FIRST_MODEL_CATALOG,
+          catalog: SEEDED_MODEL_CATALOG,
           providers: FIRST_APPROVED_PROVIDERS,
           outputNeeds: SEEDED_OUTPUT_TOKEN_NEEDS,
         },
@@ -575,8 +588,9 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
 
   it("refuses with no_route and writes nothing when no candidate passes the hard rules", async () => {
     const t = await setup();
+    // Only Anthropic approved: the Developer's one candidate, on DeepInfra, fails hard rule 3.
     await t.setting("model_providers_approved", {
-      deepinfra: { decision: "D-208", covers: "self_hosted" },
+      anthropic: { decision: "D-171", covers: "all" },
     });
     const nodeId = await t.item();
     const result = await t.runs.dispatch(t.request(nodeId), credential());
@@ -588,8 +602,9 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
         rejected: [
           {
             index: 0,
-            provider: "anthropic",
-            model: "claude-sonnet-5-5",
+            provider: "deepinfra",
+            model: QWEN_CODER,
+            tier: "flex",
             failed: [{ rule: "approved_provider" }],
           },
         ],
@@ -617,16 +632,16 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
   it("refuses a QA run whose only candidate is a Developer run's model id, and admits another", async () => {
     const t = await setup();
     const nodeId = await t.item();
-    // The Developer ran on Sonnet; a policy that puts QA on Sonnet too has no route.
+    // The Developer ran on Qwen3 Coder; a policy that puts QA on Qwen3 Coder too has no route.
     await t.runs.recordEnd(await t.started(t.request(nodeId)), t.report());
-    const sonnetQa = {
-      ...FIRST_ROUTING_POLICY,
+    const qwenQa = {
+      ...SEEDED_ROUTING_POLICY,
       taskTypes: {
-        ...FIRST_ROUTING_POLICY.taskTypes,
-        "qa:review": FIRST_ROUTING_POLICY.taskTypes["developer:code"],
+        ...SEEDED_ROUTING_POLICY.taskTypes,
+        "qa:review": SEEDED_ROUTING_POLICY.taskTypes["developer:code"],
       },
     };
-    await t.setting("model_routing_policy", sonnetQa);
+    await t.setting("model_routing_policy", qwenQa);
     expect(await t.runs.dispatch(t.request(nodeId, "qa"), credential())).toMatchObject({
       admitted: false,
       reason: "no_route",
@@ -680,9 +695,10 @@ describe("run ends (ADR 0107 outcomes)", () => {
       outcome: "success",
       turns: 12,
       minutes: 4.5,
-      // Worked out by the core at Sonnet 5.5's Standard price: 1200 x 2 + 48000 x 0.2 +
-      // 3000 x 2.5 + 900 x 10, per million.
-      costUsd: 0.0285,
+      // Worked out by the core at Qwen3 Coder's Standard price, since the run reported no served
+      // tier: 1200 x 0.3 + 48000 x 0.1 + 3000 x 0.3 (no cache-write price, so the input rate) +
+      // 900 x 1, per million.
+      costUsd: 0.00696,
       tokens: {
         uncachedInput: 1200,
         cachedInput: 48000,
@@ -692,6 +708,17 @@ describe("run ends (ADR 0107 outcomes)", () => {
       transcriptRef: "pod-log-1",
       usageExhaustedCause: null,
       retryAfterSeconds: null,
+    });
+  });
+
+  it("prices a Developer run that reports Flex at the seeded model's Flex price (D-207, D-421)", async () => {
+    const t = await setup();
+    const runId = await t.started(t.request(await t.item()));
+    await t.runs.recordEnd(runId, t.report({ serviceTierServed: "flex" }));
+    // 1200 x 0.24 + 48000 x 0.08 + 3000 x 0.24 (the Flex input rate) + 900 x 0.8, per million.
+    expect(await t.store.getRun(runId)).toMatchObject({
+      serviceTierServed: "flex",
+      costUsd: 0.005568,
     });
   });
 

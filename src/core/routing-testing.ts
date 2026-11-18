@@ -1,6 +1,6 @@
-// Test support for model routing (ADR 0114): the routing settings migrations 0005 and 0019 seed,
-// the task types in contracts/task-types.yaml and the bot files, and the route columns of a run on
-// the seeded policy. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
+// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019 and 0024
+// seed, the task types in contracts/task-types.yaml and the bot files, and the route columns of a
+// run on an Anthropic route. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
 import { ROUTING_SETTINGS, type RunPrice } from "./routing.ts";
@@ -9,6 +9,8 @@ import type { TaskTypes } from "./task-types.ts";
 
 const SONNET = "claude-sonnet-5-5";
 const OPUS = "claude-opus-5-5";
+/** The Developer's and Designer's model since migration 0024 (D-421). */
+export const QWEN_CODER = "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo";
 
 const anthropic = (model: string) => ({
   candidates: [{ provider: "anthropic", model, tier: "standard" }],
@@ -68,11 +70,10 @@ export const FIRST_OUTPUT_TOKEN_NEEDS = {
 } satisfies Json;
 
 /**
- * The routing policy and output needs as migration 0019 leaves the first ones (D-324): the close
- * task types copy their role's own entry, and the policy's version moves on. These are what a
- * migrated store holds, so the tests seed them; test/db/runs.test.ts checks they are equal.
+ * The routing policy as migration 0019 leaves the first one (D-324): the close task types copy
+ * their role's own entry, and the policy's version moves on. Every task type is on Anthropic.
  */
-export const SEEDED_ROUTING_POLICY = {
+export const CLOSE_ROUTES_POLICY = {
   ...FIRST_ROUTING_POLICY,
   version: "2026-11-04.1",
   taskTypes: {
@@ -82,17 +83,66 @@ export const SEEDED_ROUTING_POLICY = {
   },
 } satisfies Json;
 
+/** One candidate on DeepInfra at Flex (D-207), waiting on a capacity end. */
+const deepInfraFlex = (model: string) => ({
+  candidates: [{ provider: "deepinfra", model, tier: "flex" }],
+  onCapacity: "wait",
+});
+
+/**
+ * The routing policy as migration 0024 leaves it (D-421): the Developer's and Designer's own task
+ * types move to Qwen3 Coder on DeepInfra Flex; the close task types, QA, the Council and Triage
+ * stay on Anthropic. This is what a migrated store holds, so the tests seed it;
+ * test/db/runs.test.ts and test/db/schema.test.ts check it is equal.
+ */
+export const SEEDED_ROUTING_POLICY = {
+  ...CLOSE_ROUTES_POLICY,
+  version: "2026-11-18.1",
+  taskTypes: {
+    ...CLOSE_ROUTES_POLICY.taskTypes,
+    "developer:code": deepInfraFlex(QWEN_CODER),
+    "developer:infra": deepInfraFlex(QWEN_CODER),
+    designer: deepInfraFlex(QWEN_CODER),
+  },
+} satisfies Json;
+
+/**
+ * Qwen3 Coder's catalog entry from migration 0024 (D-421): DeepInfra's prices from its public
+ * model list, read on 2026-11-18, with Flex at 0.8 times Standard and no cache-write price, and
+ * DeepInfra's output cap of 16,384 tokens per response.
+ */
+const QWEN_CODER_ENTRY = {
+  provider: "deepinfra",
+  family: "qwen",
+  tiers: ["standard", "flex"],
+  pricePerMTok: {
+    standard: { input: 0.3, cachedInput: 0.1, output: 1 },
+    flex: { input: 0.24, cachedInput: 0.08, output: 0.8 },
+  },
+  maxOutputTokens: 16384,
+  resold: false,
+  priceSource:
+    "DeepInfra public model list (api.deepinfra.com/models/list): input and output prices, the cached input rate and the Flex rate",
+  priceReadOn: "2026-11-18",
+};
+
+/** The model catalog as migration 0024 leaves the first one: Qwen3 Coder added, a new version. */
+export const SEEDED_MODEL_CATALOG = {
+  version: "2026-11-18.1",
+  models: { ...FIRST_MODEL_CATALOG.models, [QWEN_CODER]: QWEN_CODER_ENTRY },
+} satisfies Json;
+
 export const SEEDED_OUTPUT_TOKEN_NEEDS = {
   ...FIRST_OUTPUT_TOKEN_NEEDS,
   "developer:close": FIRST_OUTPUT_TOKEN_NEEDS["developer:code"],
   "designer:close": FIRST_OUTPUT_TOKEN_NEEDS.designer,
 } satisfies Json;
 
-/** Seeds the four routing settings as migrations 0005 and 0019 leave them. */
+/** Seeds the four routing settings as migrations 0005, 0019 and 0024 leave them. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
     [ROUTING_SETTINGS.policy, SEEDED_ROUTING_POLICY],
-    [ROUTING_SETTINGS.catalog, FIRST_MODEL_CATALOG],
+    [ROUTING_SETTINGS.catalog, SEEDED_MODEL_CATALOG],
     [ROUTING_SETTINGS.providers, FIRST_APPROVED_PROVIDERS],
     [ROUTING_SETTINGS.outputNeeds, SEEDED_OUTPUT_TOKEN_NEEDS],
   ] as const) {
@@ -160,7 +210,20 @@ export function firstRunPrice(model: string): RunPrice {
   };
 }
 
-/** The route columns of a run on the first policy, for tests that insert runs directly. */
+/** The price a run on Qwen3 Coder records (migration 0024): Standard and Flex. */
+export function qwenCoderRunPrice(): RunPrice {
+  const { standard, flex } = QWEN_CODER_ENTRY.pricePerMTok;
+  return {
+    tiers: ["standard", "flex"],
+    pricePerMTok: { standard: { ...standard }, flex: { ...flex } },
+  };
+}
+
+/**
+ * The route columns of a run on the first policy's Anthropic routes, as recorded under the policy
+ * migration 0019 left (before the Developer and the Designer moved to DeepInfra, D-421), for tests
+ * that insert runs directly.
+ */
 export function testRouteColumns(
   bot: string,
   overrides: Partial<RouteColumns> = {},
@@ -171,7 +234,7 @@ export function testRouteColumns(
     modelFamily: "claude",
     serviceTierRequested: "standard",
     serviceTierServed: null,
-    routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
+    routingPolicyVersion: CLOSE_ROUTES_POLICY.version,
     modelCatalogVersion: FIRST_MODEL_CATALOG.version,
     capacityRetries: null,
     capacityWaitSeconds: null,

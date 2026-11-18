@@ -13,8 +13,10 @@ import { ROUTING_SETTINGS } from "../../src/core/routing.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
   FIRST_APPROVED_PROVIDERS,
-  FIRST_MODEL_CATALOG,
   firstRunPrice,
+  QWEN_CODER,
+  qwenCoderRunPrice,
+  SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
   TEST_TASK_TYPES,
@@ -243,8 +245,9 @@ describe.skipIf(!adminUrl)(
         usageExhaustedCause: "out_of_credit",
         retryAfterSeconds: 3600,
         minutes: 1.25,
-        // The core's figure at Sonnet 5.5's Standard price: 500 x 2 + 20000 x 0.2 + 300 x 10.
-        costUsd: 0.008,
+        // The core's figure at Qwen3 Coder's Standard price, since the end reports no served
+        // tier: 500 x 0.3 + 20000 x 0.1 + 300 x 1, per million.
+        costUsd: 0.00245,
         tokens: { uncachedInput: 500, cachedInput: 20000, output: 300 },
       });
       expect(await store.listActiveRuns()).toEqual([]);
@@ -324,15 +327,62 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005 and 0019)", async () => {
+    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019 and 0024)", async () => {
       const value = async (key: string) => (await store.getSetting(key))?.value;
       expect(await value(ROUTING_SETTINGS.policy)).toEqual(SEEDED_ROUTING_POLICY);
-      expect(await value(ROUTING_SETTINGS.catalog)).toEqual(FIRST_MODEL_CATALOG);
+      expect(await value(ROUTING_SETTINGS.catalog)).toEqual(SEEDED_MODEL_CATALOG);
       expect(await value(ROUTING_SETTINGS.providers)).toEqual(FIRST_APPROVED_PROVIDERS);
       expect(await value(ROUTING_SETTINGS.outputNeeds)).toEqual(
         SEEDED_OUTPUT_TOKEN_NEEDS,
       );
     });
+
+    // Each role's default task type, and developer:infra asked for by name.
+    it.each([
+      ["developer", "developer:code", false],
+      ["developer", "developer:infra", true],
+      ["designer", "designer", false],
+    ] as const)(
+      "routes a %s run (%s) to Qwen3 Coder on DeepInfra Flex and prices its Flex end at the Flex price (migration 0024, D-421)",
+      async (role, taskType, asked) => {
+        const nodeId = await item(await project());
+        const result = await runs.dispatch(
+          { ...request(nodeId, role), ...(asked ? { taskType } : {}) },
+          credential(),
+        );
+        if (!result.admitted) throw new Error(result.reason);
+        expect(await store.getRun(result.run.id)).toMatchObject({
+          model: QWEN_CODER,
+          taskType,
+          provider: "deepinfra",
+          modelFamily: "qwen",
+          serviceTierRequested: "flex",
+          routingPolicyVersion: "2026-11-18.1",
+          modelCatalogVersion: "2026-11-18.1",
+        });
+        expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
+          qwenCoderRunPrice(),
+        );
+        await runs.recordEnd(result.run.id, {
+          outcome: "success",
+          turns: 3,
+          minutes: 2,
+          tokens: {
+            uncachedInput: 500,
+            cachedInput: 20000,
+            cacheWriteInput: 100,
+            output: 300,
+          },
+          serviceTierServed: "flex",
+        });
+        // 500 x 0.24 + 20000 x 0.08 + 100 x 0.24 (no cache-write price, so the Flex input rate)
+        // + 300 x 0.8, per million.
+        expect(await store.getRun(result.run.id)).toMatchObject({
+          serviceTierServed: "flex",
+          costUsd: 0.001984,
+        });
+      },
+    );
 
     it("records the route's price on the run, and prices the end from it after the catalog changes (migration 0008)", async () => {
       const nodeId = await item(await project());
@@ -341,7 +391,7 @@ describe.skipIf(!adminUrl)(
       expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
         firstRunPrice("claude-opus-5-5"),
       );
-      const catalog = FIRST_MODEL_CATALOG;
+      const catalog = SEEDED_MODEL_CATALOG;
       try {
         // A new catalog version at ten times Opus 5.5's price, set after admission.
         const opus = catalog.models["claude-opus-5-5"];
@@ -397,8 +447,8 @@ describe.skipIf(!adminUrl)(
         modelFamily: "claude",
         serviceTierRequested: "standard",
         serviceTierServed: null,
-        routingPolicyVersion: "2026-11-04.1",
-        modelCatalogVersion: "2026-10-31.1",
+        routingPolicyVersion: "2026-11-18.1",
+        modelCatalogVersion: "2026-11-18.1",
         capacityRetries: null,
         reportedCostUsd: null,
       });
