@@ -21,6 +21,19 @@
 // guards, clock and id source (D-162). It reads only: the runner starts the run through the
 // dispatch flow, and admission (src/core/runs.ts) still decides, under its lock, with the kill
 // switch, the limits and the usage-exhausted wait.
+//
+// A builder run that started and ended `fail` (a `bad_output` result included), `timeout` or
+// `cancelled` is followed by another run of the same role on the same item (D-413, O-142), the
+// way Triage and the Council get their re-run: the item's latest started run is the role's and
+// ended so. A failed or timed-out run counts one toward `failure` before the next run starts
+// (`runFailed` in ./failures.ts, called by flows/lib/builder-runs.ts), so the third failure
+// escalates; a cancelled run (the kill switch's cancel pass, D-202) counts nothing and starts
+// again once the switch is off, since admission refuses every run under it. A run that never
+// started (no `dispatch_record`) is not this run: the start path handles it as before. Nothing is
+// due on an item a cancel covers: Didi's cancel or the Council's stop standing on it or its idea,
+// or a Council stop still waiting for Didi's word (./cancel.ts, D-308). A finished item (Done,
+// Cancelled) is in no building state, and an escalated, held, stale or not agent-ready item is not
+// dispatchable, so neither gets one.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import { visualApprovalTopic } from "./guards/design.ts";
 import {
@@ -29,8 +42,9 @@ import {
   readVisualComparison,
 } from "./guards/evidence.ts";
 import { optionFoldersAt } from "./guards/options.ts";
+import { askedDidiAbout, ideaOf, readCancelOn } from "./cancel.ts";
 import { COUNCIL_TRIGGER, DIDI_TRIGGER } from "./escalations.ts";
-import { captureRefusalKey, failureCountKey } from "./failures.ts";
+import { captureRefusalKey, FAILED_RUN_OUTCOMES, failureCountKey } from "./failures.ts";
 import { createLibrary, type Clock, type IdSource } from "./library.ts";
 import { CAPTURE_REFUSAL_TEXT, DESIGNER_REFUSALS } from "./option-capture.ts";
 import { QA_FAIL_GUARD } from "./run-reports.ts";
@@ -65,12 +79,23 @@ export interface BuilderRunsOptions {
  * `usage_exhausted`, and admission then applies the wait (src/core/runs.ts); `refused`, the item's
  * latest started run is the role's, its done report was refused on its guards and counted toward
  * `failure` (P-03, M3.5, O-43), or option capture refused the options of its report for a reason
- * the Designer caused and counted it (O-89), so the fix round goes on, bounded by the escalation.
+ * the Designer caused and counted it (O-89), so the fix round goes on, bounded by the escalation;
+ * `failed`, the item's latest started run is the role's and ended `fail` or `timeout`, which the
+ * runner counts toward `failure` before this run starts (D-413); `cancelled`, it ended
+ * `cancelled`, which counts nothing (D-413).
  */
-export type BuilderRunCause = "returned" | "resumed" | "refused";
+export type BuilderRunCause =
+  "returned" | "resumed" | "refused" | "failed" | "cancelled";
 
 export type BuilderRunCheck =
-  | { due: true; nodeId: string; role: AgentRole; cause: BuilderRunCause }
+  | {
+      due: true;
+      nodeId: string;
+      role: AgentRole;
+      cause: BuilderRunCause;
+      /** With `failed` and `cancelled`: the run that ended so, which this run follows (D-413). */
+      runId?: string;
+    }
   | {
       due: false;
       nodeId: string;
@@ -84,6 +109,8 @@ export type BuilderRunCheck =
         | "active_run"
         /** The guards allow the escalation: the item belongs to the Council, not to a new run. */
         | "escalation_due"
+        /** After a failed, timed-out or cancelled run: a cancel covers the item (D-413, D-308). */
+        | "cancel_stands"
         /** Not sent back since the role's last run, and that run did not end usage_exhausted. */
         | "not_due";
     };
@@ -186,6 +213,24 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
     );
   }
 
+  /**
+   * Whether a cancel covers the item (D-308, ./cancel.ts): Didi's cancel or the Council's stop
+   * stands on it or on its idea, or a Council stop on either still waits for Didi's word (its
+   * request not opened yet, or open). A stop Didi kept (Reject or Request changes) covers nothing.
+   */
+  async function cancelCovers(node: Node): Promise<boolean> {
+    const idea = await ideaOf(store, node);
+    for (const on of idea && idea.id !== node.id ? [node, idea] : [node]) {
+      const cancel = await readCancelOn(store, on, idea);
+      if (cancel?.status === "cancel") return true;
+      if (cancel?.status === "ask_didi") {
+        const asked = await askedDidiAbout(store, on, cancel.stop);
+        if (!asked || asked.status === "open") return true;
+      }
+    }
+    return false;
+  }
+
   /** Whether the guards would let the item escalate now (`escalation_trigger_met`). */
   async function escalationDue(node: Node): Promise<boolean> {
     if (!escalationMove) return false;
@@ -223,6 +268,7 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
       (r) => !PUSHING_ROLES.includes(r.bot as AgentRole) || recorded.has(r.id),
     );
     let cause: BuilderRunCause | null = null;
+    let after: string | null = null;
     const back = await returnMove(node);
     if (
       back &&
@@ -239,12 +285,23 @@ export function createBuilderRuns(options: BuilderRunsOptions) {
           (await refusedCapture(node, latest.id)))
       )
         cause = "refused";
+      else if (
+        latest?.bot === role &&
+        (FAILED_RUN_OUTCOMES.includes(latest.outcome) || latest.outcome === "cancelled")
+      ) {
+        cause = latest.outcome === "cancelled" ? "cancelled" : "failed";
+        after = latest.id;
+      }
     }
     if (!cause) return { due: false, nodeId, reason: "not_due" };
+    // D-413: a run that failed or was cancelled starts again only on work nobody cancelled.
+    if (after && (await cancelCovers(node))) {
+      return { due: false, nodeId, reason: "cancel_stands" };
+    }
     if (await escalationDue(node)) {
       return { due: false, nodeId, reason: "escalation_due" };
     }
-    return { due: true, nodeId, role, cause };
+    return { due: true, nodeId, role, cause, ...(after ? { runId: after } : {}) };
   }
 
   /**

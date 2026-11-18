@@ -1,8 +1,10 @@
 // The P-03 failure counts that have no move of their own (build plan M3.5, D-169, O-43, O-44,
-// O-89). QA's fail and the staging fail count in the transaction of their move back
-// (src/core/run-reports.ts, src/core/staging.ts). Three counts have no move: a done report the
-// runner refused on its guards, a repeated failed start, and an option capture refused for a
-// reason the Designer caused (src/core/option-capture.ts). Each is recorded as `failure_count`
+// O-89, D-413, O-142). QA's fail and the staging fail count in the transaction of their move back
+// (src/core/run-reports.ts, src/core/staging.ts). Four counts have no move: a done report the
+// runner refused on its guards, a repeated failed start, an option capture refused for a
+// reason the Designer caused (src/core/option-capture.ts), and a builder run that started and
+// ended `fail` or `timeout`, counted before the runner starts it again (D-413,
+// flows/lib/builder-runs.ts). Each is recorded as `failure_count`
 // evidence on the node under a key that names its cause and run (for a capture refusal, its node
 // head and run, so a pass asking again counts once and each empty fix round once more, D-293), in the transaction that adds one to `failure`, so the
 // row and the count commit together and a repeated report or a retried flow counts once. After a count the
@@ -17,7 +19,9 @@
 import { createEscalations, type EscalationMove } from "./escalations.ts";
 import type { Contracts, GuardRegistry } from "./contracts.ts";
 import type { Clock, IdSource, Trigger } from "./library.ts";
-import type { Evidence, Json, Run, Store, StoreOps } from "./store.ts";
+import type { AgentRole, Evidence, Json, Run, Store, StoreOps } from "./store.ts";
+import { PUSHING_ROLES } from "./task-input.ts";
+import { isCloseTaskType } from "./task-types.ts";
 
 /**
  * A run admitted and ended `fail` by the runner before it started: it has no handle. Such a run
@@ -32,7 +36,15 @@ export async function failedStart(
 }
 
 /** Why a `failure_count` row added one to `failure`. */
-export type FailureCause = "report_refused" | "dispatch_failed" | "capture_refused";
+export type FailureCause =
+  | "report_refused"
+  | "dispatch_failed"
+  | "capture_refused"
+  /** A builder run that started and ended `fail` or `timeout` (D-413, O-142). */
+  | "run_failed";
+
+/** The run ends of a builder run that count as a failure and start another run (D-413). */
+export const FAILED_RUN_OUTCOMES: readonly (string | null)[] = ["fail", "timeout"];
 
 /** The key a count is recorded under: one per cause and run. */
 export const failureCountKey = (
@@ -83,7 +95,13 @@ export type FailureCount =
         | "not_a_failed_start"
         | "first_failed_start"
         /** A Council run's failed start counts as one of its question's runs instead (D-228). */
-        | "council_run";
+        | "council_run"
+        /** Not a Developer or Designer run on its item's work (D-413): a close run, say. */
+        | "not_a_builder_run"
+        /** The run did not end `fail` or `timeout`: a cancelled run never counts (D-413). */
+        | "not_a_failed_run"
+        /** No `dispatch_record`: the run never started, which `dispatchFailed` counts (D-413). */
+        | "not_started";
     };
 
 export function createFailures(options: FailuresOptions) {
@@ -239,6 +257,43 @@ export function createFailures(options: FailuresOptions) {
         { kind: "event", ref: `capture_refused:${headSha}:run-${run.id}` },
         "the runner refused to capture the Designer's options, and the failure counter reached its limit",
         captureRefusalKey(run.nodeId, headSha, run.id),
+      );
+    },
+
+    /**
+     * A builder run that started and ended `fail` (its result included, `bad_output` say) or
+     * `timeout` (D-413, O-142): `failure` up by one, once per run, then the escalation with the
+     * trigger `run_failed:<run id>`, which the guards allow at `failure_threshold`, so the third
+     * failure escalates as other repeated failures do. A run with no `dispatch_record` never
+     * started: its task, its start or its start record failed, which `dispatchFailed` and the
+     * start path handle as before. A `cancelled` run never counts: the runner stopped it (the kill
+     * switch, D-202). The caller (flows/lib/builder-runs.ts) counts it before the run that follows
+     * it starts, so a run-end flow cut short is counted by the next trigger.
+     */
+    async runFailed(runId: string): Promise<FailureCount> {
+      const run = withNode(await store.getRun(runId));
+      if (!run) return { counted: false, reason: "no_run" };
+      if (
+        !PUSHING_ROLES.includes(run.bot as AgentRole) ||
+        isCloseTaskType(run.taskType)
+      ) {
+        return { counted: false, reason: "not_a_builder_run" };
+      }
+      if (run.endedAt === null || !FAILED_RUN_OUTCOMES.includes(run.outcome)) {
+        return { counted: false, reason: "not_a_failed_run" };
+      }
+      const started = (
+        await store.listEvidence({ nodeId: run.nodeId, kind: "dispatch_record" })
+      ).some((e) => e.runId === run.id);
+      if (!started) return { counted: false, reason: "not_started" };
+      return countAndEscalate(
+        run,
+        "run_failed",
+        { outcome: run.outcome },
+        null,
+        { kind: "event", ref: `run_failed:${run.id}` },
+        "a builder run failed or timed out, and the failure counter reached its limit",
+        failureCountKey("run_failed", run.id),
       );
     },
   };

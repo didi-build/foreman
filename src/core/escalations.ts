@@ -21,6 +21,21 @@
 // opened before its move (the guard reads it); a call cut short between the two finds the open
 // request on the next call and asks for the move again. Dry run writes dry-run rows, resets
 // nothing and opens no gate request; the kill switch refuses every move.
+//
+// One cap on Council returns (D-414, O-143): once the Council has returned an item twice with no
+// step forward in between, the item's next escalation goes to Didi instead of the Council, with
+// one `escalation` question for Didi on its topic, as when the Council gives no usable answer. The
+// Council pass asks for it in place of the Council's run (src/core/council.ts `next`,
+// flows/lib/council-runs.ts), so it holds whatever escalated the item: refused done reports, stops
+// for a decision, failed QA rounds, failed staging checks or deploys, repeated failures. A Council
+// return is a move out of Escalated to Council with a `council_decision:` trigger. A step forward
+// is a move, other than into an escalated state, into a state the item had never been in: it got
+// further than it had ever been. Each of those loops only goes back to states the item has been
+// in (both counters reset on every return, so a loop through QA or staging repeats the same
+// states), so none counts. Didi's return out of Escalated to Didi neither counts nor ends the row:
+// until the item steps forward, each later escalation goes to Didi too. This replaces D-386's
+// narrower cap on a builder's stops for a decision; moves it wrote (`builder_stops_again:`) stay
+// as they are, and their items leave Escalated to Didi on Didi's answer like any other.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import {
   escalationTopic,
@@ -37,7 +52,7 @@ import {
   type Trigger,
 } from "./library.ts";
 import { ESCALATION_GUARD } from "./staging.ts";
-import type { Json, Node, Store } from "./store.ts";
+import type { Json, Node, Store, Transition } from "./store.ts";
 
 export { ESCALATION_GUARD };
 
@@ -52,10 +67,48 @@ export const DIDI_TRIGGER = "didi_answer:";
 /** The trigger ref prefix of the move to Didi when the Council gave no usable answer, then a run id. */
 export const COUNCIL_UNANSWERED_TRIGGER = "council_unanswered:";
 /**
- * The trigger ref prefix of the move to Didi when a builder stopped for a decision again after
- * the Council had returned its item twice (D-386), then the stopping run's id.
+ * The trigger ref prefix of the move to Didi when the Council has returned the item twice with
+ * no step forward in between (D-414), then the id of the move into Escalated to Council it acts on.
+ */
+export const COUNCIL_RETURNS_TRIGGER = "council_returns_capped:";
+/**
+ * D-386's trigger ref prefix of the move to Didi when a builder stopped for a decision again,
+ * then the stopping run's id. D-414 replaced that cap and nothing writes it now; it names the
+ * moves already written with it.
  */
 export const BUILDER_STOPS_TRIGGER = "builder_stops_again:";
+
+/** The Council's returns with no step forward in between after which it is not asked again (D-414). */
+export const COUNCIL_RETURNS_BEFORE_DIDI = 2;
+
+/**
+ * The Council's returns of an item since its last step forward (D-414), oldest first, from its
+ * transitions in the order they were written. A Council return is an applied move out of
+ * `councilState` with a `council_decision:` trigger. A step forward is an applied move into a
+ * state the item had never been in (its first move's start state counts as one it has been in),
+ * unless that state is an escalated one; it ends the row. Pure, so the rule is tested alone.
+ */
+export function councilReturnsSinceStepForward(
+  contracts: Pick<Contracts, "states">,
+  councilState: string,
+  transitions: readonly Transition[],
+): Transition[] {
+  const escalated = (state: string): boolean =>
+    Object.hasOwn(contracts.states, state) &&
+    contracts.states[state]?.escalated === true;
+  const applied = transitions.filter((t) => t.mode === "applied");
+  const seen = new Set<string>(applied[0] ? [applied[0].fromState] : []);
+  let returns: Transition[] = [];
+  for (const t of applied) {
+    if (t.fromState === councilState && t.triggerRef?.startsWith(COUNCIL_TRIGGER)) {
+      returns.push(t);
+    } else if (!seen.has(t.toState) && !escalated(t.toState)) {
+      returns = [];
+    }
+    seen.add(t.toState);
+  }
+  return returns;
+}
 
 export interface EscalationsOptions {
   store: Store;
@@ -304,33 +357,50 @@ export function createEscalations(options: EscalationsOptions) {
     );
   }
 
+  /** The Council's returns of the item since its last step forward (D-414), oldest first. */
+  async function councilReturns(nodeId: string): Promise<Transition[]> {
+    if (!councilState) return [];
+    return councilReturnsSinceStepForward(
+      contracts,
+      councilState,
+      await store.listTransitions(nodeId),
+    );
+  }
+
   /**
-   * A builder stopped for a decision again after the Council had returned its item twice with no
-   * progress in between (D-386): the item, already moved to the Council by this stop, goes on to
-   * Didi with one `escalation` gate request on its topic and the move to Escalated to Didi
-   * (trigger `builder_stops_again:<run id>`), so the Council is not asked a third time.
+   * D-414: the item waits in Escalated to Council, and the Council has returned it
+   * `COUNCIL_RETURNS_BEFORE_DIDI` times since its last step forward. It goes on to Didi with one
+   * `escalation` gate request on its topic and the move to Escalated to Didi (trigger
+   * `council_returns_capped:<id of the move into Escalated to Council>`), so the Council is not
+   * asked again. `waiting` on the Council while the cap is not reached.
    */
-  async function builderStoppedAgain(
-    nodeId: string,
-    runId: string,
-    stops: number,
-  ): Promise<EscalationStep> {
+  async function councilReturnsCapped(nodeId: string): Promise<EscalationStep> {
     const node = await store.getNode(nodeId);
     if (!node) return { nodeId, step: "no_node" };
     if (!councilState || node.state !== councilState || !didiState) {
       return { nodeId, step: "not_escalated" };
     }
+    const history = await store.listTransitions(node.id);
+    const returns = councilReturnsSinceStepForward(contracts, councilState, history);
+    const entered = history
+      .filter((t) => t.mode === "applied" && t.toState === councilState)
+      .at(-1);
+    if (returns.length < COUNCIL_RETURNS_BEFORE_DIDI || !entered) {
+      return { nodeId, step: "waiting", on: "council" };
+    }
     return toDidi(
       node,
       {
         question:
-          "The item's builder stopped for a decision again after the Council had returned it twice.",
-        reason: `${stops} stops in a row with no progress in between; the last run's reason is on the item`,
-        lastBuilderRunId: runId,
+          "The Council has returned this item twice with no step forward in between.",
+        reason: `the Council returned it ${returns.length} times since it last reached a state it had not been in; this escalation's reason is on the item`,
+        councilDecisionIds: returns.map((t) =>
+          (t.triggerRef ?? "").slice(COUNCIL_TRIGGER.length),
+        ),
         returnState: (await library.returnState(node.id)) ?? "",
       },
-      { kind: "event", ref: `${BUILDER_STOPS_TRIGGER}${runId}` },
-      "the builder stopped again after the Council returned the item twice",
+      { kind: "event", ref: `${COUNCIL_RETURNS_TRIGGER}${entered.id}` },
+      "the Council has returned the item twice with no step forward in between",
     );
   }
 
@@ -338,7 +408,8 @@ export function createEscalations(options: EscalationsOptions) {
     escalate,
     resolve,
     councilUnanswered,
-    builderStoppedAgain,
+    councilReturns,
+    councilReturnsCapped,
     /** The state an item waits in for the Council, from the contracts. */
     councilState,
 

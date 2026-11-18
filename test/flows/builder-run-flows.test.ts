@@ -4,10 +4,12 @@
 // passes. Which items are due is tested in test/builder-runs.test.ts, the input's section in
 // src/core/task-input.test.ts and admission in src/core/runs.test.ts; this covers what is
 // started, with what, on which branch, and what the switches, the limits and a duplicate trigger
-// leave.
+// leave. Also the run after a builder run that failed, timed out or was cancelled (D-413), from the
+// run-end flow and the reconcile flow.
 import { describe, expect, it } from "vitest";
 
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import { run as cancelRuns } from "../../flows/cancel-runs.ts";
 import { run as dispatch } from "../../flows/dispatch.ts";
 import {
   reportedMoveAndFixRound,
@@ -17,6 +19,7 @@ import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import { runReport } from "../../flows/lib/runs.ts";
+import { createCancels } from "../../src/core/cancel.ts";
 import { reconcile } from "../../src/core/reconcile.ts";
 import { createRunReports } from "../../src/core/run-reports.ts";
 import { createRuns } from "../../src/core/runs.ts";
@@ -478,5 +481,173 @@ describe("walkthrough: QA fail, fix round, done report, QA pass, merge (flow: fa
       await t.store.listEvidence({ nodeId: t.node.id, kind: "dispatch_record" })
     ).map((r) => (r.payload as { branch: string }).branch);
     expect(new Set(branches)).toEqual(new Set([`foreman/${t.node.id}`]));
+  });
+});
+
+describe("a builder run that failed, timed out or was cancelled starts again (flow: fake adapters, D-413, O-142)", () => {
+  const FAILED: AgentRunResult = { ...RESULT, outcome: "fail", detail: "bad_output" };
+  const TIMED_OUT: AgentRunResult = {
+    ...RESULT,
+    outcome: "timeout",
+    detail: "deadline_exceeded",
+  };
+
+  /** A ready item dispatched live: the Developer's first run is running. */
+  async function developing() {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const node = await f.node("ready_for_dev");
+    const dev = await dispatch(f.deps, { nodeId: node.id, role: "developer" });
+    if (dev.outcome !== "started") throw new Error("the Developer was not started");
+    return { f, node, runId: dev.runId };
+  }
+
+  const developerRuns = async (f: FlowFixture, nodeId: string) =>
+    (await f.store.listRuns({ nodeId })).filter((r) => r.bot === "developer");
+  const failureRows = (f: FlowFixture, nodeId: string) =>
+    f.store.listEvidence({ nodeId, kind: "failure_count" });
+
+  it("counts a failed run once and starts the Developer again on the item's one branch", async () => {
+    const { f, node, runId } = await developing();
+    const ended = await finish(f, runId, FAILED);
+    expect(ended).toMatchObject({
+      outcome: "recorded",
+      report: { outcome: "fail" },
+      move: { requested: false, reason: "not_success" },
+      builderRuns: [
+        {
+          nodeId: node.id,
+          role: "developer",
+          cause: "failed",
+          failureCount: { counted: true, failures: 1 },
+          result: { outcome: "started", transitionId: null },
+        },
+      ],
+    });
+    expect(await f.store.getCounter(node.id, "failure")).toBe(1);
+    expect((await f.store.getNode(node.id))?.state).toBe("in_development");
+    expect((await developerRuns(f, node.id)).map((r) => r.outcome)).toEqual([
+      "fail",
+      null,
+    ]);
+    expect((await dispatchRecords(f, node.id)).map((r) => r.payload)).toEqual([
+      { repo: REPO, branch: `foreman/${node.id}` },
+      { repo: REPO, branch: `foreman/${node.id}` },
+    ]);
+    // A repeated run-end trigger counts nothing more and starts nothing more.
+    expect(await recordRunEnd(f.deps, { runId })).toMatchObject({
+      outcome: "already_recorded",
+      builderRuns: [],
+    });
+    expect(await f.store.getCounter(node.id, "failure")).toBe(1);
+    expect(await failureRows(f, node.id)).toHaveLength(1);
+    expect(await developerRuns(f, node.id)).toHaveLength(2);
+  });
+
+  it("escalates at the third failed or timed-out run and starts the Council, not the Developer", async () => {
+    const { f, node, runId: first } = await developing();
+    let runId = first;
+    for (const [failures, result] of [
+      [1, FAILED],
+      [2, TIMED_OUT],
+    ] as const) {
+      const ended = await finish(f, runId, result);
+      expect(ended).toMatchObject({
+        builderRuns: [{ cause: "failed", failureCount: { failures } }],
+      });
+      const next =
+        ended.outcome === "recorded" ? ended.builderRuns[0]?.result : undefined;
+      if (next?.outcome !== "started")
+        throw new Error("the Developer was not restarted");
+      runId = next.runId;
+    }
+    const third = await finish(f, runId, FAILED);
+    expect(third).toMatchObject({
+      builderRuns: [
+        {
+          cause: "failed",
+          failureCount: {
+            counted: true,
+            failures: 3,
+            escalation: { outcome: "applied", toState: "escalated_to_council" },
+          },
+          // Escalated to Council is the Council's state, not a building state.
+          result: { outcome: "not_started", reason: "not_building" },
+        },
+      ],
+      councilRuns: [
+        { kind: "escalation", step: "start", result: { outcome: "started" } },
+      ],
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("escalated_to_council");
+    expect(await developerRuns(f, node.id)).toHaveLength(3);
+    expect((await reconcileFlow(f.deps)).builderRuns).toEqual([]);
+    expect(await developerRuns(f, node.id)).toHaveLength(3);
+  });
+
+  it("starts a run the kill switch cancelled again once the switch is off, counting nothing", async () => {
+    const { f, node, runId } = await developing();
+    await f.killed();
+    expect(await cancelRuns(f.deps)).toMatchObject({
+      outcome: "cancelled",
+      cancelled: [runId],
+    });
+    expect((await reconcileFlow(f.deps)).builderRuns).toBeNull();
+    expect(await startBuilderRuns(f.deps)).toMatchObject([
+      {
+        nodeId: node.id,
+        cause: "cancelled",
+        result: { outcome: "not_admitted", reason: "kill_switch" },
+      },
+    ]);
+    expect(await developerRuns(f, node.id)).toHaveLength(1);
+
+    await f.setting("kill_switch", false);
+    const report = await reconcileFlow(f.deps);
+    expect(report.builderRuns).toMatchObject([
+      {
+        nodeId: node.id,
+        role: "developer",
+        cause: "cancelled",
+        result: { outcome: "started" },
+      },
+    ]);
+    expect(report.builderRuns?.[0]).not.toHaveProperty("failureCount");
+    expect(await f.store.getCounter(node.id, "failure")).toBe(0);
+    expect(await failureRows(f, node.id)).toEqual([]);
+    expect((await reconcileFlow(f.deps)).builderRuns).toEqual([]);
+    expect(await developerRuns(f, node.id)).toHaveLength(2);
+  });
+
+  it("in dry run counts nothing and only plans the run", async () => {
+    const { f, node, runId } = await developing();
+    await createRuns(f.deps).recordEnd(runId, runReport(FAILED));
+    await f.setting("dry_run", true);
+    expect(await startBuilderRuns(f.deps)).toMatchObject([
+      {
+        nodeId: node.id,
+        cause: "failed",
+        failureCount: { counted: false, reason: "dry_run" },
+        result: { outcome: "planned" },
+      },
+    ]);
+    expect(await f.store.getCounter(node.id, "failure")).toBe(0);
+    expect(await developerRuns(f, node.id)).toHaveLength(1);
+  });
+
+  it("starts nothing on an item Didi cancelled while its run was going", async () => {
+    const { f, node, runId } = await developing();
+    expect(
+      await createCancels(f.deps).cancelByDidi(node.id, "Not needed any more."),
+    ).toMatchObject({ recorded: true });
+    // The run fails; the cancel step takes the item first, and nothing runs again.
+    expect(await finish(f, runId, FAILED)).toMatchObject({
+      outcome: "recorded",
+      builderRuns: [],
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("cancelled");
+    expect(await startBuilderRuns(f.deps)).toEqual([]);
+    expect(await developerRuns(f, node.id)).toHaveLength(1);
   });
 });

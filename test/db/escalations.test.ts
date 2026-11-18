@@ -1,9 +1,10 @@
 // Seam: database integration (docs/test-plan.md, build plan M3.5). The P-03 counts with no move
 // and the escalation moves on the real Postgres store, as the factory_runner role: a refused done
 // report's `failure_count` row (migration 0013) and its count commit together, once under its key;
-// a repeated failed start counts once; the Council's return resets both counters in its own
-// transaction; a "cannot resolve" opens one gate request for Didi; a reversed decision marks its
-// dependents stale once.
+// a repeated failed start counts once; a failed builder run counts once (D-413); the Council's
+// return resets both counters in its own transaction; a "cannot resolve" opens one gate request
+// for Didi, and so does the escalation after two Council returns (D-414); a reversed decision
+// marks its dependents stale once.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -242,6 +243,85 @@ describe.skipIf(!adminUrl)(
         [decision.id],
       );
       expect(events.rows[0]?.n).toBe(1);
+    });
+
+    it("counts a failed builder run once, with its row under its key (D-413, O-142)", async () => {
+      const t = await setup("85000000-0000-4000-8000", "e");
+      const node = await t.node("in_development");
+      const failures = createFailures(t.deps);
+      const dev = await t.ended(node.id, "developer", "timeout");
+      await t.evidence(
+        node.id,
+        "dispatch_record",
+        { repo: "didi-build/rehearsal", branch: `foreman/${node.id}` },
+        { runId: dev.id },
+      );
+      const [a, b] = await Promise.all([
+        failures.runFailed(dev.id),
+        failures.runFailed(dev.id),
+      ]);
+      expect([String(a.counted), String(b.counted)].sort()).toEqual([
+        "already_counted",
+        "true",
+      ]);
+      const rows = await pool.query(
+        "select run_id, kind, payload from factory.evidence where ingest_key = $1",
+        [failureCountKey("run_failed", dev.id)],
+      );
+      expect(rows.rows).toEqual([
+        {
+          run_id: dev.id,
+          kind: "failure_count",
+          payload: { cause: "run_failed", outcome: "timeout" },
+        },
+      ]);
+      expect(await store.getCounter(node.id, "failure")).toBe(1);
+    });
+
+    it("sends the escalation after two Council returns to Didi with one gate request (D-414, O-143)", async () => {
+      const t = await setup("86000000-0000-4000-8000", "f");
+      const escalations = createEscalations(t.deps);
+      const library = createLibrary(t.deps);
+      const node = await t.node("in_development");
+      const escalate = async (ref: string) => {
+        await store.setCounter(node.id, "failure", 3, t.clock.now());
+        t.advanceMinutes(1);
+        await escalations.escalate(node.id, { kind: "event", ref }, "three failures");
+        t.advanceMinutes(1);
+      };
+      for (const ref of ["test:1", "test:2"]) {
+        await escalate(ref);
+        await library.recordDecision({
+          projectId: t.projectId,
+          nodeId: node.id,
+          kind: "council_decision",
+          scope: { ...KEEPS },
+          textVerbatim: "Try again.",
+          byActor: "council",
+        });
+        expect(await escalations.resolve(node.id)).toMatchObject({ step: "returned" });
+      }
+      await escalate("test:3");
+      expect(await escalations.councilReturns(node.id)).toHaveLength(2);
+      expect(await escalations.councilReturnsCapped(node.id)).toMatchObject({
+        step: "to_didi",
+        move: { outcome: "applied", toState: "escalated_to_didi" },
+      });
+      expect(await escalations.councilReturnsCapped(node.id)).toMatchObject({
+        step: "not_escalated",
+      });
+      const gates = await pool.query(
+        "select kind, owner, status, payload->'councilDecisionIds' as ids from factory.gate_requests where topic_key = $1",
+        [escalationTopic(node.id)],
+      );
+      expect(gates.rows).toHaveLength(1);
+      expect(gates.rows[0]).toMatchObject({
+        kind: "escalation",
+        owner: "didi",
+        status: "open",
+      });
+      expect(gates.rows[0]?.ids).toHaveLength(2);
+      expect((await store.getNode(node.id))?.state).toBe("escalated_to_didi");
     });
   },
 );

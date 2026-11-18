@@ -16,7 +16,9 @@
 // Council never writes a decision or any evidence a guard trusts (essential 6). Its words are kept
 // only inside that schema-checked answer. An answer that does not fit the schema, or a run that
 // gave none, is not usable: the question gets one more run, and after that it goes to Didi as an
-// `escalation` gate request with the reason.
+// `escalation` gate request with the reason. An escalation question gets no run at all once the
+// Council has returned its item twice with no step forward in between: it goes to Didi instead
+// (D-414, O-143, src/core/escalations.ts).
 //
 // An escalation answer is recorded on the item with `scope {topicKey, runId, outcome,
 // changesProductDirection, passesGate}` and the note as its text; the escalation pass then acts on
@@ -122,7 +124,11 @@ import {
   type ScopeUpdateView,
 } from "./council-input.ts";
 import { CANCEL_REQUEST_PREFIX, STILL_NEEDED_PREFIX } from "./cancel.ts";
-import { createEscalations, type EscalationStep } from "./escalations.ts";
+import {
+  COUNCIL_RETURNS_BEFORE_DIDI,
+  createEscalations,
+  type EscalationStep,
+} from "./escalations.ts";
 import {
   COUNCIL_CANNOT_RESOLVE,
   escalationTopic,
@@ -358,6 +364,11 @@ export type CouncilNext =
   | { step: "start"; question: CouncilQuestion; nodeId: string; attempt: number }
   /** No usable answer after both runs: the question goes to Didi. */
   | { step: "to_didi"; question: DidiBoundQuestion; lastRunId: string; reason: string }
+  /**
+   * An escalation whose item the Council has returned twice with no step forward in between: it
+   * goes to Didi instead of the Council (D-414). `returns` counts those returns.
+   */
+  | { step: "returns_capped"; question: EscalationQuestion; returns: number }
   /** A visual call with no usable answer after both runs: it is recorded as dropped (D-270). */
   | { step: "drop"; question: VisualCallQuestion; lastRunId: string; reason: string }
   /** A reversal question with no node to run on: no decision node and no stale item. */
@@ -952,6 +963,14 @@ export function createCouncil(options: CouncilOptions) {
     const runs = await runsFor(q);
     const active = runs.find((r) => r.endedAt === null);
     if (active) return { step: "running", question: q, runId: active.id };
+    // D-414: the Council has returned the item twice with no step forward in between, so this
+    // escalation goes to Didi and the Council is not asked again.
+    if (q.kind === "escalation") {
+      const returns = (await escalations.councilReturns(q.nodeId)).length;
+      if (returns >= COUNCIL_RETURNS_BEFORE_DIDI) {
+        return { step: "returns_capped", question: q, returns };
+      }
+    }
     const attempts: Run[] = [];
     for (const r of runs) {
       if (NOT_AN_ATTEMPT.includes(r.outcome)) continue;

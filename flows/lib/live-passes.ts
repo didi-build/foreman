@@ -48,10 +48,13 @@
 //    rendered them at its PR head, opens Didi's visual-approval request and asks again for the
 //    Designer report's move into Waiting for Didi (O-88, ./option-capture.ts).
 // 15. Last, the builder runs pass starts the fix round of each item a failed QA round, a staging
-//    check, a refused done report or an answered escalation sent back, and resumes a builder run
-//    queued after `usage_exhausted` (O-41, O-43). It runs after the staging and escalation passes,
-//    so an escalation that pass recovers is taken first, and after step 1, whose dispatch already
-//    started what the plan found due, so it finds those runs active and starts nothing twice.
+//    check, a refused done report or an answered escalation sent back, resumes a builder run
+//    queued after `usage_exhausted` (O-41, O-43), and starts again a builder run that ended
+//    `fail`, `timeout` or `cancelled`, the first two counted first (D-413, O-142), so a run the
+//    kill switch cancelled starts again on the first pass after the switch is off. It runs after
+//    the staging and escalation passes, so an escalation that pass recovers is taken first, and
+//    after step 1, whose dispatch already started what the plan found due, so it finds those runs
+//    active and starts nothing twice.
 // 16. In both modes, unless the kill switch stopped the pass, the backstop of `BOOTSTRAP_TOKEN`'s
 //    access (D-358 lock (2), O-114, src/core/bootstrap-access.ts): each repository on the secret's
 //    list outside its setup window is removed, and in dry run reported as one it would remove.
