@@ -2643,6 +2643,81 @@ describe.skipIf(process.platform === "win32")(
         );
       });
 
+      /** A `sleep` that only records how long it was asked to wait. */
+      const recordSleeps = (box: Sandbox): (() => string[]) => {
+        const file = join(box.root, "sleeps.log");
+        writeFileSync(file, "");
+        writeFileSync(
+          join(box.bin, "sleep"),
+          `#!/usr/bin/env bash\nprintf "%s\\n" "$*" >>${JSON.stringify(file)}\n`,
+        );
+        chmodSync(join(box.bin, "sleep"), 0o755);
+        return () =>
+          readFileSync(file, "utf8")
+            .split("\n")
+            .filter((l) => l !== "");
+      };
+
+      it("tries a refused push again, 10 and then 30 seconds later, and goes on", () => {
+        const box = sandbox();
+        const sleeps = recordSleeps(box);
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const repoMap = `ghcr.io/didi-build/foreman-repo-map:${commit}`;
+        const out = join(box.root, "images.json");
+        const result = run(box, "build-images.sh", [out], {
+          REGISTRY: "ghcr.io/didi-build",
+          COMMIT: commit,
+          SOURCE_URL: "https://github.com/didi-build/foreman",
+          FAKE_DOCKER_PUSH_FAILS: `${repoMap}=2`,
+        });
+        expect(result.status).toBe(0);
+        const pushes = box
+          .calls()
+          .filter((c) => c.args[0] === "push")
+          .map((c) => c.args[1]);
+        expect(pushes.filter((ref) => ref === repoMap)).toHaveLength(3);
+        expect(pushes).toHaveLength(10);
+        expect(sleeps()).toEqual(["10", "30"]);
+        expect(result.stderr).toContain(
+          `::warning::Pushing ${repoMap} failed (try 1 of 3); trying again in 10 seconds.`,
+        );
+        const images = JSON.parse(readFileSync(out, "utf8")) as {
+          images: Record<string, string>;
+        };
+        expect(Object.keys(images.images)).toHaveLength(8);
+      });
+
+      it("fails after three refused pushes, building nothing after it and writing no images file", () => {
+        const box = sandbox();
+        const sleeps = recordSleeps(box);
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const repoMap = `ghcr.io/didi-build/foreman-repo-map:${commit}`;
+        const out = join(box.root, "images.json");
+        const result = run(box, "build-images.sh", [out], {
+          REGISTRY: "ghcr.io/didi-build",
+          COMMIT: commit,
+          SOURCE_URL: "https://github.com/didi-build/foreman",
+          FAKE_DOCKER_PUSH_FAILS: `${repoMap}=3`,
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          `::error::Pushing ${repoMap} failed three times.`,
+        );
+        const calls = box.calls();
+        expect(
+          calls.filter((c) => c.args[0] === "push" && c.args[1] === repoMap),
+        ).toHaveLength(3);
+        expect(
+          calls.some(
+            (c) =>
+              c.args[0] === "build" &&
+              c.args.includes("src/agent-images/qa-fetch/Dockerfile"),
+          ),
+        ).toBe(false);
+        expect(sleeps()).toEqual(["10", "30"]);
+        expect(existsSync(out)).toBe(false);
+      });
+
       it("refuses a commit that is not a full commit id", () => {
         const box = sandbox();
         const result = run(box, "build-images.sh", [join(box.root, "images.json")], {
