@@ -11,12 +11,15 @@ import { runCostUsd } from "../../src/core/run-cost.ts";
 import { chooseRoute } from "../../src/core/routing.ts";
 import {
   CLOSE_ROUTES_POLICY,
+  DEEPINFRA_MODEL_CATALOG,
+  FIRST_MODEL_CATALOG,
   FIRST_ROUTING_POLICY,
   QWEN_CODER,
   qwenCoderRunPrice,
   SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
+  seededRunPrice,
 } from "../../src/core/routing-testing.ts";
 import type { AgentRole, Json } from "../../src/core/store.ts";
 import {
@@ -428,7 +431,8 @@ describe.skipIf(!adminUrl)(
             failFast: false,
             onCapacity: "wait",
             policyVersion: "2026-11-18.1",
-            catalogVersion: "2026-11-18.1",
+            // 0025 has since changed Sonnet's cache read price (O-150), and the catalog's version.
+            catalogVersion: SEEDED_MODEL_CATALOG.version,
             price: qwenCoderRunPrice(),
           });
           // A million of each token served at Flex: 0.24 + 0.08 + 0.24 (a cache write at the
@@ -460,7 +464,10 @@ describe.skipIf(!adminUrl)(
         expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
         // Unchanged: 16000 for each task type, below the model's cap of 16,384.
         expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
-        expect(versionsLogged("model_catalog")).toBe("2026-10-31.1>2026-11-18.1");
+        // 0024's change, then 0025's.
+        expect(versionsLogged("model_catalog")).toBe(
+          "2026-10-31.1>2026-11-18.1,2026-11-18.1>2026-11-18.2",
+        );
       });
 
       it("changes nothing when it runs again", () => {
@@ -555,6 +562,115 @@ describe.skipIf(!adminUrl)(
         } finally {
           setByHand("model_routing_policy", before.model_routing_policy ?? null);
           setByHand("model_catalog", before.model_catalog ?? null);
+        }
+      });
+    });
+
+    describe("Claude Sonnet 5.5's cache read price at 0.10 (migration 0025, O-150)", () => {
+      const PRICE = "db/migrations/0025_sonnet_cache_read_price.sql";
+      const SONNET = "claude-sonnet-5-5";
+      const logged = (): string =>
+        sql("select count(*) from factory.settings_log where key = 'model_catalog';")
+          .out;
+      const setCatalog = (value: Json) => {
+        const done = sql(
+          `update factory.settings set value = '${JSON.stringify(value)}'::jsonb, updated_by = 'didi', updated_at = ${AT} where key = 'model_catalog';`,
+        );
+        expect(done.ok, done.err).toBe(true);
+      };
+      const migrate = (): string => {
+        const again = sql(readFileSync(PRICE, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        return again.err;
+      };
+      type Catalog = { version: string; models: Record<string, Record<string, Json>> };
+      /** The catalog with Sonnet's cache read price set to `cachedInput`, under `version`. */
+      const withSonnetCache = (
+        catalog: Catalog,
+        cachedInput: number,
+        version: string,
+      ) => {
+        const sonnet = catalog.models[SONNET] ?? {};
+        const prices = sonnet.pricePerMTok as { standard: Record<string, number> };
+        return {
+          ...catalog,
+          version,
+          models: {
+            ...catalog.models,
+            [SONNET]: {
+              ...sonnet,
+              pricePerMTok: { standard: { ...prices.standard, cachedInput } },
+            },
+          },
+        };
+      };
+
+      it("sets the price where 0005 seeded 0.2, changes nothing else but the version, and is logged", () => {
+        const written = sql(
+          "select json_build_object('old', old_value, 'new', new_value) from factory.settings_log where key = 'model_catalog' and changed_by = 'migration' and new_value ->> 'version' = '2026-11-18.2';",
+        );
+        expect(written.ok, written.err).toBe(true);
+        const change = JSON.parse(written.out) as { old: Catalog; new: Catalog };
+        expect(change.old).toEqual(DEEPINFRA_MODEL_CATALOG);
+        expect(change.new).toEqual(withSonnetCache(change.old, 0.1, "2026-11-18.2"));
+        expect(settings().model_catalog).toEqual(SEEDED_MODEL_CATALOG);
+        // Opus 5.5 keeps its list price (docs/costs.md section 2): 4, 0.20 cached, 20.
+        expect(SEEDED_MODEL_CATALOG.models["claude-opus-5-5"]).toEqual(
+          FIRST_MODEL_CATALOG.models["claude-opus-5-5"],
+        );
+        // A Council run is routed to Sonnet at the new price, under the new catalog version.
+        const council = route("council", "council");
+        if (!council.routed) throw new Error(JSON.stringify(council.noRoute));
+        expect(council.route).toMatchObject({
+          model: SONNET,
+          catalogVersion: "2026-11-18.2",
+          price: seededRunPrice(SONNET),
+        });
+        expect(council.route.price.pricePerMTok.standard?.cachedInput).toBe(0.1);
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = settings();
+        const count = logged();
+        expect(migrate()).not.toContain("NOTICE");
+        expect(settings()).toEqual(before);
+        expect(logged()).toBe(count);
+      });
+
+      it("keeps an operator's own price with a NOTICE, and names its own version", () => {
+        const before = settings().model_catalog as Catalog;
+        try {
+          const own = withSonnetCache(before, 0.15, "operator.cat");
+          setCatalog(own);
+          const notices = migrate();
+          expect(notices).toContain("NOTICE");
+          expect(notices).toContain("claude-sonnet-5-5");
+          expect(settings().model_catalog).toEqual(own);
+          // An operator's catalog that still has the seeded 0.2 is moved, its version marked.
+          setCatalog(withSonnetCache(before, 0.2, "operator.cat"));
+          expect(migrate()).not.toContain("NOTICE");
+          expect(settings().model_catalog).toEqual(
+            withSonnetCache(before, 0.1, "operator.cat+o150"),
+          );
+        } finally {
+          setCatalog(before);
+        }
+      });
+
+      it("names a catalog with no Sonnet entry and changes nothing", () => {
+        const before = settings().model_catalog as Catalog;
+        const withoutSonnet = {
+          ...before,
+          models: Object.fromEntries(
+            Object.entries(before.models).filter(([model]) => model !== SONNET),
+          ),
+        };
+        try {
+          setCatalog(withoutSonnet);
+          expect(migrate()).toContain("NOTICE");
+          expect(settings().model_catalog).toEqual(withoutSonnet);
+        } finally {
+          setCatalog(before);
         }
       });
     });

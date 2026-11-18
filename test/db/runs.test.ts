@@ -327,7 +327,7 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019 and 0024)", async () => {
+    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019, 0024 and 0025)", async () => {
       const value = async (key: string) => (await store.getSetting(key))?.value;
       expect(await value(ROUTING_SETTINGS.policy)).toEqual(SEEDED_ROUTING_POLICY);
       expect(await value(ROUTING_SETTINGS.catalog)).toEqual(SEEDED_MODEL_CATALOG);
@@ -358,7 +358,7 @@ describe.skipIf(!adminUrl)(
           modelFamily: "qwen",
           serviceTierRequested: "flex",
           routingPolicyVersion: "2026-11-18.1",
-          modelCatalogVersion: "2026-11-18.1",
+          modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         });
         expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
           qwenCoderRunPrice(),
@@ -448,7 +448,7 @@ describe.skipIf(!adminUrl)(
         serviceTierRequested: "standard",
         serviceTierServed: null,
         routingPolicyVersion: "2026-11-18.1",
-        modelCatalogVersion: "2026-11-18.1",
+        modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         capacityRetries: null,
         reportedCostUsd: null,
       });
