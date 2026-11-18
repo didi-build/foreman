@@ -29,7 +29,8 @@
 //   (`scanFoundNone`, ./scan.ts), gets `scan_not_found` evidence on the scan's commit, once per
 //   commit. One still in Submitted is then withdrawn: after the transaction the runner asks for
 //   the runner-only move Submitted to Rejected, guarded by `scanner_finding_gone`
-//   (./guards/scanner.ts), with the trigger `scan:<scan id>`; the move's transaction closes the
+//   (./guards/scanner.ts), which it names, since Didi's withdrawal is a second way in with its own
+//   guard (D-412), with the trigger `scan:<scan id>`; the move's transaction closes the
 //   idea's open plan-approval request (D-316 (4)) and its open no-plan request to Didi (D-322) as
 //   cancelled, so Didi is not left answering about a withdrawn idea. One further along is never moved
 //   and none of its work items is touched: when its `scan_not_found` is new and no question is
@@ -77,6 +78,11 @@ export const WITHDRAWN_STATE = "rejected";
 export const PARKED_OR_REJECTED: readonly string[] = ["parked", WITHDRAWN_STATE];
 /** The withdrawal's trigger names the scan: `scan:<scan id>`. */
 export const SCAN_TRIGGER_PREFIX = "scan:";
+/**
+ * The guard of the withdrawal's way into Rejected (./guards/scanner.ts). Submitted to Rejected is
+ * also the cancel's way in (D-412), so the step names its own (`guardedBy`, D-307).
+ */
+export const SCANNER_GONE_GUARD = "scanner_finding_gone";
 /** The Council question on whether to stop a scanner idea that is no longer found. */
 export const SCANNER_GONE_PREFIX = "scanner-gone:";
 export const scannerGoneTopic = (nodeId: string): string =>
@@ -506,6 +512,7 @@ export function createScanIdeas({
             trigger: { kind: "event", ref: filed.ref },
             actor: { kind: "runner", id: SCANNER_ACTOR },
             runnerOnly: true,
+            guardedBy: SCANNER_GONE_GUARD,
             reason: notFoundText(scan.commitSha),
           },
           // Didi is not left answering about a withdrawn idea (D-316 (4)).

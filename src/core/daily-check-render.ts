@@ -275,21 +275,34 @@ function pullRequestLine(i: CancelEntry["items"][number]): string {
   return `${pr} ${CLOSE_TEXT[i.close.outcome]}`;
 }
 
+/**
+ * An idea with no work items, withdrawn whole: Didi's withdrawal of its plan (D-412), or the
+ * Council's stop of a scanner idea (D-308). The idea is its own line's node.
+ */
+function withdrawalLine(c: CancelEntry): Line {
+  const who =
+    c.how === "didi"
+      ? "Didi withdrew it before it had work items"
+      : `${CANCEL_WHO[c.how]}, before it had work items`;
+  const words = c.how === "didi" ? "Didi's reason" : "The Council's note";
+  const state: Line = c.ideaRejected
+    ? line`It moved to Rejected ${when(c.ideaRejected.at)}.`
+    : ["Still being withdrawn: it waits for the run on it to end."];
+  return line`${quoted(c.title)} (item ${c.nodeId}): ${who}. ${words}: ${quoted(c.note)}. ${state} ${REOPEN_LATER}`;
+}
+
 function cancelLine(c: CancelEntry): Line {
-  const items: Line =
-    c.items.length === 0
-      ? ["no work items"]
-      : joined(
-          c.items.map(
-            (i) =>
-              line`${item(i)} ${i.stateLabel}${
-                i.state === "verifying_on_staging"
-                  ? " (merged: it finishes normally)"
-                  : ""
-              }${pullRequestLine(i)}`,
-          ),
-          "; ",
-        );
+  // Only an idea's entry can cover no work items: a work item's covers itself.
+  if (c.items.length === 0) return withdrawalLine(c);
+  const items: Line = joined(
+    c.items.map(
+      (i) =>
+        line`${item(i)} ${i.stateLabel}${
+          i.state === "verifying_on_staging" ? " (merged: it finishes normally)" : ""
+        }${pullRequestLine(i)}`,
+    ),
+    "; ",
+  );
   const words = c.how === "didi" ? "Didi's reason" : "The Council's note";
   const state: Line = c.ideaRejected
     ? line`Its idea ${quoted(c.ideaRejected.title)} (item ${c.ideaRejected.nodeId}) moved to Rejected ${when(c.ideaRejected.at)}.`

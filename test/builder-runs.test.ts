@@ -1,11 +1,14 @@
 // Seam: unit, on the memory store with the real machine-2 contracts and guards. Which items need a
 // builder run with no move (src/core/builder-runs.ts, O-41): an item a failed QA round or staging
 // check sent back to its building state, with no builder run started since, and one whose builder
-// run ended usage_exhausted; and why it came back, from the evidence the fail move carried. The
+// run ended usage_exhausted; and why it came back, from the evidence the fail move carried. Also
+// the run after a builder run that started and ended fail, timeout or cancelled (D-413). The
 // dispatch of those runs is covered through the flows in test/flows/builder-run-flows.test.ts.
 import { describe, expect, it } from "vitest";
 
+import { approvalDecision } from "../src/core/approvals.ts";
 import { createBuilderRuns } from "../src/core/builder-runs.ts";
+import { cancelRequestTopic, stillNeededTopic } from "../src/core/cancel.ts";
 import { visualApprovalTopic } from "../src/core/guards/design.ts";
 import { createLibrary } from "../src/core/library.ts";
 import { createRunReports } from "../src/core/run-reports.ts";
@@ -374,5 +377,161 @@ describe("a builder run resumed after usage_exhausted (unit, O-41)", () => {
     });
     // Its input says nothing about a return: it was never sent back.
     expect(await createBuilderRuns(f.deps).returnReason(node.id)).toBeNull();
+  });
+});
+
+describe("a builder run started again after it failed, timed out or was cancelled (unit, D-413, O-142)", () => {
+  /** An item whose latest started builder run ended with `outcome`. */
+  async function endedWith(
+    outcome: NonNullable<Run["outcome"]>,
+    track: Track = "code",
+  ) {
+    const f = await createReconcileFixture();
+    const role: AgentRole = track === "design" ? "designer" : "developer";
+    const node = await f.node(
+      track === "design" ? "building_components" : "in_development",
+      {
+        ownerRole: role,
+        track,
+      },
+    );
+    const run = await startedBuilderRun(f, node.id, role);
+    f.advanceMinutes(5);
+    await end(f, run, outcome);
+    return { f, node, role, run, builderRuns: createBuilderRuns(f.deps) };
+  }
+
+  it("is due after a run that ended fail or timeout, or was cancelled, naming that run", async () => {
+    for (const [outcome, cause] of [
+      ["fail", "failed"],
+      ["timeout", "failed"],
+      ["cancelled", "cancelled"],
+    ] as const) {
+      const t = await endedWith(outcome);
+      expect(await t.builderRuns.check(t.node.id)).toEqual({
+        due: true,
+        nodeId: t.node.id,
+        role: "developer",
+        cause,
+        runId: t.run.id,
+      });
+      expect(await t.builderRuns.listDue()).toHaveLength(1);
+    }
+    const design = await endedWith("timeout", "design");
+    expect(await design.builderRuns.check(design.node.id)).toMatchObject({
+      due: true,
+      role: "designer",
+      cause: "failed",
+      runId: design.run.id,
+    });
+  });
+
+  it("leaves a run that never started to the start path, and is not due once a later run started", async () => {
+    // A failed start alone: no started run, so nothing to run again here.
+    const f = await createReconcileFixture();
+    const node = await f.node("in_development");
+    await end(f, await f.run(node.id, "developer"), "fail");
+    expect(await createBuilderRuns(f.deps).check(node.id)).toMatchObject({
+      due: false,
+      reason: "not_due",
+    });
+    // After a started run that failed, a failed start of its next run leaves it due, for that run.
+    const t = await endedWith("fail");
+    t.f.advanceMinutes(1);
+    await end(t.f, await t.f.run(t.node.id, "developer"), "fail");
+    expect(await t.builderRuns.check(t.node.id)).toMatchObject({
+      due: true,
+      cause: "failed",
+      runId: t.run.id,
+    });
+    // A later run that started and succeeded ends it.
+    t.f.advanceMinutes(1);
+    await end(t.f, await startedBuilderRun(t.f, t.node.id, "developer"));
+    expect(await t.builderRuns.check(t.node.id)).toMatchObject({
+      due: false,
+      reason: "not_due",
+    });
+  });
+
+  it("is not due on a finished, escalated or held item, nor once the escalation is due", async () => {
+    for (const state of ["cancelled", "done", "escalated_to_council"]) {
+      const f = await createReconcileFixture();
+      const node = await f.node(state);
+      await end(f, await startedBuilderRun(f, node.id, "developer"), "fail");
+      expect(await createBuilderRuns(f.deps).check(node.id)).toMatchObject({
+        due: false,
+        reason: "not_building",
+      });
+    }
+    const held = await endedWith("cancelled");
+    await held.f.store.setNodeFlags(held.node.id, { hold: true }, held.f.clock.now());
+    expect(await held.builderRuns.check(held.node.id)).toMatchObject({
+      due: false,
+      reason: "not_dispatchable",
+    });
+    const capped = await endedWith("fail");
+    await capped.f.store.setCounter(capped.node.id, "failure", 3, capped.f.clock.now());
+    expect(await capped.builderRuns.check(capped.node.id)).toMatchObject({
+      due: false,
+      reason: "escalation_due",
+    });
+  });
+
+  it("is not due while Didi's cancel or the Council's stop covers the item, until Didi keeps the work", async () => {
+    const didi = await endedWith("fail");
+    await createLibrary(didi.f.deps).recordDecision({
+      projectId: didi.f.projectId,
+      nodeId: didi.node.id,
+      kind: "answer",
+      scope: { kind: "cancel" },
+      textVerbatim: "No longer needed.",
+      byActor: "didi",
+    });
+    expect(await didi.builderRuns.check(didi.node.id)).toMatchObject({
+      due: false,
+      reason: "cancel_stands",
+    });
+
+    // The Council's stop on an item with no accepted plan waits for Didi's word.
+    const t = await endedWith("cancelled");
+    const library = createLibrary(t.f.deps);
+    const stop = await library.recordDecision({
+      projectId: t.f.projectId,
+      nodeId: t.node.id,
+      kind: "council_decision",
+      scope: { topicKey: stillNeededTopic(t.node.id), verdict: "stop" },
+      textVerbatim: "Another item already did this.",
+      byActor: "council",
+    });
+    expect(await t.builderRuns.check(t.node.id)).toMatchObject({
+      due: false,
+      reason: "cancel_stands",
+    });
+    const gate = await library.openGateRequest({
+      projectId: t.f.projectId,
+      nodeId: t.node.id,
+      topicKey: cancelRequestTopic(t.node.id),
+      kind: "scope",
+      owner: "didi",
+      blocking: false,
+      payload: { councilDecisionId: stop.id },
+    });
+    expect(await t.builderRuns.check(t.node.id)).toMatchObject({
+      due: false,
+      reason: "cancel_stands",
+    });
+    t.f.advanceMinutes(5);
+    await library.answerGateRequest(
+      gate.id,
+      approvalDecision(gate, {
+        choice: "reject",
+        words: "Keep the work.",
+        approvers: ["anonymous"],
+      }),
+    );
+    expect(await t.builderRuns.check(t.node.id)).toMatchObject({
+      due: true,
+      cause: "cancelled",
+    });
   });
 });

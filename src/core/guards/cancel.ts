@@ -3,8 +3,9 @@
 // stands on the item or on its idea (Didi's own cancel, the Council's stop on a plan the Council
 // accepted, or the Council's stop Didi approved on the cancel request), and no run is active on
 // the item. For an idea it passes only when every work item is Done or Cancelled and at least one
-// is Cancelled, or the idea has no work items and a cancel stands on it, and no run is active on
-// the idea (`ideaRejectionDue`). It names no evidence: it reads decisions, requests and runs.
+// is Cancelled, or the idea has no work items and a cancel stands on it (Didi's withdrawal, D-412,
+// or the Council's stop), and no run is active on the idea (`ideaRejectionDue`). It names no
+// evidence: it reads decisions, requests and runs.
 import type { GuardCheck, GuardContext } from "../contracts.ts";
 import { CANCEL_GUARD, ideaOf, ideaRejectionDue, readCancelOfItem } from "../cancel.ts";
 import { result } from "./evidence.ts";

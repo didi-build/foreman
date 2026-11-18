@@ -4,7 +4,9 @@
 // dispatch (./start-run.ts), so admission decides under its lock as for every run: the kill switch,
 // dry run, one active run per item, the cluster limit, the usage-exhausted wait and the route for
 // task type `council`. Two triggers at once give one run, and a trigger while the run is active
-// starts nothing. A question whose run and one re-run gave no usable answer goes to Didi instead.
+// starts nothing. A question whose run and one re-run gave no usable answer goes to Didi instead,
+// and so does an escalation whose item the Council has returned twice with no step forward in
+// between, with no Council run (D-414, O-143, src/core/escalations.ts).
 // The Council's call on a visual approval (D-270) is a question too: its run starts the same way,
 // with task type `council:visual` (./start-run.ts), and with no usable answer after the re-run it
 // is recorded as dropped, never sent to Didi. So is the question on a scanner idea the Scanner no
@@ -164,7 +166,8 @@ export interface CouncilPassStep {
   result?: StartRunResult | StartFailed;
   /**
    * With `to_didi`: the escalation's move to Didi, or the gate request for Didi of a reversal or
-   * a scanner idea that is no longer found (D-301).
+   * a scanner idea that is no longer found (D-301). With `returns_capped`: the escalation's move
+   * to Didi in place of the Council (D-414).
    */
   didi?: EscalationStep | { gateRequestId: string | null };
   /** With `drop`: the visual call recorded as dropped, or why not (D-270). */
@@ -207,6 +210,11 @@ export async function councilPass(
       const sent = await council.toDidi(next.question, next.lastRunId, next.reason);
       step.didi =
         sent.kind === "escalation" ? sent.step : { gateRequestId: sent.gateRequestId };
+    }
+    if (next.step === "returns_capped") {
+      step.didi = await createEscalations(deps).councilReturnsCapped(
+        next.question.nodeId,
+      );
     }
     if (next.step === "drop") {
       step.dropped = await council.dropVisualCall(

@@ -5,7 +5,6 @@
 // pass after a Council decision, and the approval resume step after Didi's answer to an
 // escalation question, which starts the fix round of an item it returns to its building state
 // (O-104), never under a switch. The rules themselves are in test/escalations.test.ts.
-import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
@@ -15,7 +14,6 @@ import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
-import { needsDecisionRef } from "../../src/core/run-reports.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import { HEAD } from "../reconcile-fixture.ts";
 import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
@@ -221,111 +219,6 @@ describe("run-end flow after a builder stopped for a decision (flow: fake adapte
     expect(await f.store.listRuns({ nodeId: node.id })).toHaveLength(2);
   });
 
-  /** An earlier Developer run on the node, ended `success`, with or without a stop for a decision. */
-  async function earlierRun(
-    f: FlowFixture,
-    nodeId: string,
-    minutesAgo: number,
-    stopped: boolean,
-  ) {
-    const earlier = await f.run(nodeId, "developer", minutesAgo);
-    await f.store.endRun(earlier.id, {
-      endedAt: new Date(earlier.startedAt.getTime() + 120_000),
-      outcome: "success",
-      turns: 3,
-      minutes: 2,
-      costUsd: null,
-      tokens: null,
-      transcriptRef: null,
-      usageExhaustedCause: null,
-      retryAfterSeconds: null,
-      serviceTierServed: null,
-      capacityRetries: null,
-      capacityWaitSeconds: null,
-      firstTokenMs: null,
-      reportedCostUsd: null,
-    });
-    if (stopped) {
-      await f.store.insertEvidence({
-        id: randomUUID(),
-        nodeId,
-        runId: earlier.id,
-        kind: "agent_report",
-        ref: needsDecisionRef(earlier.id),
-        commitSha: null,
-        payload: { escalate: true, reason: REASON },
-        recordedBy: "runner",
-        recordedAt: new Date(earlier.startedAt.getTime() + 60_000),
-        supersedesId: null,
-      });
-    }
-  }
-
-  it("sends the item to Didi on the third stop in a row, without asking the Council a third time (D-386)", async () => {
-    const f = await createFlowFixture();
-    ticking(f);
-    await f.live();
-    const node = await f.node("ready_for_dev");
-    // Two earlier stops, each of which the Council answered by returning the item.
-    await earlierRun(f, node.id, 30, true);
-    await earlierRun(f, node.id, 20, true);
-    const run = await dispatch(f.deps, { nodeId: node.id, role: "developer" });
-    if (run.outcome !== "started") throw new Error("the Developer was not started");
-    f.runtime.status.set(run.runId, { state: "finished", result: STOPPED });
-    const ended = await recordRunEnd(f.deps, { runId: run.runId });
-    expect(ended).toMatchObject({
-      outcome: "recorded",
-      move: {
-        requested: true,
-        toState: "escalated_to_council",
-        didi: {
-          step: "to_didi",
-          move: { outcome: "applied", toState: "escalated_to_didi" },
-        },
-      },
-    });
-    const after = await f.store.getNode(node.id);
-    expect(after?.state).toBe("escalated_to_didi");
-    expect(after?.blockedReason).toBe(
-      "Waiting on Didi: the Council could not resolve it, or it needs Didi",
-    );
-    const gates = await f.store.listGateRequests(
-      node.projectId,
-      escalationTopic(node.id),
-    );
-    expect(gates).toHaveLength(1);
-    expect(gates[0]).toMatchObject({
-      kind: "escalation",
-      owner: "didi",
-      status: "open",
-    });
-    // No Council run was started for the third stop.
-    expect(
-      (await f.store.listRuns({ nodeId: node.id })).filter((r) => r.bot === "council"),
-    ).toEqual([]);
-  });
-
-  it("asks the Council again when a run in between ended in success without stopping (D-386)", async () => {
-    const f = await createFlowFixture();
-    ticking(f);
-    await f.live();
-    const node = await f.node("ready_for_dev");
-    await earlierRun(f, node.id, 40, true);
-    await earlierRun(f, node.id, 30, true);
-    // Progress: a run that ended in success without a stop breaks the row.
-    await earlierRun(f, node.id, 20, false);
-    const run = await dispatch(f.deps, { nodeId: node.id, role: "developer" });
-    if (run.outcome !== "started") throw new Error("the Developer was not started");
-    f.runtime.status.set(run.runId, { state: "finished", result: STOPPED });
-    const ended = await recordRunEnd(f.deps, { runId: run.runId });
-    expect(ended).toMatchObject({
-      move: { toState: "escalated_to_council" },
-      councilRuns: [{ topicKey: escalationTopic(node.id), step: "start" }],
-    });
-    expect(ended).not.toHaveProperty("move.didi");
-    expect((await f.store.getNode(node.id))?.state).toBe("escalated_to_council");
-  });
-
   it("ends the run fail, recording nothing, when the reason is missing or too long", async () => {
     for (const needsDecision of [undefined, { reason: "x".repeat(1001) }]) {
       const f = await createFlowFixture();
@@ -338,16 +231,24 @@ describe("run-end flow after a builder stopped for a decision (flow: fake adapte
         ...(needsDecision ? { needsDecision } : {}),
       };
       f.runtime.status.set(runId, { state: "finished", result });
+      // A failed run counts once and the Developer runs again (D-413, O-142).
       expect(await recordRunEnd(f.deps, { runId })).toMatchObject({
         outcome: "recorded",
         report: { outcome: "fail" },
         move: { requested: false, reason: "not_success" },
+        builderRuns: [
+          {
+            cause: "failed",
+            failureCount: { counted: true, failures: 1 },
+            result: { outcome: "started" },
+          },
+        ],
       });
       expect((await f.store.getNode(node.id))?.state).toBe("in_development");
       expect(
         await f.store.listEvidence({ nodeId: node.id, kind: "agent_report" }),
       ).toEqual([]);
-      expect(await f.store.getCounter(node.id, "failure")).toBe(0);
+      expect(await f.store.getCounter(node.id, "failure")).toBe(1);
     }
   });
 
@@ -366,6 +267,165 @@ describe("run-end flow after a builder stopped for a decision (flow: fake adapte
     expect(
       await f.store.listEvidence({ nodeId: node.id, kind: "agent_report" }),
     ).toEqual([]);
+  });
+});
+
+describe("one cap on Council returns (flow: fake adapters, D-414, O-143)", () => {
+  const REASON = "The work folder has no checkout of the repository.";
+  const STOPPED: AgentRunResult = {
+    ...RESULT,
+    detail: "needs_decision",
+    needsDecision: { reason: REASON },
+  };
+  const RESOLVE = {
+    outcome: "resolve",
+    note: "An environment problem, not a product decision: try again.",
+    ...KEEPS,
+  };
+
+  /**
+   * The builder run stops for a decision, the Council's run starts at once and its answer returns
+   * the item, and the next builder run starts at once (O-104). Returns that run's id.
+   */
+  async function stopAndReturn(f: FlowFixture, runId: string): Promise<string> {
+    f.runtime.status.set(runId, { state: "finished", result: STOPPED });
+    const stopped = await recordRunEnd(f.deps, { runId });
+    const council =
+      "councilRuns" in stopped ? stopped.councilRuns?.[0]?.result : undefined;
+    if (council?.outcome !== "started") throw new Error("the Council was not started");
+    f.runtime.status.set(council.runId, {
+      state: "finished",
+      result: { ...RESULT, structured: RESOLVE },
+    });
+    const answered = await recordRunEnd(f.deps, { runId: council.runId });
+    expect(answered).toMatchObject({ council: { escalation: { step: "returned" } } });
+    const next =
+      "council" in answered ? answered.council?.builderRuns[0]?.result : undefined;
+    if (next?.outcome !== "started")
+      throw new Error("the builder was not started again");
+    return next.runId;
+  }
+
+  async function developing(f: FlowFixture) {
+    const node = await f.node("ready_for_dev");
+    const first = await dispatch(f.deps, { nodeId: node.id, role: "developer" });
+    if (first.outcome !== "started") throw new Error("the Developer was not started");
+    return { node, runId: first.runId };
+  }
+
+  it("sends the third escalation to Didi with one question, without asking the Council a third time", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const { node, runId: first } = await developing(f);
+    // The Council returns the item twice, with no step forward in between.
+    const runId = await stopAndReturn(f, await stopAndReturn(f, first));
+    f.runtime.status.set(runId, { state: "finished", result: STOPPED });
+    const third = await recordRunEnd(f.deps, { runId });
+    expect(third).toMatchObject({
+      outcome: "recorded",
+      move: { outcome: "applied", toState: "escalated_to_council" },
+      councilRuns: [
+        {
+          topicKey: escalationTopic(node.id),
+          kind: "escalation",
+          step: "returns_capped",
+          didi: {
+            step: "to_didi",
+            move: { outcome: "applied", toState: "escalated_to_didi" },
+          },
+        },
+      ],
+    });
+    const after = await f.store.getNode(node.id);
+    expect(after?.state).toBe("escalated_to_didi");
+    expect(after?.blockedReason).toBe(
+      "Waiting on Didi: the Council could not resolve it, or it needs Didi",
+    );
+    const gates = await f.store.listGateRequests(
+      node.projectId,
+      escalationTopic(node.id),
+    );
+    expect(gates).toHaveLength(1);
+    expect(gates[0]).toMatchObject({
+      kind: "escalation",
+      owner: "didi",
+      status: "open",
+      payload: {
+        question:
+          "The Council has returned this item twice with no step forward in between.",
+        returnState: "in_development",
+      },
+    });
+    const councilDecisions = (await f.store.listDecisionsForNode(node.id)).filter(
+      (d) => d.kind === "council_decision",
+    );
+    expect(gates[0]?.payload).toMatchObject({
+      councilDecisionIds: councilDecisions.map((d) => d.id),
+    });
+    const toCouncil = (await f.store.listTransitions(node.id)).filter(
+      (t) => t.toState === "escalated_to_council",
+    );
+    expect((await f.store.listTransitions(node.id)).at(-1)).toMatchObject({
+      fromState: "escalated_to_council",
+      toState: "escalated_to_didi",
+      triggerRef: `council_returns_capped:${toCouncil.at(-1)?.id}`,
+    });
+    // The Council ran twice, never for the third escalation.
+    const bots = (await f.store.listRuns({ nodeId: node.id })).map((r) => r.bot);
+    expect(bots.filter((b) => b === "council")).toHaveLength(2);
+    // A repeated trigger and the next pass ask nothing more.
+    expect(await recordRunEnd(f.deps, { runId })).toMatchObject({
+      outcome: "already_recorded",
+    });
+    expect((await reconcileFlow(f.deps)).councilRuns).toEqual([]);
+    expect(
+      await f.store.listGateRequests(node.projectId, escalationTopic(node.id)),
+    ).toHaveLength(1);
+    expect((await f.store.listRuns({ nodeId: node.id })).map((r) => r.bot)).toEqual(
+      bots,
+    );
+  });
+
+  it("asks the Council again once the item stepped forward after the returns", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const { node, runId: first } = await developing(f);
+    const runId = await stopAndReturn(f, await stopAndReturn(f, first));
+    // A step forward: the done report takes the item into review for the first time.
+    const ciId = await f.evidence(
+      node.id,
+      "ci_run",
+      { conclusion: "success", pr: 7, changedPaths: ["src/a.ts"] },
+      { commitSha: HEAD },
+    );
+    await f.evidence(node.id, "docs_note", { impact: "none" }, { commitSha: HEAD });
+    const reported = await finish(f, runId);
+    expect(reported).toMatchObject({ move: { toState: "in_qa_review" } });
+    const qa = "qaRuns" in reported ? reported.qaRuns?.[0]?.result : undefined;
+    if (qa?.outcome !== "started") throw new Error("QA was not started");
+    await f.evidence(
+      node.id,
+      "qa_verdict",
+      {
+        verdict: "fail",
+        findings: [{ path: "src/a.ts", startLine: 1, endLine: 1, note: "wrong" }],
+        evidenceIds: [ciId],
+      },
+      { commitSha: HEAD, runId: qa.runId },
+    );
+    const failed = await finish(f, qa.runId);
+    const fix =
+      failed.outcome === "recorded" ? failed.builderRuns[0]?.result : undefined;
+    if (fix?.outcome !== "started") throw new Error("the fix round was not started");
+    // The fix round stops for a decision: the Council is asked, as on a first escalation.
+    f.runtime.status.set(fix.runId, { state: "finished", result: STOPPED });
+    expect(await recordRunEnd(f.deps, { runId: fix.runId })).toMatchObject({
+      move: { toState: "escalated_to_council" },
+      councilRuns: [{ topicKey: escalationTopic(node.id), step: "start" }],
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("escalated_to_council");
   });
 });
 

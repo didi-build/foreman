@@ -1,22 +1,29 @@
 // Seam: unit, on the memory store with the real machine-2 contracts and guards. Escalation and
 // stale marking (build plan M3.5, P-03 as confirmed by D-169, O-42 to O-46): a done report on a
-// head QA already failed goes back to QA no more and counts as a failure; a refused done report
-// and a repeated failed start count once each; three deliberate failures reach Escalated to
-// Council; the Council's decision returns the item with both counters reset, and "cannot resolve"
-// reaches Didi as a gate request whose answer returns it; a reversed decision marks its dependents
-// stale and opens one Council question. The flows around these are in
-// test/flows/escalation-flows.test.ts.
+// head QA already failed goes back to QA no more and counts as a failure; a refused done report,
+// a repeated failed start and a builder run that failed or timed out (D-413) count once each;
+// three deliberate failures reach Escalated to Council; the Council's decision returns the item
+// with both counters reset, and "cannot resolve" reaches Didi as a gate request whose answer
+// returns it; after two Council returns with no step forward in between, the next escalation goes
+// to Didi (D-414); a reversed decision marks its dependents stale and opens one Council question.
+// The flows around these are in test/flows/escalation-flows.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { approvalDecision } from "../src/core/approvals.ts";
 import { createBuilderRuns } from "../src/core/builder-runs.ts";
-import { createEscalations } from "../src/core/escalations.ts";
+import { createCouncil, type EscalationQuestion } from "../src/core/council.ts";
+import {
+  BUILDER_STOPS_TRIGGER,
+  COUNCIL_RETURNS_TRIGGER,
+  councilReturnsSinceStepForward,
+  createEscalations,
+} from "../src/core/escalations.ts";
 import { createFailures, failureCountKey } from "../src/core/failures.ts";
 import { escalationTopic } from "../src/core/guards/escalation.ts";
 import { createLibrary } from "../src/core/library.ts";
 import { createRunReports } from "../src/core/run-reports.ts";
-import type { AgentRole, Json, Run } from "../src/core/store.ts";
-import { createReconcileFixture, HEAD, REPO } from "./reconcile-fixture.ts";
+import type { AgentRole, Json, Run, Transition } from "../src/core/store.ts";
+import { createReconcileFixture, HEAD, machine2, REPO } from "./reconcile-fixture.ts";
 
 const NEW_HEAD = "c".repeat(40);
 const FINDING = { path: "src/a.ts", startLine: 1, endLine: 2, note: "wrong" };
@@ -432,6 +439,94 @@ describe("repeated dispatch failure (unit, P-03, O-44)", () => {
   });
 });
 
+describe("a builder run that failed or timed out (unit, P-03, D-413, O-142)", () => {
+  it("counts once per run under its key, and the third failure escalates", async () => {
+    const t = await setup();
+    const node = await t.node("in_development");
+    const first = await t.ended(node.id, "developer", "fail");
+    expect(await t.failures.runFailed(first.id)).toEqual({
+      counted: true,
+      failures: 1,
+    });
+    expect(await t.failures.runFailed(first.id)).toEqual({
+      counted: "already_counted",
+      failures: 1,
+    });
+    const rows = await t.failureRows(node.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      runId: first.id,
+      ref: failureCountKey("run_failed", first.id),
+      commitSha: null,
+      payload: { cause: "run_failed", outcome: "fail" },
+      recordedBy: "runner",
+    });
+    const second = await t.ended(node.id, "developer", "timeout");
+    expect(await t.failures.runFailed(second.id)).toMatchObject({ failures: 2 });
+    const third = await t.ended(node.id, "developer", "fail");
+    expect(await t.failures.runFailed(third.id)).toMatchObject({
+      counted: true,
+      failures: 3,
+      escalation: { outcome: "applied", toState: "escalated_to_council" },
+    });
+    expect((await t.transitions(node.id)).at(-1)).toMatchObject({
+      toState: "escalated_to_council",
+      triggerRef: `run_failed:${third.id}`,
+    });
+  });
+
+  it("does not count a cancelled or successful run, a run that never started, or another role's", async () => {
+    const t = await setup();
+    const node = await t.node("in_development");
+    const cancelled = await t.ended(node.id, "developer", "cancelled");
+    expect(await t.failures.runFailed(cancelled.id)).toEqual({
+      counted: false,
+      reason: "not_a_failed_run",
+    });
+    const succeeded = await t.ended(node.id, "developer", "success");
+    expect(await t.failures.runFailed(succeeded.id)).toEqual({
+      counted: false,
+      reason: "not_a_failed_run",
+    });
+    const neverStarted = await t.ended(node.id, "developer", "fail", {
+      started: false,
+    });
+    expect(await t.failures.runFailed(neverStarted.id)).toEqual({
+      counted: false,
+      reason: "not_started",
+    });
+    const qa = await t.ended(node.id, "qa", "fail");
+    expect(await t.failures.runFailed(qa.id)).toEqual({
+      counted: false,
+      reason: "not_a_builder_run",
+    });
+    expect(await t.failures.runFailed("no-such-run")).toEqual({
+      counted: false,
+      reason: "no_run",
+    });
+    expect(await t.counters(node.id)).toEqual({ failure: 0, qaRound: 0 });
+    expect(await t.failureRows(node.id)).toEqual([]);
+  });
+
+  it("counts nothing in dry run or under the kill switch", async () => {
+    const t = await setup();
+    const node = await t.node("in_development");
+    const run = await t.ended(node.id, "designer", "timeout");
+    await t.setting("dry_run", true);
+    expect(await t.failures.runFailed(run.id)).toEqual({
+      counted: false,
+      reason: "dry_run",
+    });
+    await t.setting("dry_run", false);
+    await t.setting("kill_switch", true);
+    expect(await t.failures.runFailed(run.id)).toEqual({
+      counted: false,
+      reason: "kill_switch",
+    });
+    expect(await t.counters(node.id)).toEqual({ failure: 0, qaRound: 0 });
+  });
+});
+
 describe("out of Escalated to Council (unit, D-169, D-177, O-46)", () => {
   it("waits for a Council decision, then returns the item with both counters reset, once", async () => {
     const t = await setup();
@@ -627,6 +722,317 @@ describe("out of Escalated to Council (unit, D-169, D-177, O-46)", () => {
       { nodeId: back.id, step: "returned" },
       { nodeId: waiting.id, step: "waiting", on: "council" },
     ]);
+  });
+});
+
+describe("one cap on Council returns (unit, D-414, O-143)", () => {
+  const COUNCIL = "escalated_to_council";
+  const DIDI = "escalated_to_didi";
+  let seq = 0;
+  /** One transition, as the library writes it; `ref` is its trigger. */
+  const move = (
+    fromState: string,
+    toState: string,
+    ref: string,
+    mode: Transition["mode"] = "applied",
+  ): Transition => ({
+    id: `t${(seq += 1)}`,
+    nodeId: "n1",
+    fromState,
+    toState,
+    fromSubstate: null,
+    toSubstate: null,
+    triggerKind: "event",
+    triggerRef: ref,
+    actorKind: "runner",
+    actorId: "test",
+    guardResult: [],
+    evidenceIds: [],
+    specVersion: "v1",
+    mode,
+    reason: null,
+    at: new Date(seq * 60_000),
+  });
+  /** Escalated from `state` and returned there by the Council's decision `decision`. */
+  const loop = (state: string, decision: string): Transition[] => [
+    move(state, COUNCIL, "test:escalate"),
+    move(COUNCIL, state, `council_decision:${decision}`),
+  ];
+  const returns = (transitions: Transition[]) =>
+    councilReturnsSinceStepForward(machine2(), COUNCIL, transitions).map(
+      (t) => t.triggerRef,
+    );
+  const TWO = ["council_decision:d1", "council_decision:d2"];
+
+  it("counts the Council's returns while the item only goes back to states it has been in", () => {
+    // Refused done reports or stops for a decision in In development.
+    expect(
+      returns([
+        move("ready_for_dev", "in_development", "dispatch:r1"),
+        ...loop("in_development", "d1"),
+        ...loop("in_development", "d2"),
+      ]),
+    ).toEqual(TWO);
+    // Failed QA rounds: back to In development and into review again are no steps forward.
+    expect(
+      returns([
+        move("ready_for_dev", "in_development", "dispatch:r1"),
+        move("in_development", "in_qa_review", "run:r1"),
+        ...loop("in_qa_review", "d1"),
+        move("in_qa_review", "in_development", "run:qa1"),
+        move("in_development", "in_qa_review", "run:r2"),
+        ...loop("in_qa_review", "d2"),
+      ]),
+    ).toEqual(TWO);
+    // Failed staging checks: each round merges again, through states the item has been in.
+    const staging = (n: number) => [
+      move("in_development", "in_qa_review", `run:r${n}`),
+      move("in_qa_review", "verifying_on_staging", `run:qa${n}`),
+      move("verifying_on_staging", "in_development", `staging_check:e${n}`),
+    ];
+    expect(
+      returns([
+        move("ready_for_dev", "in_development", "dispatch:r1"),
+        ...staging(1),
+        ...loop("in_development", "d1"),
+        ...staging(2),
+        ...loop("in_development", "d2"),
+      ]),
+    ).toEqual(TWO);
+    // Repeated failed starts, escalated from Ready for dev before any other move.
+    expect(
+      returns([...loop("ready_for_dev", "d1"), ...loop("ready_for_dev", "d2")]),
+    ).toEqual(TWO);
+  });
+
+  it("ends the row at a step forward: a move into a state the item had never been in", () => {
+    expect(
+      returns([
+        move("ready_for_dev", "in_development", "dispatch:r1"),
+        ...loop("in_development", "d1"),
+        ...loop("in_development", "d2"),
+        move("in_development", "in_qa_review", "run:r3"),
+      ]),
+    ).toEqual([]);
+    expect(
+      returns([
+        move("ready_for_dev", "in_development", "dispatch:r1"),
+        ...loop("in_development", "d1"),
+        move("in_development", "in_qa_review", "run:r2"),
+        move("in_qa_review", "in_development", "run:qa1"),
+        ...loop("in_development", "d2"),
+      ]),
+    ).toEqual(["council_decision:d2"]);
+  });
+
+  it("reads neither Didi's return nor a dry-run row as a Council return or a step forward", () => {
+    expect(
+      returns([
+        move("ready_for_dev", "in_development", "dispatch:r1"),
+        ...loop("in_development", "d1"),
+        ...loop("in_development", "d2"),
+        move("in_development", COUNCIL, "test:escalate"),
+        move(COUNCIL, DIDI, "council_returns_capped:t1"),
+        move(DIDI, "in_development", "didi_answer:a1"),
+        move("in_development", "in_qa_review", "run:r9", "dry_run"),
+      ]),
+    ).toEqual(TWO);
+  });
+
+  type Setup = Awaited<ReturnType<typeof setup>>;
+
+  /** Escalates the item from where it is, with the failure counter at its limit. */
+  async function escalate(t: Setup, nodeId: string) {
+    await t.store.setCounter(nodeId, "failure", 3, t.clock.now());
+    t.advanceMinutes(1);
+    expect(
+      await t.escalations.escalate(
+        nodeId,
+        { kind: "event", ref: `test:escalate:${(seq += 1)}` },
+        "three failures",
+      ),
+    ).toMatchObject({ outcome: "applied", toState: COUNCIL });
+  }
+
+  /** The item's escalation question, as the Council pass reads it. */
+  const questionOf = async (t: Setup, nodeId: string): Promise<EscalationQuestion> => ({
+    kind: "escalation",
+    topicKey: escalationTopic(nodeId),
+    projectId: t.projectId,
+    nodeId,
+    openedAt: (await t.store.getNode(nodeId))!.stateSince,
+  });
+
+  /** An item the Council returned `times` times to In development, with nothing in between. */
+  async function returned(times: number) {
+    const t = await setup();
+    const node = await t.escalated();
+    for (let i = 0; i < times; i++) {
+      if (i > 0) await escalate(t, node.id);
+      await t.councilDecides(node.id, KEEPS);
+      expect(await t.escalations.resolve(node.id)).toMatchObject({ step: "returned" });
+    }
+    return { t, node, council: createCouncil(t.deps) };
+  }
+
+  it("asks the Council after one return, and sends the escalation after two to Didi, once", async () => {
+    const once = await returned(1);
+    await escalate(once.t, once.node.id);
+    expect(
+      await once.council.next(await questionOf(once.t, once.node.id)),
+    ).toMatchObject({ step: "start" });
+    expect(await once.t.escalations.councilReturnsCapped(once.node.id)).toEqual({
+      nodeId: once.node.id,
+      step: "waiting",
+      on: "council",
+    });
+
+    const { t, node, council } = await returned(2);
+    await escalate(t, node.id);
+    const question = await questionOf(t, node.id);
+    expect(await council.next(question)).toEqual({
+      step: "returns_capped",
+      question,
+      returns: 2,
+    });
+    const step = await t.escalations.councilReturnsCapped(node.id);
+    expect(step).toMatchObject({
+      step: "to_didi",
+      move: { outcome: "applied", toState: DIDI },
+    });
+    const decisions = (await t.store.listDecisionsForNode(node.id)).map((d) => d.id);
+    const gate = await t.store.findOpenGateRequest(
+      t.projectId,
+      escalationTopic(node.id),
+    );
+    expect(gate).toMatchObject({
+      id: step.step === "to_didi" ? step.gateRequestId : "",
+      kind: "escalation",
+      owner: "didi",
+      blocking: true,
+      payload: {
+        question:
+          "The Council has returned this item twice with no step forward in between.",
+        councilDecisionIds: decisions,
+        returnState: "in_development",
+      },
+    });
+    const history = await t.transitions(node.id);
+    const entered = history.filter((m) => m.toState === COUNCIL).at(-1);
+    expect(history.at(-1)).toMatchObject({
+      fromState: COUNCIL,
+      toState: DIDI,
+      triggerRef: `${COUNCIL_RETURNS_TRIGGER}${entered?.id}`,
+    });
+    // Asked again, the item is not in the Council's state any more: nothing more is written.
+    expect(await t.escalations.councilReturnsCapped(node.id)).toMatchObject({
+      step: "not_escalated",
+    });
+    expect(
+      await t.store.listGateRequests(t.projectId, escalationTopic(node.id)),
+    ).toHaveLength(1);
+    expect(await t.transitions(node.id)).toHaveLength(history.length);
+    // The counters stay until Didi's answer returns the item.
+    expect(await t.counters(node.id)).toMatchObject({ failure: 3 });
+  });
+
+  it("sends each later escalation to Didi too, until the item steps forward", async () => {
+    const { t, node, council } = await returned(2);
+    await escalate(t, node.id);
+    await t.escalations.councilReturnsCapped(node.id);
+    const gate = await t.store.findOpenGateRequest(
+      t.projectId,
+      escalationTopic(node.id),
+    );
+    t.advanceMinutes(5);
+    await t.library.answerGateRequest(
+      gate!.id,
+      approvalDecision(gate!, {
+        choice: "approve",
+        words: "Fix the work folder, then go on.",
+        approvers: ["anonymous"],
+      }),
+    );
+    expect(await t.escalations.resolve(node.id)).toMatchObject({ step: "returned" });
+    // Didi's return is no step forward: the next escalation goes to Didi as well.
+    await escalate(t, node.id);
+    expect(await council.next(await questionOf(t, node.id))).toMatchObject({
+      step: "returns_capped",
+      returns: 2,
+    });
+
+    // After two returns the done report takes the item into review for the first time, and QA
+    // fails it: the next escalation asks the Council again.
+    const other = await returned(2);
+    await other.t.head(other.node.id, HEAD);
+    const done = await other.t.ended(other.node.id, "developer");
+    expect(await other.t.reports.requestReportedMove(done.id)).toMatchObject({
+      outcome: "applied",
+      toState: "in_qa_review",
+    });
+    expect(await other.t.qaFails(other.node.id, HEAD)).toMatchObject({
+      outcome: "applied",
+      toState: "in_development",
+    });
+    await escalate(other.t, other.node.id);
+    expect(
+      await other.council.next(await questionOf(other.t, other.node.id)),
+    ).toMatchObject({ step: "start" });
+  });
+
+  it("in dry run opens no question for Didi, and the move is refused for want of one", async () => {
+    const { t, node } = await returned(2);
+    await escalate(t, node.id);
+    await t.setting("dry_run", true);
+    expect(await t.escalations.councilReturnsCapped(node.id)).toMatchObject({
+      step: "to_didi",
+      gateRequestId: null,
+      move: { outcome: "rejected", failedGuards: ["didi_question_open"] },
+    });
+    expect(await t.store.listOpenGateRequests(t.projectId)).toEqual([]);
+    expect(await t.state(node.id)).toBe(COUNCIL);
+  });
+
+  it("keeps an item D-386's cap sent to Didi readable: Didi's answer returns it", async () => {
+    const t = await setup();
+    const node = await t.escalated();
+    // As D-386's cap wrote it: the question for Didi, then the move with that cap's trigger.
+    const gate = await t.library.openGateRequest({
+      projectId: t.projectId,
+      nodeId: node.id,
+      topicKey: escalationTopic(node.id),
+      kind: "escalation",
+      owner: "didi",
+      blocking: true,
+      payload: { question: "The builder stopped again.", lastBuilderRunId: "r3" },
+    });
+    expect(
+      await t.library.requestTransitionOnce({
+        nodeId: node.id,
+        toState: DIDI,
+        blockedReason:
+          "Waiting on Didi: the Council could not resolve it, or it needs Didi",
+        trigger: { kind: "event", ref: `${BUILDER_STOPS_TRIGGER}r3` },
+        actor: { kind: "runner", id: "escalation" },
+      }),
+    ).toMatchObject({ outcome: "applied" });
+    t.advanceMinutes(5);
+    const answer = await t.library.answerGateRequest(
+      gate.id,
+      approvalDecision(gate, {
+        choice: "approve",
+        words: "Set up the checkout, then go on.",
+        approvers: ["anonymous"],
+      }),
+    );
+    expect(await t.escalations.resolve(node.id)).toMatchObject({
+      step: "returned",
+      move: { outcome: "applied", toState: "in_development" },
+    });
+    expect((await t.transitions(node.id)).at(-1)).toMatchObject({
+      triggerRef: `didi_answer:${answer.id}`,
+    });
+    expect(await t.counters(node.id)).toEqual({ failure: 0, qaRound: 0 });
   });
 });
 

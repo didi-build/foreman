@@ -802,9 +802,14 @@ describe("how scanner ideas change over time (unit: D-301, O-93)", () => {
       outcome: "rejected",
       reason: "runner_only_move",
     });
-    // With the flag but no scan since the idea was filed, the guard refuses.
+    // With the flag and the scan's own guard named, as the scan's step asks (D-412 shares the
+    // move), but no scan since the idea was filed, the guard refuses.
     expect(
-      await library.requestTransition({ ...request, runnerOnly: true }),
+      await library.requestTransition({
+        ...request,
+        runnerOnly: true,
+        guardedBy: "scanner_finding_gone",
+      }),
     ).toMatchObject({
       outcome: "rejected",
       reason: "guard_failed",

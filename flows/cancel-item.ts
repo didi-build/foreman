@@ -1,12 +1,12 @@
-// Didi's own cancel of a work item (D-308 (2), O-97), with Didi's reason, started only by Didi
-// from its page in the Windmill workspace, signed in (O-90, D-295): never from a public or
-// signed-token link, and no schedule, pass or other flow starts it. By default it records the
-// reason as Didi's cancel and takes the cancel step at once (src/core/cancel.ts): the item is
-// cancelled once no run is active on it, its idea moves to Rejected once all its items are
-// finished, and a merged item in Verifying on staging finishes normally. With `askCouncil` it
-// opens the item's "is this still needed?" question for the Council instead, with Didi's words
-// as data (src/core/still-needed.ts), and starts its run. Then the close run starts if due (D-318,
-// ./lib/close-runs.ts). The kill switch and dry run write nothing; dry run says what would happen.
+// Didi's own cancel of a work item (D-308 (2), O-97), or withdrawal of an idea with no work items
+// (D-412, O-141), with Didi's reason, started only by Didi from its Windmill page, signed in
+// (O-90, D-295): never from a public or signed-token link, and no schedule, pass or other flow
+// starts it. By default it records the reason as Didi's cancel and takes the cancel step at once
+// (src/core/cancel.ts): an item is cancelled once no run is active on it, its idea moves to
+// Rejected once all its items are finished, a merged item finishes normally, and a withdrawn idea
+// moves to Rejected; an idea with work items is refused with fixed text. `askCouncil` asks the
+// Council instead, Didi's words as data (src/core/still-needed.ts), and starts its run. The close
+// run starts if due (D-318). The kill switch and dry run write nothing; dry run says what it does.
 import { createCancels, type DidiCancel } from "../src/core/cancel.ts";
 import { stillNeededTopic } from "../src/core/cancel.ts";
 import { createStillNeeded, type StillNeededOpen } from "../src/core/still-needed.ts";

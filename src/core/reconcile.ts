@@ -652,8 +652,9 @@ export async function reconcile(
 
   // Step 3. Dispatch: each node ready for an agent with no active run, each node in review whose
   // QA run on its head is due (N-80, O-104), each node queued after `usage_exhausted` once its
-  // wait has passed, and each node a failed QA round or staging check sent back to its building
-  // state with no builder run since (src/core/builder-runs.ts).
+  // wait has passed, each node a failed QA round or staging check sent back to its building
+  // state with no builder run since, and each node whose builder run ended `fail`, `timeout` or
+  // `cancelled` (src/core/builder-runs.ts, D-413).
   const intervalMinutes = await positiveNumberSetting(
     store,
     "reconcile_interval_minutes",
@@ -683,7 +684,8 @@ export async function reconcile(
         ? latestRun.bot
         : null;
     // A builder run due with no move: the item came back from a failed QA round or staging
-    // check (O-41). It is planned like a queued dispatch.
+    // check (O-41), or its builder run ended `fail`, `timeout` or `cancelled` (D-413). It is
+    // planned like a queued dispatch.
     const builderRun = dispatchMove ? null : await builderRuns.check(node.id);
     const builderRole = builderRun?.due ? builderRun.role : null;
     if (!dispatchMove && queuedBot === null && builderRole === null) continue;

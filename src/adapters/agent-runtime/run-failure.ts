@@ -10,6 +10,9 @@
 // start is followed by words from the model keeps its fixed start only. Any other error text,
 // the model's or a tool's words, or a message a library made, is not kept. Nothing here logs,
 // and nothing is stored: the runner's result shows it (flows/lib/runs.ts).
+//
+// A run that left no readable result has no error sentence; the Kubernetes runtime gives its
+// pod's end reason and exit code instead (D-415, kubernetes/pod-end.ts).
 import { CEILING_MESSAGE, REJECTED_CEILING_MESSAGE } from "../../egress-proxy/proxy.ts";
 
 /** A failed run's cause, as far as it can be kept (D-385). Every field may be missing. */
@@ -20,6 +23,13 @@ export interface RunFailure {
   providerType?: string;
   /** The agent's error, only when it is one of the images' fixed sentences. */
   error?: string;
+  /**
+   * Only with `bad_output` and no result line: the pod's end reason, one word from the Kubernetes
+   * runtime's fixed list, or `other` (D-415, kubernetes/pod-end.ts `POD_END_REASONS`).
+   */
+  podReason?: string;
+  /** Only with `bad_output` and no result line: the main container's exit code (D-415). */
+  exitCode?: number;
 }
 
 /**

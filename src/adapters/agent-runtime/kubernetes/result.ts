@@ -15,6 +15,7 @@ import { isFlexCapacityRejection } from "../../../agent-images/shared/provider-e
 import { runFailure } from "../run-failure.ts";
 import type { AgentRunResult } from "../runtime.ts";
 import type { JobStatus } from "./objects.ts";
+import type { PodEnd } from "./pod-end.ts";
 
 // Where a Job is lives in its own small file, which the run watcher's image copies (D-330).
 export { jobState, type JobState } from "./job-state.ts";
@@ -294,7 +295,9 @@ function mapOutcome(
 /**
  * How a run ended (`mapOutcome` above), and for a run that did not succeed, what can be kept of
  * its cause: the provider's status and error type, and the agent's error only when it is one of
- * the images' fixed sentences (D-385, ../run-failure.ts).
+ * the images' fixed sentences (D-385, ../run-failure.ts). A run that left no result line is
+ * `bad_output` with nothing of the agent to keep: then its pod's end reason and exit code, when
+ * the runtime read them (D-415, ./pod-end.ts).
  */
 export function mapRunEnd(
   state: "complete" | "deadline" | "failed",
@@ -302,9 +305,15 @@ export function mapRunEnd(
   result: AgentResult | null,
   model: string,
   tier: ServiceTier = "standard",
+  pod: PodEnd | null = null,
 ): AgentRunResult {
   const mapped = mapOutcome(state, job, result, model, tier);
-  if (mapped.outcome === "success" || result === null) return mapped;
+  if (mapped.outcome === "success") return mapped;
+  if (result === null) {
+    return mapped.detail === "bad_output" && pod !== null
+      ? { ...mapped, failure: { ...pod } }
+      : mapped;
+  }
   const failure = runFailure(result.errorText, result.providerError);
   return Object.keys(failure).length === 0 ? mapped : { ...mapped, failure };
 }

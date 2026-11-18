@@ -106,6 +106,49 @@ describe("the stall check, stalled items (unit: D-112, D-302)", () => {
     ]);
   });
 
+  it("lists an item whose started builder run was cancelled, from the run's end (D-413)", async () => {
+    const f = await fixture();
+    await f.live();
+    const node = await f.node("in_development");
+    const run = await f.run(node.id, "developer", 20);
+    await f.evidence(
+      node.id,
+      "dispatch_record",
+      { repo: "didi-build/rehearsal", branch: `foreman/${node.id}` },
+      { runId: run.id },
+    );
+    const endedAt = f.clock.now();
+    await f.store.endRun(run.id, {
+      endedAt,
+      outcome: "cancelled",
+      turns: null,
+      minutes: null,
+      costUsd: null,
+      tokens: null,
+      transcriptRef: null,
+      usageExhaustedCause: null,
+      retryAfterSeconds: null,
+      serviceTierServed: null,
+      capacityRetries: null,
+      capacityWaitSeconds: null,
+      firstTokenMs: null,
+      reportedCostUsd: null,
+    });
+    // The kill switch cancelled it, and holds its next run while it stays on.
+    await f.setting("kill_switch", true);
+    f.advanceMinutes(CYCLE);
+    expect((await f.items(readOnly(f.store))).items).toMatchObject([
+      {
+        nodeId: node.id,
+        state: "in_development",
+        role: "developer",
+        readySince: endedAt,
+        stalledForMinutes: CYCLE,
+        waits: [{ code: "kill_switch", detail: null }],
+      },
+    ]);
+  });
+
   it("names the kill switch, once, with dry run", async () => {
     const f = await fixture();
     await f.setting("kill_switch", true);

@@ -11,6 +11,7 @@ import { parse } from "yaml";
 import {
   MACHINE_1_DIR,
   MACHINE_2_DIR,
+  loadAllContractFiles,
   loadContractFiles,
 } from "../src/adapters/contracts-file/load.ts";
 import { validateContracts } from "../src/core/contracts.ts";
@@ -320,6 +321,16 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
     const rows = new Map(machineOneRows().map((r) => [r.label, r.moves]));
     const labelOf = (id: string) => parsed.states[id]?.label ?? id;
     for (const move of parsed.transitions) {
+      // A move out of an escalated state (escalation.yaml's, which the table has no row for) is
+      // Didi dropping an idea with no work items (D-412), as the Parked or Rejected row says.
+      if (!parsed.states[move.from]) {
+        expect(move.from, `${move.from} to ${move.to}`).toMatch(/^escalated_to_/);
+        expect(move.to).toBe("rejected");
+        expect(rows.get("Parked or Rejected")).toContain(
+          "Didi parks or drops the idea at any point",
+        );
+        continue;
+      }
       expect(rows.get(labelOf(move.from)), `${move.from} to ${move.to}`).toContain(
         `Goes to ${labelOf(move.to)}`,
       );
@@ -337,6 +348,25 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       "plan_accepted->rejected",
       "triage->rejected",
       "handed_off->rejected",
+      "submitted->rejected",
+      "escalated_to_council->rejected",
+      "escalated_to_didi->rejected",
+    ]);
+  });
+
+  it("validates with Machine 2's escalated states, and keeps Submitted to Rejected as two runner-only ways (D-412, D-307)", () => {
+    const { contracts, problems } = validateContracts(
+      loadAllContractFiles("0".repeat(40)).raw,
+      GUARD_NAMES,
+    );
+    expect(problems).toEqual([]);
+    expect(
+      contracts?.transitions
+        .filter((t) => t.from === "submitted" && t.to === "rejected")
+        .map((t) => [t.guards, t.runnerOnly, t.tracks, t.escalation]),
+    ).toEqual([
+      [["scanner_finding_gone"], true, undefined, undefined],
+      [["cancel_recorded"], true, undefined, undefined],
     ]);
   });
 
@@ -368,7 +398,7 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
     expect(rows.get("Council planning")).toMatch(/the Council accepts it itself/);
   });
 
-  it("only the runner rejects an idea: a scanner idea in Submitted no longer found (D-301), or one further along after a cancel (D-308)", () => {
+  it("only the runner rejects an idea: a scanner idea in Submitted no longer found (D-301), one further along after a cancel (D-308), or one Didi withdrew with no work items (D-412)", () => {
     const intoRejected = parsed.transitions.filter((t) => t.to === "rejected");
     expect(
       intoRejected.map((t) => [`${t.from}->${t.to}`, t.guards, t.runner_only]),
@@ -378,8 +408,31 @@ describe("Machine 1's contract matches the spec's section 3 table (contract cons
       ["plan_accepted->rejected", ["cancel_recorded"], true],
       ["triage->rejected", ["cancel_recorded"], true],
       ["handed_off->rejected", ["cancel_recorded"], true],
+      ["submitted->rejected", ["cancel_recorded"], true],
+      ["escalated_to_council->rejected", ["cancel_recorded"], true],
+      ["escalated_to_didi->rejected", ["cancel_recorded"], true],
     ]);
     expect(intoRejected[0]?.trigger).toContain("scan:<scan id>");
+    // Didi's withdrawal leaves every state an idea with no work items can be in, but Interview,
+    // Needs Didi and Parked, which no move leads into (D-412).
+    expect(
+      intoRejected
+        .filter((t) => String(t.trigger).includes("D-412"))
+        .map((t) => t.from)
+        .sort(),
+    ).toEqual([
+      "council_planning",
+      "escalated_to_council",
+      "escalated_to_didi",
+      "plan_accepted",
+      "submitted",
+      "triage",
+    ]);
+    expect(
+      parsed.transitions.filter((t) =>
+        ["interview", "needs_didi", "parked"].includes(t.to),
+      ),
+    ).toEqual([]);
     expect(parsed.transitions.filter((t) => t.to === "parked")).toEqual([]);
     // No cancel leaves Interview or Needs Didi: an idea there has no work items yet.
     expect(

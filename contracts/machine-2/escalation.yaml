@@ -9,9 +9,15 @@
 # declared twice. This file owns the two escalated states.
 # The two `to: return` moves are runner_only: only the escalation pass applies them, with both
 # counters reset (O-46, D-227, O-54).
+# The move from Escalated to Council to Escalated to Didi is also taken, with no Council run, when
+# the Council has returned the item twice with no step forward in between (D-414, O-143): the
+# runner opens the question for Didi first, so didi_question_open passes as for any other reason.
 # Escalated to Council to Cancelled and Escalated to Didi to Cancelled (D-308) are runner_only
 # too: only the cancel step takes them, for a work item, guarded by cancel_recorded. An item in
 # Escalated to Didi is cancelled only on Didi's word: the Council's stop of it asks Didi first.
+# An idea escalated with no work items leaves either state for Rejected when Didi withdraws it
+# with the cancel form (D-412). Those two moves are in contracts/machine-1/idea.yaml, since
+# Rejected is Machine 1's state and these files are also loaded without it.
 # Rules live here and in guard functions, never in the library (essential 3).
 
 part: escalation

@@ -2,7 +2,8 @@
 // and returns at once; `poll` reads the Job and the agent's result, and moves QA from its fetch
 // step to its review; `cancel` deletes the run's Jobs with the grace period. Once `poll` sees an
 // end it deletes the run's Secrets and every other object but the agent Job, whose pod holds the
-// result; `cleanup` removes that too, after the runner has recorded the end.
+// result; `cleanup` removes that too, after the runner has recorded the end. The result is read
+// from the run's pod, and a run that left none shows how that pod ended (D-415, ./pod-end.ts).
 //
 // Every object is deleted by its fixed name: the runner's Role cannot list Secrets, Services,
 // NetworkPolicies or PersistentVolumeClaims, on purpose. Jobs are also found by label.
@@ -29,7 +30,8 @@ import {
 } from "./manifests.ts";
 import { LABEL_COMPONENT, agentNamespace, runNames, runSelector } from "./names.ts";
 import type { RunObjectKind } from "./objects.ts";
-import { jobState, mapRunEnd, parseAgentResult } from "./result.ts";
+import { podEnd, runPod, type PodEnd } from "./pod-end.ts";
+import { jobState, mapRunEnd, parseAgentResult, type AgentResult } from "./result.ts";
 import type { AgentTaskFile } from "./task.ts";
 
 export interface KubernetesAgentTask extends KubernetesRunSpec {
@@ -58,6 +60,8 @@ export interface KubernetesRuntime extends AgentRuntime<
 /** How much of the agent's log is read for its result. */
 const LOG_TAIL_LINES = 50;
 const LOG_LIMIT_BYTES = 256 * 1024;
+/** The agent pod's one container: the manifests name each container after its component. */
+const AGENT_CONTAINER = "agent";
 
 type Owned = [RunObjectKind, string];
 
@@ -143,19 +147,25 @@ export function createKubernetesRuntime(options: {
     await remove(handle.namespace, [...labelled, ...named]);
   }
 
-  async function readResult(handle: KubernetesRunHandle) {
+  /**
+   * The agent's result from its pod's log, and how that pod ended (D-415), from one listing of
+   * the run's agent pods. No pod is no result and no end.
+   */
+  async function readResult(
+    handle: KubernetesRunHandle,
+  ): Promise<{ result: AgentResult | null; pod: PodEnd | null }> {
     const pods = await client.listPods(handle.namespace, {
       ...runSelector(handle.runId),
       [LABEL_COMPONENT]: "agent",
     });
-    const pod = pods.map((p) => p.metadata.name).sort()[0];
-    if (pod === undefined) return null;
-    const log = await client.readPodLog(handle.namespace, pod, {
-      container: "agent",
+    const pod = runPod(pods, AGENT_CONTAINER);
+    if (pod === null) return { result: null, pod: null };
+    const log = await client.readPodLog(handle.namespace, pod.metadata.name, {
+      container: AGENT_CONTAINER,
       tailLines: LOG_TAIL_LINES,
       limitBytes: LOG_LIMIT_BYTES,
     });
-    return parseAgentResult(log);
+    return { result: parseAgentResult(log), pod: podEnd(pod, AGENT_CONTAINER) };
   }
 
   async function finish(
@@ -277,10 +287,17 @@ export function createKubernetesRuntime(options: {
       // Kubernetes deletes a Job by itself only after ttlSecondsAfterFinished. A Job gone
       // before the runner read it was stopped from outside the run: `cancel`, or by hand.
       if (state === "gone") return cancelled(handle, "job_deleted");
-      const result = state === "deadline" ? null : await readResult(handle);
+      const read = state === "deadline" ? null : await readResult(handle);
       return finish(
         handle,
-        mapRunEnd(state, agentJob, result, handle.spec.model, handle.spec.serviceTier),
+        mapRunEnd(
+          state,
+          agentJob,
+          read?.result ?? null,
+          handle.spec.model,
+          handle.spec.serviceTier,
+          read?.pod ?? null,
+        ),
       );
     },
 

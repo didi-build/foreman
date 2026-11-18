@@ -306,10 +306,12 @@ describe("a freed slot (flow: run-end, N-81, O-104)", () => {
     ]);
     expect(f.runtime.started).toHaveLength(2);
 
-    // One run ends: its slot goes to the older item, and the newer one still waits.
+    // One run ends: its slot goes to the older item, and the newer one still waits. The run went
+    // over budget, so its own item gets no next run first (D-413 runs again only a builder run
+    // that ended `fail`, `timeout` or `cancelled`).
     f.runtime.status.set(first.runId, {
       state: "finished",
-      result: { ...RESULT, outcome: "fail", detail: "error" },
+      result: { ...RESULT, outcome: "budget_exceeded", detail: "max_turns" },
     });
     const ended = await recordRunEnd(f.deps, { runId: first.runId });
     expect(ended).toMatchObject({

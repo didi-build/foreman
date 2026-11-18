@@ -11,7 +11,8 @@
 // pass's step 3 finds them, from the contracts and the dispatch guard, never from a list here:
 // - ready to start: the node's state has a move guarded by `agent_ready_not_on_hold` (the
 //   dispatch move), or its latest run ended `usage_exhausted` (a queued dispatch), or a builder
-//   run is due with no move (src/core/builder-runs.ts, O-41); and the library would dispatch it
+//   run is due with no move (src/core/builder-runs.ts, O-41), the run after a builder run that
+//   ended `fail`, `timeout` or `cancelled` included (D-413); and the library would dispatch it
 //   (`canDispatch`: not escalated, not held, agent-ready and not stale);
 // - left out: an item with an open blocker (the `blockers_done` guard fails), the subject of an
 //   open blocking gate request, held, or with an active run;

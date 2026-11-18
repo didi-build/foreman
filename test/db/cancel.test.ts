@@ -2,9 +2,11 @@
 // store as the factory_runner role: the guard's reads (decisions, gate requests, transitions,
 // runs), each work item's move into Cancelled with its open gate requests cancelled in the same
 // transaction (gate requests read by node), the idea's move into Rejected, the request for Didi
-// on a plan Didi approved, Didi's own cancel recorded as Didi's `answer`, and the "is this still
-// needed?" question opened as the Council's request. No migration: the new state is a contract
-// state, the store holds no list of states, and every row uses an existing kind.
+// on a plan Didi approved, Didi's own cancel recorded as Didi's `answer`, the "is this still
+// needed?" question opened as the Council's request, and Didi's withdrawal of an idea with no
+// work items out of Escalated to Didi with its requests cancelled (D-412). No migration: the new
+// state and moves are contract data, the store holds no list of states, and every row uses an
+// existing kind.
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -18,6 +20,8 @@ import {
   createCancels,
   stillNeededTopic,
 } from "../../src/core/cancel.ts";
+import { escalationTopic } from "../../src/core/guards/escalation.ts";
+import { planApprovalTopic } from "../../src/core/plans.ts";
 import { createStillNeeded } from "../../src/core/still-needed.ts";
 import { scannerGoneTopic } from "../../src/core/scan-ideas.ts";
 import type { Store } from "../../src/core/store.ts";
@@ -178,6 +182,61 @@ describe.skipIf(!adminUrl)(
       expect(
         await store.findOpenGateRequest(t.projectId, stillNeededTopic(other.id)),
       ).toBeNull();
+    });
+
+    it("withdraws an idea with no work items from Escalated to Didi, its requests cancelled with the move, once (D-412)", async () => {
+      const t = await createReconcileFixture({
+        store,
+        idPrefix: "8f330000-0000-4000-8000",
+        slug: "cs-d",
+      });
+      await t.setting("dry_run", false);
+      const idea = await t.node("escalated_to_didi", {
+        type: "idea",
+        track: null,
+        ownerRole: "operator",
+        blockedReason: "the Council gave no usable answer",
+      });
+      const question = await t.openGate(idea.id, escalationTopic(idea.id), {
+        kind: "escalation",
+        owner: "didi",
+        blocking: false,
+      });
+      const plan = await t.openGate(idea.id, planApprovalTopic(idea.id), {
+        kind: "scope",
+        owner: "didi",
+      });
+      const cancels = createCancels(t.deps);
+      const done = await cancels.cancelByDidi(idea.id, "An early copy of the plan.");
+      expect(done).toMatchObject({
+        recorded: true,
+        step: { step: "acted", items: [], idea: { outcome: "applied" } },
+      });
+      expect(await store.getNode(idea.id)).toMatchObject({
+        state: "rejected",
+        blockedReason: null,
+      });
+      expect((await store.getGateRequest(question.id))?.status).toBe("cancelled");
+      expect((await store.getGateRequest(plan.id))?.status).toBe("cancelled");
+      expect(await store.listDecisionsForNode(idea.id)).toMatchObject([
+        {
+          kind: "answer",
+          byActor: "didi",
+          scope: { kind: "cancel" },
+          textVerbatim: "An early copy of the plan.",
+        },
+      ]);
+      expect(await cancels.cancelByDidi(idea.id, "Again.")).toEqual({
+        recorded: false,
+        reason: "finished",
+      });
+      expect(
+        (await store.listTransitions(idea.id)).map((r) => [
+          r.fromState,
+          r.toState,
+          r.mode,
+        ]),
+      ).toEqual([["escalated_to_didi", "rejected", "applied"]]);
     });
   },
 );
