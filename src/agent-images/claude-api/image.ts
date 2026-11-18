@@ -5,6 +5,8 @@
 // with images is the visual comparison (D-242): no tools, the images in the first message, and
 // structured output only, which the runner checks and records; it posts nothing. A Council task
 // with images is its call on a visual approval (D-270): the same, through the structured run.
+// A provider without structured outputs (DeepInfra's Anthropic endpoint, O-152) gets the same
+// answer through an `answer` tool the model must call (FOREMAN_ANSWER_VIA=tool).
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -24,9 +26,11 @@ import {
   type AgentResult,
 } from "../shared/result.ts";
 import {
+  ANSWER_VIA,
   PLACEHOLDER_CREDENTIAL,
   readImageSettings,
   secretValues,
+  type AnswerVia,
   type ImageSettings,
 } from "../shared/settings.ts";
 import { readTask, type AgentTaskFile } from "../shared/task.ts";
@@ -86,16 +90,36 @@ const apiSettings = {
   } satisfies Setting<ServiceTier>,
   maxMinutes: wholeNumber("FOREMAN_MAX_MINUTES", 1),
   flexCapacityRetries: wholeNumber("FOREMAN_FLEX_CAPACITY_RETRIES", 0),
+  // How the route's provider takes the answer and a cache key (O-152, the bot file's
+  // `messages_api`). Unset is Anthropic's way: structured outputs and no key.
+  answerVia: {
+    env: "FOREMAN_ANSWER_VIA",
+    fallback: "schema",
+    parse: (raw: string) => {
+      if (!ANSWER_VIA.includes(raw as AnswerVia))
+        throw new Error("is not schema or tool");
+      return raw as AnswerVia;
+    },
+  } satisfies Setting<AnswerVia>,
+  promptCacheKey: {
+    env: "FOREMAN_PROMPT_CACHE_KEY",
+    fallback: "false",
+    parse: (raw: string) => {
+      if (raw !== "true" && raw !== "false") throw new Error("is not true or false");
+      return raw === "true";
+    },
+  } satisfies Setting<boolean>,
 };
 
 type Common = ReturnType<typeof readCommon>;
 /**
  * The loop's settings, and the run's price for its dollar limit (../shared/price.ts). The price is
  * checked against the requested tier, so it is read once the tier is known; a missing or unusable
- * price stops the run before any model call.
+ * price stops the run before any model call. A provider that takes `prompt_cache_key` gets the
+ * run's id, so every request of the run shares one key (O-152).
  */
-function readCommon(env: NodeJS.ProcessEnv) {
-  const common = readConfig(apiSettings, env);
+function readCommon(env: NodeJS.ProcessEnv, runId: string) {
+  const { promptCacheKey, ...common } = readConfig(apiSettings, env);
   const { price } = readConfig(
     {
       price: {
@@ -105,7 +129,7 @@ function readCommon(env: NodeJS.ProcessEnv) {
     },
     env,
   );
-  return { ...common, price };
+  return { ...common, price, ...(promptCacheKey ? { promptCacheKey: runId } : {}) };
 }
 
 const qaSettings = {
@@ -171,7 +195,7 @@ async function qaRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    system: systemText("qa", task.instructions),
+    system: systemText("qa", task.instructions, false, common.answerVia),
     tools: WORKSPACE_TOOLS,
     input: fencedInput(task.input, [
       `Head commit: ${qa.headSha}`,
@@ -245,7 +269,7 @@ async function visualRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    system: systemText("qa", task.instructions, true),
+    system: systemText("qa", task.instructions, true, common.answerVia),
     tools: [],
     input: fencedInput(task.input),
     images: task.images ?? [],
@@ -291,7 +315,12 @@ async function structuredRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    system: systemText(settings.role, task.instructions, task.images !== undefined),
+    system: systemText(
+      settings.role,
+      task.instructions,
+      task.images !== undefined,
+      common.answerVia,
+    ),
     // ADR 0107 gives Council and Triage no tools.
     tools: [],
     input: fencedInput(task.input),
@@ -301,7 +330,8 @@ async function structuredRun(
   });
   if (result.status !== "success") return result;
   try {
-    // Structured outputs make this JSON; the runner validates it against its schema (ADR 0107).
+    // Structured outputs, or the answer tool's input (O-152), make this JSON; the runner
+    // validates it against its schema (ADR 0107).
     return { ...result, structured: JSON.parse(result.finalText) as unknown };
   } catch {
     return { ...result, status: "error", errorText: "the answer is not JSON" };
@@ -317,7 +347,7 @@ export async function runClaudeApiImage(
   try {
     const settings = readImageSettings("claude-api", env);
     secrets = secretValues(settings, env);
-    const common = readCommon(env);
+    const common = readCommon(env, settings.runId);
     const task = readTask(settings.role, settings.taskFile);
     // The proxy may not answer yet when this pod starts (O-133).
     await (deps.waitForProxy ?? waitForProxy)(settings.modelBaseUrl);

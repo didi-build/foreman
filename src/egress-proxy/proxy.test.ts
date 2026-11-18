@@ -377,6 +377,13 @@ async function start(
           secretPath: "projects/test/models/openai",
         },
         {
+          // Shaped like the Messages API bots' DeepInfra entry (O-152).
+          name: "deepinfra",
+          upstream: `https://${MODEL_HOST}:${upstreamPort}/anthropic`,
+          credential: "x-api-key",
+          secretPath: "projects/test/models/deepinfra",
+        },
+        {
           name: "private",
           upstream: `https://private-model.example.com:${upstreamPort}`,
           credential: "none",
@@ -391,6 +398,7 @@ async function start(
     credentials: new Map([
       ["anthropic", PROVIDER_KEY],
       ["openai", PROVIDER_KEY],
+      ["deepinfra", PROVIDER_KEY],
     ]),
     maxModelRequests: overrides.maxModelRequests ?? 100,
     maxRejectedModelRequests: overrides.maxRejectedModelRequests ?? 5,
@@ -583,6 +591,20 @@ describe("egress proxy model forwarding (integration: localhost fakes, ADR 0106 
     expect(seen.path).toBe("/v1/chat/completions");
     expect(seen.headers.authorization).toBe(`Bearer ${PROVIDER_KEY}`);
     expect(seen.headers["x-api-key"]).toBeUndefined();
+  });
+
+  it("sets an x-api-key credential under a base path, as for DeepInfra's Anthropic endpoint (O-152)", async () => {
+    await start();
+    await fetch(proxyUrl("/deepinfra/v1/messages"), {
+      method: "POST",
+      headers: { "x-api-key": AGENT_KEY, authorization: `Bearer ${AGENT_KEY}` },
+      body: "{}",
+    });
+    const seen = upstreamSeen[0] as Seen;
+    expect(seen.path).toBe("/anthropic/v1/messages");
+    expect(seen.headers["x-api-key"]).toBe(PROVIDER_KEY);
+    expect(seen.headers.authorization).toBeUndefined();
+    expect(seen.headers.host).toBe(`${MODEL_HOST}:${upstreamPort}`);
   });
 
   it("streams server-sent events as they arrive", async () => {

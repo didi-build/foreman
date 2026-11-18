@@ -8,8 +8,10 @@ const TIERS: readonly ServiceTier[] = ["standard", "flex", "priority"];
 
 /**
  * The tier a provider response reports, read from `usage.service_tier` (the Messages API, and
- * Claude Code's result) or a top-level `service_tier` (OpenAI-style responses). Any other value,
- * such as Anthropic's `batch`, counts as not reported.
+ * Claude Code's result) or a top-level `service_tier` (OpenAI-style responses). `default` is
+ * Standard: DeepInfra's and OpenAI's word for it, which Anthropic never sends, as the egress
+ * proxy reads it (D-423, O-152). Any other value, such as Anthropic's `batch`, counts as not
+ * reported.
  */
 export function reportedTier(response: unknown): ServiceTier | null {
   if (typeof response !== "object" || response === null) return null;
@@ -19,6 +21,7 @@ export function reportedTier(response: unknown): ServiceTier | null {
       ? (usage as Record<string, unknown>).service_tier
       : undefined;
   for (const value of [inUsage, topLevel]) {
+    if (value === "default") return "standard";
     if (TIERS.includes(value as ServiceTier)) return value as ServiceTier;
   }
   return null;

@@ -10,7 +10,13 @@ import {
   STATE_API_PREFIX,
   parseStateApiUpstream,
 } from "../../../egress-proxy/state-api.ts";
-import { MODEL_APIS, type ModelApi } from "../../../agent-images/shared/settings.ts";
+import {
+  ANSWER_VIA,
+  MODEL_APIS,
+  ROLES_BY_IMAGE,
+  type AnswerVia,
+  type ModelApi,
+} from "../../../agent-images/shared/settings.ts";
 import { parseRunPrice } from "../../../core/run-cost.ts";
 import type { RunPrice } from "../../../core/routing.ts";
 import type { ServiceTier } from "../../../core/store.ts";
@@ -107,6 +113,19 @@ export interface ModelProviderSetting {
    * FOREMAN_MODEL_BASE_URL (the OpenCode image, D-222). At most one provider of a run has it.
    */
   api?: { kind: ModelApi; path: string };
+  /**
+   * How the Messages API image uses this provider (O-152), from the bot file's `messages_api`.
+   * Absent is Anthropic's way: structured outputs and no `prompt_cache_key`, and no variable.
+   */
+  messagesApi?: MessagesApiSetting;
+}
+
+/** A provider's `messages_api`, with its defaults filled in (O-152). */
+export interface MessagesApiSetting {
+  /** `tool` gives the agent FOREMAN_ANSWER_VIA=tool. */
+  answer: AnswerVia;
+  /** `true` gives the agent FOREMAN_PROMPT_CACHE_KEY=true. */
+  promptCacheKey: boolean;
 }
 
 /** Everything about a run except its credential values. Safe to keep in the run handle. */
@@ -267,6 +286,16 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
       (!MODEL_APIS.includes(provider.api.kind) || !API_PATH.test(provider.api.path))
     ) {
       throw new Error(`provider ${provider.name} has an invalid API`);
+    }
+    const messagesApi = provider.messagesApi;
+    if (
+      messagesApi !== undefined &&
+      (!ROLES_BY_IMAGE["claude-api"].includes(spec.role) ||
+        !ANSWER_VIA.includes(messagesApi.answer) ||
+        typeof messagesApi.promptCacheKey !== "boolean")
+    ) {
+      // Only the Messages API image reads it (O-152).
+      throw new Error(`provider ${provider.name} has invalid Messages API settings`);
     }
   }
   const withApi = spec.providers.filter((p) => p.api !== undefined);
@@ -798,6 +827,10 @@ function agentEnv(
       plain.FOREMAN_MODEL_API = provider.api.kind;
       plain.FOREMAN_MODEL_BASE_URL = `${proxyBase}/${provider.name}${provider.api.path}`;
     }
+    // Set only when the bot file asks, so a run on Anthropic gets the same variables as before
+    // (O-152).
+    if (provider.messagesApi?.answer === "tool") plain.FOREMAN_ANSWER_VIA = "tool";
+    if (provider.messagesApi?.promptCacheKey) plain.FOREMAN_PROMPT_CACHE_KEY = "true";
   }
   const env = [
     ...plainEnv(plain),
