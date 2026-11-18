@@ -318,6 +318,20 @@ export function mapRunEnd(
   return Object.keys(failure).length === 0 ? mapped : { ...mapped, failure };
 }
 
+/**
+ * The run's end with the tier its egress proxy counted (D-423, O-151), only when the agent's
+ * result reported none: a tier the agent image reported itself is never replaced, and a null
+ * (no request named a tier, or no tally could be read) leaves the end as it is, priced at
+ * Standard.
+ */
+export function withProxyServedTier(
+  end: AgentRunResult,
+  proxyTier: ServedTier | null,
+): AgentRunResult {
+  if (end.serviceTierServed !== undefined || proxyTier === null) return end;
+  return { ...end, serviceTierServed: proxyTier };
+}
+
 /** The route measurements of a result, only those it has. */
 function measured(result: AgentResult | null): Partial<AgentRunResult> {
   if (result === null) return {};

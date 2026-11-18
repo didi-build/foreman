@@ -4,10 +4,17 @@
 // end it deletes the run's Secrets and every other object but the agent Job, whose pod holds the
 // result; `cleanup` removes that too, after the runner has recorded the end. The result is read
 // from the run's pod, and a run that left none shows how that pod ended (D-415, ./pod-end.ts).
+// When the agent reported no served tier, the tier comes from the tally its egress proxy logged
+// (D-423, O-151), read from the proxy's pod before the proxy is deleted.
 //
 // Every object is deleted by its fixed name: the runner's Role cannot list Secrets, Services,
 // NetworkPolicies or PersistentVolumeClaims, on purpose. Jobs are also found by label.
 // Nothing here logs, and no credential value is kept: the handle holds only the run's spec.
+import type { ServedTier } from "../../../core/store.ts";
+import {
+  parseServedTiersLog,
+  servedTierOf,
+} from "../../../egress-proxy/served-tiers.ts";
 import type { AgentRunStatus, AgentRuntime, RunLimits } from "../runtime.ts";
 import {
   KubernetesApiError,
@@ -31,7 +38,13 @@ import {
 import { LABEL_COMPONENT, agentNamespace, runNames, runSelector } from "./names.ts";
 import type { RunObjectKind } from "./objects.ts";
 import { podEnd, runPod, type PodEnd } from "./pod-end.ts";
-import { jobState, mapRunEnd, parseAgentResult, type AgentResult } from "./result.ts";
+import {
+  jobState,
+  mapRunEnd,
+  parseAgentResult,
+  withProxyServedTier,
+  type AgentResult,
+} from "./result.ts";
 import type { AgentTaskFile } from "./task.ts";
 
 export interface KubernetesAgentTask extends KubernetesRunSpec {
@@ -62,6 +75,10 @@ const LOG_TAIL_LINES = 50;
 const LOG_LIMIT_BYTES = 256 * 1024;
 /** The agent pod's one container: the manifests name each container after its component. */
 const AGENT_CONTAINER = "agent";
+/** The agent's proxy pod's one container, and how much of its log is read for the tally. */
+const PROXY_CONTAINER = "proxy";
+const PROXY_LOG_TAIL_LINES = 200;
+const PROXY_LOG_LIMIT_BYTES = 256 * 1024;
 
 type Owned = [RunObjectKind, string];
 
@@ -166,6 +183,39 @@ export function createKubernetesRuntime(options: {
       limitBytes: LOG_LIMIT_BYTES,
     });
     return { result: parseAgentResult(log), pod: podEnd(pod, AGENT_CONTAINER) };
+  }
+
+  /**
+   * The tier the run's egress proxy counted its served model requests at (D-423, O-151), from
+   * the newest tally line in the tail of its log: it logs one after each served request, so the
+   * newest covers every request once the agent has ended. Null when there is not exactly one
+   * proxy pod (its Job never retries, so a second one means the count may be split), when its log
+   * is gone or reached the byte limit (it may be cut), when no well-formed tally line is found, or
+   * when any read fails: the end is then recorded as before, priced at Standard. Never throws.
+   */
+  async function proxyServedTier(
+    handle: KubernetesRunHandle,
+  ): Promise<ServedTier | null> {
+    try {
+      const pods = await client.listPods(handle.namespace, {
+        ...runSelector(handle.runId),
+        [LABEL_COMPONENT]: "proxy",
+      });
+      const name = pods.length === 1 ? pods[0]?.metadata?.name : undefined;
+      if (typeof name !== "string") return null;
+      const log = await client.readPodLog(handle.namespace, name, {
+        container: PROXY_CONTAINER,
+        tailLines: PROXY_LOG_TAIL_LINES,
+        limitBytes: PROXY_LOG_LIMIT_BYTES,
+      });
+      if (log === null || Buffer.byteLength(log, "utf8") >= PROXY_LOG_LIMIT_BYTES) {
+        return null;
+      }
+      const tally = parseServedTiersLog(log, handle.runId);
+      return tally === null ? null : servedTierOf(tally);
+    } catch {
+      return null;
+    }
   }
 
   async function finish(
@@ -288,17 +338,21 @@ export function createKubernetesRuntime(options: {
       // before the runner read it was stopped from outside the run: `cancel`, or by hand.
       if (state === "gone") return cancelled(handle, "job_deleted");
       const read = state === "deadline" ? null : await readResult(handle);
-      return finish(
-        handle,
-        mapRunEnd(
-          state,
-          agentJob,
-          read?.result ?? null,
-          handle.spec.model,
-          handle.spec.serviceTier,
-          read?.pod ?? null,
-        ),
+      const end = mapRunEnd(
+        state,
+        agentJob,
+        read?.result ?? null,
+        handle.spec.model,
+        handle.spec.serviceTier,
+        read?.pod ?? null,
       );
+      // The proxy's tally is read only for an end that was read and names no tier, and before
+      // `finish` deletes the proxy (D-423).
+      const proxyTier =
+        read === null || end.serviceTierServed !== undefined
+          ? null
+          : await proxyServedTier(handle);
+      return finish(handle, withProxyServedTier(end, proxyTier));
     },
 
     async cancel(handle) {

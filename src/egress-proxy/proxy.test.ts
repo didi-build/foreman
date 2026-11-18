@@ -19,7 +19,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo, Socket } from "node:net";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../service-kit/logger.ts";
 import { startService, type RunningService } from "../service-kit/server.ts";
@@ -31,6 +32,12 @@ import {
   REJECTED_CEILING_MESSAGE,
   type EgressProxy,
 } from "./proxy.ts";
+import {
+  emptyTally,
+  parseServedTiersLog,
+  SERVED_TIERS_MESSAGE,
+  servedTierOf,
+} from "./served-tiers.ts";
 import { parseStateApiUpstream } from "./state-api.ts";
 
 // Integration: the proxy over real sockets on localhost. No real DNS and no real network: the
@@ -74,6 +81,98 @@ interface Seen {
   bodyHash: string;
 }
 let upstreamSeen: Seen[] = [];
+
+/** One served model response of the fake upstream: its headers and the writes of its body. */
+interface ServedCase {
+  headers: Record<string, string>;
+  writes: Buffer[];
+}
+
+/** A chat completion that names a tier, or none. The marker checks no body reaches the logs. */
+const completionBody = (tier?: string): Buffer =>
+  Buffer.from(
+    JSON.stringify({
+      id: "chatcmpl-1",
+      object: "chat.completion",
+      choices: [{ message: { role: "assistant", content: BODY_MARKER } }],
+      ...(tier === undefined ? {} : { service_tier: tier }),
+    }),
+  );
+/** A streamed completion whose chunks name these tiers (undefined: a chunk without the field). */
+const eventsBody = (...tiers: (string | undefined)[]): Buffer =>
+  Buffer.from(
+    tiers
+      .map(
+        (tier) =>
+          `data: ${JSON.stringify({
+            object: "chat.completion.chunk",
+            choices: [{ delta: { content: `${BODY_MARKER} é` } }],
+            ...(tier === undefined ? {} : { service_tier: tier }),
+          })}\n\n`,
+      )
+      .join("") + "data: [DONE]\n\n",
+  );
+/** A body in three writes, so the proxy and its reader see it in pieces. */
+const inThree = (body: Buffer): Buffer[] => {
+  const third = Math.ceil(body.length / 3);
+  return [
+    body.subarray(0, third),
+    body.subarray(third, 2 * third),
+    body.subarray(2 * third),
+  ];
+};
+const JSON_HEADERS = { "content-type": "application/json" };
+const EVENT_HEADERS = {
+  "content-type": "text/event-stream",
+  "cache-control": "no-cache",
+};
+const SERVED_CASES: Record<string, ServedCase> = {
+  "json-default": { headers: JSON_HEADERS, writes: inThree(completionBody("default")) },
+  "json-flex": { headers: JSON_HEADERS, writes: inThree(completionBody("flex")) },
+  "json-unknown-value": { headers: JSON_HEADERS, writes: [completionBody("scale")] },
+  "json-no-field": { headers: JSON_HEADERS, writes: [completionBody()] },
+  "events-flex": {
+    headers: EVENT_HEADERS,
+    writes: inThree(eventsBody("flex", "flex")),
+  },
+  "events-default-last": {
+    headers: EVENT_HEADERS,
+    writes: inThree(eventsBody(undefined, undefined, "default")),
+  },
+  "events-disagree": {
+    headers: EVENT_HEADERS,
+    writes: inThree(eventsBody("flex", "default")),
+  },
+  "events-no-field": { headers: EVENT_HEADERS, writes: inThree(eventsBody(undefined)) },
+  "gzip-json-flex": {
+    headers: { ...JSON_HEADERS, "content-encoding": "gzip" },
+    writes: inThree(gzipSync(completionBody("flex"))),
+  },
+  "deflate-json-default": {
+    headers: { ...JSON_HEADERS, "content-encoding": "deflate" },
+    writes: inThree(deflateSync(completionBody("default"))),
+  },
+  "br-events-flex": {
+    headers: { ...EVENT_HEADERS, "content-encoding": "br" },
+    writes: inThree(brotliCompressSync(eventsBody(undefined, "flex"))),
+  },
+  "gzip-events-unknown-value": {
+    headers: { ...EVENT_HEADERS, "content-encoding": "gzip" },
+    writes: inThree(gzipSync(eventsBody("auto"))),
+  },
+  "corrupt-gzip": {
+    headers: { ...JSON_HEADERS, "content-encoding": "gzip" },
+    writes: [Buffer.from(`not gzip ${BODY_MARKER}`)],
+  },
+  zstd: {
+    headers: { ...JSON_HEADERS, "content-encoding": "zstd" },
+    writes: [randomBytes(64)],
+  },
+};
+/** What the fake upstream sent for each served response, in order. */
+let servedSent: Buffer[] = [];
+/** How to end each held stream the fake upstream is holding open. */
+let heldReleases: (() => void)[] = [];
 
 // Stand in for the in-cluster state API, and for a second private service the route must never
 // reach.
@@ -154,6 +253,32 @@ beforeAll(async () => {
         releaseStream = () => response.end("event: last\ndata: 2\n\n");
         return;
       }
+      const served = /^\/v1\/served\?case=([a-z0-9-]+)$/.exec(request.url ?? "")?.[1];
+      const servedCase = served === undefined ? undefined : SERVED_CASES[served];
+      if (servedCase !== undefined) {
+        const { headers, writes } = servedCase;
+        servedSent.push(Buffer.concat(writes));
+        response.writeHead(200, headers);
+        let i = 0;
+        const next = (): void => {
+          const write = writes[i];
+          i += 1;
+          if (write === undefined) response.end();
+          else response.write(write, () => setTimeout(next, 5));
+        };
+        next();
+        return;
+      }
+      if (request.url === "/v1/served-held") {
+        // A stream held open after its first event, which names Flex.
+        const whole = eventsBody("flex");
+        const first = whole.subarray(0, whole.indexOf("data: [DONE]"));
+        servedSent.push(first);
+        response.writeHead(200, EVENT_HEADERS);
+        response.write(first);
+        heldReleases.push(() => response.end("data: [DONE]\n\n"));
+        return;
+      }
       if (request.url === "/v1/busy") {
         // A provider that is busy: not served, not billed.
         response.writeHead(429, { "content-type": "application/json" });
@@ -211,6 +336,9 @@ afterEach(async () => {
   upstreamSeen = [];
   stateApiSeen = [];
   otherServiceSeen = [];
+  servedSent = [];
+  for (const release of heldReleases) release();
+  heldReleases = [];
 });
 
 async function start(
@@ -747,5 +875,177 @@ describe("egress proxy logs (integration: captured logger, ADR 0106 section 5)",
     expect(text).not.toContain(BODY_MARKER);
     expect(text).not.toContain(PROVIDER_KEY);
     expect(text).not.toContain(AGENT_KEY);
+  });
+});
+
+/** A POST through the proxy that reads the raw answer: no decompression, unlike fetch. */
+function rawPost(
+  path: string,
+): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: harness?.service.port,
+      method: "POST",
+      path,
+      headers: { "content-type": "application/json", "accept-encoding": "gzip, br" },
+    });
+    request.on("response", (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () =>
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks),
+        }),
+      );
+    });
+    request.on("error", reject);
+    request.end("{}");
+  });
+}
+
+/** The tally lines logged so far, parsed. */
+const tallies = (logs: string[]) =>
+  logs
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((entry) => entry.message === SERVED_TIERS_MESSAGE);
+
+describe("egress proxy served tier (integration: localhost fakes, D-423)", () => {
+  it.each([
+    ["json-default", "standard"],
+    ["json-flex", "flex"],
+    ["json-unknown-value", "unknown"],
+    ["json-no-field", "unknown"],
+    ["events-flex", "flex"],
+    ["events-default-last", "standard"],
+    ["events-disagree", "mixed"],
+    ["events-no-field", "unknown"],
+    ["gzip-json-flex", "flex"],
+    ["deflate-json-default", "standard"],
+    ["br-events-flex", "flex"],
+    ["gzip-events-unknown-value", "unknown"],
+    ["corrupt-gzip", "unknown"],
+    ["zstd", "unknown"],
+  ])("passes %s through byte for byte and counts it as %s", async (name, counted) => {
+    const { logs } = await start();
+    const answer = await rawPost(`/openai/served?case=${name}`);
+    const sent = SERVED_CASES[name] as ServedCase;
+    expect(answer.status).toBe(200);
+    expect(servedSent).toHaveLength(1);
+    expect(sha256(answer.body)).toBe(sha256(servedSent[0] as Buffer));
+    for (const [header, value] of Object.entries(sent.headers)) {
+      expect(answer.headers[header]).toBe(value);
+    }
+    await vi.waitFor(() => expect(tallies(logs)).toHaveLength(1));
+    expect(tallies(logs)[0]).toMatchObject({
+      runId: RUN_ID,
+      level: "info",
+      servedTiers: { ...emptyTally(), [counted]: 1 },
+    });
+  });
+
+  it("keeps the run's tally across requests, which the runtime's parser reads as Flex", async () => {
+    const { logs } = await start();
+    // More requests than the reads allowed at once, one after another: each read ends.
+    for (const name of [
+      "events-flex",
+      "gzip-json-flex",
+      "json-no-field",
+      "br-events-flex",
+      "json-flex",
+      "deflate-json-default",
+    ]) {
+      await rawPost(`/openai/served?case=${name}`);
+    }
+    await vi.waitFor(() => expect(tallies(logs)).toHaveLength(6));
+    const tally = parseServedTiersLog(logs.join("\n"), RUN_ID);
+    expect(tally).toEqual({ ...emptyTally(), flex: 4, standard: 1, unknown: 1 });
+    expect(servedTierOf(tally ?? emptyTally())).toBe("mixed");
+    expect(
+      servedTierOf(
+        parseServedTiersLog(logs.slice(0, -1).join("\n"), RUN_ID) ?? emptyTally(),
+      ),
+    ).toBe("flex");
+  });
+
+  /** Opens a held stream through the proxy and reads its first event. */
+  async function openHeld() {
+    const response = await fetch(proxyUrl("/openai/served-held"), {
+      method: "POST",
+      body: "{}",
+    });
+    const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+    const first = await reader.read();
+    return { reader, first: Buffer.from(first.value ?? new Uint8Array()) };
+  }
+  const drain = async (reader: ReadableStreamDefaultReader<Uint8Array>) => {
+    while (!(await reader.read()).done);
+  };
+
+  it("does not hold a stream back: the first event arrives while the stream is open", async () => {
+    const { logs } = await start();
+    const { reader, first } = await openHeld();
+    expect(first).toEqual(servedSent[0]);
+    // Nothing is counted while the stream is open.
+    expect(tallies(logs)).toEqual([]);
+    for (const release of heldReleases) release();
+    await drain(reader);
+    await vi.waitFor(() => expect(tallies(logs)).toHaveLength(1));
+    expect(tallies(logs)[0]).toMatchObject({ servedTiers: { flex: 1, unknown: 0 } });
+  });
+
+  it("reads at most four answers at once and counts any other as unknown at once", async () => {
+    const { logs } = await start();
+    const held = [];
+    for (let i = 0; i < 5; i += 1) held.push(await openHeld());
+    // Every stream still passes through; the fifth is counted unknown without being read.
+    for (const { first } of held) expect(first).toEqual(servedSent[0]);
+    await vi.waitFor(() => expect(tallies(logs)).toHaveLength(1));
+    expect(tallies(logs)[0]).toMatchObject({ servedTiers: { flex: 0, unknown: 1 } });
+    for (const release of heldReleases) release();
+    await Promise.all(held.map(({ reader }) => drain(reader)));
+    await vi.waitFor(() => expect(tallies(logs)).toHaveLength(5));
+    expect(tallies(logs)[4]).toMatchObject({ servedTiers: { flex: 4, unknown: 1 } });
+  });
+
+  it("counts nothing for an answer that was not served, the state API or a tunnel", async () => {
+    const { service, logs } = await start();
+    const busy = await fetch(proxyUrl("/openai/busy"), { method: "POST", body: "{}" });
+    await busy.arrayBuffer();
+    expect(busy.status).toBe(429);
+    const state = await fetch(proxyUrl("/state-api/v1/runs"));
+    await state.arrayBuffer();
+    expect(state.status).toBe(200);
+    const tunnel = await connectThrough(service.port, "github.com:443");
+    tunnel.socket.write('{"service_tier":"flex"}');
+    await readOnce(tunnel.socket);
+    tunnel.socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(tallies(logs)).toEqual([]);
+  });
+
+  it("logs counts only: no body, header value or credential", async () => {
+    const { logs } = await start();
+    for (const name of ["json-flex", "events-flex", "gzip-json-flex", "corrupt-gzip"]) {
+      await rawPost(`/openai/served?case=${name}`);
+    }
+    await vi.waitFor(() => expect(tallies(logs)).toHaveLength(4));
+    const text = logs.join("\n");
+    expect(text).not.toContain(BODY_MARKER);
+    expect(text).not.toContain(PROVIDER_KEY);
+    expect(text).not.toContain("chat.completion");
+    expect(text).not.toContain("event-stream");
+    for (const entry of tallies(logs)) {
+      expect(Object.keys(entry).sort()).toEqual([
+        "level",
+        "message",
+        "runId",
+        "servedTiers",
+        "service",
+        "time",
+      ]);
+    }
   });
 });

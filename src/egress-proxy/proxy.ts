@@ -13,7 +13,12 @@
 // 3. The state API route (D-195): `/state-api/...` goes over plain HTTP to the one in-cluster
 //    address in its settings, the only private address the proxy ever reaches. The agent's own
 //    Authorization header (its per-run state API token) passes through unchanged.
-// Logs carry the run id, host names, durations and outcomes. Never a payload, path or credential.
+// It also counts the tier the provider says it served each model request (D-423, O-151): it
+// reads `service_tier` from a copy of each served model response, after each chunk is passed on
+// (./tier-reader.ts), and logs the run's tally as one fixed line (./served-tiers.ts) that the
+// runtime adapter reads at the run's end. GitHub and state API traffic is never read.
+// Logs carry the run id, host names, durations, outcomes and served tier counts. Never a payload,
+// path or credential.
 import { lookup } from "node:dns/promises";
 import {
   request as httpRequest,
@@ -35,7 +40,14 @@ import {
 } from "./headers.ts";
 import { checkConnectTarget, TUNNEL_PORT } from "./hosts.ts";
 import { routeToProvider, type Provider, type ProviderRoute } from "./providers.ts";
+import {
+  emptyTally,
+  SERVED_TIERS_MESSAGE,
+  servedTiersFields,
+  type RequestTier,
+} from "./served-tiers.ts";
 import { stateApiPath, type StateApiUpstream } from "./state-api.ts";
+import { MAX_CONCURRENT_TIER_READS, readServedTier } from "./tier-reader.ts";
 
 export const CEILING_MESSAGE = "This run has reached its model request ceiling.";
 /** The 403 past the ceiling on requests the upstream rejected with 429 (ADR 0114 section 9). */
@@ -112,11 +124,45 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
   // Requests sent upstream and not rejected, those still waiting for an answer included.
   let modelRequests = 0;
   let rejectedRequests = 0;
+  // Served model requests by the tier the provider named (D-423), and the reads under way.
+  const servedTiers = emptyTally();
+  let tierReads = 0;
 
   const info = (message: string, fields: LogFields): void =>
     logger.info(message, { runId, ...fields });
   const warn = (message: string, fields: LogFields): void =>
     logger.warn(message, { runId, ...fields });
+
+  /** Counts one served request and logs the run's whole tally, the line the runtime reads. */
+  function countServed(tier: RequestTier): void {
+    servedTiers[tier] += 1;
+    info(SERVED_TIERS_MESSAGE, servedTiersFields(servedTiers));
+  }
+
+  /**
+   * Reads the tier a served (2xx) model response names, from a copy of its body (D-423). Called
+   * once the body is piped to the agent, so each chunk is passed on before it is read, and the
+   * reader never throws. Other answers were not served and are not counted.
+   */
+  function readServed(status: number, upstreamResponse: IncomingMessage): void {
+    if (status < 200 || status > 299) return;
+    try {
+      if (tierReads >= MAX_CONCURRENT_TIER_READS) {
+        countServed("unknown");
+        return;
+      }
+      tierReads += 1;
+      const reader = readServedTier(upstreamResponse.headers, (tier) => {
+        tierReads -= 1;
+        countServed(tier);
+      });
+      upstreamResponse.on("data", (chunk: Buffer) => reader.push(chunk));
+      upstreamResponse.once("end", () => reader.finish(true));
+      upstreamResponse.once("close", () => reader.finish(false));
+    } catch {
+      // Counting is best effort: the answer is already on its way to the agent.
+    }
+  }
 
   /**
    * The one public address to connect to for a host, or why there is none. Every answer must be
@@ -361,33 +407,37 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
           ALPNProtocols: ["http/1.1"],
         }),
     });
-    relay(
-      request,
-      response,
-      upstreamRequest,
-      done,
-      "model provider unreachable",
+    relay(request, response, upstreamRequest, done, "model provider unreachable", {
       answered,
-    );
+      read: readServed,
+    });
   }
 
-  /** Streams the request to the upstream and the answer back, both unchanged. */
+  /**
+   * Streams the request to the upstream and the answer back, both unchanged. For model traffic,
+   * `answered` sees each status and `read` gets each answer once it is piped (D-423).
+   */
   function relay(
     request: IncomingMessage,
     response: ServerResponse,
     upstreamRequest: ReturnType<typeof httpRequest>,
     done: (outcome: string, status?: number) => void,
     unreachable: string,
-    answered?: (status: number) => void,
+    model: {
+      answered?: (status: number) => void;
+      read?: (status: number, upstreamResponse: IncomingMessage) => void;
+    } = {},
   ): void {
     upstreamRequest.on("response", (upstreamResponse) => {
       const status = upstreamResponse.statusCode ?? 502;
-      answered?.(status);
+      model.answered?.(status);
       response.writeHead(status, downstreamResponseHeaders(upstreamResponse.headers));
       response.flushHeaders();
       pipeline(upstreamResponse, response, (error) =>
         done(error ? "stream closed early" : "ok", status),
       );
+      // After the pipe: its listener writes each chunk to the agent before the reader sees it.
+      model.read?.(status, upstreamResponse);
     });
     upstreamRequest.on("error", (error) => {
       if (!response.headersSent) {

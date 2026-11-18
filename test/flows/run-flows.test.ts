@@ -6,7 +6,27 @@
 // duplicate trigger gives one run and one end.
 import { describe, expect, it } from "vitest";
 
+import { createFakeKubernetes } from "../../src/adapters/agent-runtime/kubernetes/fake.ts";
+import {
+  credentialsFor,
+  DEVELOPER,
+  LIMITS,
+  SETTINGS,
+  taskFor,
+} from "../../src/adapters/agent-runtime/kubernetes/fixtures.ts";
+import {
+  agentNamespace,
+  runNames,
+} from "../../src/adapters/agent-runtime/kubernetes/names.ts";
+import { createKubernetesRuntime } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import {
+  emptyTally,
+  SERVED_TIERS_MESSAGE,
+  servedTiersFields,
+  type ServedTierTally,
+} from "../../src/egress-proxy/served-tiers.ts";
+import { createLogger } from "../../src/service-kit/logger.ts";
 import { run as cancelRuns } from "../../flows/cancel-runs.ts";
 import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
@@ -619,6 +639,104 @@ describe("run-end flow (flow: fake adapters, build plan M3.1 and M3.2)", () => {
       capacityRetries: 0,
       capacityWaitSeconds: 0,
       firstTokenMs: null,
+    });
+  });
+
+  describe("the served tier the egress proxy counted (D-423, O-151)", () => {
+    // The rehearsal's first Developer run on DeepInfra Flex (O-149): Foreman recorded 0.0787 USD
+    // at Standard, and DeepInfra billed 0.06297, which is the Flex price.
+    const REHEARSAL_TOKENS = {
+      uncachedInput: 207379,
+      cachedInput: 144880,
+      output: 2016,
+    };
+    const AT_STANDARD = 0.0787177;
+    const AT_FLEX = 0.06297416;
+
+    /**
+     * The end the Kubernetes runtime reads, over the fake cluster, for an agent that reported
+     * these tokens and no served tier (as the OpenCode image does) and a proxy that logged this
+     * tally with its own logger.
+     */
+    async function kubernetesEnd(
+      counts: Partial<ServedTierTally>,
+      agent: Record<string, unknown> = {},
+    ): Promise<AgentRunResult> {
+      const cluster = createFakeKubernetes();
+      const runtime = createKubernetesRuntime({ client: cluster, settings: SETTINGS });
+      const handle = await runtime.start(
+        {
+          ...DEVELOPER,
+          credentials: credentialsFor(DEVELOPER),
+          task: taskFor(DEVELOPER),
+        },
+        LIMITS,
+      );
+      const names = runNames(DEVELOPER.runId);
+      const namespace = agentNamespace(DEVELOPER.projectSlug);
+      const result = {
+        foremanResult: 1,
+        status: "success",
+        tokens: REHEARSAL_TOKENS,
+        ...agent,
+      };
+      cluster.finishJob(namespace, names.agentJob, {
+        condition: "Complete",
+        log: `${JSON.stringify(result)}\n`,
+      });
+      let tally = "";
+      createLogger("egress-proxy", (line) => (tally = line)).info(
+        SERVED_TIERS_MESSAGE,
+        {
+          runId: DEVELOPER.runId,
+          ...servedTiersFields({ ...emptyTally(), ...counts }),
+        },
+      );
+      cluster.startPod(namespace, names.proxyJob, { log: `${tally}\n` });
+      const status = await runtime.poll(handle);
+      if (status.state !== "finished")
+        throw new Error("expected the run to have finished");
+      return status.result;
+    }
+
+    it.each<
+      [string, Partial<ServedTierTally>, Record<string, unknown>, string | null, number]
+    >([
+      ["at Flex when every request was Flex", { flex: 31 }, {}, "flex", AT_FLEX],
+      [
+        "at Flex when the rest were unknown",
+        { flex: 30, unknown: 1 },
+        {},
+        "flex",
+        AT_FLEX,
+      ],
+      [
+        "at Standard when one was Standard",
+        { flex: 30, standard: 1 },
+        {},
+        "mixed",
+        AT_STANDARD,
+      ],
+      ["at Standard when none named a tier", { unknown: 31 }, {}, null, AT_STANDARD],
+      [
+        "at the tier the agent reported itself, whatever the proxy counted",
+        { flex: 31 },
+        { serviceTierServed: "standard" },
+        "standard",
+        AT_STANDARD,
+      ],
+    ])("prices the run %s", async (_label, counts, agent, served, cost) => {
+      const { f, input } = await activeRun();
+      f.runtime.status.set(input.runId, {
+        state: "finished",
+        result: await kubernetesEnd(counts, agent),
+      });
+      expect(await recordRunEnd(f.deps, input)).toMatchObject({ outcome: "recorded" });
+      expect(await f.store.getRun(input.runId)).toMatchObject({
+        serviceTierServed: served,
+        costUsd: cost,
+        tokens: REHEARSAL_TOKENS,
+      });
     });
   });
 

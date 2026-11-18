@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { CEILING_MESSAGE } from "../../../egress-proxy/proxy.ts";
-import { KubernetesApiError } from "./client.ts";
+import {
+  emptyTally,
+  SERVED_TIERS_MESSAGE,
+  servedTiersFields,
+  type ServedTierTally,
+} from "../../../egress-proxy/served-tiers.ts";
+import { createLogger } from "../../../service-kit/logger.ts";
+import { KubernetesApiError, type KubernetesClient } from "./client.ts";
 import { createFakeKubernetes, type FakeKubernetes } from "./fake.ts";
 import {
   COUNCIL,
@@ -546,6 +553,184 @@ describe("poll (adapter contract: outcome mapping, ADR 0106 section 6)", () => {
     expect(await finished(handle)).toEqual(first);
     await runtime.cleanup(handle);
     expect(fake.objects.size).toBe(0);
+  });
+});
+
+describe("the served tier from the proxy's tally (adapter contract: D-423, O-151)", () => {
+  const n = runNames(DEVELOPER.runId);
+  const proxyPod = `${n.proxyJob}-abcde`;
+  let handle: KubernetesRunHandle;
+  beforeEach(async () => {
+    handle = await runtime.start(task(DEVELOPER), LIMITS);
+  });
+
+  /** Lines as the run's proxy logs them: its own logger, its run id, its other lines too. */
+  const proxyLine = (message: string, fields: Record<string, unknown> = {}) => {
+    let line = "";
+    createLogger("egress-proxy", (written) => (line = written)).info(message, {
+      runId: DEVELOPER.runId,
+      ...fields,
+    });
+    return line;
+  };
+  const tallyLine = (counts: Partial<ServedTierTally>, runId = DEVELOPER.runId) =>
+    proxyLine(SERVED_TIERS_MESSAGE, {
+      ...servedTiersFields({ ...emptyTally(), ...counts }),
+      runId,
+    });
+  const proxyLog = (...lines: string[]) =>
+    [
+      proxyLine("listening", { port: 8080 }),
+      ...lines,
+      proxyLine("tunnel closed", { host: "github.com" }),
+      proxyLine("state api request", { status: 200 }),
+      "",
+    ].join("\n");
+  /** The agent's result line as the OpenCode image prints it: tokens, and no served tier. */
+  const agentEnds = (fields: Record<string, unknown> = {}) =>
+    fake.finishJob(NS, n.agentJob, {
+      condition: "Complete",
+      log: result({
+        status: "success",
+        turns: 31,
+        tokens: { uncachedInput: 207379, cachedInput: 144880, output: 2016 },
+        ...fields,
+      }),
+    });
+
+  it("fills the tier from the newest tally line when every request was Flex", async () => {
+    agentEnds();
+    fake.startPod(NS, n.proxyJob, {
+      log: proxyLog(tallyLine({ flex: 30 }), tallyLine({ flex: 31 })),
+    });
+    expect(await finished(handle)).toMatchObject({
+      outcome: "success",
+      serviceTierServed: "flex",
+    });
+    // The proxy's log is read before its Job is deleted.
+    expect(fake.calls.indexOf(`log Pod/${proxyPod}`)).toBeGreaterThan(-1);
+    expect(fake.calls.indexOf(`log Pod/${proxyPod}`)).toBeLessThan(
+      fake.calls.indexOf(`delete Job/${n.proxyJob}`),
+    );
+  });
+
+  it.each<[string, Partial<ServedTierTally>, string | undefined]>([
+    ["Flex with some unknown", { flex: 30, unknown: 3 }, "flex"],
+    ["Standard only", { standard: 4 }, "standard"],
+    ["Flex and Standard", { flex: 30, standard: 1 }, "mixed"],
+    ["a mixed request", { flex: 2, mixed: 1 }, "mixed"],
+    ["unknown only", { unknown: 31 }, undefined],
+    ["no request", {}, undefined],
+  ])("gives %s as %s", async (_label, counts, expected) => {
+    agentEnds();
+    fake.startPod(NS, n.proxyJob, { log: proxyLog(tallyLine(counts)) });
+    expect((await finished(handle)).serviceTierServed).toBe(expected);
+  });
+
+  it("never replaces a tier the agent image reported itself, and then reads no proxy log", async () => {
+    agentEnds({ serviceTierServed: "standard" });
+    fake.startPod(NS, n.proxyJob, { log: proxyLog(tallyLine({ flex: 31 })) });
+    expect((await finished(handle)).serviceTierServed).toBe("standard");
+    expect(fake.calls).not.toContain(`log Pod/${proxyPod}`);
+  });
+
+  it.each([
+    ["no tally line", proxyLog()],
+    ["another run's tally", proxyLog(tallyLine({ flex: 31 }, "run-other"))],
+    [
+      "a malformed newest tally",
+      proxyLog(tallyLine({ flex: 31 }), tallyLine({ flex: -1 })),
+    ],
+    ["an empty log", ""],
+  ])("reads no tier from %s", async (_label, log) => {
+    agentEnds();
+    fake.startPod(NS, n.proxyJob, { log });
+    const end = await finished(handle);
+    expect(end).toMatchObject({ outcome: "success" });
+    expect(end).not.toHaveProperty("serviceTierServed");
+  });
+
+  it("reads no tier when the proxy's pod is gone", async () => {
+    agentEnds();
+    const end = await finished(handle);
+    expect(end).toMatchObject({ outcome: "success" });
+    expect(end).not.toHaveProperty("serviceTierServed");
+    expect(fake.calls).not.toContain(`log Pod/${proxyPod}`);
+  });
+
+  it("reads no tier from two proxy pods, whose counts may be split", async () => {
+    agentEnds();
+    fake.startPod(NS, n.proxyJob, {
+      name: `${n.proxyJob}-aaaaa`,
+      log: proxyLog(tallyLine({ flex: 31 })),
+    });
+    fake.startPod(NS, n.proxyJob, {
+      name: `${n.proxyJob}-bbbbb`,
+      log: proxyLog(tallyLine({ flex: 1 })),
+    });
+    expect(await finished(handle)).not.toHaveProperty("serviceTierServed");
+  });
+
+  it("reads no tier from a log tail that reached the byte limit, which may be cut", async () => {
+    agentEnds();
+    // The cut drops the newest tally, which saw a Standard request, and keeps an older one.
+    const filler = proxyLine("tunnel closed", { host: "x".repeat(2000) });
+    fake.startPod(NS, n.proxyJob, {
+      log: proxyLog(
+        tallyLine({ flex: 1 }),
+        ...Array.from({ length: 150 }, () => filler),
+        tallyLine({ flex: 1, standard: 30 }),
+      ),
+    });
+    expect(await finished(handle)).not.toHaveProperty("serviceTierServed");
+  });
+
+  it("records the end with no tier when reading the proxy fails, and never throws", async () => {
+    const refusing: KubernetesClient = {
+      ...fake,
+      async readPodLog(namespace, pod, options) {
+        if (options.container === "proxy") {
+          throw new KubernetesApiError("read Pod log", 500, "InternalError");
+        }
+        return fake.readPodLog(namespace, pod, options);
+      },
+    };
+    const withRefusals = createKubernetesRuntime({
+      client: refusing,
+      settings: SETTINGS,
+    });
+    agentEnds();
+    fake.startPod(NS, n.proxyJob, { log: proxyLog(tallyLine({ flex: 31 })) });
+    const status = await withRefusals.poll(handle);
+    expect(status).toMatchObject({ state: "finished", result: { outcome: "success" } });
+    expect(status.state === "finished" && status.result).not.toHaveProperty(
+      "serviceTierServed",
+    );
+  });
+
+  it("reads no proxy for a run past its deadline", async () => {
+    fake.finishJob(NS, n.agentJob, { condition: "Failed", reason: "DeadlineExceeded" });
+    fake.startPod(NS, n.proxyJob, { log: proxyLog(tallyLine({ flex: 31 })) });
+    const end = await finished(handle);
+    expect(end).toMatchObject({ outcome: "timeout" });
+    expect(end).not.toHaveProperty("serviceTierServed");
+    expect(fake.calls).not.toContain(`log Pod/${proxyPod}`);
+  });
+
+  it("fills the tier of an end that did not succeed too", async () => {
+    agentEnds({ status: "error", errorText: "the model declined the request" });
+    fake.startPod(NS, n.proxyJob, { log: proxyLog(tallyLine({ flex: 5 })) });
+    expect(await finished(handle)).toMatchObject({
+      outcome: "fail",
+      serviceTierServed: "flex",
+    });
+  });
+
+  it("reads no tier on a second poll once the proxy is deleted: the safe side, Standard", async () => {
+    agentEnds();
+    fake.startPod(NS, n.proxyJob, { log: proxyLog(tallyLine({ flex: 31 })) });
+    expect((await finished(handle)).serviceTierServed).toBe("flex");
+    expect(await finished(handle)).not.toHaveProperty("serviceTierServed");
   });
 });
 
