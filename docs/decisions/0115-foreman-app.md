@@ -2,7 +2,7 @@
 
 - **Status:** direction accepted by Didi in the planning interview of 2026-11-16 (D-390 to D-399). The open points at the end are settled as the app is designed and built, each with its own decision.
 - **Date:** 2026-11-16
-- **Related:** D-012, D-126, D-242, D-254, D-266, D-271, D-273, D-282, D-343, D-345, D-353, D-354, D-377, D-378, N-96, [ADR 0004](./0004-component-gallery.md), [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0106](./0106-agent-execution-environment.md)
+- **Related:** D-012, D-126, D-242, D-254, D-266, D-271, D-273, D-282, D-343, D-345, D-353, D-354, D-377, D-378, N-96, [ADR 0004](./0004-component-gallery.md), [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0106](./0106-agent-execution-environment.md), [ADR 0116](./0116-planning-chat.md)
 
 ## Context
 
@@ -54,5 +54,5 @@ The order of the work: the tidy-up of the rehearsal; this planning; the one-appr
 - The service's name, and the exact routes under `/api`.
 - How `foreman.didi.build/` reaches the app's static Worker while `/api/*` keeps going through the tunnel: N-96's notes suggest a route for the app with a no-Worker route for `/api/*`, to be confirmed against Cloudflare when built.
 - Production deploys of `foreman-app`: projects start with no production (D-345), and a production deploy is Didi's (D-007).
-- The model and limits for the planning chat.
+- The model and limits for the planning chat. **Settled 2026-11-18 by D-400 and D-409; the chat itself is [ADR 0116](./0116-planning-chat.md).**
 - The catalog's manifest format and how the Designer keeps it current.
