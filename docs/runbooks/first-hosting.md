@@ -310,7 +310,7 @@ A pull request sets `expose_planning_route = true` in `infra/stacks/factory/prod
 
 ## 12. The model key with a spend cap (new-credentials gate)
 
-Create the Anthropic API key for agent runs with a monthly spending limit at the provider (D-143, D-185): 50 USD a month for the rehearsal period (D-342). The first rehearsal runs on Anthropic only. Store it in Windmill as a secret variable at `f/foreman/` followed by its secret path, `projects/<slug>/models/<provider>` for the project's bot files' provider (D-143, D-370). The runner puts it only into each run's egress proxy Secret; no agent holds it.
+Create the Anthropic API key for agent runs with a monthly spending limit at the provider (D-143, D-185): 50 USD a month for the rehearsal period, as D-342 planned; the key was made with 20 USD. The first rehearsal runs on Anthropic only. Store it in Windmill as a secret variable at `f/foreman/` followed by its secret path, `projects/<slug>/models/<provider>` for the project's bot files' provider (D-143, D-370). The runner puts it only into each run's egress proxy Secret; no agent holds it.
 
 The DeepInfra key for agents (D-400, D-420) is made the same way: a DeepInfra account with a monthly spending limit of 50 USD in its billing settings, and an API key named `foreman-agents`, stored only in Windmill as a secret variable at `f/foreman/projects/<slug>/models/deepinfra` for each project whose Developer or Designer runs on DeepInfra (the rehearsal first). The Developer's and Designer's bot files already name that path; nothing reads it until a routing migration Didi approves sends a role to DeepInfra.
 
