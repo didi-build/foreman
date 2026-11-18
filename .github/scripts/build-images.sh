@@ -31,6 +31,26 @@ IMAGES=(
   "foreman-run-watcher        src/run-watcher/Dockerfile"
 )
 
+# GitHub's registry now and then refuses a push partway, for example with "unknown blob" while it
+# mounts a layer that another image shares (the Images run of 2026-11-18). Each push is tried up
+# to three times, 10 and then 30 seconds apart, so a passing hiccup does not fail the job; one that
+# lasts through all three tries still does.
+push_image() {
+  local ref="$1" attempt wait
+  for attempt in 1 2 3; do
+    if docker push "$ref" >&2; then
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      if [ "$attempt" -eq 1 ]; then wait=10; else wait=30; fi
+      echo "::warning::Pushing $ref failed (try $attempt of 3); trying again in $wait seconds." >&2
+      sleep "$wait"
+    fi
+  done
+  echo "::error::Pushing $ref failed three times." >&2
+  return 1
+}
+
 refs='{}'
 for entry in "${IMAGES[@]}"; do
   read -r name dockerfile <<<"$entry"
@@ -40,7 +60,7 @@ for entry in "${IMAGES[@]}"; do
     --label "org.opencontainers.image.source=$SOURCE_URL" \
     --label "org.opencontainers.image.revision=$COMMIT" \
     --tag "$image:$COMMIT" . >&2
-  docker push "$image:$COMMIT" >&2
+  push_image "$image:$COMMIT"
   # The digest as the registry serves it, which is what the cluster pulls.
   digest="$(docker buildx imagetools inspect "$image:$COMMIT" --format '{{json .Manifest}}' | jq -r '.digest')"
   echo "::endgroup::" >&2
