@@ -12,8 +12,9 @@ import { createRunStart } from "../../src/core/run-start.ts";
 import { ROUTING_SETTINGS } from "../../src/core/routing.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import {
+  DEEPSEEK_PRO,
+  deepSeekProRunPrice,
   FIRST_APPROVED_PROVIDERS,
-  firstRunPrice,
   QWEN_CODER,
   qwenCoderRunPrice,
   SEEDED_MODEL_CATALOG,
@@ -119,6 +120,7 @@ describe.skipIf(!adminUrl)(
       runtime: "claude_code",
       botVersion: "v1",
       ...(role === "qa" ? { prNumber: 7, headSha: HEAD } : {}),
+      ...(role === "council" ? { questionTopic: `escalation:${nodeId}` } : {}),
     });
 
     beforeAll(async () => {
@@ -327,7 +329,7 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019, 0024 and 0025)", async () => {
+    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019, 0024, 0025 and 0026)", async () => {
       const value = async (key: string) => (await store.getSetting(key))?.value;
       expect(await value(ROUTING_SETTINGS.policy)).toEqual(SEEDED_ROUTING_POLICY);
       expect(await value(ROUTING_SETTINGS.catalog)).toEqual(SEEDED_MODEL_CATALOG);
@@ -357,7 +359,8 @@ describe.skipIf(!adminUrl)(
           provider: "deepinfra",
           modelFamily: "qwen",
           serviceTierRequested: "flex",
-          routingPolicyVersion: "2026-11-18.1",
+          // 0026 has since moved QA, the Council and Triage (D-425), and the policy's version.
+          routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
           modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         });
         expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
@@ -384,25 +387,65 @@ describe.skipIf(!adminUrl)(
       },
     );
 
+    it.each(["qa", "council", "triage"] as const)(
+      "routes a %s run to DeepSeek V4 Pro on DeepInfra Flex and prices its Flex end at the Flex price (migration 0026, D-425)",
+      async (role) => {
+        const nodeId = await item(await project());
+        const result = await runs.dispatch(request(nodeId, role), credential());
+        if (!result.admitted) throw new Error(result.reason);
+        expect(await store.getRun(result.run.id)).toMatchObject({
+          model: DEEPSEEK_PRO,
+          taskType: role === "qa" ? "qa:review" : role,
+          provider: "deepinfra",
+          modelFamily: "deepseek",
+          serviceTierRequested: "flex",
+          routingPolicyVersion: "2026-11-18.2",
+          modelCatalogVersion: "2026-11-18.3",
+        });
+        expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
+          deepSeekProRunPrice(),
+        );
+        await runs.recordEnd(result.run.id, {
+          outcome: "success",
+          turns: 3,
+          minutes: 2,
+          tokens: {
+            uncachedInput: 500,
+            cachedInput: 20000,
+            cacheWriteInput: 100,
+            output: 300,
+          },
+          serviceTierServed: "flex",
+        });
+        // 500 x 1.04 + 20000 x 0.08 + 100 x 1.04 (no cache-write price, so the Flex input rate)
+        // + 300 x 2.08, per million.
+        expect(await store.getRun(result.run.id)).toMatchObject({
+          serviceTierServed: "flex",
+          costUsd: 0.002848,
+        });
+      },
+    );
+
     it("records the route's price on the run, and prices the end from it after the catalog changes (migration 0008)", async () => {
       const nodeId = await item(await project());
       const result = await runs.dispatch(request(nodeId, "qa"), credential());
       if (!result.admitted) throw new Error(result.reason);
       expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
-        firstRunPrice("claude-opus-5-5"),
+        deepSeekProRunPrice(),
       );
       const catalog = SEEDED_MODEL_CATALOG;
       try {
-        // A new catalog version at ten times Opus 5.5's price, set after admission.
-        const opus = catalog.models["claude-opus-5-5"];
+        // A new catalog version at ten times DeepSeek V4 Pro's price, set after admission.
+        const deepseek = catalog.models[DEEPSEEK_PRO];
         await setting(ROUTING_SETTINGS.catalog, {
           version: "test.2",
           models: {
             ...catalog.models,
-            "claude-opus-5-5": {
-              ...opus,
+            [DEEPSEEK_PRO]: {
+              ...deepseek,
               pricePerMTok: {
-                standard: { input: 40, cachedInput: 2, cacheWrite: 50, output: 200 },
+                standard: { input: 13, cachedInput: 1, output: 26 },
+                flex: { input: 10.4, cachedInput: 0.8, output: 20.8 },
               },
             },
           },
@@ -420,10 +463,11 @@ describe.skipIf(!adminUrl)(
           serviceTierServed: "standard",
           reportedCostUsd: 0.5,
         });
-        // 1000 x 4 + 4000 x 0.2 + 4000 x 5 + 170 x 20, per million, at the recorded price.
+        // 1000 x 1.3 + 4000 x 0.1 + 4000 x 1.3 (no cache-write price, so the input rate) + 170 x
+        // 2.6, per million, at the recorded Standard price.
         expect(await store.getRun(result.run.id)).toMatchObject({
           modelCatalogVersion: catalog.version,
-          costUsd: 0.0282,
+          costUsd: 0.007342,
           reportedCostUsd: 0.5,
         });
       } finally {
@@ -441,13 +485,13 @@ describe.skipIf(!adminUrl)(
       const result = await runs.dispatch(request(nodeId, "qa"), credential());
       if (!result.admitted) throw new Error(result.reason);
       expect(await store.getRun(result.run.id)).toMatchObject({
-        model: "claude-opus-5-5",
+        model: DEEPSEEK_PRO,
         taskType: "qa:review",
-        provider: "anthropic",
-        modelFamily: "claude",
-        serviceTierRequested: "standard",
+        provider: "deepinfra",
+        modelFamily: "deepseek",
+        serviceTierRequested: "flex",
         serviceTierServed: null,
-        routingPolicyVersion: "2026-11-18.1",
+        routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
         modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         capacityRetries: null,
         reportedCostUsd: null,
@@ -461,7 +505,7 @@ describe.skipIf(!adminUrl)(
       expect(records.rows[0]).toMatchObject({
         decider_id: "model_route_rule_v1",
         confidence: "1",
-        output: { runId: result.run.id, model: "claude-opus-5-5", tier: "standard" },
+        output: { runId: result.run.id, model: DEEPSEEK_PRO, tier: "flex" },
       });
       expect(records.rows[0].input_hash).toMatch(/^[0-9a-f]{64}$/);
     });

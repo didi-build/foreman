@@ -32,7 +32,7 @@ import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
-import { QWEN_CODER } from "../../src/core/routing-testing.ts";
+import { DEEPSEEK_PRO, QWEN_CODER } from "../../src/core/routing-testing.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import type { Store } from "../../src/core/store.ts";
 import { createFlowFixture, HEAD, type FlowFixture } from "./flow-fixture.ts";
@@ -247,6 +247,13 @@ describe("dispatch flow (flow: fake adapters, build plan M3.1 and M3.2)", () => 
     const input = { nodeId: node.id, role: "qa" as const, prNumber: 7, headSha: HEAD };
     expect((await dispatch(f.deps, input)).outcome).toBe("started");
     expect(f.tasksFor[0]).toMatchObject({ branch: null, evidenceIds: [ci] });
+    // QA's seeded route is DeepSeek V4 Pro on DeepInfra (migration 0026, D-425).
+    expect(f.runtime.started).toMatchObject([
+      {
+        task: { model: DEEPSEEK_PRO, provider: "deepinfra" },
+        limits: f.deps.limits.qa,
+      },
+    ]);
     expect(f.tasksFor[0]?.input).toContain(`## Head commit\n\n${HEAD}`);
     const after = await written(f, node.id);
     expect(after.dispatchRecords).toEqual([]);

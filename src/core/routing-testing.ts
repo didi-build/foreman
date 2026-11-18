@@ -1,5 +1,5 @@
-// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019, 0024 and
-// 0025 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
+// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019, 0024, 0025
+// and 0026 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
 // of a run on an Anthropic route. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
@@ -11,6 +11,8 @@ const SONNET = "claude-sonnet-5-5";
 const OPUS = "claude-opus-5-5";
 /** The Developer's and Designer's model since migration 0024 (D-421). */
 export const QWEN_CODER = "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo";
+/** QA's review, the Council's and Triage's model since migration 0026 (D-425). */
+export const DEEPSEEK_PRO = "deepseek-ai/DeepSeek-V4-Pro-0813";
 
 const anthropic = (model: string) => ({
   candidates: [{ provider: "anthropic", model, tier: "standard" }],
@@ -92,10 +94,9 @@ const deepInfraFlex = (model: string) => ({
 /**
  * The routing policy as migration 0024 leaves it (D-421): the Developer's and Designer's own task
  * types move to Qwen3 Coder on DeepInfra Flex; the close task types, QA, the Council and Triage
- * stay on Anthropic. This is what a migrated store holds, so the tests seed it;
- * test/db/runs.test.ts and test/db/schema.test.ts check it is equal.
+ * stay on Anthropic.
  */
-export const SEEDED_ROUTING_POLICY = {
+export const DEEPINFRA_ROUTING_POLICY = {
   ...CLOSE_ROUTES_POLICY,
   version: "2026-11-18.1",
   taskTypes: {
@@ -103,6 +104,23 @@ export const SEEDED_ROUTING_POLICY = {
     "developer:code": deepInfraFlex(QWEN_CODER),
     "developer:infra": deepInfraFlex(QWEN_CODER),
     designer: deepInfraFlex(QWEN_CODER),
+  },
+} satisfies Json;
+
+/**
+ * The routing policy as migration 0026 leaves it (D-425): QA's review, the Council and Triage move
+ * to DeepSeek V4 Pro on DeepInfra Flex; the Developer and the Designer stay on Qwen3 Coder, and the
+ * close task types on Anthropic. The visual task types have no route. This is what a migrated store
+ * holds, so the tests seed it; test/db/runs.test.ts and test/db/schema.test.ts check it is equal.
+ */
+export const SEEDED_ROUTING_POLICY = {
+  ...DEEPINFRA_ROUTING_POLICY,
+  version: "2026-11-18.2",
+  taskTypes: {
+    ...DEEPINFRA_ROUTING_POLICY.taskTypes,
+    "qa:review": deepInfraFlex(DEEPSEEK_PRO),
+    council: deepInfraFlex(DEEPSEEK_PRO),
+    triage: deepInfraFlex(DEEPSEEK_PRO),
   },
 } satisfies Json;
 
@@ -134,11 +152,9 @@ export const DEEPINFRA_MODEL_CATALOG = {
 
 /**
  * The model catalog as migration 0025 leaves it (O-150): Claude Sonnet 5.5's cache read price at
- * its list price since 2026-11-06, 0.10, and nothing else changed but the version. This is what a
- * migrated store holds, so the tests seed it; test/db/runs.test.ts and test/db/schema.test.ts
- * check it is equal.
+ * its list price since 2026-11-06, 0.10, and nothing else changed but the version.
  */
-export const SEEDED_MODEL_CATALOG = {
+export const SONNET_CACHE_MODEL_CATALOG = {
   version: "2026-11-18.2",
   models: {
     ...DEEPINFRA_MODEL_CATALOG.models,
@@ -154,13 +170,44 @@ export const SEEDED_MODEL_CATALOG = {
   },
 } satisfies Json;
 
+/**
+ * DeepSeek V4 Pro's catalog entry from migration 0026 (D-425): DeepInfra's prices from its public
+ * model list, read on 2026-11-18 (1.30 input, 0.10 cached input, 2.60 output per million), with
+ * Flex at 0.8 times Standard and no cache-write price, and the output cap of 16,384 tokens the Qwen3
+ * Coder entry records.
+ */
+const DEEPSEEK_PRO_ENTRY = {
+  provider: "deepinfra",
+  family: "deepseek",
+  tiers: ["standard", "flex"],
+  pricePerMTok: {
+    standard: { input: 1.3, cachedInput: 0.1, output: 2.6 },
+    flex: { input: 1.04, cachedInput: 0.08, output: 2.08 },
+  },
+  maxOutputTokens: 16384,
+  resold: false,
+  priceSource:
+    "DeepInfra public model list (api.deepinfra.com/models/list): input and output prices, the cached input rate and the Flex rate",
+  priceReadOn: "2026-11-18",
+};
+
+/**
+ * The model catalog as migration 0026 leaves it (D-425): DeepSeek V4 Pro added, a new version.
+ * This is what a migrated store holds, so the tests seed it; test/db/runs.test.ts and
+ * test/db/schema.test.ts check it is equal.
+ */
+export const SEEDED_MODEL_CATALOG = {
+  version: "2026-11-18.3",
+  models: { ...SONNET_CACHE_MODEL_CATALOG.models, [DEEPSEEK_PRO]: DEEPSEEK_PRO_ENTRY },
+} satisfies Json;
+
 export const SEEDED_OUTPUT_TOKEN_NEEDS = {
   ...FIRST_OUTPUT_TOKEN_NEEDS,
   "developer:close": FIRST_OUTPUT_TOKEN_NEEDS["developer:code"],
   "designer:close": FIRST_OUTPUT_TOKEN_NEEDS.designer,
 } satisfies Json;
 
-/** Seeds the four routing settings as migrations 0005, 0019, 0024 and 0025 leave them. */
+/** Seeds the four routing settings as migrations 0005, 0019, 0024, 0025 and 0026 leave them. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
     [ROUTING_SETTINGS.policy, SEEDED_ROUTING_POLICY],
@@ -233,8 +280,8 @@ export function firstRunPrice(model: string): RunPrice {
 }
 
 /**
- * The price a run routed on the seeded settings records for `model` (Sonnet or Opus 5.5): Sonnet
- * at the cache read price migration 0025 set (O-150), Opus as 0005 seeded it.
+ * The price `model` (Sonnet or Opus 5.5) has in the seeded catalog, which a run routed to it
+ * records: Sonnet at the cache read price migration 0025 set (O-150), Opus as 0005 seeded it.
  */
 export function seededRunPrice(model: string): RunPrice {
   const entry =
@@ -247,13 +294,23 @@ export function seededRunPrice(model: string): RunPrice {
   };
 }
 
-/** The price a run on Qwen3 Coder records (migration 0024): Standard and Flex. */
-export function qwenCoderRunPrice(): RunPrice {
-  const { standard, flex } = QWEN_CODER_ENTRY.pricePerMTok;
+/** The price a run on a DeepInfra catalog entry records: Standard and Flex. */
+function deepInfraRunPrice(entry: typeof QWEN_CODER_ENTRY): RunPrice {
+  const { standard, flex } = entry.pricePerMTok;
   return {
     tiers: ["standard", "flex"],
     pricePerMTok: { standard: { ...standard }, flex: { ...flex } },
   };
+}
+
+/** The price a run on Qwen3 Coder records (migration 0024): Standard and Flex. */
+export function qwenCoderRunPrice(): RunPrice {
+  return deepInfraRunPrice(QWEN_CODER_ENTRY);
+}
+
+/** The price a run on DeepSeek V4 Pro records (migration 0026): Standard and Flex. */
+export function deepSeekProRunPrice(): RunPrice {
+  return deepInfraRunPrice(DEEPSEEK_PRO_ENTRY);
 }
 
 /**

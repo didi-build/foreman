@@ -23,6 +23,10 @@ import type {
   InstallationTokenRequest,
   InstallationTokens,
 } from "../../src/adapters/github/installation-tokens.ts";
+import {
+  SEEDED_ROUTING_POLICY,
+  TEST_TASK_TYPES,
+} from "../../src/core/routing-testing.ts";
 import type { AgentRole, Json } from "../../src/core/store.ts";
 import { appTokensWithoutKeys } from "./flow-fixture.ts";
 
@@ -369,6 +373,19 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
       ]);
     },
   );
+
+  it("finds each provider the seeded routes name in the role's bot file, so none is refused here (migrations 0024 and 0026)", () => {
+    for (const [taskType, routing] of Object.entries(SEEDED_ROUTING_POLICY.taskTypes)) {
+      const role = Object.entries(TEST_TASK_TYPES.roles).find(([, types]) =>
+        types.allowed.includes(taskType),
+      )?.[0] as AgentRole | undefined;
+      if (!role) throw new Error(`no role allows ${taskType}`);
+      const listed = BOTS[role].providers.map((provider) => provider.name);
+      for (const { provider } of routing.candidates) {
+        expect(listed, `${taskType} routes to ${provider}`).toContain(provider);
+      }
+    }
+  });
 
   it("reads each project's key at its own path", async () => {
     const { tasks, secretsRead } = source();
