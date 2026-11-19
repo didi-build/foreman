@@ -59,6 +59,14 @@ export function parseRunPrice(raw: string, requested: ServiceTier): RunPrice {
   } catch {
     throw new Error("is not JSON");
   }
+  return readRunPrice(value, requested);
+}
+
+/**
+ * The same check for a price already parsed from JSON, such as one entry of the weekly test set's
+ * plan (src/agent-images/eval/plan.ts).
+ */
+export function readRunPrice(value: unknown, requested: ServiceTier): RunPrice {
   if (
     !isRecord(value) ||
     Object.keys(value).some((k) => k !== "tiers" && k !== "pricePerMTok")

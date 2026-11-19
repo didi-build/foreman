@@ -1,8 +1,10 @@
 // Test helper: a local HTTP server that stands in for a run's egress proxy. It serves enough of
-// Anthropic's Messages API at `/anthropic/v1/messages` and the state API's `POST /qa-verdicts` at
-// `/state-api/...`, and CONNECT tunnels, which it hands to an in-memory fake GitHub when one is
-// given (./fake-github.ts). Replies come from a script, one per model request. It records every
-// request so tests can check the body (cache_control, tools) and the headers (no real
+// Anthropic's Messages API at `/<provider>/v1/messages` (`/anthropic/...` for the agent images;
+// the weekly test job also reaches `/deepinfra/...` through one proxy) and the state API's
+// `POST /qa-verdicts` at `/state-api/...`, and CONNECT tunnels, which it hands to an in-memory
+// fake GitHub when one is given (./fake-github.ts). Replies come from a script, one per model
+// request, or once the script is empty from `respond`, when a test sets it. It records every
+// request so tests can check the path, the body (cache_control, tools) and the headers (no real
 // credential). Localhost only: no real model call and no network.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -31,6 +33,8 @@ export interface FakeProxy {
   stateApiRequests: RecordedRequest[];
   /** Replies for the next model requests, in order. */
   replies: FakeReply[];
+  /** The reply to a model request once `replies` is empty. Unset: a 500 error. */
+  respond?: (request: RecordedRequest) => FakeReply;
   /** The state API's reply to a verdict. */
   verdictReply: FakeReply;
   /** The state API's reply to `POST /reports`. */
@@ -97,6 +101,9 @@ export const reply = {
   }),
 };
 
+/** A provider's Messages API path on the proxy, as the runtime names it (`/<provider>`). */
+const MODEL_PATH = /^\/(?!state-api\/)[a-z0-9-]+\/v1\/messages$/;
+
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(chunk as Buffer);
@@ -134,13 +141,12 @@ export async function startFakeProxy(github?: FakeGitHub): Promise<FakeProxy> {
         // The real proxy's readiness check, which each agent image waits for (O-133).
         state.healthChecks += 1;
         out = { status: 200, body: { status: "ok" } };
-      } else if (
-        recorded.path === "/anthropic/v1/messages" &&
-        recorded.method === "POST"
-      ) {
+      } else if (MODEL_PATH.test(recorded.path) && recorded.method === "POST") {
         state.modelRequests.push(recorded);
         out =
-          state.replies.shift() ?? reply.error(500, "api_error", "no scripted reply");
+          state.replies.shift() ??
+          state.respond?.(recorded) ??
+          reply.error(500, "api_error", "no scripted reply");
       } else if (recorded.path.startsWith("/state-api/")) {
         state.stateApiRequests.push(recorded);
         out =

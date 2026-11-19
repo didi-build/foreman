@@ -147,6 +147,17 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+  # The weekly test job (ADR 0117, D-432): not an agent either, but a job image of the same kind.
+  - package-ecosystem: docker
+    directory: /src/agent-images/eval
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # The Claude Code CLI pinned for the Claude Code agent image only.
   - package-ecosystem: npm
@@ -177,6 +188,20 @@ updates:
   # The TypeScript compiler pinned for the repo map Job's image only (D-275 (2)).
   - package-ecosystem: npm
     directory: /src/agent-images/repo-map/deps
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # The Anthropic SDK, the TypeScript compiler and the YAML parser pinned for the weekly test job's
+  # image only (ADR 0117, D-432). A bump here should match the root's version of each, which
+  # test/agent-image-dockerfiles.test.ts checks.
+  - package-ecosystem: npm
+    directory: /src/agent-images/eval/deps
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

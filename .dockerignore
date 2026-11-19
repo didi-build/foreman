@@ -4,6 +4,9 @@ node_modules
 .env
 .env.*
 **/*.test.ts
+# The weekly test set's case trees hold their fixtures' own tests, which the eval image needs byte
+# for byte: the case loader checks each tree against its source (src/agent-images/eval/, ADR 0117).
+!eval/cases/*/tree/**/*.test.ts
 coverage
 test-results
 dist

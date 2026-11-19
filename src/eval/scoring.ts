@@ -17,6 +17,12 @@
 //   routed to Didi also names the reasons that count: an answer that reaches Didi for another
 //   reason is wrong.
 //
+// Each score also carries a fixed code for its reason (`SCORE_CODES`), and for a usable answer a
+// few facts the runner's check has already read (`AnswerFacts`): QA's verdict and the files its
+// findings name, Triage's item count, the Council's outcome and flags. The weekly test job puts
+// the code and the facts in its result line (src/agent-images/eval/), never the detail sentence
+// or any other text of the answer.
+//
 // The answer is the run's final text: the model's JSON, or in tool mode the answer tool's input as
 // JSON (src/agent-images/claude-api/loop.ts).
 import { parseVerdict } from "../agent-images/claude-api/verdict.ts";
@@ -36,13 +42,53 @@ import type { CaseRun, CouncilRun, QaRun, TriageRun } from "./inputs.ts";
 
 export type ScoreOutcome = "correct" | "wrong" | "unusable";
 
+/** Every reason a score gives, as a fixed code. Each belongs to one outcome. */
+export const SCORE_CODES = {
+  as_expected: "correct",
+  wrong_verdict: "wrong",
+  no_accepted_finding: "wrong",
+  wrong_item_count: "wrong",
+  items_do_not_cover: "wrong",
+  wrong_blocked_by: "wrong",
+  wrong_flags: "wrong",
+  should_resolve: "wrong",
+  should_go_to_didi: "wrong",
+  wrong_didi_reason: "wrong",
+  answer_not_json: "unusable",
+  answer_rejected: "unusable",
+  citation_not_at_head: "unusable",
+} as const satisfies Record<string, ScoreOutcome>;
+export type ScoreCode = keyof typeof SCORE_CODES;
+
+/** What a usable answer says, as the runner's check read it. No free text. */
+export type AnswerFacts =
+  /** QA: the verdict, and each file its findings name once, in their order. */
+  | { verdict: "pass" | "fail"; findingPaths: string[] }
+  /** Triage: how many items it made. */
+  | { itemCount: number }
+  /** The Council: its outcome and the two flags the runner routes by. */
+  | {
+      outcome: EscalationAnswer["outcome"];
+      changesProductDirection: boolean;
+      passesGate: boolean;
+    };
+
 export interface Score {
   outcome: ScoreOutcome;
+  /** Why, as a fixed code. */
+  code: ScoreCode;
   /** Why, in one sentence. Names fields and paths, never quotes the answer's text. */
   detail: string;
+  /** Only for a usable answer: correct or wrong. */
+  facts?: AnswerFacts;
 }
 
-const score = (outcome: ScoreOutcome, detail: string): Score => ({ outcome, detail });
+const score = (code: ScoreCode, detail: string, facts?: AnswerFacts): Score => ({
+  outcome: SCORE_CODES[code],
+  code,
+  detail,
+  ...(facts ? { facts } : {}),
+});
 
 function json(text: string): { value: unknown } | null {
   try {
@@ -58,29 +104,43 @@ const lineCount = (text: string): number => text.split("\n").length;
 function scoreQa(c: QaCase, run: QaRun, text: string): Score {
   const parsed = parseVerdict(text, run.evidenceIds);
   if ("problem" in parsed)
-    return score("unusable", `the verdict is unusable: ${parsed.problem}`);
+    return score("answer_rejected", `the verdict is unusable: ${parsed.problem}`);
   const { verdict } = parsed;
   for (const finding of verdict.findings) {
     const file = run.files.get(finding.path);
     if (file === undefined || finding.endLine > lineCount(file)) {
       return score(
-        "unusable",
+        "citation_not_at_head",
         "a finding cites a file or lines that are not at the head commit (ADR 0112)",
       );
     }
   }
+  const facts: AnswerFacts = {
+    verdict: verdict.verdict,
+    findingPaths: [...new Set(verdict.findings.map((f) => f.path))],
+  };
   if (verdict.verdict !== c.expected.verdict) {
     return score(
-      "wrong",
+      "wrong_verdict",
       `the verdict is ${verdict.verdict}, and ${c.expected.verdict} is right`,
+      facts,
     );
   }
-  if (c.expected.verdict === "pass") return score("correct", "a pass, as expected");
+  if (c.expected.verdict === "pass")
+    return score("as_expected", "a pass, as expected", facts);
   const accepted = c.expected.findingIn;
   if (!verdict.findings.some((f) => accepted.includes(f.path))) {
-    return score("wrong", `a fail, but no finding is on ${accepted.join(" or ")}`);
+    return score(
+      "no_accepted_finding",
+      `a fail, but no finding is on ${accepted.join(" or ")}`,
+      facts,
+    );
   }
-  return score("correct", `a fail with a finding on ${accepted.join(" or ")}`);
+  return score(
+    "as_expected",
+    `a fail with a finding on ${accepted.join(" or ")}`,
+    facts,
+  );
 }
 
 /** True when one of the item's paths is the path itself or a folder that holds it. */
@@ -111,24 +171,30 @@ function matchItems(
 
 function scoreTriage(c: TriageCase, run: TriageRun, text: string): Score {
   const parsed = json(text);
-  if (!parsed) return score("unusable", "the answer is not JSON");
+  if (!parsed) return score("answer_not_json", "the answer is not JSON");
   const checked = checkTriageAnswer(run.outputSchema, parsed.value, run.map);
   if ("rejection" in checked) {
     return score(
-      "unusable",
+      "answer_rejected",
       `the runner rejects the answer: ${checked.rejection.code}`,
     );
   }
   const { items } = checked.answer;
+  const facts: AnswerFacts = { itemCount: items.length };
   const expected = c.expected.items;
   if (items.length !== expected.length) {
-    return score("wrong", `${items.length} items, and ${expected.length} is right`);
+    return score(
+      "wrong_item_count",
+      `${items.length} items, and ${expected.length} is right`,
+      facts,
+    );
   }
   const matched = matchItems(expected, items);
   if (!matched) {
     return score(
-      "wrong",
+      "items_do_not_cover",
       "the items do not cover the expected items' paths one to one",
+      facts,
     );
   }
   for (const want of expected) {
@@ -138,18 +204,24 @@ function scoreTriage(c: TriageCase, run: TriageRun, text: string): Score {
       .sort();
     if ([...item.blockedBy].sort().join("\n") !== after.join("\n")) {
       return score(
-        "wrong",
+        "wrong_blocked_by",
         `the ${want.name} item is not blocked by exactly the items it waits on`,
+        facts,
       );
     }
     if (item.needsDidi !== want.needsDidi || item.hold !== want.hold) {
       return score(
-        "wrong",
+        "wrong_flags",
         `the ${want.name} item's needsDidi or hold is not as expected`,
+        facts,
       );
     }
   }
-  return score("correct", `${expected.length} items, covering and ordered as expected`);
+  return score(
+    "as_expected",
+    `${expected.length} items, covering and ordered as expected`,
+    facts,
+  );
 }
 
 /**
@@ -173,26 +245,44 @@ const REASON_HOLDS: Record<DidiReason, (answer: EscalationAnswer) => boolean> = 
 
 function scoreCouncil(c: CouncilCase, run: CouncilRun, text: string): Score {
   const parsed = json(text);
-  if (!parsed) return score("unusable", "the answer is not JSON");
+  if (!parsed) return score("answer_not_json", "the answer is not JSON");
   const problem = outputProblem(run.outputSchema, parsed.value);
   if (problem)
-    return score("unusable", `the answer does not fit its schema: ${problem}`);
+    return score("answer_rejected", `the answer does not fit its schema: ${problem}`);
   const read = readEscalationAnswer(parsed.value);
   if ("problem" in read)
-    return score("unusable", `the answer is unusable: ${read.problem}`);
+    return score("answer_rejected", `the answer is unusable: ${read.problem}`);
+  const { outcome, changesProductDirection, passesGate } = read.answer;
+  const facts: AnswerFacts = { outcome, changesProductDirection, passesGate };
   const toDidi = goesToDidi(read.answer);
   if (c.expected.route === "council") {
     return toDidi
-      ? score("wrong", "the item goes to Didi, and the Council should resolve it")
-      : score("correct", "the Council resolves it, as expected");
+      ? score(
+          "should_resolve",
+          "the item goes to Didi, and the Council should resolve it",
+          facts,
+        )
+      : score("as_expected", "the Council resolves it, as expected", facts);
   }
   if (!toDidi)
-    return score("wrong", "the Council resolves it, and it should go to Didi");
+    return score(
+      "should_go_to_didi",
+      "the Council resolves it, and it should go to Didi",
+      facts,
+    );
   const reasons = c.expected.reasons;
   if (!reasons.some((reason) => REASON_HOLDS[reason](read.answer))) {
-    return score("wrong", `the item goes to Didi, but not for ${reasons.join(" or ")}`);
+    return score(
+      "wrong_didi_reason",
+      `the item goes to Didi, but not for ${reasons.join(" or ")}`,
+      facts,
+    );
   }
-  return score("correct", "the item goes to Didi, for a reason the case accepts");
+  return score(
+    "as_expected",
+    "the item goes to Didi, for a reason the case accepts",
+    facts,
+  );
 }
 
 /** Scores the run's final text against the case. The run must be the case's own. */
