@@ -1,0 +1,74 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-truncate-readme-change
+version: 1
+role: qa
+taskType: "qa:review"
+title: truncate with an unrelated change to README.md
+added: "2026-11-19"
+source:
+  kind: planted
+  ref: didi-build/rehearsal#9 as merged, with an unrelated Contributing section added to README.md
+  basedOn: qa-truncate-pass
+  note: The pull request number and head commit are made up for this case.
+  changes:
+    - path: README.md
+      replace: |-
+        ## License
+      with: |-
+        ## Contributing
+
+        Open a pull request against `main`. A change merges once one review approves it.
+
+        ## License
+input:
+  item:
+    id: 2ad62680-7161-44fb-b8b0-036ff8233b0c
+    title: Add truncate helper function
+    description: >-
+      Add a small helper in src/truncate.ts: truncate(text, max) returns text unchanged when it
+      has at most max characters; otherwise it returns the first max - 1 characters followed by
+      one ellipsis character, so the result has exactly max characters. A max below 1 throws a
+      RangeError. Add unit tests in test/truncate.test.ts covering those cases. No user-facing
+      change, and nothing else in the repository changes.
+    acceptanceCriteria:
+      - truncate(text, max) returns text unchanged when it has at most max characters.
+      - Otherwise it returns the first max - 1 characters followed by one ellipsis character, so
+        the result has exactly max characters.
+      - A max below 1 throws a RangeError.
+      - Unit tests in test/truncate.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 9007
+  headSha: 8b30845f9989f4d0ac918a4052a65e17938d33af
+  changedFiles:
+    - README.md
+    - src/truncate.ts
+    - test/truncate.test.ts
+  evidence:
+    - id: 38b3f0ed-2ff3-4fcc-8544-2a572ee8fc2d
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: 64528ccf-3f8f-4b54-b7a4-abb2c953234e
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: fail
+  findingIn:
+    - README.md
+  why: >-
+    The helper is right, but the pull request also adds a Contributing section to README.md,
+    which the item does not ask for; it says nothing else in the repository changes.
+example:
+  verdict: fail
+  findings:
+    - path: README.md
+      startLine: 57
+      endLine: 59
+      note: >-
+        Acceptance criterion 5: nothing else in the repository may change, but a Contributing
+        section was added. Remove it.
+  evidenceIds:
+    - 38b3f0ed-2ff3-4fcc-8544-2a572ee8fc2d

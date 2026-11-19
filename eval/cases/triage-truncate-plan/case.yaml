@@ -1,0 +1,72 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the commit the plan was split
+# at; the runner's repo map is built from it, and Triage sees only the map's brief, through the
+# runner's own input builder.
+id: triage-truncate-plan
+version: 1
+role: triage
+taskType: triage
+title: The truncate plan, one helper and its tests
+added: "2026-11-19"
+source:
+  kind: real
+  ref: >-
+    Didi's truncate plan on didi-build/rehearsal, split at main 2f6e941; Triage's real answer
+    became #9 and #10
+  note: >-
+    The plan is the text given when this case was written, which left out a middle part between
+    the RangeError sentence and the tests sentence. A later version of this case should use the
+    plan exactly as Foreman recorded it. The idea's title is written for this case. The tree is
+    the repository's code files at 2f6e941 (blobs below), with package.json cut to its scripts
+    and the two packages the code needs; the gallery and tooling folders are left out.
+  blobs:
+    README.md: 67a94bfc95729124f477969061478151a43e30d5
+    src/format-duration.ts: 3bc841cce14bdf91294ee09b0da74a4d22d6d422
+    src/slugify.ts: b387c72ca53cd040c5030d67ca5a839ad4edc215
+    test/format-duration.test.ts: 6dd54b8915808dea2e15778d6130085a3f5e1c1a
+    test/slugify.test.ts: 051928a2f2117d20b4a0a9e078450f44376ed238
+input:
+  idea:
+    id: 060fe65c-813e-4959-8b17-492081997ec9
+    title: Truncate helper
+  plan: >-
+    Add a small helper in src/truncate.ts: truncate(text, max) returns text unchanged when it has
+    at most max characters; otherwise it returns the first max - 1 characters followed by one
+    ellipsis character, so the result has exactly max characters. A max below 1 throws a
+    RangeError. Add unit tests in test/truncate.test.ts covering those cases. No user-facing
+    change, and nothing else in the repository changes.
+  commitSha: 2f6e9413c1f11855476267098fc50a807aac575d
+expected:
+  items:
+    - name: helper
+      covers:
+        - src/truncate.ts
+        - test/truncate.test.ts
+      after: []
+  why: >-
+    One small helper and its tests are one pull request a reviewer reads in one sitting. At the
+    rehearsal Triage split this plan into a helper item and a tests item (#9 and #10).
+example:
+  items:
+    - key: truncate-helper
+      title: Add the truncate helper with unit tests
+      track: code
+      description: >-
+        Add truncate(text, max) in src/truncate.ts as the plan describes, with unit tests in
+        test/truncate.test.ts.
+      acceptanceCriteria:
+        - truncate(text, max) returns text unchanged when it has at most max characters.
+        - Otherwise it returns the first max - 1 characters followed by one ellipsis character,
+          exactly max characters in all.
+        - A max below 1 throws a RangeError.
+        - Unit tests in test/truncate.test.ts cover each case above.
+      pathsInScope:
+        - src/truncate.ts
+        - test/truncate.test.ts
+      checks:
+        - npm run check
+      blockedBy: []
+      needsDidi: false
+      gate: none
+      hold: false
+  note: ""

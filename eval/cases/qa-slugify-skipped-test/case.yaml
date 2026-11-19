@@ -1,0 +1,71 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-slugify-skipped-test
+version: 1
+role: qa
+taskType: "qa:review"
+title: slugify with one test switched off
+added: "2026-11-19"
+source:
+  kind: planted
+  ref: didi-build/rehearsal#8 as merged, with the test of the hyphen rule switched off (it.skip)
+  basedOn: qa-slugify-pass
+  note: >-
+    The pull request number and head commit are made up for this case. CI would still be green:
+    a skipped test does not fail the run.
+  changes:
+    - path: test/slugify.test.ts
+      replace: '  it("should not have leading or trailing hyphens", () => {'
+      with: '  it.skip("should not have leading or trailing hyphens", () => {'
+input:
+  item:
+    id: e3cfaa13-e8f5-49b8-a666-1f86c5540957
+    title: Add slugify helper with unit tests
+    description: >-
+      Add a small helper in src/slugify.ts that turns a title into a URL slug: lowercase, letters
+      and digits kept, every run of other characters becomes one hyphen, and no hyphen at either
+      end. For example "Hello, World!" gives "hello-world" and "  Foreman 2.0  " gives
+      "foreman-2-0". An empty result returns an empty string. Add unit tests in
+      test/slugify.test.ts covering those cases. No user-facing change, and nothing else in the
+      repository changes.
+    acceptanceCriteria:
+      - slugify("Hello, World!") returns "hello-world" and slugify("  Foreman 2.0  ") returns
+        "foreman-2-0".
+      - The slug is lowercase, keeps letters and digits, turns every run of other characters into
+        one hyphen, and has no hyphen at either end.
+      - An input whose slug would be empty returns an empty string.
+      - Unit tests in test/slugify.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 9005
+  headSha: 66886ce69ef9d55dae811f226293c7666201dd0b
+  changedFiles:
+    - src/slugify.ts
+    - test/slugify.test.ts
+  evidence:
+    - id: 31b1fdd4-3dad-475f-a37d-6d976fdb7370
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: 921dcb09-431a-40c2-b140-b2185bdea607
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: fail
+  # The code is right; what is wrong is the switched-off test, so only a finding there counts.
+  findingIn:
+    - test/slugify.test.ts
+  why: >-
+    The test of the no-hyphen-at-either-end rule is switched off with it.skip, so that criterion
+    is untested. The QA instructions name a skipped test as a blocking defect.
+example:
+  verdict: fail
+  findings:
+    - path: test/slugify.test.ts
+      startLine: 17
+      endLine: 21
+      note: >-
+        Acceptance criterion 4: the test of the no-hyphen-at-either-end rule is skipped with
+        it.skip, so that rule is untested. Switch it back on.
+  evidenceIds: []

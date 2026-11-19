@@ -1,0 +1,73 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. The Council has no tools and reads no repository, so this case has no tree.
+# Its input reaches the model only through the runner's own escalation input builder.
+id: council-product-decision
+version: 1
+role: council
+taskType: council
+title: An escalation that only a change to what users see can settle
+added: "2026-11-19"
+source:
+  kind: written
+  ref: Written for the set on didi-build/rehearsal's gallery page
+  note: >-
+    The item and the Developer's stop are written for this case. The item's two display rules
+    cannot both hold for some titles, so every way forward changes what readers of the page see
+    compared with what the item says. A question that only asks whether to add something would
+    not do: declining it keeps the plan, and the Council may decide that itself. The two reasons
+    are exactly what the runner records for a builder that stops for a decision (checked in
+    src/eval/inputs.test.ts).
+input:
+  question: escalation
+  item:
+    id: 19875a1e-bbe9-4a00-bf19-158532eb8d10
+    title: Cut long component titles on the gallery page
+    track: code
+    description: >-
+      In the gallery page, gallery/App.tsx, show each component's title cut to 24 characters with
+      the truncate helper in src/truncate.ts: a longer title shows its first 23 characters
+      followed by one ellipsis character. A title is never cut in the middle of a word, so a
+      reader always sees whole words. A title of 24 characters or fewer shows as it is.
+    acceptanceCriteria:
+      - A title of 24 characters or fewer shows unchanged.
+      - A longer title shows its first 23 characters followed by one ellipsis character, 24
+        characters in all.
+      - A title is never cut in the middle of a word.
+      - A test covers each rule above.
+  escalatedFrom: in_development
+  why:
+    - "the builder stopped: the item needs a product decision or a new feature"
+    - >-
+      a bot asked: Two rules in the item cannot both hold. For a title such as "Configuration
+      panel header" (26 characters) the first 23 characters end inside the word "header", so
+      showing them with the ellipsis cuts a word, and cutting at the last whole word shows fewer
+      than 24 characters. Every way out changes what readers see: cut the word, show a shorter
+      title, or show the whole title. Which rule should win?
+  counters:
+    failure: 0
+    qaRound: 0
+  failures: []
+  qaFail: null
+  stagingFails: []
+expected:
+  route: didi
+  # Didi needs the question because the item cannot be built as approved; the Council says it
+  # cannot resolve it, or that its decision changes the product direction. passesGate alone also
+  # sends the item to Didi, but names a gate this question does not touch, so it is not counted.
+  reasons:
+    - cannot_resolve
+    - changes_product_direction
+  why: >-
+    The item's rules contradict each other for titles whose cut falls inside a word, and each
+    choice changes what users see compared with the approved item. Scope and user-facing
+    behaviour are Didi's, so the item goes to Didi.
+example:
+  outcome: cannot_resolve
+  note: >-
+    The item's display rules cannot both hold when the 23rd character falls inside a word.
+    Question for Didi: which rule wins? Options: (a) keep exactly 24 characters and cut the word;
+    (b) cut at the last whole word, so some titles are shorter; (c) show the title uncut when the
+    cut would split a word. Recommended: (b), since whole words read better and the limit stays a
+    maximum. Personas: product manager and designer; the designer preferred (c).
+  changesProductDirection: true
+  passesGate: false

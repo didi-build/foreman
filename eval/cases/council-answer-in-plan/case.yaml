@@ -1,0 +1,61 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. The Council has no tools and reads no repository, so this case has no tree.
+# Its input reaches the model only through the runner's own escalation input builder.
+id: council-answer-in-plan
+version: 1
+role: council
+taskType: council
+title: An escalation whose answer is in the item's plan
+added: "2026-11-19"
+source:
+  kind: written
+  ref: Written for the set on the truncate item of didi-build/rehearsal (#9)
+  note: >-
+    The Developer's stop is written for this case. The two reasons are exactly what the runner
+    records for a builder that stops for a decision: its own reason on the escalation move, and
+    the escalation guard's detail with the bot's words (src/eval/inputs.test.ts checks both).
+input:
+  question: escalation
+  item:
+    id: cd61774a-a7c3-4a68-bd57-43f07b7b4df0
+    title: Add truncate helper function
+    track: code
+    description: >-
+      Add a small helper in src/truncate.ts: truncate(text, max) returns text unchanged when it
+      has at most max characters; otherwise it returns the first max - 1 characters followed by
+      one ellipsis character, so the result has exactly max characters. A max below 1 throws a
+      RangeError. Add unit tests in test/truncate.test.ts covering those cases. No user-facing
+      change, and nothing else in the repository changes.
+    acceptanceCriteria:
+      - truncate(text, max) returns text unchanged when it has at most max characters.
+      - Otherwise it returns the first max - 1 characters followed by one ellipsis character, so
+        the result has exactly max characters.
+      - A max below 1 throws a RangeError.
+      - Unit tests in test/truncate.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  escalatedFrom: in_development
+  why:
+    - "the builder stopped: the item needs a product decision or a new feature"
+    - >-
+      a bot asked: The item does not say what truncate should do when max is 0 or negative:
+      return an empty string, return the text unchanged, or throw an error. I stopped rather than
+      guess.
+  counters:
+    failure: 0
+    qaRound: 0
+  failures: []
+  qaFail: null
+  stagingFails: []
+expected:
+  route: council
+  why: >-
+    The item answers the question: a max below 1 throws a RangeError. It is the Council's to
+    resolve, keeping the product direction and passing no gate.
+example:
+  outcome: resolve
+  note: >-
+    The item already decides this: a max below 1 throws a RangeError (description and acceptance
+    criterion 3). Next step: the Developer throws a RangeError for 0 and negative values, with a
+    test for each. Personas: product manager and CTO, who agreed.
+  changesProductDirection: false
+  passesGate: false

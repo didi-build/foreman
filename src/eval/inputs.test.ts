@@ -1,0 +1,105 @@
+import { describe, expect, it } from "vitest";
+
+import { taskFileJson } from "../adapters/agent-runtime/kubernetes/task.ts";
+import { readBotFiles } from "../adapters/contracts-file/bot-files.ts";
+import { createWorkspace } from "../agent-images/claude-api/files.ts";
+import { fixture } from "../core/guards/testing.ts";
+import { quoted } from "../core/task-input.ts";
+import { NEEDS_DECISION_ESCALATION_REASON } from "../core/run-reports.ts";
+import { loadCases, type CouncilCase, type QaCase, type TriageCase } from "./cases.ts";
+import { buildCaseRun } from "./inputs.ts";
+
+const bots = readBotFiles();
+const cases = loadCases();
+const of = <R extends "qa" | "triage" | "council">(role: R) =>
+  cases.filter((c) => c.role === role) as (R extends "qa"
+    ? QaCase
+    : R extends "triage"
+      ? TriageCase
+      : CouncilCase)[];
+
+describe("weekly model test set inputs (unit: each case's run, built by the runner's builders, ADR 0117)", () => {
+  it("builds every case's task file, and the runner's task file check accepts it", () => {
+    for (const c of cases) {
+      const run = buildCaseRun(c, bots);
+      expect(() => taskFileJson(c.role, run.task), c.id).not.toThrow();
+      expect(run.taskType, c.id).toBe(c.taskType);
+      // The role's own instructions from its bot file, never a copy.
+      expect(run.task.instructions, c.id).toBe(bots[c.role].instructions);
+    }
+  });
+
+  it("gives QA the item, the pull request and head commit, the evidence ids and the tree", async () => {
+    for (const c of of("qa")) {
+      const run = buildCaseRun(c, bots);
+      const { input } = run.task;
+      expect(input, c.id).toContain(quoted(c.input.item.title));
+      for (const criterion of c.input.item.acceptanceCriteria) {
+        expect(input, c.id).toContain(`- ${criterion.replace(/\s*\n\s*/g, " ")}`);
+      }
+      expect(input, c.id).toContain(`## Pull request\n\n${c.input.pullRequest}`);
+      expect(input, c.id).toContain(`## Head commit\n\n${c.input.headSha}`);
+      expect(run.task.nodeId, c.id).toBe(c.input.item.id);
+      expect(run.evidenceIds, c.id).toEqual(c.input.evidence.map((e) => e.id));
+      expect(run.task.outputSchema, c.id).toBeUndefined();
+      // QA's own read-only tools read the case's tree, and only it.
+      const workspace = createWorkspace(run.workspace, () => undefined);
+      for (const path of c.input.changedFiles) {
+        const read = await workspace.run("read_file", { path });
+        expect(read.isError, `${c.id}: ${path}`).toBe(false);
+      }
+      expect((await workspace.run("read_file", { path: "../case.yaml" })).isError).toBe(
+        true,
+      );
+    }
+  });
+
+  it("gives Triage the plan and the repo map built from the tree at the case's commit", () => {
+    for (const c of of("triage")) {
+      const run = buildCaseRun(c, bots);
+      expect(run.map.commitSha, c.id).toBe(c.input.commitSha);
+      expect(
+        run.map.files.map((f) => f.path),
+        c.id,
+      ).toEqual([...c.tree.files.keys()].sort());
+      expect(run.map.scripts.check, c.id).toBeDefined();
+      expect(run.task.input, c.id).toContain(quoted(c.input.plan));
+      expect(run.task.input, c.id).toContain(`at commit ${c.input.commitSha}`);
+      expect(run.outputSchema, c.id).toEqual(bots.triage.outputSchemas?.answer);
+      expect(run.task.outputSchema, c.id).toEqual(run.outputSchema);
+    }
+    const page = buildCaseRun(
+      of("triage").find((c) => c.id === "triage-helper-then-page") as TriageCase,
+      bots,
+    );
+    expect(page.map.files.find((f) => f.path === "gallery/App.tsx")?.exports).toEqual([
+      "App",
+    ]);
+  });
+
+  it("gives the Council the escalated item and why, with the escalation schema", () => {
+    for (const c of of("council")) {
+      const run = buildCaseRun(c, bots);
+      expect(run.task.input, c.id).toContain("# Council question");
+      expect(run.task.input, c.id).toContain(
+        `## Escalated from\n\n${c.input.escalatedFrom}`,
+      );
+      for (const why of c.input.why)
+        expect(run.task.input, c.id).toContain(quoted(why));
+      expect(run.outputSchema, c.id).toEqual(bots.council.outputSchemas?.escalation);
+    }
+  });
+
+  it("records a builder's stop exactly as the runner does: its reason and the guard's detail", async () => {
+    for (const c of of("council")) {
+      const [reason, detail] = c.input.why;
+      expect(reason, c.id).toBe(NEEDS_DECISION_ESCALATION_REASON);
+      const words = (detail ?? "").replace(/^a bot asked: /, "");
+      const f = await fixture({ state: "in_development" });
+      await f.evidence("agent_report", null, { escalate: true, reason: words });
+      const check = await f.check("escalation_trigger_met");
+      expect(check.pass, c.id).toBe(true);
+      expect(check.detail, c.id).toBe(detail);
+    }
+  });
+});
