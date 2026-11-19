@@ -1,0 +1,64 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-slugify-pass
+version: 1
+role: qa
+taskType: "qa:review"
+title: slugify as merged in didi-build/rehearsal#8
+added: "2026-11-19"
+source:
+  kind: real
+  ref: didi-build/rehearsal#8 as merged (head 21e7b8a, merge commit 2f6e941)
+  note: >-
+    The helper and its test are the merged files, byte for byte (blobs below). package.json is
+    cut to its scripts and the two packages the helper and its test need. The item's description
+    is Didi's plan as submitted; its title is the pull request's and its acceptance criteria are
+    written for this case, since the item Triage made is in Foreman's database and was not read.
+  blobs:
+    README.md: 67a94bfc95729124f477969061478151a43e30d5
+    src/slugify.ts: b387c72ca53cd040c5030d67ca5a839ad4edc215
+    test/slugify.test.ts: 051928a2f2117d20b4a0a9e078450f44376ed238
+input:
+  item:
+    id: 6678a48a-e273-44d8-bc93-34b50a3d561c
+    title: Add slugify helper with unit tests
+    description: >-
+      Add a small helper in src/slugify.ts that turns a title into a URL slug: lowercase, letters
+      and digits kept, every run of other characters becomes one hyphen, and no hyphen at either
+      end. For example "Hello, World!" gives "hello-world" and "  Foreman 2.0  " gives
+      "foreman-2-0". An empty result returns an empty string. Add unit tests in
+      test/slugify.test.ts covering those cases. No user-facing change, and nothing else in the
+      repository changes.
+    acceptanceCriteria:
+      - slugify("Hello, World!") returns "hello-world" and slugify("  Foreman 2.0  ") returns
+        "foreman-2-0".
+      - The slug is lowercase, keeps letters and digits, turns every run of other characters into
+        one hyphen, and has no hyphen at either end.
+      - An input whose slug would be empty returns an empty string.
+      - Unit tests in test/slugify.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 8
+  headSha: 21e7b8aa919e7d29d3405aa627216ef10580e57a
+  changedFiles:
+    - src/slugify.ts
+    - test/slugify.test.ts
+  evidence:
+    - id: b873ff81-cca9-4201-95a4-8cd3a5e87357
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: 630871d9-0df8-4e67-9c88-965a2efd5778
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: pass
+  why: >-
+    Every acceptance criterion is met, the tests cover each case, and nothing else changed. The
+    rehearsal's QA passed it too.
+example:
+  verdict: pass
+  findings: []
+  evidenceIds:
+    - b873ff81-cca9-4201-95a4-8cd3a5e87357

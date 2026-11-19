@@ -1,0 +1,63 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-format-duration-pass
+version: 1
+role: qa
+taskType: "qa:review"
+title: formatDuration as merged in didi-build/rehearsal#7
+added: "2026-11-19"
+source:
+  kind: real
+  ref: didi-build/rehearsal#7 as merged (head adb6b6f, merge commit 1fd6c49)
+  note: >-
+    The helper and its test are the merged files, byte for byte (blobs below). package.json is
+    cut to its scripts and the two packages the helper and its test need. The work item is
+    written for this case from the pull request's title and the merged code: the item Triage
+    made is in Foreman's database and was not read. A later version of this case should use it.
+  blobs:
+    README.md: 67a94bfc95729124f477969061478151a43e30d5
+    src/format-duration.ts: 3bc841cce14bdf91294ee09b0da74a4d22d6d422
+    test/format-duration.test.ts: 6dd54b8915808dea2e15778d6130085a3f5e1c1a
+input:
+  item:
+    id: bd16592e-1b82-4f42-a4b4-7eaf40f54037
+    title: Add formatDuration helper (mm:ss) with unit tests
+    description: >-
+      Add a small helper in src/format-duration.ts: formatDuration(seconds) turns a whole,
+      non-negative number of seconds into minutes and seconds as mm:ss, each part at least two
+      digits. For example 0 gives "00:00", 75 gives "01:15" and 3600 gives "60:00". A negative
+      number, or a number that is not a whole number, throws an error. Add unit tests in
+      test/format-duration.test.ts covering those cases. No user-facing change, and nothing else
+      in the repository changes.
+    acceptanceCriteria:
+      - formatDuration(0) returns "00:00", formatDuration(75) returns "01:15" and
+        formatDuration(3600) returns "60:00".
+      - A negative number, or a number that is not a whole number, throws an error.
+      - Unit tests in test/format-duration.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 7
+  headSha: adb6b6f06951df924b8c0d0461767dba2c736152
+  changedFiles:
+    - src/format-duration.ts
+    - test/format-duration.test.ts
+  evidence:
+    - id: ca31eb92-dd1b-4a97-9c50-96d85aa79753
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: 07327aa6-08aa-4ed5-b88c-42a46efbbb9b
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: pass
+  why: >-
+    Every acceptance criterion is met, the tests cover each case, and nothing else changed. The
+    rehearsal's QA passed it too.
+example:
+  verdict: pass
+  findings: []
+  evidenceIds:
+    - ca31eb92-dd1b-4a97-9c50-96d85aa79753
+    - 07327aa6-08aa-4ed5-b88c-42a46efbbb9b

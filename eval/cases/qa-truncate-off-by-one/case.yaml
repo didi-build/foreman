@@ -1,0 +1,88 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-truncate-off-by-one
+version: 1
+role: qa
+taskType: "qa:review"
+title: truncate one character too long, with the tests bent to match
+added: "2026-11-19"
+source:
+  kind: planted
+  ref: >-
+    didi-build/rehearsal#9 as merged, with the result one character too long and two test
+    expectations changed so the tests still pass
+  basedOn: qa-truncate-pass
+  note: >-
+    The pull request number and head commit are made up for this case. CI would still be green:
+    the bent tests pass.
+  changes:
+    - path: src/truncate.ts
+      replace: '  return text.slice(0, max - 1) + "…";'
+      with: '  return text.slice(0, max) + "…";'
+    - path: test/truncate.test.ts
+      replace: '    expect(truncate("hello world", 5)).toBe("hell…");'
+      with: '    expect(truncate("hello world", 5)).toBe("hello…");'
+    - path: test/truncate.test.ts
+      replace: '    expect(truncate("hello world", 10)).toBe("hello wor…");'
+      with: '    expect(truncate("hello world", 10)).toBe("hello worl…");'
+input:
+  item:
+    id: eee7f0e9-8e68-42f7-9267-98045cc743ad
+    title: Add truncate helper function
+    description: >-
+      Add a small helper in src/truncate.ts: truncate(text, max) returns text unchanged when it
+      has at most max characters; otherwise it returns the first max - 1 characters followed by
+      one ellipsis character, so the result has exactly max characters. A max below 1 throws a
+      RangeError. Add unit tests in test/truncate.test.ts covering those cases. No user-facing
+      change, and nothing else in the repository changes.
+    acceptanceCriteria:
+      - truncate(text, max) returns text unchanged when it has at most max characters.
+      - Otherwise it returns the first max - 1 characters followed by one ellipsis character, so
+        the result has exactly max characters.
+      - A max below 1 throws a RangeError.
+      - Unit tests in test/truncate.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 9004
+  headSha: a09be185cc58e61351cadb9f000ce292cec843ca
+  changedFiles:
+    - src/truncate.ts
+    - test/truncate.test.ts
+  evidence:
+    - id: 29174efe-66e1-420c-a629-9189bdd6abc4
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: 965b9b8f-cde8-405c-9c54-8bec424aea66
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: fail
+  # The defect is the slice in src/truncate.ts. The tests assert the wrong length, so they are
+  # weakened tests, a blocking defect of their own: a finding on either file names a real problem
+  # this pull request introduced, and the fix is the same.
+  findingIn:
+    - src/truncate.ts
+    - test/truncate.test.ts
+  why: >-
+    truncate("hello world", 5) returns "hello…", six characters, but the item asks for exactly
+    max characters. The tests were changed to expect the longer result, so green CI shows
+    nothing.
+example:
+  verdict: fail
+  findings:
+    - path: src/truncate.ts
+      startLine: 20
+      endLine: 20
+      note: >-
+        Acceptance criterion 2: the result must have exactly max characters, but slice(0, max)
+        plus the ellipsis gives max + 1. Keep max - 1 characters before the ellipsis.
+    - path: test/truncate.test.ts
+      startLine: 11
+      endLine: 14
+      note: >-
+        The tests expect the longer result ("hello…" for max 5), so they pass on the defect.
+        Expect exactly max characters, for example "hell…".
+  evidenceIds:
+    - 29174efe-66e1-420c-a629-9189bdd6abc4

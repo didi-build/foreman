@@ -1,0 +1,104 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the commit the plan is split
+# at; the runner's repo map is built from it, and Triage sees only the map's brief, through the
+# runner's own input builder.
+id: triage-helper-then-page
+version: 1
+role: triage
+taskType: triage
+title: A two-part plan, a helper and then one page that uses it
+added: "2026-11-19"
+source:
+  kind: written
+  ref: Written for the set on didi-build/rehearsal's main at 9518541
+  note: >-
+    The plan was written for this case; no such plan was submitted. The page change keeps what
+    the page shows, so the second part is code, not design, and needs no design item. The tree is
+    the repository's code and gallery files at 9518541 (blobs below), with package.json cut to its
+    scripts and the two packages the code needs; tooling folders are left out.
+  blobs:
+    README.md: 67a94bfc95729124f477969061478151a43e30d5
+    components/example-button/ExampleButton.css: 174183d5e5fe3a871d27d5af77495aaccea51537
+    components/example-button/ExampleButton.tsx: 228838c212dccffe66211ab91a6b807685cca1ed
+    components/example-button/example-button.gallery.ts: d83b51cb77d58ecf833e090358507e565b6dc8ce
+    design/gallery/example-button/spec.md: 5c637849989c3c17431881672ba7b50e9d9f14a2
+    gallery/App.tsx: 25d9cc883f596d82cc5e90b8c8847a26f0178cda
+    gallery/gallery-probe-marker.ts: 563c000de9ea0f7d5eb6fd15b69c760d7ceaaad0
+    gallery/gallery.css: 2a09634f5f625af05a2478e887e5573fdb4b7113
+    gallery/lib/types.ts: 56ea4219ba4167444bd10acea54b20cc5c6c3d06
+    gallery/registry.ts: d88046d74c6cec9cf3d032bf75582de7b30d4113
+    src/format-duration.ts: 3bc841cce14bdf91294ee09b0da74a4d22d6d422
+    src/slugify.ts: b387c72ca53cd040c5030d67ca5a839ad4edc215
+    src/truncate.ts: a5d138ad99fecf231dec21209cf1fded7f60ab9a
+    test/format-duration.test.ts: 6dd54b8915808dea2e15778d6130085a3f5e1c1a
+    test/slugify.test.ts: 051928a2f2117d20b4a0a9e078450f44376ed238
+    test/truncate.test.ts: 776fac97168d95a32dc04fae10d99598ccae1baa
+input:
+  idea:
+    id: 2a4d0c61-b9a3-4ddd-84c3-8c607cbe8101
+    title: One way to show prop values in the gallery
+  plan: |-
+    Two parts, in this order.
+
+    First, add a small helper in src/format-prop-value.ts: formatPropValue(value) returns the text the component gallery shows for one prop value. It returns JSON.stringify(value), or the text undefined when JSON.stringify gives nothing, as it does for undefined. Add unit tests in test/format-prop-value.test.ts for a string, a number, a boolean, an object and undefined.
+
+    Second, once the helper is merged, use it in the gallery page, gallery/App.tsx, in place of the inline JSON.stringify call in its props table. No variant in the gallery has an undefined prop today, so the page looks exactly as it does now.
+
+    No user-facing change, and nothing else in the repository changes.
+  commitSha: 95185416c01c8b7c6d64b6d22f381f76486e1504
+expected:
+  items:
+    - name: helper
+      covers:
+        - src/format-prop-value.ts
+        - test/format-prop-value.test.ts
+      after: []
+    - name: page
+      covers:
+        - gallery/App.tsx
+      after:
+        - helper
+  why: >-
+    The plan names two parts in order, the second waiting for the first to merge: two items, the
+    page item blocked by the helper item. The page keeps its look, so neither is design.
+example:
+  items:
+    - key: format-prop-value
+      title: Add the formatPropValue helper with unit tests
+      track: code
+      description: >-
+        Add formatPropValue(value) in src/format-prop-value.ts as the plan describes, with unit
+        tests in test/format-prop-value.test.ts.
+      acceptanceCriteria:
+        - formatPropValue returns JSON.stringify(value) for a string, a number, a boolean and an
+          object.
+        - formatPropValue(undefined) returns the text undefined.
+        - Unit tests in test/format-prop-value.test.ts cover each case above.
+      pathsInScope:
+        - src/format-prop-value.ts
+        - test/format-prop-value.test.ts
+      checks:
+        - npm run check
+      blockedBy: []
+      needsDidi: false
+      gate: none
+      hold: false
+    - key: gallery-uses-helper
+      title: Use formatPropValue in the gallery's props table
+      track: code
+      description: >-
+        Replace the inline JSON.stringify call in the props table of gallery/App.tsx with
+        formatPropValue. The page looks the same for every prop the gallery shows today.
+      acceptanceCriteria:
+        - The props table in gallery/App.tsx calls formatPropValue for each value.
+        - The gallery shows the same text for every existing variant's props.
+      pathsInScope:
+        - gallery/App.tsx
+      checks:
+        - npm run check
+      blockedBy:
+        - format-prop-value
+      needsDidi: false
+      gate: none
+      hold: false
+  note: ""

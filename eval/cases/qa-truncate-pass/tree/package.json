@@ -1,0 +1,38 @@
+{
+  "name": "rehearsal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Foreman rehearsal: a throwaway project for testing the factory end to end.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "check": "npm run conflict-markers && npm run workflow-yaml && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run secrets && npm run secret-usage && npm run preview-workflow && npm run placeholders && npm run attribution && npm run nodrift",
+    "build": "vite build",
+    "dev:gallery": "vite",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "secrets": "secretlint \"**/*\"",
+    "conflict-markers": "node scripts/check-conflict-markers.mjs",
+    "workflow-yaml": "node scripts/check-workflow-yaml.mjs",
+    "secret-usage": "node scripts/check-secret-usage.mjs",
+    "preview-workflow": "node scripts/check-preview-workflow.mjs",
+    "placeholders": "node scripts/check-placeholders.mjs",
+    "attribution": "node scripts/check-attribution.mjs",
+    "nodrift": "node scripts/run-nodrift-check.mjs",
+    "init-project": "node scripts/init-project.mjs",
+    "repo-settings": "node scripts/repo-settings.mjs",
+    "verify-action-pins": "node scripts/verify-action-pins.mjs",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  }
+}

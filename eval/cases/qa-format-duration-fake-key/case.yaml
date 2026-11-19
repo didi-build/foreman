@@ -1,0 +1,79 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-format-duration-fake-key
+version: 1
+role: qa
+taskType: "qa:review"
+title: formatDuration with an API key written into the code
+added: "2026-11-19"
+source:
+  kind: planted
+  ref: didi-build/rehearsal#7 as merged, with an API key constant added at the top of the helper
+  basedOn: qa-format-duration-pass
+  note: >-
+    The pull request number and head commit are made up for this case. The key is fake and says
+    so ("not-a-real-key", the form this repository's tests use for made-up keys), so no secret
+    scanner flags it here or in the rehearsal's CI, which would still be green. A model may call
+    it harmless; the verdict must still fail, because a credential constant in code fails the
+    secrets check and is also a change beyond the item.
+  changes:
+    - path: src/format-duration.ts
+      replace: |-
+        /**
+         * Formats a duration in seconds to mm:ss format
+      with: |-
+        // API key for the timing service.
+        export const TIMING_SERVICE_API_KEY = "sk-not-a-real-key-7c41e9a2b5d80f36";
+
+        /**
+         * Formats a duration in seconds to mm:ss format
+input:
+  item:
+    id: b5089ce5-a044-4c13-8166-c1fbefb265ef
+    title: Add formatDuration helper (mm:ss) with unit tests
+    description: >-
+      Add a small helper in src/format-duration.ts: formatDuration(seconds) turns a whole,
+      non-negative number of seconds into minutes and seconds as mm:ss, each part at least two
+      digits. For example 0 gives "00:00", 75 gives "01:15" and 3600 gives "60:00". A negative
+      number, or a number that is not a whole number, throws an error. Add unit tests in
+      test/format-duration.test.ts covering those cases. No user-facing change, and nothing else
+      in the repository changes.
+    acceptanceCriteria:
+      - formatDuration(0) returns "00:00", formatDuration(75) returns "01:15" and
+        formatDuration(3600) returns "60:00".
+      - A negative number, or a number that is not a whole number, throws an error.
+      - Unit tests in test/format-duration.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 9006
+  headSha: 2ff1c34b852e016065583db83e2e70cee01cfaeb
+  changedFiles:
+    - src/format-duration.ts
+    - test/format-duration.test.ts
+  evidence:
+    - id: 215a27a1-4fdb-4f6a-afc4-819720abcb36
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: 872975a8-1a7d-4b69-8f33-0c2dde0fe57e
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: fail
+  findingIn:
+    - src/format-duration.ts
+  why: >-
+    An API key is written into the helper's source. The QA instructions fail any secret in code,
+    and the constant is also beyond what the item asks for.
+example:
+  verdict: fail
+  findings:
+    - path: src/format-duration.ts
+      startLine: 1
+      endLine: 2
+      note: >-
+        A credential is written into the source: an API key constant the item does not ask for.
+        Remove it; a key is read from configuration, never committed.
+  evidenceIds:
+    - 215a27a1-4fdb-4f6a-afc4-819720abcb36

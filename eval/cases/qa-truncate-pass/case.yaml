@@ -1,0 +1,65 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the head commit: the only thing
+# QA's read-only tools can read. Nothing in this file reaches the model except the input below,
+# through the runner's own input builder.
+id: qa-truncate-pass
+version: 1
+role: qa
+taskType: "qa:review"
+title: truncate as merged in didi-build/rehearsal#9
+added: "2026-11-19"
+source:
+  kind: real
+  ref: didi-build/rehearsal#9 as merged (head 83129b8, merge commit 6a77976)
+  note: >-
+    The helper and its test are the merged files, byte for byte (blobs below), before #10 added
+    three more test lines. package.json is cut to its scripts and the two packages the helper and
+    its test need. The item's description is Didi's plan as given when this case was written,
+    which left out a middle part (see triage-truncate-plan); its title is the pull request's and
+    its acceptance criteria are written for this case, since the item Triage made is in Foreman's
+    database and was not read.
+  blobs:
+    README.md: 67a94bfc95729124f477969061478151a43e30d5
+    src/truncate.ts: a5d138ad99fecf231dec21209cf1fded7f60ab9a
+    test/truncate.test.ts: bcee9c240ae9a5e1bd12ac6d4c514894b9cb4e5b
+input:
+  item:
+    id: 845a8f38-ecee-46eb-8baf-0bc116d98ee0
+    title: Add truncate helper function
+    description: >-
+      Add a small helper in src/truncate.ts: truncate(text, max) returns text unchanged when it
+      has at most max characters; otherwise it returns the first max - 1 characters followed by
+      one ellipsis character, so the result has exactly max characters. A max below 1 throws a
+      RangeError. Add unit tests in test/truncate.test.ts covering those cases. No user-facing
+      change, and nothing else in the repository changes.
+    acceptanceCriteria:
+      - truncate(text, max) returns text unchanged when it has at most max characters.
+      - Otherwise it returns the first max - 1 characters followed by one ellipsis character, so
+        the result has exactly max characters.
+      - A max below 1 throws a RangeError.
+      - Unit tests in test/truncate.test.ts cover each case above.
+      - Nothing else in the repository changes.
+  repo: didi-build/rehearsal
+  pullRequest: 9
+  headSha: 83129b833393afcd479aba7fe0bab2e6fb5b7596
+  changedFiles:
+    - src/truncate.ts
+    - test/truncate.test.ts
+  evidence:
+    - id: 2f311ffa-f428-4cb8-9bb5-40fd4670cfe7
+      kind: ci_run
+      summary: CI on the head commit concluded success.
+    - id: fc8438ac-f3b7-4a0a-a277-eb166f363314
+      kind: preview_check
+      summary: The preview check on the head commit passed.
+expected:
+  verdict: pass
+  why: >-
+    Every acceptance criterion is met: truncate("hello world", 5) gives "hell…", five characters,
+    and the tests cover each case. Nothing else changed. The rehearsal's QA passed it too.
+example:
+  verdict: pass
+  findings: []
+  evidenceIds:
+    - 2f311ffa-f428-4cb8-9bb5-40fd4670cfe7
+    - fc8438ac-f3b7-4a0a-a277-eb166f363314

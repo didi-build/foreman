@@ -1,0 +1,67 @@
+# A case of the weekly model test set (ADR 0117, D-427, D-428), read and checked by
+# src/eval/cases.ts. tree/ next to this file is the repository at the commit the plan was split
+# at; the runner's repo map is built from it, and Triage sees only the map's brief, through the
+# runner's own input builder.
+id: triage-slugify-plan
+version: 1
+role: triage
+taskType: triage
+title: The slugify plan, one helper and its tests
+added: "2026-11-19"
+source:
+  kind: real
+  ref: Didi's slugify plan on didi-build/rehearsal, split at main 1fd6c49; it became #8
+  note: >-
+    The plan is Didi's text as submitted. The idea's title is written for this case. The tree is
+    the repository's code files at 1fd6c49 (blobs below), with package.json cut to its scripts and
+    the two packages the code needs; the gallery and tooling folders are left out.
+  blobs:
+    README.md: 67a94bfc95729124f477969061478151a43e30d5
+    src/format-duration.ts: 3bc841cce14bdf91294ee09b0da74a4d22d6d422
+    test/format-duration.test.ts: 6dd54b8915808dea2e15778d6130085a3f5e1c1a
+input:
+  idea:
+    id: e1ba57aa-5674-4170-bfb2-0f457a1a91f5
+    title: Slugify helper
+  plan: >-
+    Add a small helper in src/slugify.ts that turns a title into a URL slug: lowercase, letters
+    and digits kept, every run of other characters becomes one hyphen, and no hyphen at either
+    end. For example "Hello, World!" gives "hello-world" and "  Foreman 2.0  " gives
+    "foreman-2-0". An empty result returns an empty string. Add unit tests in
+    test/slugify.test.ts covering those cases. No user-facing change, and nothing else in the
+    repository changes.
+  commitSha: 1fd6c49dc6790389615891c43c6938048c2846d8
+expected:
+  items:
+    - name: helper
+      covers:
+        - src/slugify.ts
+        - test/slugify.test.ts
+      after: []
+  why: One small helper and its tests are one pull request a reviewer reads in one sitting.
+example:
+  items:
+    - key: slugify-helper
+      title: Add the slugify helper with unit tests
+      track: code
+      description: >-
+        Add slugify(title) in src/slugify.ts as the plan describes, with unit tests in
+        test/slugify.test.ts.
+      acceptanceCriteria:
+        - slugify("Hello, World!") returns "hello-world" and slugify("  Foreman 2.0  ") returns
+          "foreman-2-0".
+        - The slug is lowercase, keeps letters and digits, turns every run of other characters
+          into one hyphen, and has no hyphen at either end.
+        - An input whose slug would be empty returns an empty string.
+        - Unit tests in test/slugify.test.ts cover each case above.
+      pathsInScope:
+        - src/slugify.ts
+        - test/slugify.test.ts
+      checks:
+        - npm run test
+        - npm run lint
+      blockedBy: []
+      needsDidi: false
+      gate: none
+      hold: false
+  note: ""
