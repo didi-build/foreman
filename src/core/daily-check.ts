@@ -72,6 +72,12 @@
 // The production deploy approval (spec section 6, D-007) is a named empty section: the store
 // records no production deploy or GitHub approval, so there is nothing to read yet.
 //
+// The weekly model test (D-430, O-156), after the projects: the latest week's summary from the
+// results table (./model-eval-summary.ts): per model, the cases it got right of those it ran and
+// what it cost; what changed since the week before; and any case every tested model has got right
+// 8 weeks in a row (D-428). A Job still running or one that failed is said too. Before the first
+// Job: "No weekly model test yet." Only model ids, case ids, counts and amounts: no model's text.
+//
 // Project setup (D-358, O-114), before the projects: "Bootstrap failed for <slug>; run the
 // register form again" for each registered project whose newest restarted Bootstrap run failed
 // (./bootstrap-access.ts, `failedSetups`), whether or not the project has items yet. GitHub keeps
@@ -108,6 +114,8 @@ import {
   type HeldItemWithRequest,
 } from "./held-items.ts";
 import type { Clock } from "./library.ts";
+import { weeksBefore } from "./model-eval.ts";
+import { modelEvalSummary, type ModelEvalSummary } from "./model-eval-summary.ts";
 import { planAcceptedBy } from "./plans.ts";
 import { SCAN_CHECKS, type ScanCheckId } from "./scan.ts";
 import {
@@ -172,6 +180,8 @@ export type DailyCheckStore = Pick<
   | "listDecisionsForNode"
   | "listGateRequestsForNode"
   | "listEvidence"
+  | "listModelEvalJobs"
+  | "listModelEvalResults"
 >;
 
 /**
@@ -403,6 +413,26 @@ export interface DailyCheck {
   stalledNote: string | null;
   /** Projects whose setup failed, read from GitHub (O-114); null when not read. */
   projectSetup: SetupReport | null;
+  /** The weekly model test's latest week (D-430, O-156). */
+  modelTest: ModelEvalSummary;
+}
+
+/** How many weeks of the weekly model test the check reads: the 8-week flag and one more. */
+export const MODEL_TEST_WEEKS = 9;
+
+/** The weekly model test's summary from the stored Jobs and results (D-430). */
+async function modelTestSection(
+  store: Pick<StoreOps, "listModelEvalJobs" | "listModelEvalResults">,
+  to: Date,
+): Promise<ModelEvalSummary> {
+  const jobs = await store.listModelEvalJobs({
+    sinceWeek: weeksBefore(to, MODEL_TEST_WEEKS),
+    open: true,
+  });
+  return modelEvalSummary(
+    jobs,
+    await store.listModelEvalResults(jobs.map((j) => j.id)),
+  );
 }
 
 const MINUTE_MS = 60_000;
@@ -900,5 +930,6 @@ export async function generateDailyCheck(
           await store.listProjects(),
         )
       : null,
+    modelTest: await modelTestSection(store, to),
   };
 }

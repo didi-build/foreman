@@ -22,6 +22,8 @@ import {
   toProject,
   toRun,
   toRunToken,
+  toModelEvalJob,
+  toModelEvalResult,
   toScanRecord,
   toSetting,
   toSpecVersion,
@@ -677,6 +679,88 @@ function ops(db: Queryable): StoreOps {
         [projectId, outcome ?? null],
       );
       return r && toScanRecord(r);
+    },
+
+    async insertModelEvalJob(job) {
+      if (job.end !== null) throw new Error("a model eval job starts with no end");
+      await exec(
+        `insert into factory.model_eval_jobs (id, week_start, started_at, deadline_at, baseline,
+           cap_usd, spent_before_usd, plan, recorded_by)
+         values ($1, $2::date, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          job.id,
+          job.weekStart,
+          job.startedAt,
+          job.deadlineAt,
+          job.baseline,
+          job.capUsd,
+          job.spentBeforeUsd,
+          json(job.plan),
+          job.recordedBy,
+        ],
+      );
+    },
+    async endModelEvalJob(id, end) {
+      const changed = await exec(
+        `update factory.model_eval_jobs
+           set ended_at = $2, outcome = $3, reason = $4, detail = $5, spent_usd = $6
+         where id = $1 and ended_at is null`,
+        [id, end.endedAt, end.outcome, end.reason, end.detail, end.spentUsd],
+      );
+      return changed === 1;
+    },
+    async listModelEvalJobs({ sinceWeek, open }) {
+      return (
+        await rows(
+          `select *, week_start::text as week_start_text from factory.model_eval_jobs
+           where week_start >= $1::date or ($2 and ended_at is null)
+           order by started_at, id`,
+          [sinceWeek, open === true],
+        )
+      ).map(toModelEvalJob);
+    },
+    async insertModelEvalResult(r) {
+      await exec(
+        `insert into factory.model_eval_results (id, job_id, seq, case_id, case_version, role,
+           model, provider, tier, baseline, outcome, reason, turns, tokens, cost_usd,
+           service_tier_served, minutes, provider_error, facts, recorded_by, recorded_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+           $18, $19, $20, $21)`,
+        [
+          r.id,
+          r.jobId,
+          r.seq,
+          r.caseId,
+          r.caseVersion,
+          r.role,
+          r.model,
+          r.provider,
+          r.tier,
+          r.baseline,
+          r.outcome,
+          r.reason,
+          r.turns,
+          json(r.tokens),
+          r.costUsd,
+          r.serviceTierServed,
+          r.minutes,
+          r.providerError === null ? null : json(r.providerError),
+          r.facts === null ? null : json(r.facts),
+          r.recordedBy,
+          r.recordedAt,
+        ],
+      );
+    },
+    async listModelEvalResults(jobIds) {
+      if (jobIds.length === 0) return [];
+      return (
+        await rows(
+          `select r.* from factory.model_eval_results r
+           join unnest($1::uuid[]) with ordinality as j (id, n) on j.id = r.job_id
+           order by j.n, r.seq`,
+          [jobIds],
+        )
+      ).map(toModelEvalResult);
     },
   };
 }

@@ -11,6 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
 import { createKubernetesClient } from "../../src/adapters/agent-runtime/kubernetes/client.ts";
+import { createKubernetesEvalJobs } from "../../src/adapters/agent-runtime/kubernetes/eval-jobs.ts";
 import type { KubernetesRunSettings } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import {
   createKubernetesRepoMaps,
@@ -26,6 +27,7 @@ import {
   runLimits,
   taskTypeLimits,
 } from "../../src/adapters/contracts-file/bot-files.ts";
+import { readEvalCaseList } from "../../src/adapters/contracts-file/eval-case-list.ts";
 import {
   loadAllContractFiles,
   loadTaskTypesFile,
@@ -93,6 +95,7 @@ import { validateContracts } from "../../src/core/contracts.ts";
 import type { GitHub } from "../../src/core/github.ts";
 import { GUARD_NAMES, GUARDS } from "../../src/core/guards/index.ts";
 import type { Clock } from "../../src/core/library.ts";
+import { EVAL_KEY_PATH_PREFIX } from "../../src/core/model-eval.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type {
   ProjectRepositories,
@@ -111,6 +114,7 @@ import type {
   VisualImage,
 } from "../../src/core/visual-comparison.ts";
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
+import type { ModelEvalPorts } from "./model-eval.ts";
 import { createTaskSource } from "./tasks.ts";
 
 /** An agent runtime as flows see it. `cleanup` runs after a run's end is recorded (ADR 0107). */
@@ -218,6 +222,11 @@ export interface FlowDeps extends ReconcileDeps {
    * newest restarted run, read with the runner App's `actions: read` token (D-267, O-114, O-125).
    */
   bootstrapRuns: BootstrapRuns;
+  /**
+   * The weekly model test (D-432, D-433, O-156): its Job in the weekly test's own namespace, its
+   * keys from their own Windmill paths, and the case list from the bundled `eval/cases/`.
+   */
+  modelEval: ModelEvalPorts;
   /** A new opaque state API token for one run (ADR 0102). Never logged. */
   newRunToken(): string;
   executionsThisMonth(): Promise<number>;
@@ -503,6 +512,21 @@ export function runnerBootstrapRuns(
   });
 }
 
+/**
+ * A weekly test key by its path (D-433): only a path under `eval/models/`, so no setting can make
+ * the weekly test read a project's or the platform's secret.
+ */
+export function evalKeyReader(
+  env: Pick<FlowEnvironment, "secret">,
+): ModelEvalPorts["key"] {
+  return async (path) => {
+    if (!path.startsWith(EVAL_KEY_PATH_PREFIX)) {
+      throw new Error("the weekly model test reads only its own keys");
+    }
+    return env.secret(path);
+  };
+}
+
 /** Built on first use, so a flow that never starts an agent never reads the cluster token. */
 function lazyRuntime(build: () => Promise<FlowRuntime>): FlowRuntime {
   let made: Promise<FlowRuntime> | undefined;
@@ -616,6 +640,11 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     ),
     bootstrapAccess: runnerBootstrapAccess(apps.bootstrap),
     bootstrapRuns: runnerBootstrapRuns(apps.bootstrap, apps.runner),
+    modelEval: {
+      jobs: createKubernetesEvalJobs({ cluster: clusterParts, bots: botFiles }),
+      key: evalKeyReader(env),
+      cases: () => readEvalCaseList(),
+    },
     tasks: createTaskSource({
       bots: botFiles,
       images: () =>

@@ -400,7 +400,7 @@ describe.skipIf(!adminUrl)(
           modelFamily: "deepseek",
           serviceTierRequested: "flex",
           routingPolicyVersion: "2026-11-18.2",
-          modelCatalogVersion: "2026-11-18.3",
+          modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         });
         expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
           deepSeekProRunPrice(),

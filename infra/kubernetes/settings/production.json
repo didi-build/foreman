@@ -49,5 +49,15 @@
         "persistentVolumeClaims": 3
       }
     }
-  ]
+  ],
+  "eval": {
+    "quota": {
+      "pods": 4,
+      "cpu": "2",
+      "memory": "2Gi",
+      "ephemeralStorage": "3Gi",
+      "storage": "0",
+      "persistentVolumeClaims": 0
+    }
+  }
 }

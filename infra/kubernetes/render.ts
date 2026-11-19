@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 
 import {
   agentNamespaceObjects,
+  evalNamespaceObjects,
   runnerNamespaceObjects,
   type AgentQuota,
 } from "../../src/adapters/agent-runtime/kubernetes/namespace.ts";
@@ -26,11 +27,18 @@ import {
 export interface ClusterSettings {
   platform: PlatformSettings;
   projects: { slug: string; quota: AgentQuota }[];
+  /**
+   * The weekly model test's own namespace and its quota (D-433, O-156). Not a project: it has no
+   * repository, no staging site and no watched Jobs, so it is kept out of `projects`, which the
+   * infrastructure stack, the register-project form and the run watcher read.
+   */
+  eval?: { quota: AgentQuota };
 }
 
 /**
- * The platform namespace, the runner's namespace, then one agent namespace per project. The run
- * watcher watches exactly those agent namespaces, and each one binds its Role (D-330).
+ * The platform namespace, the runner's namespace, one agent namespace per project, then the
+ * weekly model test's namespace when the settings give one. The run watcher watches exactly the
+ * agent namespaces, and each one binds its Role (D-330).
  */
 export function clusterObjects(settings: ClusterSettings): {
   apiVersion: "v1";
@@ -47,6 +55,7 @@ export function clusterObjects(settings: ClusterSettings): {
       ),
       ...runnerNamespaceObjects(),
       ...settings.projects.flatMap((p) => agentNamespaceObjects(p.slug, p.quota)),
+      ...(settings.eval ? evalNamespaceObjects(settings.eval.quota) : []),
     ],
   };
 }

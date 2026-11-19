@@ -28,6 +28,9 @@ workspace_folder: f/foreman
 bundle_files:
   - contracts/
   - src/adapters/store-postgres/supabase-ca.crt
+  # The weekly model test's cases (ADR 0117): the weekly flow reads each case's id and role from
+  # them to size the week's Job and name its cases (O-156).
+  - eval/cases/
 
 # Each entry's `job_token_scopes` cap the token of every job of its script (D-371, O-121): without
 # them a job runs with all the rights of whoever started it. Every flow reads only its secrets and
@@ -106,6 +109,32 @@ flows:
       every_minutes: 1440
       cron: "0 0 6 * * *"
       timezone: America/Toronto
+
+  - name: weekly_model_test
+    path: f/foreman/weekly_model_test
+    entry: flows/weekly-model-test.ts
+    trigger: schedule
+    job_token_scopes: ["variables:read:f/foreman/*"]
+    # The weekly model test (ADR 0117, D-427 to D-433, O-156): once a day at 07:17 UTC (2:17 or
+    # 3:17 am in Toronto), a quiet hour outside 9 am to noon US Eastern, at an odd minute so it
+    # does not start with the jobs everyone puts on the hour, and before the 06:00 Toronto daily
+    # check, which shows its summary. Each run first reads the weekly test's Job that has not ended
+    # yet: still running, or ended, when it checks the result line, stores one row per run in
+    # factory.model_eval_results with the Job's end, and deletes the Job's objects. Then, on the
+    # first run of each week (weeks start on Sunday, UTC), it starts the week's Job in the
+    # foreman-eval namespace behind its egress proxy, with the keys at f/foreman/eval/models/
+    # <provider> for only the providers the week's plan uses (D-433), inside the weekly cap of the
+    # model_eval setting (D-204), with Claude's baseline in the first Job of each month (D-429).
+    # It runs daily rather than weekly so it never waits on the Job: Windmill counts one execution
+    # per second of a job's run (D-369), and a week's Job runs an hour or more; a day with nothing
+    # to do takes a second or two. About 30 runs a month (D-164). Under the kill switch or in dry
+    # run it starts nothing; until runSettings.evalImage is pinned it starts nothing and says so.
+    # No new credential: the two key variables are Didi's copies of the existing provider keys
+    # (first-hosting runbook step 17), read with this folder's scope.
+    schedule:
+      every_minutes: 1440
+      cron: "0 17 7 * * *"
+      timezone: UTC
 
   - name: dispatch
     path: f/foreman/dispatch
@@ -404,7 +433,8 @@ resources:
   # A run's model key is read at the path its bot file's provider names for the run's project,
   # projects/<slug>/models/<provider> (D-143, contracts/bots/), a secret variable at
   # `f/foreman/projects/<slug>/models/<provider>`. Each is stored at first hosting (runbook step
-  # 12).
+  # 12). The weekly model test has its own keys, at `f/foreman/eval/models/<provider>` (D-433),
+  # listed below.
   #
   # The runner's cluster token, endpoint and CA certificate are not stored by hand: the Platform
   # workflow's `runner-token` job, which Didi approves, writes them (D-352, O-110, O-120): the
@@ -457,6 +487,14 @@ resources:
       holds: The QA App's private key, in PEM (D-368)
       windmill_path: f/foreman/platform/github/qa-app-private-key
       written_by: Didi, by hand (first-hosting runbook step 15)
+    - path: eval/models/deepinfra
+      holds: The weekly model test's DeepInfra key (D-433), a copy of the project key; read only by the weekly flow, for the eval egress proxy's Secret
+      windmill_path: f/foreman/eval/models/deepinfra
+      written_by: Didi, by hand (first-hosting runbook step 17)
+    - path: eval/models/anthropic
+      holds: The weekly model test's Anthropic key (D-433), a copy of the project key; read only in a week with Claude's baseline
+      windmill_path: f/foreman/eval/models/anthropic
+      written_by: Didi, by hand (first-hosting runbook step 17)
   # The Windmill deploy writes each value below that has no `written_by`, as a plain variable, and
   # only those (its token's `variables:write` names exactly them): `spec_version` is the deploy's
   # own commit, the App names come from `platform.receiver` in

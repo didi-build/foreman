@@ -27,6 +27,9 @@
 //
 // A value whose images are still empty there is left out and named in the summary, so nothing
 // half made reaches Windmill; anything else that is wrong stops the job, naming the setting. The
+// weekly model test's image (`evalImage`, O-156) is the one exception: while it is empty, it is
+// left out of `agent_run_settings` and the rest is written, since agent runs do not need it; the
+// weekly flow then starts no Job and says so. The
 // approval flow (`trigger: approval_resume`) is not deployed: its `ask` step is not built (M4.1)
 // and the deploy token has no flows scope (D-371). The summary, printed on stdout in Markdown,
 // lists each script with its bundle's sha256 and size, each schedule, and each value by name with
@@ -273,6 +276,7 @@ function pinnedOrEmpty(value: unknown, at: string): string | undefined {
 const RUN_SETTINGS_KEYS = [
   "fetchImage",
   "repoMapImage",
+  "evalImage",
   "proxyPort",
   "runAsUser",
   "resources",
@@ -299,6 +303,7 @@ function agentRunSettings(
   const s = exactKeys(committed, RUN_SETTINGS_KEYS, at);
   const fetchImage = pinnedOrEmpty(s.fetchImage, `${at}: fetchImage`);
   const repoMapImage = pinnedOrEmpty(s.repoMapImage, `${at}: repoMapImage`);
+  const evalImage = pinnedOrEmpty(s.evalImage, `${at}: evalImage`);
   const proxyImage = matching(
     platform.images?.egressProxy,
     PINNED_IMAGE,
@@ -367,6 +372,8 @@ function agentRunSettings(
     proxyImage,
     fetchImage,
     repoMapImage,
+    // Left out while empty (O-156): the weekly flow then starts no Job.
+    ...(evalImage === undefined ? {} : { evalImage }),
     proxyPort: s.proxyPort as number,
     runAsUser: s.runAsUser as number,
     resources: s.resources as KubernetesRunSettings["resources"],

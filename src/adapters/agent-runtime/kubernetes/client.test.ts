@@ -13,6 +13,7 @@ import {
 } from "./client.ts";
 import { DEVELOPER, SETTINGS, credentialsFor } from "./fixtures.ts";
 import { agentStage, runSecrets } from "./manifests.ts";
+import { EVAL_NAMESPACE } from "./names.ts";
 
 // Integration: the HTTPS client against a local TLS server that stands in for the API server. No
 // cluster and no outside network. The server answers from a small table and records requests.
@@ -195,10 +196,12 @@ describe("Kubernetes client (integration: local TLS server, ADR 0106 section 1)"
     );
   });
 
-  it("refuses any namespace that is not agents-<slug>, before any request", async () => {
+  it("refuses any namespace that is not agents-<slug> or the weekly test's own, before any request", async () => {
     for (const namespace of [
       "kube-system",
       "foreman-platform",
+      "foreman-runner",
+      "foreman-eval-x",
       "default",
       "agents-",
       "agents-x/../y",
@@ -209,6 +212,13 @@ describe("Kubernetes client (integration: local TLS server, ADR 0106 section 1)"
       );
     }
     expect(seen).toEqual([]);
+  });
+
+  it("works in the weekly model test's own namespace, which has the agent namespaces' Role (D-433)", async () => {
+    await client.getJob(EVAL_NAMESPACE, "eval-a");
+    expect(seen.at(-1)?.url).toBe(
+      `/apis/batch/v1/namespaces/${EVAL_NAMESPACE}/jobs/eval-a`,
+    );
   });
 
   it("refuses names and selectors that could change the path", async () => {

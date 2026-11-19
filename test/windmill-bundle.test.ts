@@ -105,6 +105,7 @@ const filledAgentRuns = () => {
       ...committed.runSettings,
       fetchImage: `registry.example.com/test-only/fetch${digest("c")}`,
       repoMapImage: `registry.example.com/test-only/repo-map${digest("d")}`,
+      evalImage: `registry.example.com/test-only/eval${digest("e")}`,
     },
   };
 };
@@ -182,6 +183,7 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
       "f/foreman/reconcile",
       "f/foreman/scan",
       "f/foreman/daily_check",
+      "f/foreman/weekly_model_test",
     ]);
   });
 
@@ -226,8 +228,36 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
       clusterDns: platform.platform.clusterDns,
     });
     expect(Object.keys(settings)[0]).toBe("proxyImage");
+    expect(settings.evalImage).toBe(agentRuns.runSettings.evalImage);
     expect(value("agent_images")).toEqual(agentRuns.agentImages);
   });
+
+  it("writes agent_run_settings without the weekly test's image while it is empty, and refuses one not pinned by digest (O-156)", async () => {
+    const agentRuns = filledAgentRuns();
+    const noEval = await bundleForWindmill({
+      commit: COMMIT,
+      ...settingsFiles({
+        ...agentRuns,
+        runSettings: { ...agentRuns.runSettings, evalImage: "" },
+      }),
+    });
+    expect(noEval.notWritten).toEqual([]);
+    const settings = JSON.parse(
+      noEval.manifest.values.find((v) => v.name === "agent_run_settings")?.value ??
+        "null",
+    ) as KubernetesRunSettings;
+    expect(settings).not.toHaveProperty("evalImage");
+    expect(settings.repoMapImage).toBe(agentRuns.runSettings.repoMapImage);
+    await expect(
+      bundleForWindmill({
+        commit: COMMIT,
+        ...settingsFiles({
+          ...agentRuns,
+          runSettings: { ...agentRuns.runSettings, evalImage: "foreman-eval:latest" },
+        }),
+      }),
+    ).rejects.toThrow(/evalImage is not an image reference pinned by digest/);
+  }, 120_000);
 
   it("holds the committed run settings at D-372's sizes and ADR 0106's starting values, each image pinned by digest from this repository's packages", () => {
     const { agentImages, runSettings } = committedAgentRuns();
@@ -239,6 +269,8 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
     expect(agentImages["claude-api"]).toMatch(pinned("foreman-agent-claude-api"));
     expect(runSettings.fetchImage).toMatch(pinned("foreman-qa-fetch"));
     expect(runSettings.repoMapImage).toMatch(pinned("foreman-repo-map"));
+    // Pinned in its own step once the Images workflow has built it (O-156); empty until then.
+    expect(runSettings.evalImage).toBe("");
     const sizes = runSettings.resources as Record<
       string,
       { requests: Record<string, string>; limits: Record<string, string> }

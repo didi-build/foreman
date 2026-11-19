@@ -7,19 +7,26 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { parseModelEvalSettings } from "../../src/core/model-eval.ts";
 import { runCostUsd } from "../../src/core/run-cost.ts";
-import { chooseRoute } from "../../src/core/routing.ts";
+import { chooseRoute, parseModelCatalog, runPriceOf } from "../../src/core/routing.ts";
 import {
   CLOSE_ROUTES_POLICY,
   DEEPINFRA_MODEL_CATALOG,
   DEEPINFRA_ROUTING_POLICY,
+  DEEPSEEK_FLASH,
+  DEEPSEEK_FLASH_ENTRY,
   DEEPSEEK_PRO,
+  DEEPSEEK_PRO_MODEL_CATALOG,
   deepSeekProRunPrice,
   FIRST_MODEL_CATALOG,
   FIRST_ROUTING_POLICY,
+  KIMI,
+  KIMI_ENTRY,
   QWEN_CODER,
   qwenCoderRunPrice,
   SEEDED_MODEL_CATALOG,
+  SEEDED_MODEL_EVAL,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
   seededRunPrice,
@@ -72,6 +79,8 @@ const ID = {
   record: "00000000-0000-4000-8000-00000000000a",
   outcome: "00000000-0000-4000-8000-00000000000b",
   scan: "00000000-0000-4000-8000-00000000000c",
+  evalJob: "00000000-0000-4000-8000-00000000000d",
+  evalResult: "00000000-0000-4000-8000-00000000000e",
 };
 const SHA = "a".repeat(40);
 const AT = "'2026-10-29T00:00:00Z'";
@@ -109,6 +118,16 @@ insert into factory.github_deliveries (delivery_id, event_type, repository, rece
   values ('delivery-1', 'pull_request', 'didi-build/rehearsal', ${AT}, 'ignored', 'fixture');
 insert into factory.scans (id, project_id, commit_sha, outcome, summary, recorded_by, recorded_at)
   values ('${ID.scan}', '${ID.project}', '${SHA}', 'scanned', '{}', 'runner:scanner', ${AT});
+insert into factory.model_eval_jobs (id, week_start, started_at, deadline_at, baseline, cap_usd,
+    spent_before_usd, plan, recorded_by, ended_at, outcome, spent_usd)
+  values ('${ID.evalJob}', '2026-10-25', ${AT}, '2026-10-29T12:00:00Z', false, 10, 0,
+    '[{"model": "m"}]', 'runner:weekly-model-test', '2026-10-29T13:00:00Z', 'finished', 0.1);
+insert into factory.model_eval_results (id, job_id, seq, case_id, case_version, role, model,
+    provider, tier, baseline, outcome, reason, turns, tokens, cost_usd, minutes, facts,
+    recorded_by, recorded_at)
+  values ('${ID.evalResult}', '${ID.evalJob}', 1, 'qa-truncate-pass', 1, 'qa', 'm', 'deepinfra',
+    'flex', false, 'correct', 'as_expected', 3, '{}', 0.1, 1.5,
+    '{"verdict": "pass", "findingPaths": []}', 'runner:weekly-model-test', ${AT});
 `;
 
 const APPEND_ONLY = [
@@ -122,6 +141,7 @@ const APPEND_ONLY = [
   "settings_log",
   "github_deliveries",
   "scans",
+  "model_eval_results",
 ];
 
 describe("database integration (test environment guard)", () => {
@@ -155,8 +175,8 @@ describe.skipIf(!adminUrl)(
       expect(tables.ok, tables.err).toBe(true);
       expect(tables.out).toBe("");
       const count = sql("select count(*) from pg_tables where schemaname = 'factory';");
-      // 0017 adds factory.scans (O-92).
-      expect(Number(count.out)).toBe(19);
+      // 0017 adds factory.scans (O-92), and 0027 the weekly model test's two tables (O-156).
+      expect(Number(count.out)).toBe(21);
     });
 
     /** A time column each append-only table has, for an UPDATE that touches every row. */
@@ -436,8 +456,9 @@ describe.skipIf(!adminUrl)(
             onCapacity: "wait",
             // 0026 has since moved QA, the Council and Triage (D-425), and the policy's version.
             policyVersion: SEEDED_ROUTING_POLICY.version,
-            // 0025 has since changed Sonnet's cache read price (O-150), and 0026 added DeepSeek V4
-            // Pro (D-425), each with the catalog's version.
+            // 0025 has since changed Sonnet's cache read price (O-150), 0026 added DeepSeek V4
+            // Pro (D-425) and 0027 the weekly test's two models (D-429), each with the catalog's
+            // version.
             catalogVersion: SEEDED_MODEL_CATALOG.version,
             price: qwenCoderRunPrice(),
           });
@@ -478,9 +499,9 @@ describe.skipIf(!adminUrl)(
         expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
         // Unchanged: 16000 for each task type, below the model's cap of 16,384.
         expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
-        // 0024's change, then 0025's, then 0026's.
+        // 0024's change, then 0025's, then 0026's, then 0027's.
         expect(versionsLogged("model_catalog")).toBe(
-          "2026-10-31.1>2026-11-18.1,2026-11-18.1>2026-11-18.2,2026-11-18.2>2026-11-18.3",
+          "2026-10-31.1>2026-11-18.1,2026-11-18.1>2026-11-18.2,2026-11-18.2>2026-11-18.3,2026-11-18.3>2026-11-19.1",
         );
       });
 
@@ -743,7 +764,7 @@ describe.skipIf(!adminUrl)(
             failFast: false,
             onCapacity: "wait",
             policyVersion: "2026-11-18.2",
-            catalogVersion: "2026-11-18.3",
+            catalogVersion: SEEDED_MODEL_CATALOG.version,
             price: deepSeekProRunPrice(),
           });
           // A million of each token served at Flex: 1.04 + 0.08 + 1.04 (a cache write at the
@@ -782,7 +803,7 @@ describe.skipIf(!adminUrl)(
         });
         expect(change("model_catalog", "2026-11-18.3")).toEqual({
           old: SONNET_CACHE_MODEL_CATALOG,
-          new: SEEDED_MODEL_CATALOG,
+          new: DEEPSEEK_PRO_MODEL_CATALOG,
         });
       });
 
@@ -923,6 +944,246 @@ describe.skipIf(!adminUrl)(
           expect(settings().model_catalog).toEqual(elsewhere);
         } finally {
           setByHand("model_routing_policy", before.model_routing_policy ?? null);
+          setByHand("model_catalog", before.model_catalog ?? null);
+        }
+      });
+    });
+
+    describe("the weekly model test's records, setting and models (migration 0027, D-429, D-430, D-433, O-156)", () => {
+      const EVAL = "db/migrations/0027_model_eval.sql";
+      const JOB = "00000000-0000-4000-8000-0000000000e1";
+      /** Runs the setting and catalog part again (the tables are made once, by the first run). */
+      const migrate = (): string => {
+        const text = readFileSync(EVAL, "utf8");
+        const rest = text.slice(
+          text.indexOf("-- The setting and the catalog entries."),
+        );
+        expect(rest).toMatch(/^-- The setting/);
+        const again = sql(rest);
+        expect(again.ok, again.err).toBe(true);
+        return again.err;
+      };
+      const evalSetting = (): Json =>
+        JSON.parse(
+          sql("select value::text from factory.settings where key = 'model_eval';").out,
+        ) as Json;
+      const logged = (): string =>
+        sql(
+          "select count(*) from factory.settings_log where key in ('model_eval', 'model_catalog', 'model_routing_policy');",
+        ).out;
+      const insertJob = (id: string, week = "2026-11-22", end = "") =>
+        sql(
+          `insert into factory.model_eval_jobs (id, week_start, started_at, deadline_at, baseline,
+             cap_usd, spent_before_usd, plan, recorded_by${end === "" ? "" : ", ended_at, outcome, reason"})
+           values ('${id}', '${week}', '2026-11-22T07:17:00Z', '2026-11-22T20:00:00Z', true, 10, 0,
+             '[{"model": "m"}]', 'runner:weekly-model-test'${end})`,
+          "factory_runner",
+        );
+      const insertResult = (seq: number, fields: string, values: string) =>
+        sql(
+          `insert into factory.model_eval_results (id, job_id, seq, case_id, case_version, role,
+             model, provider, tier, baseline, outcome, reason${fields}, turns, tokens, cost_usd,
+             minutes, recorded_by, recorded_at)
+           values (gen_random_uuid(), '${ID.evalJob}', ${seq}, 'qa-slugify-pass', 1, 'qa', 'm',
+             'deepinfra', 'flex', false, ${values}, 2, '{}', 0.01, 1, 'runner', ${AT})`,
+          "factory_runner",
+        );
+
+      it("lets the runner record a Job, end it once, and never change or delete anything else", () => {
+        const made = insertJob(JOB);
+        expect(made.ok, made.err).toBe(true);
+        // One Job without an end at a time.
+        expectRejected(
+          insertJob("00000000-0000-4000-8000-0000000000e2"),
+          /model_eval_jobs_one_open/,
+        );
+        expectRejected(
+          sql(
+            `update factory.model_eval_jobs set cap_usd = 20 where id = '${JOB}';`,
+            "factory_runner",
+          ),
+          /permission denied/,
+        );
+        expectRejected(
+          sql(
+            `update factory.model_eval_jobs set ended_at = now(), outcome = 'finished' where id = '${JOB}';`,
+            "factory_runner",
+          ),
+          /model_eval_jobs_check/,
+        );
+        const ended = sql(
+          `update factory.model_eval_jobs set ended_at = '2026-11-23T07:17:00Z', outcome = 'finished', spent_usd = 0.31 where id = '${JOB}' and ended_at is null;`,
+          "factory_runner",
+        );
+        expect(ended.ok, ended.err).toBe(true);
+        expectRejected(
+          sql(
+            `delete from factory.model_eval_jobs where id = '${JOB}';`,
+            "factory_runner",
+          ),
+          /permission denied|append-only/,
+        );
+        expectRejected(
+          sql(`delete from factory.model_eval_jobs where id = '${JOB}';`),
+          /append-only/,
+        );
+      });
+
+      it("keeps a Job's week on a Sunday and a failed end's reason to the fixed codes", () => {
+        expectRejected(
+          insertJob("00000000-0000-4000-8000-0000000000e3", "2026-11-23"),
+          /week_start/,
+        );
+        expectRejected(
+          insertJob(
+            "00000000-0000-4000-8000-0000000000e4",
+            "2026-11-22",
+            ", now(), 'failed', 'out_of_coffee'",
+          ),
+          /model_eval_jobs_reason_check/,
+        );
+        expectRejected(
+          insertJob(
+            "00000000-0000-4000-8000-0000000000e5",
+            "2026-11-22",
+            ", now(), 'failed', null",
+          ),
+          /model_eval_jobs_check/,
+        );
+        const failed = insertJob(
+          "00000000-0000-4000-8000-0000000000e6",
+          "2026-11-22",
+          ", now(), 'failed', 'start_failed'",
+        );
+        expect(failed.ok, failed.err).toBe(true);
+      });
+
+      it("takes a result row only with facts for a usable answer, bounded, and a provider error only for one", () => {
+        expectRejected(
+          insertResult(2, "", "'correct', 'as_expected'"),
+          /model_eval_results_check/,
+        );
+        expectRejected(
+          insertResult(2, ", facts", "'error', 'max_turns', '{\"x\": 1}'"),
+          /model_eval_results_check/,
+        );
+        expectRejected(
+          insertResult(2, "", "'error', 'provider_error'"),
+          /model_eval_results_check/,
+        );
+        expectRejected(
+          insertResult(
+            2,
+            ", facts",
+            `'wrong', 'wrong_verdict', '{"verdict": "pass", "findingPaths": ["${"a".repeat(2100)}"]}'`,
+          ),
+          /model_eval_results_facts_check/,
+        );
+        const ok = insertResult(
+          2,
+          ", provider_error",
+          `'error', 'provider_error', '{"status": 429, "type": "rate_limit"}'`,
+        );
+        expect(ok.ok, ok.err).toBe(true);
+        expectRejected(insertResult(2, "", "'skipped', 'cap_reached'"), /unique/);
+      });
+
+      it("gives the state API's and the receiver's roles no access", () => {
+        for (const role of ["factory_api", "factory_ingest"]) {
+          for (const table of ["model_eval_jobs", "model_eval_results"]) {
+            expectRejected(
+              sql(`select count(*) from factory.${table};`, role),
+              /permission denied/,
+            );
+          }
+        }
+      });
+
+      it("seeds the setting: the weekly cap, D-429's models and baseline, and the weekly test's own key paths", () => {
+        expect(evalSetting()).toEqual(SEEDED_MODEL_EVAL);
+        const problems: string[] = [];
+        const read = parseModelEvalSettings(evalSetting(), problems);
+        expect(problems).toEqual([]);
+        expect(read?.capUsd).toBe(10);
+        expect(read?.keyPaths).toEqual({
+          deepinfra: "eval/models/deepinfra",
+          anthropic: "eval/models/anthropic",
+        });
+      });
+
+      it("adds the two models to the catalog at the prices read on 2026-11-19, under a new version, and routes nothing to them", () => {
+        const s = settings();
+        const catalog = s.model_catalog as {
+          version: string;
+          models: Record<string, Json>;
+        };
+        expect(catalog.version).toBe("2026-11-19.1");
+        expect(catalog.models[DEEPSEEK_FLASH]).toEqual(DEEPSEEK_FLASH_ENTRY);
+        expect(catalog.models[KIMI]).toEqual(KIMI_ENTRY);
+        expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
+        // The routing policy is the one 0026 left: no task type is routed to either model.
+        expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
+        expect(JSON.stringify(s.model_routing_policy)).not.toMatch(/Flash-1017|Kimi/);
+        // Each prices a run at Flex from the catalog, as the weekly plan takes it.
+        const problems: string[] = [];
+        const parsed = parseModelCatalog(s.model_catalog, problems);
+        expect(problems).toEqual([]);
+        const million = {
+          uncachedInput: 1_000_000,
+          cachedInput: 1_000_000,
+          cacheWriteInput: 0,
+          output: 1_000_000,
+        };
+        const flash = parsed?.models[DEEPSEEK_FLASH];
+        const kimi = parsed?.models[KIMI];
+        if (!flash || !kimi) throw new Error("the catalog lacks a model");
+        expect(runCostUsd(runPriceOf(flash), million, "flex")).toBe(0.6448);
+        expect(runCostUsd(runPriceOf(kimi), million, "flex")).toBe(3.52);
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = settings();
+        const setting = evalSetting();
+        const count = logged();
+        expect(migrate()).not.toContain("NOTICE");
+        expect(settings()).toEqual(before);
+        expect(evalSetting()).toEqual(setting);
+        expect(logged()).toBe(count);
+      });
+
+      it("keeps an operator's own setting and catalog entries, and marks another catalog version", () => {
+        const before = settings();
+        const catalog = before.model_catalog as {
+          version: string;
+          models: Record<string, Json>;
+        };
+        const ownSetting = { ...SEEDED_MODEL_EVAL, capUsd: 5 };
+        const withoutFlash = {
+          version: "operator.cat",
+          models: Object.fromEntries(
+            Object.entries(catalog.models).filter(([m]) => m !== DEEPSEEK_FLASH),
+          ),
+        };
+        try {
+          const set = sql(
+            `update factory.settings set value = '${JSON.stringify(ownSetting)}'::jsonb, updated_by = 'didi', updated_at = ${AT} where key = 'model_eval';`,
+          );
+          expect(set.ok, set.err).toBe(true);
+          setByHand("model_catalog", withoutFlash);
+          migrate();
+          expect(evalSetting()).toEqual(ownSetting);
+          expect(settings().model_catalog).toEqual({
+            version: "operator.cat+d429",
+            models: { ...withoutFlash.models, [DEEPSEEK_FLASH]: DEEPSEEK_FLASH_ENTRY },
+          });
+          // Kimi was already there, the operator's own: it is left as it is.
+          expect(
+            (settings().model_catalog as { models: Record<string, Json> }).models[KIMI],
+          ).toEqual(catalog.models[KIMI]);
+        } finally {
+          sql(
+            `update factory.settings set value = '${JSON.stringify(SEEDED_MODEL_EVAL)}'::jsonb, updated_by = 'migration', updated_at = ${AT} where key = 'model_eval';`,
+          );
           setByHand("model_catalog", before.model_catalog ?? null);
         }
       });

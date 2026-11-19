@@ -159,7 +159,7 @@ describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421,
     failFast: false,
     onCapacity: "wait",
     policyVersion: "2026-11-18.2",
-    catalogVersion: "2026-11-18.3",
+    catalogVersion: "2026-11-19.1",
   };
 
   it.each([

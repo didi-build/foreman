@@ -1,5 +1,5 @@
-// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019, 0024, 0025
-// and 0026 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
+// Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019, 0024, 0025,
+// 0026 and 0027 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
 // of a run on an Anthropic route. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
@@ -13,6 +13,9 @@ const OPUS = "claude-opus-5-5";
 export const QWEN_CODER = "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo";
 /** QA's review, the Council's and Triage's model since migration 0026 (D-425). */
 export const DEEPSEEK_PRO = "deepseek-ai/DeepSeek-V4-Pro-0813";
+/** The weekly model test's two other models, in the catalog since migration 0027 (D-429). */
+export const DEEPSEEK_FLASH = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
+export const KIMI = "moonshotai/Kimi-K2.6";
 
 const anthropic = (model: string) => ({
   candidates: [{ provider: "anthropic", model, tier: "standard" }],
@@ -191,14 +194,78 @@ const DEEPSEEK_PRO_ENTRY = {
   priceReadOn: "2026-11-18",
 };
 
-/**
- * The model catalog as migration 0026 leaves it (D-425): DeepSeek V4 Pro added, a new version.
- * This is what a migrated store holds, so the tests seed it; test/db/runs.test.ts and
- * test/db/schema.test.ts check it is equal.
- */
-export const SEEDED_MODEL_CATALOG = {
+/** The model catalog as migration 0026 leaves it (D-425): DeepSeek V4 Pro added, a new version. */
+export const DEEPSEEK_PRO_MODEL_CATALOG = {
   version: "2026-11-18.3",
   models: { ...SONNET_CACHE_MODEL_CATALOG.models, [DEEPSEEK_PRO]: DEEPSEEK_PRO_ENTRY },
+} satisfies Json;
+
+/** A DeepInfra entry migration 0027 adds (D-429): prices read on 2026-11-19, Flex at 0.8. */
+const evalEntry = (
+  family: string,
+  standard: { input: number; cachedInput: number; output: number },
+  flex: { input: number; cachedInput: number; output: number },
+) => ({
+  provider: "deepinfra",
+  family,
+  tiers: ["standard", "flex"],
+  pricePerMTok: { standard, flex },
+  maxOutputTokens: 16384,
+  resold: false,
+  priceSource:
+    "DeepInfra public model list (api.deepinfra.com/models/list): input and output prices, the cached input rate and the Flex rate",
+  priceReadOn: "2026-11-19",
+});
+
+/**
+ * DeepSeek V4.1 Flash's and Kimi K2.6's catalog entries from migration 0027 (D-429): 0.20, 0.006
+ * and 0.60, and 0.75, 0.15 and 3.50 USD per million input, cached input and output tokens.
+ */
+export const DEEPSEEK_FLASH_ENTRY = evalEntry(
+  "deepseek",
+  { input: 0.2, cachedInput: 0.006, output: 0.6 },
+  { input: 0.16, cachedInput: 0.0048, output: 0.48 },
+);
+export const KIMI_ENTRY = evalEntry(
+  "kimi",
+  { input: 0.75, cachedInput: 0.15, output: 3.5 },
+  { input: 0.6, cachedInput: 0.12, output: 2.8 },
+);
+
+/**
+ * The model catalog as migration 0027 leaves it (D-429): the weekly model test's two other
+ * models added, a new version. This is what a migrated store holds, so the tests seed it;
+ * test/db/runs.test.ts and test/db/schema.test.ts check it is equal.
+ */
+export const SEEDED_MODEL_CATALOG = {
+  version: "2026-11-19.1",
+  models: {
+    ...DEEPSEEK_PRO_MODEL_CATALOG.models,
+    [DEEPSEEK_FLASH]: DEEPSEEK_FLASH_ENTRY,
+    [KIMI]: KIMI_ENTRY,
+  },
+} satisfies Json;
+
+/** The `model_eval` setting migration 0027 seeds (D-204, D-429, D-433). */
+export const SEEDED_MODEL_EVAL = {
+  capUsd: 10,
+  weekly: [DEEPSEEK_PRO, DEEPSEEK_FLASH, KIMI].map((model) => ({
+    model,
+    provider: "deepinfra",
+    tier: "flex",
+    roles: ["qa", "triage", "council"],
+  })),
+  baseline: [
+    { model: OPUS, provider: "anthropic", tier: "standard", roles: ["qa"] },
+    {
+      model: SONNET,
+      provider: "anthropic",
+      tier: "standard",
+      roles: ["triage", "council"],
+    },
+  ],
+  baselineCadence: "first_run_of_month",
+  keyPaths: { deepinfra: "eval/models/deepinfra", anthropic: "eval/models/anthropic" },
 } satisfies Json;
 
 export const SEEDED_OUTPUT_TOKEN_NEEDS = {
@@ -207,7 +274,7 @@ export const SEEDED_OUTPUT_TOKEN_NEEDS = {
   "designer:close": FIRST_OUTPUT_TOKEN_NEEDS.designer,
 } satisfies Json;
 
-/** Seeds the four routing settings as migrations 0005, 0019, 0024, 0025 and 0026 leave them. */
+/** Seeds the four routing settings as migrations 0005, 0019, 0024, 0025, 0026 and 0027 leave them. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
     [ROUTING_SETTINGS.policy, SEEDED_ROUTING_POLICY],

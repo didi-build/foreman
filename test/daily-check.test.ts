@@ -161,6 +161,16 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
       stalledNote: null,
       // No Bootstrap port given: project setup is not read (O-114).
       projectSetup: null,
+      // No weekly model test Job yet (O-156).
+      modelTest: {
+        latest: null,
+        previousWeekStart: null,
+        newlyWrong: [],
+        newlyRight: [],
+        replaceCandidates: [],
+        running: null,
+        failed: null,
+      },
     });
     const text = renderDailyCheck(check);
     expect(text).toContain("Nothing moved and nothing is waiting.");
@@ -596,6 +606,7 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
     const lines = text.split("\n");
     expect(lines.filter((l) => l.startsWith("== "))).toEqual([
       expect.stringMatching(/^== rehearsal /),
+      "== Weekly model test ==",
     ]);
     expect(lines.filter((l) => l.startsWith("Kill switch:"))).toHaveLength(1);
     expect(lines.filter((l) => l.startsWith("Dry run:"))).toEqual([]);
@@ -646,6 +657,9 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
         "Spend: 1 run ended, $0.42, 5000 input and 500 output tokens; 0 runs active",
         "Stalled (0):",
         `Scan: ${NO_SCAN_YET}`,
+        "",
+        "== Weekly model test ==",
+        "No weekly model test yet.",
         "",
         `Spend across projects: $0.42. ${(await f.generate()).spendNote}`,
         `Production deploy approval: ${PRODUCTION_DEPLOY_NOT_BUILT}`,

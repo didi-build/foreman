@@ -3,15 +3,19 @@ import { describe, expect, it } from "vitest";
 import { CLIENT_OPERATIONS } from "./client.ts";
 import { WATCHER_OPERATIONS } from "./job-watch.ts";
 import {
+  EVAL_PURPOSE,
   PLATFORM_NAMESPACE,
   RUNNER_NAMESPACE,
   RUNNER_ROLE_RULES,
+  RUNNER_SERVICE_ACCOUNT,
   RUN_WATCHER_ROLE_RULES,
   RUN_WATCHER_SERVICE_ACCOUNT,
   agentNamespaceObjects,
+  evalNamespaceObjects,
   runnerNamespaceObjects,
   type AgentQuota,
 } from "./namespace.ts";
+import { EVAL_NAMESPACE } from "./names.ts";
 import type { NamespaceObject, Role, RoleBinding } from "./objects.ts";
 
 // Unit: the agent namespace, its default policies, the runner's RBAC and the run watcher's RBAC
@@ -237,5 +241,72 @@ describe("run watcher RBAC (unit: D-330)", () => {
       ["Role", RUN_WATCHER_SERVICE_ACCOUNT],
       ["RoleBinding", RUN_WATCHER_SERVICE_ACCOUNT],
     ]);
+  });
+});
+
+describe("the weekly model test's namespace (unit: D-433, O-156)", () => {
+  const evalObjects = evalNamespaceObjects({
+    pods: 4,
+    cpu: "2",
+    memory: "2Gi",
+    ephemeralStorage: "3Gi",
+    storage: "0",
+    persistentVolumeClaims: 0,
+  });
+  const ofKind = <K extends NamespaceObject["kind"]>(kind: K) =>
+    evalObjects.filter((o) => o.kind === kind) as Extract<
+      NamespaceObject,
+      { kind: K }
+    >[];
+
+  it("is foreman-eval, no project's, restricted, with default deny and its own quota", () => {
+    const [namespace] = ofKind("Namespace");
+    expect(namespace?.metadata.name).toBe(EVAL_NAMESPACE);
+    expect(EVAL_NAMESPACE.startsWith("agents-")).toBe(false);
+    expect(namespace?.metadata.labels).toEqual({
+      "app.kubernetes.io/managed-by": "foreman-infra",
+      "foreman/purpose": EVAL_PURPOSE,
+      "pod-security.kubernetes.io/enforce": "restricted",
+      "pod-security.kubernetes.io/audit": "restricted",
+      "pod-security.kubernetes.io/warn": "restricted",
+    });
+    expect(ofKind("NetworkPolicy").map((p) => [p.metadata.name, p.spec])).toEqual([
+      [
+        "default-deny",
+        {
+          podSelector: {},
+          policyTypes: ["Ingress", "Egress"],
+          ingress: [],
+          egress: [],
+        },
+      ],
+    ]);
+    expect(ofKind("ResourceQuota")[0]?.spec.hard).toMatchObject({
+      pods: "4",
+      "limits.cpu": "2",
+      "limits.memory": "2Gi",
+      persistentvolumeclaims: "0",
+    });
+    for (const o of evalObjects) {
+      if (o.kind !== "Namespace") expect(o.metadata.namespace).toBe(EVAL_NAMESPACE);
+    }
+  });
+
+  it("binds the runner the agent namespaces' Role and nothing else: no new right, no run watcher", () => {
+    const roles = ofKind("Role");
+    expect(roles.map((r) => r.metadata.name)).toEqual([RUNNER_SERVICE_ACCOUNT]);
+    expect(roles[0]?.rules).toEqual(named("Role", RUNNER_SERVICE_ACCOUNT).rules);
+    expect(roles[0]?.rules).toEqual(RUNNER_ROLE_RULES.map((r) => ({ ...r })));
+    const bindings = ofKind("RoleBinding");
+    expect(bindings.map((b) => b.subjects)).toEqual([
+      [
+        {
+          kind: "ServiceAccount",
+          name: RUNNER_SERVICE_ACCOUNT,
+          namespace: RUNNER_NAMESPACE,
+        },
+      ],
+    ]);
+    expect(JSON.stringify(evalObjects)).not.toContain(RUN_WATCHER_SERVICE_ACCOUNT);
   });
 });

@@ -39,6 +39,13 @@ export const SECRET_PATHS = {
   developerAppPrivateKey: "platform/github/developer-app-private-key",
   designerAppPrivateKey: "platform/github/designer-app-private-key",
   qaAppPrivateKey: "platform/github/qa-app-private-key",
+  /**
+   * The weekly model test's own provider keys (D-433, O-156): copies of the existing keys, read
+   * by the weekly flow only for the providers the week's plan uses, and put only into the Secret
+   * its egress proxy reads. The `model_eval` setting names the same paths.
+   */
+  evalDeepinfraKey: "eval/models/deepinfra",
+  evalAnthropicKey: "eval/models/anthropic",
 } as const;
 
 /** Every plain value the flows read. `flows/windmill.yaml` lists the same names. */

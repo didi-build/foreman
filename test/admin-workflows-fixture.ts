@@ -79,6 +79,7 @@ export function filledSettings(
 ): ClusterSettings {
   const settings = fill(committedSettings(), "") as {
     platform: Record<string, unknown>;
+    eval?: ClusterSettings["eval"];
   };
   return {
     platform: {
@@ -86,6 +87,8 @@ export function filledSettings(
       kubernetesApi,
     } as unknown as ClusterSettings["platform"],
     projects: [EXAMPLE_PROJECT],
+    // The weekly model test's namespace, as committed (D-433): no project's, so not made up.
+    ...(settings.eval ? { eval: settings.eval } : {}),
   };
 }
 
