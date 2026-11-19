@@ -16,6 +16,8 @@ import {
   type GateRequest,
   type GithubDelivery,
   type Json,
+  type ModelEvalJob,
+  type ModelEvalResult,
   type Node,
   type Project,
   type Run,
@@ -51,6 +53,8 @@ interface State {
   decisionPointRecords: Map<string, DecisionPointRecord>;
   decisionPointOutcomes: Map<string, DecisionPointOutcome>;
   scans: Map<string, ScanRecord>;
+  modelEvalJobs: Map<string, ModelEvalJob>;
+  modelEvalResults: Map<string, ModelEvalResult>;
 }
 
 const emptyState = (): State => ({
@@ -74,6 +78,8 @@ const emptyState = (): State => ({
   decisionPointRecords: new Map(),
   decisionPointOutcomes: new Map(),
   scans: new Map(),
+  modelEvalJobs: new Map(),
+  modelEvalResults: new Map(),
 });
 
 /** Copies on the way in and out, so callers can never change stored rows by reference. */
@@ -489,6 +495,62 @@ function ops(state: State): StoreOps {
         .sort(byTimeThenId<ScanRecord>((scan) => scan.recordedAt));
       return copy(scans.at(-1) ?? null);
     },
+
+    async insertModelEvalJob(job) {
+      if (job.end !== null) throw new Error("a model eval job starts with no end");
+      if ([...state.modelEvalJobs.values()].some((j) => j.end === null)) {
+        // The schema's model_eval_jobs_one_open: one open Job at a time.
+        throw new StoreConflictError(
+          "model_eval_jobs_one_open",
+          "Duplicate key (model_eval_jobs_one_open)",
+        );
+      }
+      insertUnique(state.modelEvalJobs, job.id, job, "model_eval_jobs_pkey");
+    },
+    async endModelEvalJob(id, end) {
+      const job = state.modelEvalJobs.get(id);
+      if (!job || job.end !== null) return false;
+      state.modelEvalJobs.set(id, copy({ ...job, end }));
+      return true;
+    },
+    async listModelEvalJobs({ sinceWeek, open }) {
+      return copy(
+        [...state.modelEvalJobs.values()]
+          .filter((j) => j.weekStart >= sinceWeek || (open === true && j.end === null))
+          .sort(byTimeThenId<ModelEvalJob>((j) => j.startedAt)),
+      );
+    },
+    async insertModelEvalResult(result) {
+      if (!state.modelEvalJobs.has(result.jobId)) {
+        throw new Error("model_eval_results.job_id must name a job");
+      }
+      const key = `${result.jobId}/${result.seq}`;
+      if (
+        [...state.modelEvalResults.values()].some((r) => `${r.jobId}/${r.seq}` === key)
+      ) {
+        throw new StoreConflictError(
+          "model_eval_results_job_id_seq_key",
+          "Duplicate key (model_eval_results_job_id_seq_key)",
+        );
+      }
+      insertUnique(
+        state.modelEvalResults,
+        result.id,
+        result,
+        "model_eval_results_pkey",
+      );
+    },
+    async listModelEvalResults(jobIds) {
+      const order = new Map(jobIds.map((id, i) => [id, i]));
+      return copy(
+        [...state.modelEvalResults.values()]
+          .filter((r) => order.has(r.jobId))
+          .sort(
+            (a, b) =>
+              (order.get(a.jobId) ?? 0) - (order.get(b.jobId) ?? 0) || a.seq - b.seq,
+          ),
+      );
+    },
   };
 }
 
@@ -514,6 +576,8 @@ function cloneState(state: State): State {
     decisionPointRecords: new Map(state.decisionPointRecords),
     decisionPointOutcomes: new Map(state.decisionPointOutcomes),
     scans: new Map(state.scans),
+    modelEvalJobs: new Map(state.modelEvalJobs),
+    modelEvalResults: new Map(state.modelEvalResults),
   };
 }
 

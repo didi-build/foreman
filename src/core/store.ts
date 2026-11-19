@@ -369,6 +369,74 @@ export interface ScanRecord {
   recordedAt: Date;
 }
 
+/**
+ * One weekly model test Job (migration 0027, D-430, D-432, D-433, O-156), written by the runner
+ * only: recorded when the weekly flow starts it, ended once when a later run of the flow reads its
+ * result or finds it failed. `plan` is the plan the Job was given: each entry's model, provider,
+ * tier, catalog price and roles, and whether it is Claude's baseline. No secret, no model text.
+ */
+export interface ModelEvalJob {
+  /** The Job's id, also its run id (`FOREMAN_RUN_ID`). */
+  id: string;
+  /** The Sunday (UTC) its week starts on, `YYYY-MM-DD` (src/core/model-eval.ts). */
+  weekStart: string;
+  startedAt: Date;
+  /** Past this, the Job has passed its deadline: the flow stops waiting for it. */
+  deadlineAt: Date;
+  /** Whether the plan holds Claude's monthly baseline (D-429). */
+  baseline: boolean;
+  capUsd: number;
+  /** What earlier Jobs of the week spent, as the Job was told. */
+  spentBeforeUsd: number;
+  plan: Json;
+  recordedBy: string;
+  end: ModelEvalJobEnd | null;
+}
+
+/** How a weekly model test Job ended. */
+export interface ModelEvalJobEnd {
+  endedAt: Date;
+  /** `finished`: its result was read, checked and stored. `failed`: it was not. */
+  outcome: "finished" | "failed";
+  /** For `failed`: a fixed code (src/core/model-eval.ts `JOB_FAILURES`). Null when finished. */
+  reason: string | null;
+  /** For `failed`: the Job's own error text, plain words only and cut short, or null. */
+  detail: string | null;
+  /** What the Job spent: its result's total when finished, 0 when it never started, else null. */
+  spentUsd: number | null;
+}
+
+/**
+ * One run of a weekly model test Job's result (migration 0027, D-430): a case on a model, as the
+ * Job reported and the runner checked it. Append-only. Only fixed codes, counts, amounts and the
+ * facts the runner's own checks read (QA's verdict and finding files, Triage's item count, the
+ * Council's outcome and flags): never a model's text.
+ */
+export interface ModelEvalResult {
+  id: string;
+  jobId: string;
+  /** Its place in the Job's order, from 1. */
+  seq: number;
+  caseId: string;
+  caseVersion: number;
+  role: "qa" | "triage" | "council";
+  model: string;
+  provider: string;
+  tier: ServiceTier;
+  baseline: boolean;
+  outcome: "correct" | "wrong" | "unusable" | "error" | "skipped";
+  reason: string;
+  turns: number;
+  tokens: Json;
+  costUsd: number;
+  serviceTierServed: ServedTier | null;
+  minutes: number;
+  providerError: Json | null;
+  facts: Json | null;
+  recordedBy: string;
+  recordedAt: Date;
+}
+
 /** A write the store refused because of a uniqueness rule, for example a second open gate request. */
 export class StoreConflictError extends Error {
   readonly constraint: string;
@@ -519,6 +587,23 @@ export interface StoreOps {
     projectId: string,
     outcome?: ScanRecord["outcome"],
   ): Promise<ScanRecord | null>;
+
+  /** Records a weekly model test Job as started, with no end (migration 0027). */
+  insertModelEvalJob(job: ModelEvalJob): Promise<void>;
+  /** Records how the Job ended. Returns false, writing nothing, if it had already ended. */
+  endModelEvalJob(id: string, end: ModelEvalJobEnd): Promise<boolean>;
+  /**
+   * The weekly model test Jobs, oldest first: those whose week starts on or after `sinceWeek`
+   * (`YYYY-MM-DD`), and with `open`, also every one with no end, whatever its week.
+   */
+  listModelEvalJobs(filter: {
+    sinceWeek: string;
+    open?: true;
+  }): Promise<ModelEvalJob[]>;
+  /** Records one run of a Job's result (migration 0027). */
+  insertModelEvalResult(result: ModelEvalResult): Promise<void>;
+  /** The results of the given Jobs, by Job and then by their place in the Job's order. */
+  listModelEvalResults(jobIds: readonly string[]): Promise<ModelEvalResult[]>;
 }
 
 export interface Store extends StoreOps {

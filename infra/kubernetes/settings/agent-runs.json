@@ -6,6 +6,7 @@
   "runSettings": {
     "fetchImage": "ghcr.io/didi-build/foreman-qa-fetch@sha256:9c5f6e6da938bda1fe568aa91257cdd6e1cbe16f58e968fa0543e472e88e2a87",
     "repoMapImage": "ghcr.io/didi-build/foreman-repo-map@sha256:502484006a20c3a6462ad8d38f6480a1994f3be51ae710c0d9513485398deaaa",
+    "evalImage": "",
     "proxyPort": 8080,
     "runAsUser": 1000,
     "resources": {

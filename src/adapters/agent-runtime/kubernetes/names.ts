@@ -14,6 +14,8 @@ export const LABEL_RUN_ID = "foreman/run-id";
 export const LABEL_PROJECT = "foreman/project";
 export const LABEL_ROLE = "foreman/role";
 export const LABEL_COMPONENT = "foreman/component";
+/** Marks the weekly model test's own namespace (D-433), which is no project's. */
+export const LABEL_PURPOSE = "foreman/purpose";
 export const LABEL_MANAGED_BY = "app.kubernetes.io/managed-by";
 export const MANAGED_BY = "foreman-runner";
 
@@ -23,13 +25,21 @@ export const MANAGED_BY = "foreman-runner";
  * (D-275 (2)), which is not a run.
  */
 export type Component =
-  "agent" | "proxy" | "fetch" | "fetch-proxy" | "repo-map" | "repo-map-proxy";
+  | "agent"
+  | "proxy"
+  | "fetch"
+  | "fetch-proxy"
+  | "repo-map"
+  | "repo-map-proxy"
+  | "eval"
+  | "eval-proxy";
 
 /**
- * The role label of a Job's objects: an agent run's role, or `repo-map` for the repo map's own
- * Job, which is the runner's work and runs no agent (D-275 (2)).
+ * The role label of a Job's objects: an agent run's role, `repo-map` for the repo map's own Job,
+ * which is the runner's work and runs no agent (D-275 (2)), or `eval` for the weekly model test's
+ * Job (D-432, D-433).
  */
-export type JobRole = AgentRole | "repo-map";
+export type JobRole = AgentRole | "repo-map" | "eval";
 
 export function checkRunId(runId: string): string {
   if (!RUN_ID.test(runId)) {
@@ -49,6 +59,14 @@ export function checkSlug(slug: string): string {
 export function agentNamespace(slug: string): string {
   return `agents-${checkSlug(slug)}`;
 }
+
+/**
+ * The weekly model test's own namespace (D-433, O-156). Every project's namespace is
+ * `agents-<slug>`, so a name that does not start with `agents-` can never be one, whatever slug a
+ * project takes; `foreman-` is the prefix of Foreman's own namespaces (`foreman-runner`,
+ * `foreman-platform`).
+ */
+export const EVAL_NAMESPACE = "foreman-eval";
 
 /** The fixed names of every object a run can own. */
 export function runNames(runId: string) {
@@ -90,6 +108,22 @@ export function repoMapNames(mapId: string) {
   };
 }
 
+/**
+ * The fixed names of the objects of one weekly model test Job (D-432, D-433), from its own id.
+ * `eval-`, not `run-` or `map-`, so they never meet a run's or a map read's names.
+ */
+export function evalNames(jobId: string) {
+  const base = `eval-${checkRunId(jobId)}`;
+  return {
+    job: base,
+    policy: base,
+    proxyJob: `${base}-proxy`,
+    proxyService: `${base}-proxy`,
+    proxyPolicy: `${base}-proxy`,
+    modelSecret: `${base}-model-credentials`,
+  };
+}
+
 /** Labels that find every object of one run. */
 export function runSelector(runId: string): Labels {
   return { [LABEL_RUN_ID]: checkRunId(runId) };
@@ -100,18 +134,25 @@ export function componentSelector(runId: string, component: Component): Labels {
   return { ...runSelector(runId), [LABEL_COMPONENT]: component };
 }
 
-/** Who a Job's objects belong to: a run, or one repo map read (whose id stands in the run id). */
-export interface JobOwner {
-  runId: string;
-  projectSlug: string;
-  role: JobRole;
+/**
+ * Who a Job's objects belong to: a run, or one repo map read (whose id stands in the run id), in
+ * the project's agent namespace; or the weekly model test's Job, whose id stands in the run id, in
+ * its own namespace with no project (D-433).
+ */
+export type JobOwner =
+  | { runId: string; projectSlug: string; role: AgentRole | "repo-map" }
+  | { runId: string; role: "eval" };
+
+/** The namespace a Job owner's objects live in. */
+export function ownerNamespace(owner: JobOwner): string {
+  return "projectSlug" in owner ? agentNamespace(owner.projectSlug) : EVAL_NAMESPACE;
 }
 
 export function runLabels(run: JobOwner, component?: Component): Labels {
   return {
     [LABEL_MANAGED_BY]: MANAGED_BY,
     [LABEL_RUN_ID]: checkRunId(run.runId),
-    [LABEL_PROJECT]: checkSlug(run.projectSlug),
+    ...("projectSlug" in run ? { [LABEL_PROJECT]: checkSlug(run.projectSlug) } : {}),
     [LABEL_ROLE]: run.role,
     ...(component ? { [LABEL_COMPONENT]: component } : {}),
   };

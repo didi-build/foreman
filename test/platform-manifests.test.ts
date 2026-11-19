@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,12 @@ import {
 import {
   RUN_WATCHER_SERVICE_ACCOUNT,
   agentNamespaceObjects,
+  evalNamespaceObjects,
 } from "../src/adapters/agent-runtime/kubernetes/namespace.ts";
+import {
+  EVAL_NAMESPACE,
+  runLabels,
+} from "../src/adapters/agent-runtime/kubernetes/names.ts";
 import type {
   Labels,
   LabelSelector,
@@ -461,6 +466,27 @@ describe("agent namespaces reach the state API only (unit: D-193, D-195)", () =>
     ]);
   });
 
+  it("refuses the weekly model test's pods everywhere in the platform namespace: no project, and not an agent's proxy (D-433)", () => {
+    const evalNamespace = evalNamespaceObjects(EVAL_QUOTA)[0];
+    const namespaceLabels: Labels = {
+      ...(evalNamespace?.metadata.labels ?? {}),
+      "kubernetes.io/metadata.name": EVAL_NAMESPACE,
+    };
+    const owner = {
+      runId: "7e5a0000-0000-4000-8000-000000000001",
+      role: "eval" as const,
+    };
+    for (const component of ["eval", "eval-proxy"] as const) {
+      const pod: Pod = {
+        namespace: EVAL_NAMESPACE,
+        namespaceLabels,
+        labels: runLabels(owner, component),
+      };
+      for (const d of deployments)
+        expect(ingressPorts(d.metadata.name, pod)).toEqual([]);
+    }
+  });
+
   it("refuses the agent pod itself, and the QA fetch proxy, everywhere in the platform namespace", () => {
     const fetchProxyPod: Pod = {
       ...agentProxyPod,
@@ -734,6 +760,27 @@ describe("the run watcher (unit: D-330, O-102)", () => {
     expect(watcherEnv().map((e) => e.name)).not.toContain("DATABASE_URL");
   });
 
+  it("neither watches nor is bound in the weekly model test's namespace, whose Jobs are no runs (D-433)", () => {
+    const items = clusterObjects({
+      platform: PLATFORM,
+      projects: PROJECTS.map((slug) => ({ slug, quota: EVAL_QUOTA })),
+      eval: { quota: EVAL_QUOTA },
+    }).items;
+    expect(
+      items.some(
+        (o) =>
+          o.kind === "RoleBinding" &&
+          o.metadata.namespace === EVAL_NAMESPACE &&
+          o.subjects.some((s) => s.name === RUN_WATCHER_SERVICE_ACCOUNT),
+      ),
+    ).toBe(false);
+    const watcher = items.find(
+      (o): o is Deployment =>
+        o.kind === "Deployment" && o.metadata.name === RUN_WATCHER.name,
+    );
+    expect(JSON.stringify(watcher)).not.toContain(EVAL_NAMESPACE);
+  });
+
   it("is bound only in agent namespaces, by a Role there: nothing cluster-wide and nothing in the platform or runner namespace", () => {
     const quota = {
       pods: 4,
@@ -765,7 +812,43 @@ describe("the run watcher (unit: D-330, O-102)", () => {
   });
 });
 
+const EVAL_QUOTA = {
+  pods: 4,
+  cpu: "2",
+  memory: "2Gi",
+  ephemeralStorage: "3Gi",
+  storage: "0",
+  persistentVolumeClaims: 0,
+};
+
 describe("cluster objects (unit: render)", () => {
+  it("adds the weekly model test's namespace after the projects', and none when the settings give none (D-433)", () => {
+    const namespaces = (eval_?: { quota: typeof EVAL_QUOTA }) =>
+      clusterObjects({
+        platform: PLATFORM,
+        projects: [{ slug: "rehearsal", quota: EVAL_QUOTA }],
+        ...(eval_ ? { eval: eval_ } : {}),
+      })
+        .items.filter((o) => o.kind === "Namespace")
+        .map((o) => o.metadata.name);
+    expect(namespaces({ quota: EVAL_QUOTA })).toEqual([
+      PLATFORM_NAMESPACE,
+      "foreman-runner",
+      "agents-rehearsal",
+      EVAL_NAMESPACE,
+    ]);
+    expect(namespaces()).not.toContain(EVAL_NAMESPACE);
+  });
+
+  it("renders the committed settings' weekly test namespace, outside the projects the stack and the form read", () => {
+    const committed = JSON.parse(
+      readFileSync("infra/kubernetes/settings/production.json", "utf8"),
+    ) as { projects: { slug: string }[]; eval?: { quota: typeof EVAL_QUOTA } };
+    expect(committed.eval?.quota).toEqual(EVAL_QUOTA);
+    expect(committed.projects.map((p) => p.slug)).not.toContain(EVAL_NAMESPACE);
+    expect(committed.projects.map((p) => p.slug)).not.toContain("eval");
+  });
+
   it("lists the platform, the runner's namespace and each project's agent namespace", () => {
     const list = clusterObjects({
       platform: PLATFORM,

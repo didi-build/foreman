@@ -19,6 +19,7 @@ import {
   renderDailyCheckHtml,
   stagingHref,
 } from "../src/core/daily-check-render.ts";
+import { modelEvalSummary } from "../src/core/model-eval-summary.ts";
 import { SCAN_CHECKS, type ScanCheckId } from "../src/core/scan.ts";
 
 const FLOW = "f/foreman/hold_release_request";
@@ -93,6 +94,7 @@ function check(projects: ProjectCheck[], extra: Partial<DailyCheck> = {}): Daily
     stalledAfterMinutes: 120,
     stalledNote: null,
     projectSetup: null,
+    modelTest: modelEvalSummary([], []),
     ...extra,
   };
 }
@@ -383,7 +385,7 @@ describe("the daily check's page (unit: D-319, D-320, O-100)", () => {
     ]);
     expect(
       [...html.matchAll(/<h3[^>]*>([^<]*)<\/h3>/g)].map((m) => m[1]?.split(" ")[0]),
-    ).toEqual(["rehearsal", "second"]);
+    ).toEqual(["rehearsal", "second", "Weekly"]);
     // Only item ids and the gate request id, as the text: no run or project id.
     const ids = (s: string) => new Set(s.match(/[0-9a-f]{8}-[0-9a-f-]{27}/g));
     expect(ids(html)).toEqual(ids(text));
@@ -399,6 +401,8 @@ describe("the daily check's page (unit: D-319, D-320, O-100)", () => {
       "Kill switch: off. Dry run: off.",
       DAILY_CHECK_DATA_NOTICE,
       "Nothing moved and nothing is waiting.",
+      "Weekly model test",
+      "No weekly model test yet.",
       `Spend across projects: $0.00. ${SPEND_THRESHOLDS_NOT_BUILT}`,
       `Production deploy approval: ${PRODUCTION_DEPLOY_NOT_BUILT}`,
       "Nothing to show for: quiet.",

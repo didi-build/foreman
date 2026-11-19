@@ -6,7 +6,7 @@
 import {
   KubernetesApiError,
   checkName,
-  checkNamespace,
+  checkRunnerNamespace,
   labelSelector,
   type KubernetesClient,
 } from "./client.ts";
@@ -131,7 +131,7 @@ export function createFakeKubernetes(): FakeKubernetes {
       objects.get(key(kind, namespace, name)) as T | undefined,
 
     async create(object) {
-      const namespace = checkNamespace(object.metadata.namespace);
+      const namespace = checkRunnerNamespace(object.metadata.namespace);
       const name = checkName(object.metadata.name);
       calls.push(`create ${object.kind}/${name}`);
       const failure = failures.get(object.kind);
@@ -156,7 +156,7 @@ export function createFakeKubernetes(): FakeKubernetes {
     },
 
     async delete(kind, namespace, name, options) {
-      checkNamespace(namespace);
+      checkRunnerNamespace(namespace);
       calls.push(
         `delete ${kind}/${checkName(name)}` +
           (options?.gracePeriodSeconds === undefined
@@ -177,13 +177,13 @@ export function createFakeKubernetes(): FakeKubernetes {
     },
 
     async getJob(namespace, name) {
-      checkNamespace(namespace);
+      checkRunnerNamespace(namespace);
       calls.push(`get Job/${checkName(name)}`);
       return jobView(namespace, name);
     },
 
     async listJobs(namespace, selector) {
-      checkNamespace(namespace);
+      checkRunnerNamespace(namespace);
       labelSelector(selector);
       calls.push("list Job");
       return [...objects.values()]
@@ -197,7 +197,7 @@ export function createFakeKubernetes(): FakeKubernetes {
     },
 
     async listPods(namespace, selector) {
-      checkNamespace(namespace);
+      checkRunnerNamespace(namespace);
       labelSelector(selector);
       calls.push("list Pod");
       return [...pods.values()]
@@ -210,7 +210,7 @@ export function createFakeKubernetes(): FakeKubernetes {
     },
 
     async readPodLog(namespace, pod, options) {
-      checkNamespace(namespace);
+      checkRunnerNamespace(namespace);
       calls.push(`log Pod/${checkName(pod)}`);
       const entry = pods.get(`${namespace}/${pod}`);
       if (!entry) return null;

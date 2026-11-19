@@ -32,6 +32,7 @@ import {
   agentNamespace,
   checkRunId,
   componentSelector,
+  ownerNamespace,
   repoMapNames,
   runLabels,
   runNames,
@@ -67,6 +68,12 @@ export interface KubernetesRunSettings {
   fetchImage: string;
   /** The repo map Job's image (src/agent-images/repo-map/, D-275 (2)), pinned by digest. */
   repoMapImage: string;
+  /**
+   * The weekly model test Job's image (src/agent-images/eval/, D-432, O-155), pinned by digest.
+   * Absent until it is pinned: the Windmill deploy leaves an empty image out (O-156), and the
+   * weekly flow then starts no Job.
+   */
+  evalImage?: string;
   proxyPort: number;
   /** The numeric user and group every pod runs as. Never 0. */
   runAsUser: number;
@@ -316,6 +323,9 @@ export function checkSettings(settings: KubernetesRunSettings): void {
   ] as const) {
     if (!DIGEST_PINNED.test(image))
       throw new Error(`${name} image must be pinned by digest`);
+  }
+  if (settings.evalImage !== undefined && !DIGEST_PINNED.test(settings.evalImage)) {
+    throw new Error("eval image must be pinned by digest");
   }
   if (!Number.isInteger(settings.runAsUser) || settings.runAsUser < 1) {
     throw new Error("runAsUser must be a user id above 0");
@@ -650,7 +660,7 @@ export function repoMapStage(
 }
 
 /** The provider list exactly as the proxy reads it (MODEL_PROVIDERS). */
-function proxyProvidersJson(spec: KubernetesRunSpec): string {
+export function proxyProvidersJson(spec: Pick<KubernetesRunSpec, "providers">): string {
   return JSON.stringify(
     spec.providers.map(({ name, upstream, credential, secretPath }) =>
       secretPath === undefined
@@ -660,7 +670,8 @@ function proxyProvidersJson(spec: KubernetesRunSpec): string {
   );
 }
 
-interface StageParts {
+/** The parts of a proxy stage: the client and proxy components, their names and settings. */
+export interface StageParts {
   client: Component;
   proxy: Component;
   clientPolicy: string;
@@ -675,7 +686,10 @@ interface StageParts {
 }
 
 /** The proxy's variables for the run's model credentials, from the run's model Secret. */
-function modelSecretEnv(spec: KubernetesRunSpec, secretName: string): EnvVar[] {
+export function modelSecretEnv(
+  spec: Pick<KubernetesRunSpec, "providers">,
+  secretName: string,
+): EnvVar[] {
   return spec.providers.flatMap((provider) => {
     if (!provider.secretPath) return [];
     const key = secretEnvName(provider.secretPath);
@@ -683,12 +697,16 @@ function modelSecretEnv(spec: KubernetesRunSpec, secretName: string): EnvVar[] {
   });
 }
 
-function proxyStage(
+/**
+ * A client Job's proxy stage (ADR 0106 section 2): the proxy Job and its Service, and the two
+ * NetworkPolicies that tie the client pod to it, in the owner's namespace.
+ */
+export function proxyStage(
   spec: JobOwner,
   settings: KubernetesRunSettings,
   parts: StageParts,
 ): ProxyStage {
-  const namespace = agentNamespace(spec.projectSlug);
+  const namespace = ownerNamespace(spec);
   const port = settings.proxyPort;
   const clientPods = {
     podSelector: { matchLabels: componentSelector(spec.runId, parts.client) },
@@ -894,7 +912,7 @@ function agentVolumes(
 }
 
 /** HTTPS through the proxy, by IP address, so the pod needs no DNS (ADR 0106 section 2). */
-function proxyEnvFor(proxyAddress: string, port: number): EnvVar[] {
+export function proxyEnvFor(proxyAddress: string, port: number): EnvVar[] {
   const url = `http://${proxyAddress}:${port}`;
   return plainEnv({
     HTTPS_PROXY: url,
@@ -918,15 +936,15 @@ function scratchMounts(): VolumeMount[] {
   ];
 }
 
-function plainEnv(values: Record<string, string>): EnvVar[] {
+export function plainEnv(values: Record<string, string>): EnvVar[] {
   return Object.entries(values).map(([name, value]) => ({ name, value }));
 }
 
-function secretEnv(name: string, secret: string, key: string): EnvVar {
+export function secretEnv(name: string, secret: string, key: string): EnvVar {
   return { name, valueFrom: { secretKeyRef: { name: secret, key } } };
 }
 
-interface ContainerParts {
+export interface ContainerParts {
   image: string;
   env: EnvVar[];
   resources: Resources;
@@ -936,14 +954,18 @@ interface ContainerParts {
   volumeMounts: VolumeMount[];
 }
 
-/** A one-pod Job that Kubernetes never retries (ADR 0106 sections 4 and 6). */
-function job(
+/**
+ * A one-pod Job that Kubernetes never retries (ADR 0106 sections 4 and 6). `ttlSeconds` replaces
+ * the settings' time Kubernetes keeps it once finished, for a Job read later than a run's.
+ */
+export function job(
   spec: JobOwner,
   settings: KubernetesRunSettings,
   name: string,
   component: Component,
   deadlineSeconds: number,
   parts: ContainerParts,
+  ttlSeconds: number = settings.ttlSecondsAfterFinished,
 ): Job {
   const labels = runLabels(spec, component);
   const user = settings.runAsUser;
@@ -996,11 +1018,11 @@ function job(
   return {
     apiVersion: "batch/v1",
     kind: "Job",
-    metadata: { name, namespace: agentNamespace(spec.projectSlug), labels },
+    metadata: { name, namespace: ownerNamespace(spec), labels },
     spec: {
       backoffLimit: 0,
       activeDeadlineSeconds: deadlineSeconds,
-      ttlSecondsAfterFinished: settings.ttlSecondsAfterFinished,
+      ttlSecondsAfterFinished: ttlSeconds,
       template: { metadata: { labels }, spec: pod },
     },
   };

@@ -1,11 +1,13 @@
 // A small Kubernetes API client (ADR 0106 section 1): HTTPS to the API server with the runner's
 // bearer token and the cluster's CA, Node built-ins only. Its operations are exactly what the
-// runner's Role allows, in agent namespaces only: create and delete run objects, get and list
-// Jobs, list Pods and read a pod's log. It cannot read a Secret back, list what the Role does not
-// let it list, or touch anything cluster-wide. Errors carry the operation and HTTP status, never
-// a request body, a response body or the token.
+// runner's Role allows, in agent namespaces and the weekly model test's own namespace only, which
+// has the same Role (D-433): create and delete run objects, get and list Jobs, list Pods and read
+// a pod's log. It cannot read a Secret back, list what the Role does not let it list, or touch
+// anything cluster-wide. Errors carry the operation and HTTP status, never a request body, a
+// response body or the token.
 import { request as httpsRequest } from "node:https";
 
+import { EVAL_NAMESPACE } from "./names.ts";
 import type {
   Labels,
   JobStatus,
@@ -110,6 +112,21 @@ export function checkNamespace(namespace: string | undefined): string {
     throw new Error("the runner works only in agents-<slug> namespaces");
   }
   return namespace;
+}
+
+/**
+ * Refuses anything outside the namespaces the runner's Role is bound in: the agent namespaces and
+ * the weekly model test's own (D-433), before a request is made.
+ */
+export function checkRunnerNamespace(namespace: string | undefined): string {
+  if (namespace === EVAL_NAMESPACE) return namespace;
+  try {
+    return checkNamespace(namespace);
+  } catch {
+    throw new Error(
+      `the runner works only in agents-<slug> namespaces and ${EVAL_NAMESPACE}`,
+    );
+  }
 }
 
 export function checkName(name: string): string {
@@ -272,7 +289,7 @@ export function createKubernetesClient(
 
   const collection = (kind: RunObjectKind, namespace: string): string => {
     const { group, resource } = PATHS[kind];
-    return `${group}/namespaces/${checkNamespace(namespace)}/${resource}`;
+    return `${group}/namespaces/${checkRunnerNamespace(namespace)}/${resource}`;
   };
 
   function json<T>(response: ApiResponse): T {
@@ -337,7 +354,7 @@ export function createKubernetesClient(
 
     async listPods(namespace, selector) {
       const query = encodeURIComponent(labelSelector(selector));
-      const path = `/api/v1/namespaces/${checkNamespace(namespace)}/pods?labelSelector=${query}`;
+      const path = `/api/v1/namespaces/${checkRunnerNamespace(namespace)}/pods?labelSelector=${query}`;
       const response = await call("GET", path);
       if (response.status !== 200) throw apiFailure("list Pod", response);
       return json<{ items?: PodStatus[] }>(response).items ?? [];
@@ -349,7 +366,7 @@ export function createKubernetesClient(
         tailLines: String(logOptions.tailLines),
         limitBytes: String(logOptions.limitBytes),
       });
-      const path = `/api/v1/namespaces/${checkNamespace(namespace)}/pods/${checkName(pod)}/log?${query}`;
+      const path = `/api/v1/namespaces/${checkRunnerNamespace(namespace)}/pods/${checkName(pod)}/log?${query}`;
       const response = await call("GET", path);
       if (response.status === 404) return null;
       if (response.status !== 200) throw apiFailure("read Pod log", response);

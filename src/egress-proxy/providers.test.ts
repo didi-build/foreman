@@ -31,6 +31,13 @@ describe("parseProviders (unit: egress proxy provider settings, ADR 0106 section
     expect(providers[0]?.upstream.hostname).toBe("api.anthropic.com");
   });
 
+  it("accepts the weekly model test's own key paths, which belong to no project (D-433)", () => {
+    const providers = parseProviders(
+      JSON.stringify([{ ...anthropic, secretPath: "eval/models/anthropic" }]),
+    );
+    expect(providers[0]?.secretPath).toBe("eval/models/anthropic");
+  });
+
   it("accepts an empty list, for a proxy that serves no model traffic (the QA fetch step)", () => {
     expect(parseProviders("[]")).toEqual([]);
   });
@@ -80,6 +87,11 @@ describe("parseProviders (unit: egress proxy provider settings, ADR 0106 section
     [
       "a path outside the store",
       [{ ...anthropic, secretPath: "../etc/x" }],
+      /secret path/,
+    ],
+    [
+      "a path in no area of the store",
+      [{ ...anthropic, secretPath: "evaluation/models/anthropic" }],
       /secret path/,
     ],
     [

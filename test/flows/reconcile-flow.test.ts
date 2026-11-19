@@ -18,6 +18,7 @@ import { stalledItems, stalledRuns } from "../../src/core/stalls.ts";
 import { HEAD, REPO } from "../reconcile-fixture.ts";
 import { createFakeStagingChecker, setupStaging } from "../staging-fixture.ts";
 import { createFlowFixture } from "./flow-fixture.ts";
+import { unusedModelEval } from "./model-eval-fake.ts";
 
 async function withRelease() {
   const f = await createFlowFixture();
@@ -100,6 +101,7 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
       projectRepositories: { generate: notUsed, read: notUsed },
       bootstrapAccess: createFakeBootstrap(),
       bootstrapRuns: createFakeBootstrap(),
+      modelEval: unusedModelEval(),
       tasks: { taskFor: notUsed },
       newRunToken: () => "not-used",
       executionsThisMonth: async () => 120,
@@ -140,6 +142,7 @@ function stagingFlowDeps(t: Awaited<ReturnType<typeof setupStaging>>): FlowDeps 
     projectRepositories: { generate: notUsed, read: notUsed },
     bootstrapAccess: createFakeBootstrap(),
     bootstrapRuns: createFakeBootstrap(),
+    modelEval: unusedModelEval(),
     tasks: { taskFor: notUsed },
     newRunToken: () => "not-used",
     executionsThisMonth: async () => 120,

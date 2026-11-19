@@ -8,6 +8,8 @@ import type {
   GateRequest,
   GithubDelivery,
   Json,
+  ModelEvalJob,
+  ModelEvalResult,
   Node,
   Project,
   Run,
@@ -211,6 +213,53 @@ export const toScanRecord = (r: Row): ScanRecord => ({
   commitSha: r.commit_sha as string | null,
   outcome: r.outcome as ScanRecord["outcome"],
   summary: r.summary as Json,
+  recordedBy: r.recorded_by as string,
+  recordedAt: r.recorded_at as Date,
+});
+
+/** A weekly model test Job (migration 0027). `week_start` is read as text, never as a Date. */
+export const toModelEvalJob = (r: Row): ModelEvalJob => ({
+  id: r.id as string,
+  weekStart: r.week_start_text as string,
+  startedAt: r.started_at as Date,
+  deadlineAt: r.deadline_at as Date,
+  baseline: r.baseline as boolean,
+  capUsd: Number(r.cap_usd),
+  spentBeforeUsd: Number(r.spent_before_usd),
+  plan: r.plan as Json,
+  recordedBy: r.recorded_by as string,
+  end:
+    r.ended_at === null
+      ? null
+      : {
+          endedAt: r.ended_at as Date,
+          outcome: r.outcome as "finished" | "failed",
+          reason: r.reason as string | null,
+          detail: r.detail as string | null,
+          spentUsd: num(r.spent_usd),
+        },
+});
+
+export const toModelEvalResult = (r: Row): ModelEvalResult => ({
+  id: r.id as string,
+  jobId: r.job_id as string,
+  seq: r.seq as number,
+  caseId: r.case_id as string,
+  caseVersion: r.case_version as number,
+  role: r.role as ModelEvalResult["role"],
+  model: r.model as string,
+  provider: r.provider as string,
+  tier: r.tier as ModelEvalResult["tier"],
+  baseline: r.baseline as boolean,
+  outcome: r.outcome as ModelEvalResult["outcome"],
+  reason: r.reason as string,
+  turns: r.turns as number,
+  tokens: r.tokens as Json,
+  costUsd: Number(r.cost_usd),
+  serviceTierServed: r.service_tier_served as ModelEvalResult["serviceTierServed"],
+  minutes: Number(r.minutes),
+  providerError: r.provider_error as Json | null,
+  facts: r.facts as Json | null,
   recordedBy: r.recorded_by as string,
   recordedAt: r.recorded_at as Date,
 });

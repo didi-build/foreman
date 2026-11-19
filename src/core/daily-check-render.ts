@@ -32,6 +32,8 @@ import {
   type StalledSection,
 } from "./daily-check.ts";
 import type { CancelHow } from "./cancel.ts";
+import { JOB_FAILURE_TEXT } from "./model-eval.ts";
+import type { ModelEvalChange, ModelEvalSummary } from "./model-eval-summary.ts";
 import type { CloseStatus } from "./pr-close.ts";
 import { SCAN_CHECKS } from "./scan.ts";
 import { STALL_WAIT_TEXT, type StallWait } from "./stalls.ts";
@@ -57,6 +59,8 @@ interface CheckDocument {
   /** Said when no project has anything to show. */
   nothing: Line | null;
   projects: { heading: Line; sections: Section[] }[];
+  /** The weekly model test's latest week (D-430, O-156): a first line, then its entries. */
+  modelTest: { text: Line; items: Line[] };
   footer: Line[];
 }
 
@@ -361,6 +365,64 @@ function scanSection(scan: ScanSection): Section {
   );
 }
 
+/** The heading of the weekly model test's part of the check. */
+export const MODEL_TEST_HEADING = "Weekly model test";
+export const NO_MODEL_TEST_YET = "No weekly model test yet.";
+
+/** An amount as the weekly test's lines show it: cents, and a tiny amount as under one cent. */
+const cents = (value: number): string =>
+  value > 0 && value < 0.005 ? "under $0.01" : usd(value);
+
+const changeList = (changes: readonly ModelEvalChange[]): string =>
+  changes.length === 0
+    ? "none"
+    : changes.map((c) => `${c.caseId} on ${c.model}`).join(", ");
+
+/** The weekly model test in a few short lines (D-430, D-428, O-156). */
+function modelTestPart(t: ModelEvalSummary): CheckDocument["modelTest"] {
+  const items: Line[] = [];
+  if (t.running) {
+    items.push([
+      `The week of ${t.running.weekStart}'s Job is still running (started ${when(t.running.startedAt)}).`,
+    ]);
+  }
+  if (t.failed) {
+    items.push(
+      line`The week of ${t.failed.weekStart}'s Job did not finish: ${JOB_FAILURE_TEXT[t.failed.reason]}${
+        t.failed.detail ? line`. Its error: ${quoted(t.failed.detail)}` : []
+      }.`,
+    );
+  }
+  const week = t.latest;
+  if (!week) {
+    return { text: [NO_MODEL_TEST_YET], items };
+  }
+  const text = [
+    `Week of ${week.weekStart} (weeks start on Sunday, UTC)${week.baseline ? ", with the Claude baseline" : ""}: ` +
+      `${plural(week.runs, "run")}, ${week.skipped} skipped at the cap, ${cents(week.costUsd)} of the ${usd(week.capUsd)} cap.`,
+  ];
+  for (const m of week.models) {
+    items.push([
+      `${m.model} (${m.provider}${m.baseline ? ", baseline" : ""}): ${m.correct} of ${m.total} correct, ${cents(m.costUsd)}.`,
+    ]);
+  }
+  if (t.previousWeekStart === null) {
+    items.push(["No earlier week to compare with."]);
+  } else if (t.newlyWrong.length === 0 && t.newlyRight.length === 0) {
+    items.push([`No case changed since the week of ${t.previousWeekStart}.`]);
+  } else {
+    items.push([
+      `Since the week of ${t.previousWeekStart}: newly wrong: ${changeList(t.newlyWrong)}; newly right: ${changeList(t.newlyRight)}.`,
+    ]);
+  }
+  if (t.replaceCandidates.length > 0) {
+    items.push([
+      `Every tested model got these right 8 weeks in a row, so each is a candidate for a harder case (D-428): ${t.replaceCandidates.join(", ")}.`,
+    ]);
+  }
+  return { text, items };
+}
+
 /** The check as one document, which both renderings read. */
 function documentOf(check: DailyCheck): CheckDocument {
   const { killSwitch, dryRun } = check.switches;
@@ -401,6 +463,7 @@ function documentOf(check: DailyCheck): CheckDocument {
       heading: line`${p.slug} (${quoted(p.name)}): ${plural(p.waitingItems, "item")} waiting`,
       sections: projectSections(p, check.generatedAt),
     })),
+    modelTest: modelTestPart(check.modelTest),
     footer,
   };
 }
@@ -434,6 +497,12 @@ export function renderDailyCheck(check: DailyCheck): string {
       );
     }
   }
+  lines.push(
+    "",
+    `== ${MODEL_TEST_HEADING} ==`,
+    lineText(doc.modelTest.text),
+    ...doc.modelTest.items.map((i) => `- ${lineText(i)}`),
+  );
   lines.push("", ...doc.footer.map(lineText));
   return lines.join("\n");
 }
@@ -557,6 +626,25 @@ export function renderDailyCheckHtml(
     }
     out.push(el("section", STYLE.project, parts.join("")));
   }
+  out.push(
+    el(
+      "section",
+      STYLE.project,
+      [
+        el("h3", STYLE.heading, escapeHtml(MODEL_TEST_HEADING)),
+        el("p", STYLE.p, html(doc.modelTest.text)),
+        ...(doc.modelTest.items.length > 0
+          ? [
+              el(
+                "ul",
+                STYLE.list,
+                doc.modelTest.items.map((i) => el("li", STYLE.entry, html(i))).join(""),
+              ),
+            ]
+          : []),
+      ].join(""),
+    ),
+  );
   out.push(
     el(
       "section",

@@ -37,6 +37,7 @@ import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
 import { createFakeStagingChecker } from "../staging-fixture.ts";
+import { createFakeModelEval } from "./model-eval-fake.ts";
 
 export { HEAD };
 
@@ -143,6 +144,7 @@ export function flowDepsFor(
   const projectRepositories = createFakeProjectRepositories();
   // One fake for both ports, so a grant, a restart and a removal see the same state (O-114).
   const bootstrap = createFakeBootstrap();
+  const modelEval = createFakeModelEval();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
   let executions: number | null = 120;
@@ -160,6 +162,7 @@ export function flowDepsFor(
     projectRepositories,
     bootstrapAccess: bootstrap,
     bootstrapRuns: bootstrap,
+    modelEval,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
       async taskFor(start) {
@@ -196,6 +199,7 @@ export function flowDepsFor(
     projectSettings,
     projectRepositories,
     bootstrap,
+    modelEval,
     tasksFor,
     tokens,
     setExecutions: (count: number | null) => {
@@ -219,6 +223,7 @@ export async function createFlowFixture() {
     projectSettings,
     projectRepositories,
     bootstrap,
+    modelEval,
     tasksFor,
     tokens,
     setExecutions,
@@ -251,6 +256,7 @@ export async function createFlowFixture() {
     projectSettings,
     projectRepositories,
     bootstrap,
+    modelEval,
     tasksFor,
     tokens,
     setExecutions,

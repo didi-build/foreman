@@ -29,6 +29,7 @@ import {
 import { PLATFORM_SECRETS } from "../../infra/kubernetes/platform.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
+import { WEEKLY_MODEL_TEST_FLOW_PATH } from "../../flows/lib/model-eval.ts";
 import { PLANNING_TOKEN_SHA256_PATH } from "../../src/api/auth.ts";
 import {
   MACHINE_1_DIR,
@@ -132,9 +133,14 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       expect(existsSync(entry), entry).toBe(true);
   });
 
-  it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes, the scan and the daily check", () => {
+  it("schedules only the reconcile flow, at the seeded reconcile_interval_minutes, the scan, the daily check and the weekly model test", () => {
     const scheduled = description.flows.filter((f) => f.trigger === "schedule");
-    expect(scheduled.map((f) => f.name)).toEqual(["reconcile", "scan", "daily_check"]);
+    expect(scheduled.map((f) => f.name)).toEqual([
+      "reconcile",
+      "scan",
+      "daily_check",
+      "weekly_model_test",
+    ]);
     const seed = /\('reconcile_interval_minutes', '(\d+)'/.exec(
       readFileSync("db/migrations/0001_factory_schema.sql", "utf8"),
     );
@@ -222,6 +228,8 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
           VALUE_NAMES.designerAppId,
           VALUE_NAMES.qaAppId,
           VALUE_NAMES.runnerAppInstallationId,
+          SECRET_PATHS.evalDeepinfraKey,
+          SECRET_PATHS.evalAnthropicKey,
         ].map((path) => [path, `f/foreman/${path}`]),
       ),
     });
@@ -591,13 +599,13 @@ describe("the daily check flow (unit: repo guard, M4.4, O-91)", () => {
       // Didi's own morning, daylight saving included (D-297).
       timezone: "America/Toronto",
     });
-    // Reconcile every 2 hours (about 360 runs in a 30-day month) plus one daily check (30) and
-    // one daily scan (30, O-92) leaves most of the 1,000 for event-triggered runs and the
-    // nightly backup (D-164).
+    // Reconcile every 2 hours (about 360 runs in a 30-day month) plus one daily check (30), one
+    // daily scan (30, O-92) and the weekly model test's daily read (30, O-156) leaves most of the
+    // 1,000 for event-triggered runs and the nightly backup (D-164).
     const monthly = description.flows
       .filter((f) => f.schedule)
       .reduce((sum, f) => sum + (30 * 24 * 60) / (f.schedule?.every_minutes ?? 1), 0);
-    expect(monthly).toBe(360 + 30 + 30);
+    expect(monthly).toBe(360 + 30 + 30 + 30);
   });
 });
 
@@ -616,6 +624,46 @@ describe("the scan flow (unit: repo guard, D-299, D-300, O-92)", () => {
     const hour = (cron: string | undefined) => Number(cron?.split(" ")[2]);
     expect(check?.schedule).toMatchObject({ timezone: "America/Toronto" });
     expect(hour(flow?.schedule?.cron)).toBeLessThan(hour(check?.schedule?.cron));
+  });
+});
+
+describe("the weekly model test flow (unit: repo guard, D-432, D-433, O-156)", () => {
+  const flow = description.flows.find((f) => f.name === "weekly_model_test");
+
+  it("runs once a day at a quiet odd minute in UTC, outside 9 am to noon US Eastern, before the daily check", () => {
+    expect(flow?.path).toBe(WEEKLY_MODEL_TEST_FLOW_PATH);
+    expect(flow?.entry).toBe("flows/weekly-model-test.ts");
+    expect(flow?.trigger).toBe("schedule");
+    expect(flow?.job_token_scopes).toEqual([READ_VARIABLES_SCOPE]);
+    expect(flow?.schedule).toEqual({
+      every_minutes: 24 * 60,
+      cron: "0 17 7 * * *",
+      timezone: "UTC",
+    });
+    const [, minute, hour] = (flow?.schedule?.cron ?? "").split(" ").map(Number);
+    expect(minute === 0 || minute === 30).toBe(false);
+    // 9 am to noon US Eastern is 13:00 to 17:00 UTC, daylight saving included.
+    expect((hour as number) >= 13 && (hour as number) < 17).toBe(false);
+    // Before the daily check at 06:00 Toronto (10:00 or 11:00 UTC).
+    expect(hour as number).toBeLessThan(10);
+  });
+
+  it("reads its two keys at their own paths under the flows' folder, which its scope covers (D-433)", () => {
+    for (const path of [SECRET_PATHS.evalDeepinfraKey, SECRET_PATHS.evalAnthropicKey]) {
+      expect(windmillVariablePath(path)).toMatch(/^f\/foreman\/eval\/models\/[a-z]+$/);
+      expect(windmillVariablePath(path).startsWith(`${WINDMILL_FOLDER}/`)).toBe(true);
+      const secret = description.resources.secrets.find((s) => s.path === path);
+      expect(secret?.written_by).toMatch(/runbook step 17/);
+    }
+    expect(READ_VARIABLES_SCOPE).toBe(`variables:read:${WINDMILL_FOLDER}/*`);
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    expect(runbook).toContain("## 17. The weekly model test (D-433)");
+    expect(runbook).toContain("`f/foreman/eval/models/deepinfra`");
+    expect(runbook).toContain("`f/foreman/eval/models/anthropic`");
+  });
+
+  it("carries the cases in its bundle, so it sizes the Job from the set it names", () => {
+    expect(description.bundle_files).toContain("eval/cases/");
   });
 });
 

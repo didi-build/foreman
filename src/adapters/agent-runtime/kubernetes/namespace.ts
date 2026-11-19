@@ -6,7 +6,19 @@
 // applies them, never the runner (ADR 0110, D-188); they are written and tested here, next to the
 // code that relies on them. The runner's token is a new-credentials gate at first hosting and is
 // not declared here: the Platform workflow's runner-token job makes it (D-352, O-110).
-import { LABEL_MANAGED_BY, LABEL_PROJECT, agentNamespace } from "./names.ts";
+//
+// The weekly model test has its own namespace, `foreman-eval` (D-433, O-156): the same objects as
+// an agent namespace (Pod Security Admission `restricted`, default deny, a ResourceQuota, the
+// runner's Role and RoleBinding), with no project label, so nothing that reads projects counts
+// it, and no run watcher Role, since the watcher never reads its Jobs (D-330 watches run Jobs
+// only). No new right: the runner's Role there is the agent namespaces' Role.
+import {
+  EVAL_NAMESPACE,
+  LABEL_MANAGED_BY,
+  LABEL_PROJECT,
+  LABEL_PURPOSE,
+  agentNamespace,
+} from "./names.ts";
 import type {
   Namespace,
   NamespaceObject,
@@ -104,8 +116,69 @@ export function agentNamespaceObjects(
   slug: string,
   quota: AgentQuota,
 ): NamespaceObject[] {
-  const name = agentNamespace(slug);
-  const labels = { [LABEL_MANAGED_BY]: MANAGED_BY_INFRA, [LABEL_PROJECT]: slug };
+  return namespaceObjects(
+    agentNamespace(slug),
+    { [LABEL_MANAGED_BY]: MANAGED_BY_INFRA, [LABEL_PROJECT]: slug },
+    "agents",
+    quota,
+    true,
+  );
+}
+
+/** The weekly model test's label value on its namespace (D-433). */
+export const EVAL_PURPOSE = "weekly-model-test";
+
+/**
+ * The weekly model test's own namespace (D-433, O-156): an agent namespace's objects, with no
+ * project label and no run watcher Role.
+ */
+export function evalNamespaceObjects(quota: AgentQuota): NamespaceObject[] {
+  return namespaceObjects(
+    EVAL_NAMESPACE,
+    { [LABEL_MANAGED_BY]: MANAGED_BY_INFRA, [LABEL_PURPOSE]: EVAL_PURPOSE },
+    "eval",
+    quota,
+    false,
+  );
+}
+
+const roleOf = (
+  name: string,
+  namespace: string,
+  labels: Record<string, string>,
+  rules: readonly PolicyRule[],
+): Role => ({
+  apiVersion: "rbac.authorization.k8s.io/v1",
+  kind: "Role",
+  metadata: { name, namespace, labels },
+  rules: rules.map((rule) => ({
+    apiGroups: [...rule.apiGroups],
+    resources: [...rule.resources],
+    verbs: [...rule.verbs],
+  })),
+});
+
+const bindingOf = (
+  name: string,
+  namespace: string,
+  labels: Record<string, string>,
+  subjectNamespace: string,
+): RoleBinding => ({
+  apiVersion: "rbac.authorization.k8s.io/v1",
+  kind: "RoleBinding",
+  metadata: { name, namespace, labels },
+  roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name },
+  subjects: [{ kind: "ServiceAccount", name, namespace: subjectNamespace }],
+});
+
+/** A namespace the runner starts Jobs in, and everything in it that is not a Job's. */
+function namespaceObjects(
+  name: string,
+  labels: Record<string, string>,
+  quotaName: string,
+  quota: AgentQuota,
+  watched: boolean,
+): NamespaceObject[] {
   const namespace: Namespace = {
     apiVersion: "v1",
     kind: "Namespace",
@@ -125,7 +198,7 @@ export function agentNamespaceObjects(
   const resourceQuota: ResourceQuota = {
     apiVersion: "v1",
     kind: "ResourceQuota",
-    metadata: { name: "agents", namespace: name, labels },
+    metadata: { name: quotaName, namespace: name, labels },
     spec: {
       hard: {
         pods: String(quota.pods),
@@ -140,69 +213,20 @@ export function agentNamespaceObjects(
       },
     },
   };
-  const role: Role = {
-    apiVersion: "rbac.authorization.k8s.io/v1",
-    kind: "Role",
-    metadata: { name: RUNNER_SERVICE_ACCOUNT, namespace: name, labels },
-    rules: RUNNER_ROLE_RULES.map((rule) => ({
-      apiGroups: [...rule.apiGroups],
-      resources: [...rule.resources],
-      verbs: [...rule.verbs],
-    })),
-  };
-  const binding: RoleBinding = {
-    apiVersion: "rbac.authorization.k8s.io/v1",
-    kind: "RoleBinding",
-    metadata: { name: RUNNER_SERVICE_ACCOUNT, namespace: name, labels },
-    roleRef: {
-      apiGroup: "rbac.authorization.k8s.io",
-      kind: "Role",
-      name: RUNNER_SERVICE_ACCOUNT,
-    },
-    subjects: [
-      {
-        kind: "ServiceAccount",
-        name: RUNNER_SERVICE_ACCOUNT,
-        namespace: RUNNER_NAMESPACE,
-      },
-    ],
-  };
-  const watcherRole: Role = {
-    apiVersion: "rbac.authorization.k8s.io/v1",
-    kind: "Role",
-    metadata: { name: RUN_WATCHER_SERVICE_ACCOUNT, namespace: name, labels },
-    rules: RUN_WATCHER_ROLE_RULES.map((rule) => ({
-      apiGroups: [...rule.apiGroups],
-      resources: [...rule.resources],
-      verbs: [...rule.verbs],
-    })),
-  };
-  const watcherBinding: RoleBinding = {
-    apiVersion: "rbac.authorization.k8s.io/v1",
-    kind: "RoleBinding",
-    metadata: { name: RUN_WATCHER_SERVICE_ACCOUNT, namespace: name, labels },
-    roleRef: {
-      apiGroup: "rbac.authorization.k8s.io",
-      kind: "Role",
-      name: RUN_WATCHER_SERVICE_ACCOUNT,
-    },
-    subjects: [
-      {
-        kind: "ServiceAccount",
-        name: RUN_WATCHER_SERVICE_ACCOUNT,
-        namespace: PLATFORM_NAMESPACE,
-      },
-    ],
-  };
-  return [
+  const objects: NamespaceObject[] = [
     namespace,
     defaultDeny,
     resourceQuota,
-    role,
-    binding,
-    watcherRole,
-    watcherBinding,
+    roleOf(RUNNER_SERVICE_ACCOUNT, name, labels, RUNNER_ROLE_RULES),
+    bindingOf(RUNNER_SERVICE_ACCOUNT, name, labels, RUNNER_NAMESPACE),
   ];
+  if (watched) {
+    objects.push(
+      roleOf(RUN_WATCHER_SERVICE_ACCOUNT, name, labels, RUN_WATCHER_ROLE_RULES),
+      bindingOf(RUN_WATCHER_SERVICE_ACCOUNT, name, labels, PLATFORM_NAMESPACE),
+    );
+  }
+  return objects;
 }
 
 /** Pod Security Admission: a pod that breaks ADR 0106 section 4 is refused at creation. */
