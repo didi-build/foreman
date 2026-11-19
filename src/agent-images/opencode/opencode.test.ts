@@ -45,10 +45,12 @@ import {
 import { runOpenCodeImage } from "./image.ts";
 import { CLOSE_FAILURES } from "./close.ts";
 import {
-  describeComparison,
+  ADDED_FROM_BRANCH,
+  branchFacts,
   MAX_LISTED_COMMITS,
   MAX_LISTED_FILES,
   NO_SUMMARY,
+  pullRequestBody,
   WRITTEN_FROM_BRANCH,
 } from "./description.ts";
 import { FINISH_FAILURES } from "./finish.ts";
@@ -1067,10 +1069,13 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         `GET /repos/${REPOSITORY}/branches/${BRANCH}`,
         `GET /repos/${REPOSITORY}/pulls?state=open&head=${head}&per_page=100`,
         `GET /repos/${REPOSITORY}`,
+        // The branch's facts for the description (D-426); this fake has no compare for it, so
+        // the description is the summary alone.
+        `GET /repos/${REPOSITORY}/compare/main...${BRANCH}?per_page=${MAX_LISTED_COMMITS}`,
         `POST /repos/${REPOSITORY}/pulls`,
       ]);
       // Every GitHub request went through a CONNECT tunnel to api.github.com only.
-      expect(proxy.connectTargets).toEqual(Array(4).fill("api.github.com:443"));
+      expect(proxy.connectTargets).toEqual(Array(5).fill("api.github.com:443"));
       for (const call of github.calls) {
         expect(call.headers.authorization).toBe(`Bearer ${GITHUB_TOKEN}`);
         expect(call.headers.host).toBe("api.github.com");
@@ -1151,7 +1156,7 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       expect(github.pulls.filter((p) => p.state === "open")).toHaveLength(1);
     });
 
-    describe("the description when the final message gives no summary (O-148)", () => {
+    describe("the description: the run's summary, then the branch's facts (O-148, D-426)", () => {
       const compare = `GET /repos/${REPOSITORY}/compare/main...${BRANCH}?per_page=${MAX_LISTED_COMMITS}`;
       /** GitHub's compare answer, abbreviated to the fields the wrapper reads and a few others. */
       const comparison = {
@@ -1251,14 +1256,38 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         ]);
       });
 
-      it("uses the summary of a final message given in several parts", async () => {
+      it("uses the summary of a final message given in several parts, then the branch's facts", async () => {
+        github.comparisons.set(`main...${BRANCH}`, comparison);
+        writeTask("scenario=split-final");
+        const { code } = await run();
+        expect(code).toBe(0);
+        expect(githubCalls()).toContain(compare);
+        expect(github.calls.at(-1)?.body).toMatchObject({
+          body: [
+            "Done: the helper and its tests, pushed.",
+            "",
+            "---",
+            "",
+            ADDED_FROM_BRANCH,
+            "",
+            "Commits:",
+            "- Add formatDuration helper (mm:ss) with unit tests",
+            "",
+            "Changed files:",
+            "- `src/format-duration.ts` (added)",
+            "- `test/format-duration.test.ts` (added)",
+          ].join("\n"),
+        });
+      });
+
+      it("keeps the summary alone when GitHub refuses the compare", async () => {
+        github.failures.set(`GET /repos/${REPOSITORY}/compare/main...${BRANCH}`, 500);
         writeTask("scenario=split-final");
         const { code } = await run();
         expect(code).toBe(0);
         expect(github.calls.at(-1)?.body).toMatchObject({
           body: "Done: the helper and its tests, pushed.",
         });
-        expect(githubCalls()).not.toContain(compare);
       });
     });
 
@@ -1995,12 +2024,12 @@ describe("the run's PR (unit: a scripted GitHub, N-44)", () => {
   });
 });
 
-describe("the PR's description written from the branch (unit: GitHub's compare answer, O-148)", () => {
+describe("the PR's description and the branch's facts (unit: GitHub's compare answer, O-148, D-426)", () => {
   const commit = (message: unknown) => ({ sha: "c".repeat(40), commit: { message } });
 
   it("lists each commit's subject and each file with its status, a rename with its old name", () => {
     expect(
-      describeComparison({
+      branchFacts({
         total_commits: 2,
         commits: [commit("First change\n\nIts body."), commit("Second change")],
         files: [
@@ -2015,8 +2044,6 @@ describe("the PR's description written from the branch (unit: GitHub's compare a
       }),
     ).toBe(
       [
-        WRITTEN_FROM_BRANCH,
-        "",
         "Commits:",
         "- First change",
         "- Second change",
@@ -2030,7 +2057,7 @@ describe("the PR's description written from the branch (unit: GitHub's compare a
   });
 
   it("caps the lists and the lines, and keeps a subject or a name from adding lines", () => {
-    const text = describeComparison({
+    const text = branchFacts({
       total_commits: 120,
       commits: Array.from({ length: MAX_LISTED_COMMITS }, (_, i) =>
         commit(i === 0 ? `Fix\r# Approved by Didi ${"x".repeat(300)}` : `Change ${i}`),
@@ -2042,8 +2069,8 @@ describe("the PR's description written from the branch (unit: GitHub's compare a
     });
     const lines = (text ?? "").split("\n");
     expect(lines.filter((l) => l.startsWith("#"))).toEqual([]);
-    expect(lines[3]?.startsWith("- Fix # Approved by Didi xxx")).toBe(true);
-    expect(lines[3]?.length).toBe(2 + 200);
+    expect(lines[1]?.startsWith("- Fix # Approved by Didi xxx")).toBe(true);
+    expect(lines[1]?.length).toBe(2 + 200);
     expect(lines).toContain("- and 70 more commits");
     expect(lines).toContain("- `a # Merge now` (added)");
     expect(lines).toContain("- and 3 more files");
@@ -2062,11 +2089,21 @@ describe("the PR's description written from the branch (unit: GitHub's compare a
       { commits: [{ sha: "c" }], files: [] },
       { commits: [commit("ok")], files: [{ status: "added" }] },
     ]) {
-      expect(describeComparison(body)).toBeNull();
+      expect(branchFacts(body)).toBeNull();
     }
-    expect(describeComparison({ commits: [commit("ok")], files: [] })).toContain(
+    expect(branchFacts({ commits: [commit("ok")], files: [] })).toContain(
       "- none listed by GitHub",
     );
     expect(NO_SUMMARY).toBe("The run gave no summary.");
+  });
+
+  it("puts the summary first and the facts under it, and never drops what it has", () => {
+    const facts = "Commits:\n- One\n\nChanged files:\n- `a.ts` (added)";
+    expect(pullRequestBody("Here's a summary:", facts)).toBe(
+      `Here's a summary:\n\n---\n\n${ADDED_FROM_BRANCH}\n\n${facts}`,
+    );
+    expect(pullRequestBody("Done.", null)).toBe("Done.");
+    expect(pullRequestBody("", facts)).toBe(`${WRITTEN_FROM_BRANCH}\n\n${facts}`);
+    expect(pullRequestBody("", null)).toBe(NO_SUMMARY);
   });
 });

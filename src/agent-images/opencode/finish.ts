@@ -11,8 +11,9 @@
 // pushed, if any, stay on the branch as they are. A success result also carries the bugs the run
 // noticed outside its item, with credential values removed (D-244, O-65): the runner submits each
 // as a new idea; the wrapper itself sends them nowhere. A new PR's description is the report's
-// summary, or, when the final message has none, one the wrapper writes from the branch's commits
-// and changed files (./description.ts, O-148); credential values are removed from either.
+// summary followed by the branch's commits and changed files, or, when the final message has no
+// summary, those facts after a fixed line (./description.ts, O-148, D-426); credential values are
+// removed from all of it.
 import { withinFindingBounds } from "../../core/out-of-scope-findings.ts";
 import type { AgentResult } from "../shared/result.ts";
 import { redact } from "../shared/result.ts";
@@ -78,14 +79,13 @@ export async function finishRun(
     title: redact(report.pullRequestTitle, context.secrets),
     body: async (base) =>
       redact(
-        report.summary !== ""
-          ? report.summary
-          : await describeBranch({
-              github: context.github,
-              repository: context.repository,
-              base,
-              branch: context.branch,
-            }),
+        await describeBranch({
+          github: context.github,
+          repository: context.repository,
+          base,
+          branch: context.branch,
+          summary: report.summary,
+        }),
         context.secrets,
       ),
   });
