@@ -269,8 +269,8 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
     expect(agentImages["claude-api"]).toMatch(pinned("foreman-agent-claude-api"));
     expect(runSettings.fetchImage).toMatch(pinned("foreman-qa-fetch"));
     expect(runSettings.repoMapImage).toMatch(pinned("foreman-repo-map"));
-    // Pinned in its own step once the Images workflow has built it (O-156); empty until then.
-    expect(runSettings.evalImage).toBe("");
+    // The weekly test job (D-433, O-156), pinned once the Images workflow built it.
+    expect(runSettings.evalImage).toMatch(pinned("foreman-eval"));
     const sizes = runSettings.resources as Record<
       string,
       { requests: Record<string, string>; limits: Record<string, string> }
