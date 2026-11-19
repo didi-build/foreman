@@ -75,6 +75,9 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     ]);
     expect(start?.outputSchema).toHaveProperty("properties.components");
     expect(start?.input).toContain("# Visual comparison");
+    // The pull request's change is the review's input only (D-431).
+    expect(start?.input).not.toContain("# The pull request's change");
+    expect(f.github.changeReads).toEqual([]);
   });
 
   it("refuses to start when the comparison cannot be built, writing no run", async () => {

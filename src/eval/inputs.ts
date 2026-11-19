@@ -3,9 +3,10 @@
 // role's bot file (contracts/bots/), checked with the runner's own task file check. Nothing here
 // writes a rule or an instruction of its own.
 //
-// - QA (`qa:review`): `taskInput` over the work item, the repository, the pull request and the
-//   head commit, as flows/lib/start-run.ts calls it; the evidence ids the run may cite; and the
-//   case's tree as the workspace its read-only tools read (src/agent-images/claude-api/files.ts).
+// - QA (`qa:review`): `taskInput` over the work item, the repository, the pull request, the head
+//   commit and the pull request's change, as flows/lib/start-run.ts calls it, the change computed
+//   from the case's trees (./change.ts, D-431); the evidence ids the run may cite; and the case's
+//   tree as the workspace its read-only tools read (src/agent-images/claude-api/files.ts).
 //   QA's answer schema is the verdict contract the image holds (verdict.ts), not a task file part.
 // - Triage: the repo map built from the case's tree at the case's commit by the repo map adapter
 //   and checked as the runner checks one, then `triageInput` with the plan; the answer schema from
@@ -23,10 +24,12 @@ import type { BotFile, BotFiles } from "../adapters/contracts-file/bot-files.ts"
 import { buildRepoMap, readCheckout } from "../adapters/repo-map/typescript.ts";
 import { escalationInput } from "../core/council-input.ts";
 import type { OutputSchema } from "../core/output-schema.ts";
+import type { PullRequestChange } from "../core/github.ts";
 import { checkRepoMap, type RepoMap } from "../core/repo-map.ts";
 import { taskInput } from "../core/task-input.ts";
 import { triageInput } from "../core/triage.ts";
 import type { CouncilCase, EvalCase, QaCase, TriageCase } from "./cases.ts";
+import { caseChange } from "./change.ts";
 
 interface RunCommon {
   caseId: string;
@@ -38,6 +41,8 @@ interface RunCommon {
 export interface QaRun extends RunCommon {
   role: "qa";
   headSha: string;
+  /** The pull request's change its input carries (D-431). */
+  change: PullRequestChange;
   evidenceIds: string[];
   /** The folder QA's read-only tools read: the case's tree. */
   workspace: string;
@@ -83,8 +88,9 @@ function schemaOf(bot: BotFile, kind: string): OutputSchema {
   return structuredClone(schema);
 }
 
-function qaRun(c: QaCase, bots: BotFiles): QaRun {
+function qaRun(c: QaCase, bots: BotFiles, cases: readonly EvalCase[]): QaRun {
   const { item } = c.input;
+  const change = caseChange(c, cases);
   const input = taskInput({
     role: "qa",
     node: {
@@ -98,6 +104,7 @@ function qaRun(c: QaCase, bots: BotFiles): QaRun {
     project: { repo: c.input.repo },
     prNumber: c.input.pullRequest,
     headSha: c.input.headSha,
+    change,
   });
   const evidenceIds = c.input.evidence.map((e) => e.id);
   const task: AgentTaskFile = {
@@ -114,6 +121,7 @@ function qaRun(c: QaCase, bots: BotFiles): QaRun {
     taskType: c.taskType,
     task,
     headSha: c.input.headSha,
+    change,
     evidenceIds,
     workspace: c.tree.dir,
     files: c.tree.files,
@@ -179,12 +187,23 @@ function councilRun(c: CouncilCase, bots: BotFiles): CouncilRun {
   return { caseId: c.id, role: "council", taskType: c.taskType, task, outputSchema };
 }
 
-/** The run of one case, built as the runner builds one. Throws if the runner would refuse it. */
-export function buildCaseRun<C extends EvalCase>(c: C, bots: BotFiles): RunFor<C>;
-export function buildCaseRun(c: EvalCase, bots: BotFiles): CaseRun {
+/**
+ * The run of one case, built as the runner builds one. Throws if the runner would refuse it.
+ * `cases` is every case (`loadCases`): a planted QA case's change starts from its base case's.
+ */
+export function buildCaseRun<C extends EvalCase>(
+  c: C,
+  bots: BotFiles,
+  cases: readonly EvalCase[],
+): RunFor<C>;
+export function buildCaseRun(
+  c: EvalCase,
+  bots: BotFiles,
+  cases: readonly EvalCase[],
+): CaseRun {
   switch (c.role) {
     case "qa":
-      return qaRun(c, bots);
+      return qaRun(c, bots, cases);
     case "triage":
       return triageRun(c, bots);
     case "council":

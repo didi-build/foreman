@@ -56,7 +56,7 @@ The `deepinfra` entry sets `messages_api: { answer: tool, prompt_cache_key: true
 `flows/lib/tasks.ts` builds it through `buildKubernetesTask`:
 
 1. The bot file of the run's role gives the instructions, tools, hosts, the image kind and the provider entry for the run's route.
-2. The run, as admitted, gives the model, provider, tier and price (ADR 0114). The run's input is the core's (`src/core/task-input.ts`, or the Council's question with its schema from the same bot file).
+2. The run, as admitted, gives the model, provider, tier and price (ADR 0114). The run's input is the core's (`src/core/task-input.ts`, or the Council's question with its schema from the same bot file). QA's review input also carries the pull request's changed files and diff at the head commit, which the start flow reads from GitHub with the runner App's read tokens before anything is written (D-431, O-154).
 3. The model key is read by its secret path, for the route's provider and the run's project only, and goes into the run's proxy Secret only.
 4. The GitHub installation token comes last, from the `InstallationTokens` port (`src/adapters/github/installation-tokens.ts`): Developer and Designer with write access, QA read-only for its review's fetch step (ADR 0106 section 5, D-159). QA's visual comparison (`qa:visual`), Council (also its visual call) and Triage get none: the visual run reads only the images in its task file, so it has no fetch step either (N-57, O-68).
 

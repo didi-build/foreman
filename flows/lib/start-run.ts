@@ -11,9 +11,14 @@
 //    runner's visual comparison instead: the image pairs with their located differences and the
 //    spec sections, and the visual answer schema (src/core/visual-comparison.ts, D-242, D-250); a
 //    comparison that cannot be built (no approved option, a screenshot missing or changed)
-//    refuses here. The close-only run of a cancelled item's pull request (D-318, task type
-//    `developer:close` or `designer:close`, src/core/pr-close.ts) gets the close input instead: the
-//    run's repository, the pull request and the fixed comment; one no longer due refuses here.
+//    refuses here. A QA review's input carries the pull request's change at the head commit:
+//    its changed files and diff, read from GitHub (D-431, O-154). A read GitHub refuses or that
+//    fails throws here, before anything is written, as the visual comparison's reads and Triage's
+//    repo map do: the caller keeps it as `start_failed` with GitHub's fixed sentence (D-384), and
+//    the next pass tries again. The close-only run of a cancelled item's pull request (D-318,
+//    task type `developer:close` or `designer:close`, src/core/pr-close.ts) gets the close input
+//    instead: the run's repository, the pull request and the fixed comment; one no longer due
+//    refuses here.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
@@ -198,6 +203,11 @@ export async function startRun(
     }
     visual = built;
   }
+  // QA's review never starts without the change it reviews (D-431, ADR 0112's default context).
+  const change =
+    input.role === "qa" && !isVisual && input.prNumber && input.headSha
+      ? await deps.github.readChange(project.repo, input.prNumber, input.headSha)
+      : undefined;
   const text = close
     ? close.input
     : council
@@ -212,6 +222,7 @@ export async function startRun(
               project,
               branch: branch ?? undefined,
               returned,
+              ...(change ? { change } : {}),
               // The Designer's step comes from the item's state (D-238): the state as the contracts
               // name it and its label, never a database id. It also gets the option Didi approved,
               // once one is recorded (D-242, D-243 rule 3).

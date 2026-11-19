@@ -17,7 +17,7 @@ const caseOf = (id: string): EvalCase => {
   if (!c) throw new Error(`no case ${id}`);
   return c;
 };
-const runOf = (id: string) => buildCaseRun(caseOf(id), bots);
+const runOf = (id: string) => buildCaseRun(caseOf(id), bots, cases);
 const outcome = (id: string, answer: unknown): ScoreOutcome =>
   scoreAnswer(caseOf(id), runOf(id), JSON.stringify(answer)).outcome;
 const example = (id: string) =>
@@ -26,7 +26,7 @@ const example = (id: string) =>
 describe("weekly model test set scoring (unit: answers checked by the runner's own checks, ADR 0117)", () => {
   it("passes every case's example answer through the runner's check for its role, and scores it correct", () => {
     for (const c of cases) {
-      const run = buildCaseRun(c, bots);
+      const run = buildCaseRun(c, bots, cases);
       const text = JSON.stringify(c.example);
       if (run.role === "qa") {
         expect("verdict" in parseVerdict(text, (run as QaRun).evidenceIds), c.id).toBe(

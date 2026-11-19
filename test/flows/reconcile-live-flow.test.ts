@@ -14,6 +14,7 @@ import { run as requestTransition } from "../../flows/request-transition.ts";
 import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import { startReadyRuns } from "../../flows/lib/ready-runs.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import { GitHubReadError } from "../../src/adapters/github/runner-app-tokens.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import { createLibrary } from "../../src/core/library.ts";
@@ -250,6 +251,67 @@ describe("the reconcile flow in live mode (flow: fake adapters, D-329 slice 3)",
     expect(
       (await f.store.listRuns({ nodeId: item.id })).filter((r) => r.bot === "qa"),
     ).toHaveLength(1);
+  });
+
+  it("starts no QA run while GitHub refuses the pull request's change, names GitHub's fixed sentence, and starts it on a later pass (D-431, D-384)", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const item = await f.node("in_development");
+    await f.evidence(
+      item.id,
+      "ci_run",
+      { conclusion: "success", pr: 7, changedPaths: ["src/a.ts"] },
+      { commitSha: HEAD },
+    );
+    await f.evidence(item.id, "docs_note", { impact: "none" }, { commitSha: HEAD });
+    f.github.setChange(
+      REPO,
+      7,
+      HEAD,
+      new GitHubReadError("reading the pull request failed with 502"),
+    );
+
+    const first = await reconcileFlow(f.deps);
+    expect(first.advanced).toMatchObject([
+      {
+        nodeId: item.id,
+        toState: "in_qa_review",
+        move: { outcome: "applied" },
+        qa: {
+          role: "qa",
+          plan: "planned",
+          result: {
+            outcome: "start_failed",
+            error: {
+              type: "GitHubReadError",
+              message: "reading the pull request failed with 502",
+            },
+          },
+        },
+      },
+    ]);
+    expect(await f.store.listRuns({ nodeId: item.id })).toEqual([]);
+    expect(f.runtime.started).toEqual([]);
+
+    // GitHub answers again: the next pass plans QA's run on the head and starts it.
+    f.github.setChange(REPO, 7, HEAD, {
+      headSha: HEAD,
+      mergeBaseSha: "a".repeat(40),
+      files: [],
+      complete: true,
+    });
+    const second = await reconcileFlow(f.deps);
+    expect(second.dispatched).toMatchObject([
+      { nodeId: item.id, role: "qa", result: { outcome: "started" } },
+    ]);
+    expect(f.tasksFor.at(-1)?.input).toContain(
+      "## Changed files\n\nGitHub's compare lists no changed files.",
+    );
+    expect(f.github.changeReads).toEqual([
+      { repo: REPO, number: 7, headSha: HEAD },
+      { repo: REPO, number: 7, headSha: HEAD },
+    ]);
   });
 });
 
