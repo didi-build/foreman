@@ -59,7 +59,7 @@ export interface LoopClock {
   sleep(ms: number): Promise<void>;
 }
 
-const realClock: LoopClock = {
+export const realClock: LoopClock = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
@@ -110,6 +110,17 @@ export interface LoopOptions {
   promptCacheKey?: string;
   runTool?: (name: string, input: unknown) => Promise<ToolOutput>;
 }
+
+/**
+ * The fixed error texts of a run that ended on the model's reply or could not reach the
+ * provider. The weekly test job reads them to give each such end its own reason code.
+ */
+export const LOOP_ERRORS = {
+  unreachable: "the model endpoint could not be reached",
+  outputLimit: "the model's reply reached the output token limit",
+  refused: "the model declined the request",
+  unknownStop: "the model stopped for an unknown reason",
+} as const;
 
 /** The tool a run in tool mode ends with (O-152). */
 export const ANSWER_TOOL = "answer";
@@ -292,7 +303,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
         );
       }
       if (error instanceof Anthropic.APIError) {
-        return end("error", "the model endpoint could not be reached");
+        return end("error", LOOP_ERRORS.unreachable);
       }
       throw error;
     }
@@ -320,9 +331,9 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
       case "pause_turn":
         continue;
       case "max_tokens":
-        return end("error", "the model's reply reached the output token limit");
+        return end("error", LOOP_ERRORS.outputLimit);
       case "refusal":
-        return end("error", "the model declined the request");
+        return end("error", LOOP_ERRORS.refused);
       case "tool_use": {
         const results: Anthropic.ToolResultBlockParam[] = [];
         for (const block of response.content) {
@@ -342,7 +353,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
         continue;
       }
       default:
-        return end("error", "the model stopped for an unknown reason");
+        return end("error", LOOP_ERRORS.unknownStop);
     }
   }
 }

@@ -1,0 +1,13 @@
+{
+  "name": "foreman-eval-image",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Anthropic SDK, the TypeScript compiler and the YAML parser pinned for the weekly test job's image only (ADR 0117, D-432), at the root's versions. The image runs its .ts files as ES modules.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0",
+    "typescript": "5.9.3",
+    "yaml": "2.9.1"
+  }
+}

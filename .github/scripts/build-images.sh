@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Build and push the eight images first hosting needs (D-336, O-105, O-124) to GitHub Container
-# Registry as public images, each tagged with the commit, and write their references pinned by
-# digest: a Markdown table on stdout for the job summary, and <images.json> in the shapes the
-# settings take (the cluster's settings file and Windmill's `agent_images` and
-# `agent_run_settings`).
+# Build and push the nine images first hosting needs (D-336, O-105, O-124, D-432) to GitHub
+# Container Registry as public images, each tagged with the commit, and write their references
+# pinned by digest: a Markdown table on stdout for the job summary, and <images.json> in the shapes
+# the settings take (the cluster's settings file and Windmill's `agent_images` and
+# `agent_run_settings`). The weekly test job's image (`foreman-eval`, ADR 0117) is in `images`
+# only: no setting takes it yet, and the slice that starts its Job pins it.
 #
 #   build-images.sh <images.json>
 #
@@ -25,6 +26,7 @@ IMAGES=(
   "foreman-agent-claude-api   src/agent-images/claude-api/Dockerfile"
   "foreman-repo-map           src/agent-images/repo-map/Dockerfile"
   "foreman-qa-fetch           src/agent-images/qa-fetch/Dockerfile"
+  "foreman-eval               src/agent-images/eval/Dockerfile"
   "foreman-egress-proxy       src/egress-proxy/Dockerfile"
   "foreman-state-api          src/api/Dockerfile"
   "foreman-github-receiver    src/github-receiver/Dockerfile"

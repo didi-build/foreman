@@ -34,8 +34,14 @@ import {
   type ImageSettings,
 } from "../shared/settings.ts";
 import { readTask, type AgentTaskFile } from "../shared/task.ts";
-import { WORKSPACE_TOOLS, createWorkspace } from "./files.ts";
-import { runLoop, type LoopClock, type MessagesClient } from "./loop.ts";
+import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
+import { WORKSPACE_TOOLS, createWorkspace, type Workspace } from "./files.ts";
+import {
+  runLoop,
+  type LoopClock,
+  type LoopOptions,
+  type MessagesClient,
+} from "./loop.ts";
 import { fencedInput, systemText } from "./prompts.ts";
 import { VERDICT_SCHEMA, parseVerdict, postVerdict } from "./verdict.ts";
 
@@ -61,7 +67,12 @@ const optional = <T>(setting: Setting<T>): Setting<T | undefined> => ({
   parse: (raw) => (raw === "" ? undefined : setting.parse(raw)),
 });
 
-const apiSettings = {
+/**
+ * The loop's settings from the run's environment. Exported for the weekly test job
+ * (src/agent-images/eval/), which reads the output token bound, the effort and the Flex capacity
+ * retries with the same names, defaults and checks.
+ */
+export const apiSettings = {
   maxOutputTokens: {
     env: "FOREMAN_MAX_OUTPUT_TOKENS",
     fallback: "16000",
@@ -160,17 +171,71 @@ export interface ApiImageDeps {
   waitForProxy?: (urlOnProxy: string) => Promise<void>;
 }
 
-function sdkClient(settings: ImageSettings): MessagesClient {
+/**
+ * The SDK client for one provider's address on the egress proxy, holding only the placeholder
+ * credential. Exported for the weekly test job, whose runs reach their providers the same way.
+ */
+export function proxyClient(baseURL: string): Anthropic {
   return new Anthropic({
     // The egress proxy removes this and adds the real key (ADR 0106 section 5).
     apiKey: PLACEHOLDER_CREDENTIAL,
-    baseURL: settings.modelBaseUrl,
+    baseURL,
     // A rate limit or capacity error ends the run as usage_exhausted; the runner waits and
     // dispatches again (FR-11). Retrying here would spend the proxy's request ceiling. The one
     // exception, a Flex capacity rejection, is retried by the loop itself, bounded (ADR 0114
     // section 9).
     maxRetries: 0,
   });
+}
+
+/** The part of a run's loop options its role and task fix: the frame, the tools and the schema. */
+export type RunFrame = Pick<
+  LoopOptions,
+  "system" | "tools" | "input" | "images" | "outputSchema" | "runTool"
+>;
+
+/**
+ * QA's review: the read-only tools over the tree, the head commit and the evidence ids after the
+ * fenced input, and the verdict's schema. Exported for the weekly test job (ADR 0117), so its QA
+ * runs get exactly a real run's frame.
+ */
+export function qaReviewFrame(
+  task: AgentTaskFile,
+  headSha: string,
+  answerVia: AnswerVia,
+  workspace: Workspace,
+): RunFrame {
+  const evidenceIds = task.evidenceIds ?? [];
+  return {
+    system: systemText("qa", task.instructions, false, answerVia),
+    tools: WORKSPACE_TOOLS,
+    input: fencedInput(task.input, [
+      `Head commit: ${headSha}`,
+      `Evidence ids you may cite: ${evidenceIds.length > 0 ? evidenceIds.join(", ") : "none"}`,
+    ]),
+    outputSchema: VERDICT_SCHEMA,
+    runTool: (name, input) => workspace.run(name, input),
+  };
+}
+
+/**
+ * A Council or Triage run, or the Council's visual call: no tools (ADR 0107), the images after
+ * the input when the task has them, and the task's answer schema. Exported for the weekly test
+ * job, as `qaReviewFrame` is.
+ */
+export function structuredFrame(
+  role: AgentRole,
+  task: AgentTaskFile,
+  answerVia: AnswerVia,
+): RunFrame {
+  return {
+    system: systemText(role, task.instructions, task.images !== undefined, answerVia),
+    tools: [],
+    input: fencedInput(task.input),
+    // The Council's visual call (D-270): the option screenshots after the input.
+    ...(task.images ? { images: task.images } : {}),
+    ...(task.outputSchema ? { outputSchema: task.outputSchema } : {}),
+  };
 }
 
 async function qaRun(
@@ -195,14 +260,7 @@ async function qaRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    system: systemText("qa", task.instructions, false, common.answerVia),
-    tools: WORKSPACE_TOOLS,
-    input: fencedInput(task.input, [
-      `Head commit: ${qa.headSha}`,
-      `Evidence ids you may cite: ${evidenceIds.length > 0 ? evidenceIds.join(", ") : "none"}`,
-    ]),
-    outputSchema: VERDICT_SCHEMA,
-    runTool: (name, input) => workspace.run(name, input),
+    ...qaReviewFrame(task, qa.headSha, common.answerVia, workspace),
   });
   if (result.status !== "success") return result;
   const parsed = parseVerdict(result.finalText, evidenceIds);
@@ -315,18 +373,7 @@ async function structuredRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    system: systemText(
-      settings.role,
-      task.instructions,
-      task.images !== undefined,
-      common.answerVia,
-    ),
-    // ADR 0107 gives Council and Triage no tools.
-    tools: [],
-    input: fencedInput(task.input),
-    // The Council's visual call (D-270): the option screenshots after the input.
-    ...(task.images ? { images: task.images } : {}),
-    ...(task.outputSchema ? { outputSchema: task.outputSchema } : {}),
+    ...structuredFrame(settings.role, task, common.answerVia),
   });
   if (result.status !== "success") return result;
   try {
@@ -351,7 +398,7 @@ export async function runClaudeApiImage(
     const task = readTask(settings.role, settings.taskFile);
     // The proxy may not answer yet when this pod starts (O-133).
     await (deps.waitForProxy ?? waitForProxy)(settings.modelBaseUrl);
-    const client = (deps.client ?? sdkClient)(settings);
+    const client = deps.client?.(settings) ?? proxyClient(settings.modelBaseUrl);
     result =
       settings.role === "qa" && task.images !== undefined
         ? await visualRun(settings, task, client, common, deps, secrets)

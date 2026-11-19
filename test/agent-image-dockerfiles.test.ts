@@ -47,6 +47,7 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
     expect(images.sort()).toEqual([
       "claude-api",
       "claude-code",
+      "eval",
       "opencode",
       "qa-fetch",
       "repo-map",
@@ -196,6 +197,71 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
       .join("\n");
     expect(instructionsOnly).not.toMatch(/anthropic|opencode|claude-code|\bgit\b/i);
     expect(ignoresMajor(entry("npm", "/src/agent-images/repo-map/deps"))).toBe(true);
+  });
+
+  it("pins the weekly test job's three packages in its own lockfile at the root's versions, and copies the cases with their trees' tests and the bot files (ADR 0117, D-432)", () => {
+    const deps = JSON.parse(
+      readFileSync(join(ROOT, "eval", "deps", "package.json"), "utf8"),
+    ) as { type: string; dependencies: Record<string, string> };
+    expect(deps.type).toBe("module");
+    expect(Object.keys(deps.dependencies)).toEqual([
+      "@anthropic-ai/sdk",
+      "typescript",
+      "yaml",
+    ]);
+    const root = JSON.parse(readFileSync("package.json", "utf8")) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    type Lock = {
+      packages: Record<
+        string,
+        { version?: string; integrity?: string; dependencies?: Record<string, string> }
+      >;
+    };
+    const lock = JSON.parse(
+      readFileSync(join(ROOT, "eval", "deps", "package-lock.json"), "utf8"),
+    ) as Lock;
+    const rootLock = JSON.parse(readFileSync("package-lock.json", "utf8")) as Lock;
+    for (const [name, version] of Object.entries(deps.dependencies)) {
+      expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(version).toBe(root.dependencies[name] ?? root.devDependencies[name]);
+    }
+    // Every package it installs is the root lockfile's, at the same version and integrity, so the
+    // image runs exactly what the tests ran; and each one is needed by the three.
+    const needed = new Set<string>();
+    const visit = (name: string) => {
+      if (needed.has(name)) return;
+      needed.add(name);
+      for (const dep of Object.keys(
+        lock.packages[`node_modules/${name}`]?.dependencies ?? {},
+      ))
+        visit(dep);
+    };
+    Object.keys(deps.dependencies).forEach(visit);
+    expect(Object.keys(lock.packages).sort()).toEqual(
+      ["", ...[...needed].map((n) => `node_modules/${n}`)].sort(),
+    );
+    for (const name of needed) {
+      const own = lock.packages[`node_modules/${name}`];
+      const theirs = rootLock.packages[`node_modules/${name}`];
+      expect(own?.version, name).toBe(theirs?.version);
+      expect(own?.integrity, name).toBe(theirs?.integrity);
+      expect(own?.integrity, name).toMatch(/^sha512-/);
+    }
+    const text = dockerfile("eval");
+    expect(text).toContain("npm ci --omit=dev --ignore-scripts");
+    const copies = instructions("eval", "COPY");
+    expect(copies).toContain("COPY eval/cases ./eval/cases");
+    expect(copies).toContain("COPY contracts/bots ./contracts/bots");
+    // The build context drops test files, except the case trees', which the loader checks byte
+    // for byte against their sources.
+    const ignored = readFileSync(".dockerignore", "utf8").split("\n");
+    const dropTests = ignored.indexOf("**/*.test.ts");
+    const keepTrees = ignored.indexOf("!eval/cases/*/tree/**/*.test.ts");
+    expect(dropTests).toBeGreaterThanOrEqual(0);
+    expect(keepTrees).toBeGreaterThan(dropTests);
+    expect(ignoresMajor(entry("npm", "/src/agent-images/eval/deps"))).toBe(true);
   });
 
   it("builds QA's fetch image from Node and the files it imports only, with fetch through the proxy (O-124)", () => {

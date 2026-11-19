@@ -8,7 +8,7 @@ import { outputProblem } from "../core/output-schema.ts";
 import { checkTriageAnswer } from "../core/triage.ts";
 import { loadCases, type EvalCase } from "./cases.ts";
 import { buildCaseRun, type CouncilRun, type QaRun, type TriageRun } from "./inputs.ts";
-import { goesToDidi, scoreAnswer, type ScoreOutcome } from "./scoring.ts";
+import { SCORE_CODES, goesToDidi, scoreAnswer, type ScoreOutcome } from "./scoring.ts";
 
 const bots = readBotFiles();
 const cases = loadCases();
@@ -47,8 +47,86 @@ describe("weekly model test set scoring (unit: answers checked by the runner's o
       }
       expect(scoreAnswer(c, run, text), c.id).toEqual({
         outcome: "correct",
+        code: "as_expected",
         detail: expect.any(String),
+        facts: expect.any(Object),
       });
+    }
+  });
+
+  it("gives each reason a fixed code of its own outcome, and facts only for a usable answer", () => {
+    const qa = "qa-truncate-off-by-one";
+    const evidenceId = (runOf(qa) as QaRun).evidenceIds[0];
+    const finding = (path: string) => ({ path, startLine: 1, endLine: 1, note: "x" });
+    const scored = (id: string, answer: unknown) =>
+      scoreAnswer(caseOf(id), runOf(id), JSON.stringify(answer));
+    expect(
+      scored(qa, {
+        verdict: "fail",
+        findings: [
+          finding("src/truncate.ts"),
+          finding("README.md"),
+          finding("src/truncate.ts"),
+        ],
+        evidenceIds: [],
+      }),
+    ).toMatchObject({
+      outcome: "correct",
+      code: "as_expected",
+      facts: { verdict: "fail", findingPaths: ["src/truncate.ts", "README.md"] },
+    });
+    expect(
+      scored(qa, { verdict: "pass", findings: [], evidenceIds: [evidenceId] }),
+    ).toMatchObject({
+      outcome: "wrong",
+      code: "wrong_verdict",
+      facts: { verdict: "pass", findingPaths: [] },
+    });
+    expect(
+      scored(qa, { verdict: "fail", findings: [finding("nope.ts")], evidenceIds: [] }),
+    ).toEqual({
+      outcome: "unusable",
+      code: "citation_not_at_head",
+      detail: expect.any(String),
+    });
+    expect(scoreAnswer(caseOf(qa), runOf(qa), "not json")).toMatchObject({
+      outcome: "unusable",
+      code: "answer_rejected",
+    });
+    const triage = structuredClone(caseOf("triage-helper-then-page").example) as {
+      items: unknown[];
+    };
+    triage.items = triage.items.slice(0, 1);
+    expect(scored("triage-helper-then-page", triage)).toMatchObject({
+      outcome: "wrong",
+      code: "wrong_item_count",
+      facts: { itemCount: 1 },
+    });
+    expect(
+      scoreAnswer(caseOf("triage-slugify-plan"), runOf("triage-slugify-plan"), "{"),
+    ).toEqual({
+      outcome: "unusable",
+      code: "answer_not_json",
+      detail: expect.any(String),
+    });
+    expect(
+      scored("council-answer-in-plan", {
+        outcome: "cannot_resolve",
+        note: "Didi decides.",
+        changesProductDirection: false,
+        passesGate: false,
+      }),
+    ).toMatchObject({
+      outcome: "wrong",
+      code: "should_resolve",
+      facts: {
+        outcome: "cannot_resolve",
+        changesProductDirection: false,
+        passesGate: false,
+      },
+    });
+    for (const [code, outcome] of Object.entries(SCORE_CODES)) {
+      expect(["correct", "wrong", "unusable"], code).toContain(outcome);
     }
   });
 
@@ -231,6 +309,7 @@ describe("weekly model test set scoring (unit: answers checked by the runner's o
         ),
       ).toEqual({
         outcome: "unusable",
+        code: "answer_rejected",
         detail: "the runner rejects the answer: path_not_in_repo_map",
       });
       const extra = answer("triage-slugify-plan");

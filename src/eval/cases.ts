@@ -187,7 +187,8 @@ export type EvalCase = QaCase | TriageCase | CouncilCase;
 
 // ---- Reading values ------------------------------------------------------------------------------
 
-const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** A case id, and an expected item's short name: lower case, digits and hyphens. */
+export const CASE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -362,7 +363,9 @@ function readSource(r: Reader, value: unknown): CaseSource {
     ref: r.text(f.ref, "source.ref"),
     note: r.optionalText(f.note, "source.note"),
     blobs,
-    basedOn: planted ? r.matching(f.basedOn, "source.basedOn", ID, "a case id") : null,
+    basedOn: planted
+      ? r.matching(f.basedOn, "source.basedOn", CASE_ID, "a case id")
+      : null,
     changes,
   };
 }
@@ -434,7 +437,7 @@ function readTriage(r: Reader, input: unknown, expected: unknown) {
       return value;
     };
     return {
-      name: r.matching(item.name, `${at}.name`, ID, "a short name"),
+      name: r.matching(item.name, `${at}.name`, CASE_ID, "a short name"),
       covers: r
         .list(item.covers, `${at}.covers`, 1)
         .map((p, j) => r.path(p, `${at}.covers[${j}]`)),
@@ -633,7 +636,7 @@ export function loadCase(dir: string): EvalCase {
     "expected",
     "example",
   ]);
-  const id = r.matching(f.id, "id", ID, "a case id");
+  const id = r.matching(f.id, "id", CASE_ID, "a case id");
   const folder = dir.split(/[\\/]/).filter(Boolean).at(-1);
   if (id !== folder) r.fail("id", "must be the case folder's name");
   const role = r.oneOf(f.role, "role", ["qa", "triage", "council"] as const);

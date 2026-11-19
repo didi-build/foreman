@@ -65,9 +65,10 @@ export interface ImageSettings {
  * names its owner (`Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo`). At most one `/`, and each part
  * starts with a letter or digit, so an id is never a path such as `..`.
  */
-const MODEL =
+export const MODEL_ID =
   /^(?=.{1,200}$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
-const RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+/** A run's id, as the runner makes it: lower case, digits and hyphens, at most 40 characters. */
+export const RUN_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
 function oneOf<T extends string>(
   env: string,
@@ -106,7 +107,7 @@ function positiveInteger(env: string): Setting<number> {
   };
 }
 
-function positiveAmount(env: string): Setting<number> {
+export function positiveAmount(env: string): Setting<number> {
   return {
     env,
     parse: (raw) => {
@@ -153,7 +154,7 @@ export function readImageSettings(
   const run = {
     runId: matching("FOREMAN_RUN_ID", RUN_ID, "is not a run id"),
     role: oneOf("FOREMAN_ROLE", ROLES_BY_IMAGE[kind], "is not a role this image runs"),
-    model: matching("FOREMAN_MODEL", MODEL, "is not a model id"),
+    model: matching("FOREMAN_MODEL", MODEL_ID, "is not a model id"),
     maxTurns: positiveInteger("FOREMAN_MAX_TURNS"),
     maxUsd: positiveAmount("FOREMAN_MAX_BUDGET_USD"),
     taskFile: text("FOREMAN_TASK_FILE"),

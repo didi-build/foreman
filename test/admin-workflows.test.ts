@@ -576,7 +576,7 @@ describe("the images workflow (unit: D-336)", () => {
     ...build.matchAll(/^\s+"(foreman-[a-z-]+)\s+(src\/\S+\/Dockerfile)"$/gm),
   ].map((m) => ({ name: m[1] as string, dockerfile: m[2] as string }));
 
-  it("builds exactly the eight images first hosting needs, and not the Claude Code image or the sample service", () => {
+  it("builds exactly the nine images first hosting needs, and not the Claude Code image or the sample service", () => {
     expect(images).toEqual([
       {
         name: "foreman-agent-opencode",
@@ -588,6 +588,7 @@ describe("the images workflow (unit: D-336)", () => {
       },
       { name: "foreman-repo-map", dockerfile: "src/agent-images/repo-map/Dockerfile" },
       { name: "foreman-qa-fetch", dockerfile: "src/agent-images/qa-fetch/Dockerfile" },
+      { name: "foreman-eval", dockerfile: "src/agent-images/eval/Dockerfile" },
       { name: "foreman-egress-proxy", dockerfile: "src/egress-proxy/Dockerfile" },
       { name: "foreman-state-api", dockerfile: "src/api/Dockerfile" },
       { name: "foreman-github-receiver", dockerfile: "src/github-receiver/Dockerfile" },

@@ -2573,7 +2573,7 @@ describe.skipIf(process.platform === "win32")(
     });
 
     describe("build-images.sh", () => {
-      it("builds and pushes the eight images by commit tag, with no build argument or secret, and writes their digests", () => {
+      it("builds and pushes the nine images by commit tag, with no build argument or secret, and writes their digests", () => {
         const box = sandbox();
         const commit = "0123456789abcdef0123456789abcdef01234567";
         const out = join(box.root, "images.json");
@@ -2590,6 +2590,7 @@ describe.skipIf(process.platform === "win32")(
           "src/agent-images/claude-api/Dockerfile",
           "src/agent-images/repo-map/Dockerfile",
           "src/agent-images/qa-fetch/Dockerfile",
+          "src/agent-images/eval/Dockerfile",
           "src/egress-proxy/Dockerfile",
           "src/api/Dockerfile",
           "src/github-receiver/Dockerfile",
@@ -2606,6 +2607,7 @@ describe.skipIf(process.platform === "win32")(
             "foreman-agent-claude-api",
             "foreman-repo-map",
             "foreman-qa-fetch",
+            "foreman-eval",
             "foreman-egress-proxy",
             "foreman-state-api",
             "foreman-github-receiver",
@@ -2627,6 +2629,10 @@ describe.skipIf(process.platform === "win32")(
             },
           },
         });
+        // The weekly test job's image is listed, and no setting takes it yet (D-432).
+        expect((images.images as Record<string, string>)["foreman-eval"]).toBe(
+          digestOf("foreman-eval"),
+        );
         expect(images.windmill).toEqual({
           agent_images: {
             opencode: digestOf("foreman-agent-opencode"),
@@ -2676,7 +2682,7 @@ describe.skipIf(process.platform === "win32")(
           .filter((c) => c.args[0] === "push")
           .map((c) => c.args[1]);
         expect(pushes.filter((ref) => ref === repoMap)).toHaveLength(3);
-        expect(pushes).toHaveLength(10);
+        expect(pushes).toHaveLength(11);
         expect(sleeps()).toEqual(["10", "30"]);
         expect(result.stderr).toContain(
           `::warning::Pushing ${repoMap} failed (try 1 of 3); trying again in 10 seconds.`,
@@ -2684,7 +2690,7 @@ describe.skipIf(process.platform === "win32")(
         const images = JSON.parse(readFileSync(out, "utf8")) as {
           images: Record<string, string>;
         };
-        expect(Object.keys(images.images)).toHaveLength(8);
+        expect(Object.keys(images.images)).toHaveLength(9);
       });
 
       it("fails after three refused pushes, building nothing after it and writing no images file", () => {

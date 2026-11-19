@@ -15,7 +15,8 @@
 //   file's escalation schema.
 //
 // The image's fixed frame (the system text around the instructions, and the facts it adds after
-// the fenced input) is applied when the set runs, in the next slice.
+// the fenced input) is applied when the set runs, by the weekly test job with the Messages API
+// image's own frame builders (src/agent-images/eval/week.ts, D-432).
 import {
   taskFileJson,
   type AgentTaskFile,
