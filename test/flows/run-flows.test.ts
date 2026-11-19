@@ -27,6 +27,8 @@ import {
   type ServedTierTally,
 } from "../../src/egress-proxy/served-tiers.ts";
 import { createLogger } from "../../src/service-kit/logger.ts";
+import { GitHubReadError } from "../../src/adapters/github/runner-app-tokens.ts";
+import { startFailed } from "../../flows/lib/start-failure.ts";
 import { run as cancelRuns } from "../../flows/cancel-runs.ts";
 import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
@@ -35,6 +37,7 @@ import { visualApprovalTopic } from "../../src/core/guards/design.ts";
 import { DEEPSEEK_PRO, QWEN_CODER } from "../../src/core/routing-testing.ts";
 import { hashRunToken } from "../../src/core/run-tokens.ts";
 import type { Store } from "../../src/core/store.ts";
+import { REPO } from "../reconcile-fixture.ts";
 import { createFlowFixture, HEAD, type FlowFixture } from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
@@ -244,9 +247,32 @@ describe("dispatch flow (flow: fake adapters, build plan M3.1 and M3.2)", () => 
         commitSha: "a".repeat(40),
       },
     );
+    // The pull request's change at the head, as GitHub's compare gives it (D-431).
+    f.github.setChange(REPO, 7, HEAD, {
+      headSha: HEAD,
+      mergeBaseSha: "a".repeat(40),
+      files: [
+        {
+          path: "src/health.ts",
+          status: "added",
+          additions: 1,
+          deletions: 0,
+          previousPath: null,
+          patch: "@@ -0,0 +1 @@\n+export const ok = true;",
+        },
+      ],
+      complete: true,
+    });
     const input = { nodeId: node.id, role: "qa" as const, prNumber: 7, headSha: HEAD };
     expect((await dispatch(f.deps, input)).outcome).toBe("started");
+    expect(f.github.changeReads).toEqual([{ repo: REPO, number: 7, headSha: HEAD }]);
     expect(f.tasksFor[0]).toMatchObject({ branch: null, evidenceIds: [ci] });
+    expect(f.tasksFor[0]?.input).toContain(
+      "## Changed files\n\n- `src/health.ts` (added, +1 -0)",
+    );
+    expect(f.tasksFor[0]?.input).toContain(
+      "```diff\n@@ -0,0 +1 @@\n+export const ok = true;\n```",
+    );
     // QA's seeded route is DeepSeek V4 Pro on DeepInfra (migration 0026, D-425).
     expect(f.runtime.started).toMatchObject([
       {
@@ -304,6 +330,53 @@ describe("dispatch flow when a step fails part way (flow: fake adapters, build p
       expect(f.runtime.started).toEqual([]);
     },
   );
+
+  it("starts no QA review when GitHub refuses its change: nothing is written, and the error is GitHub's fixed sentence (D-431, D-384)", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const node = await f.node("in_qa_review");
+    await f.evidence(
+      node.id,
+      "ci_run",
+      { conclusion: "success", pr: 7 },
+      { commitSha: HEAD },
+    );
+    const refused = new GitHubReadError("comparing the commits failed with 403");
+    f.github.setChange(REPO, 7, HEAD, refused);
+    const error = await dispatch(f.deps, {
+      nodeId: node.id,
+      role: "qa",
+      prNumber: 7,
+      headSha: HEAD,
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBe(refused);
+    expect(startFailed(error)).toEqual({
+      outcome: "start_failed",
+      error: {
+        type: "GitHubReadError",
+        message: "comparing the commits failed with 403",
+      },
+    });
+    const after = await written(f, node.id);
+    expect(after.runs).toEqual([]);
+    expect(after.transitions).toEqual([]);
+    expect(f.tokens).toEqual([]);
+    expect(f.tasksFor).toEqual([]);
+    expect(f.runtime.started).toEqual([]);
+  });
+
+  it("reads no change for a role other than QA (the visual comparison: test/flows/visual-flows.test.ts)", async () => {
+    const f = await createFlowFixture();
+    await f.live();
+    const node = await readyItem(f);
+    expect(
+      (await dispatch(f.deps, { nodeId: node.id, role: "developer" })).outcome,
+    ).toBe("started");
+    expect(f.github.changeReads).toEqual([]);
+  });
 
   it("cancels the started run when the kill switch is turned on while it starts", async () => {
     const f = await createFlowFixture();

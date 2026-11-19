@@ -80,10 +80,57 @@ export interface GitHubWorkflowReader {
   listWorkflowJobs(repo: string, runId: number): Promise<WorkflowJob[]>;
 }
 
+/** GitHub's word for how a file changed, in a compare's `files` (D-431). */
+export const CHANGE_STATUSES = [
+  "added",
+  "removed",
+  "modified",
+  "renamed",
+  "copied",
+  "changed",
+  "unchanged",
+] as const;
+export type ChangeStatus = (typeof CHANGE_STATUSES)[number];
+
+/** One file of a pull request's change, as GitHub's compare lists it (D-431). */
+export interface ChangedFile {
+  /** The path at the head commit, relative to the repo root. */
+  path: string;
+  status: ChangeStatus;
+  additions: number;
+  deletions: number;
+  /** A renamed or copied file's earlier path, else null. */
+  previousPath: string | null;
+  /**
+   * GitHub's diff of the file, its hunks only, or null when GitHub gives none: a binary file, a
+   * diff too large for GitHub to show, or a rename with no other change.
+   */
+  patch: string | null;
+}
+
+/**
+ * A pull request's change at one head commit (D-431, ADR 0112's default context): the files and
+ * their diff from the merge base of the pull request's base branch and that commit, as the pull
+ * request's own "Files changed" shows them, never for a later head.
+ */
+export interface PullRequestChange {
+  headSha: string;
+  /** The commit the diff starts from: the merge base of the base branch and the head. */
+  mergeBaseSha: string;
+  files: ChangedFile[];
+  /** False when GitHub listed `COMPARE_FILE_CAP` files, since more may have changed. */
+  complete: boolean;
+}
+
 export interface GitHubReader extends GitHubWorkflowReader {
   getPullRequest(repo: string, number: number): Promise<PullRequest | null>;
   /** Files the PR changes, relative to the repo root. */
   listChangedPaths(repo: string, number: number): Promise<string[]>;
+  /**
+   * The PR's change at `headSha` (D-431): QA's review gets it in its input, so it is read for the
+   * commit QA reviews, never for the PR's newest head.
+   */
+  readChange(repo: string, number: number, headSha: string): Promise<PullRequestChange>;
   /**
    * The latest check run of each name on a commit, from every check suite (GitHub's default
    * `filter=latest`), so a rerun replaces the run it reruns.

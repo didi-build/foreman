@@ -2,7 +2,7 @@
 
 - **Status:** decided by Didi on 2026-11-19 (D-427 to D-430). The first slice builds the cases, their loader and their checks. The run, its results table and its daily line are the next slice.
 - **Date:** 2026-11-19
-- **Related:** D-204, D-206, D-207, D-209, D-249, D-425, D-427, D-428, D-429, D-430, O-152, [ADR 0101](./0101-repo-layout-and-tooling.md), [ADR 0106](./0106-agent-execution-environment.md), [ADR 0107](./0107-agent-dispatch-adapters.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md), [ADR 0114](./0114-model-evaluation-routing-and-tiers.md) section 7, `spikes/visual-model-test/`
+- **Related:** D-204, D-206, D-207, D-209, D-249, D-425, D-427, D-428, D-429, D-430, D-431, O-152, O-154, [ADR 0101](./0101-repo-layout-and-tooling.md), [ADR 0106](./0106-agent-execution-environment.md), [ADR 0107](./0107-agent-dispatch-adapters.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md), [ADR 0114](./0114-model-evaluation-routing-and-tiers.md) section 7, `spikes/visual-model-test/`
 
 ## Context
 
@@ -69,11 +69,11 @@ Trees are kept small: the helper, its test, `README.md`, and `package.json` cut 
 
 `src/eval/inputs.ts` builds each case's task file as the runner builds a real run's, and checks it with the runner's own task file check (`taskFileJson`). The instructions come from the role's bot file. Nothing in the harness writes an instruction or a rule of its own.
 
-- **QA:** `taskInput` (`src/core/task-input.ts`) over the work item, the repository, the pull request and the head commit, as `flows/lib/start-run.ts` calls it, and the evidence ids the run may cite. QA's read-only tools (`src/agent-images/claude-api/files.ts`) read the case's tree. QA's answer schema is the verdict contract the image holds.
+- **QA:** `taskInput` (`src/core/task-input.ts`) over the work item, the repository, the pull request, the head commit and the pull request's change, as `flows/lib/start-run.ts` calls it, and the evidence ids the run may cite. QA's read-only tools (`src/agent-images/claude-api/files.ts`) read the case's tree. QA's answer schema is the verdict contract the image holds.
 - **Triage:** the repo map built from the case's tree at the case's commit by the repo map adapter (`buildRepoMap`, `readCheckout`), checked as the runner checks a map (`checkRepoMap`), then `triageInput` (`src/core/triage.ts`) with the plan, and the bot file's answer schema.
 - **The Council:** `escalationInput` (`src/core/council-input.ts`) over the escalation as the runner gathers it, and the bot file's escalation schema. A builder's stop carries exactly the two reasons the runner records: its own reason on the escalation move and the escalation guard's detail with the bot's words. A test checks both against the runner.
 
-QA's input has no diff and no list of changed files, because today's builder gives a real QA run neither. ADR 0112 says the runner builds a default context with the diff and the changed files, but `taskInput` does not yet. Each case records its changed files for the checks. If the runner's builder gains them, the harness gains them through the same builder.
+Since D-431, QA's input also carries the pull request's change: its changed files and their diff from the merge base to the head commit, as GitHub's compare gives a real run (O-154). The harness computes the change from each case's trees (`src/eval/change.ts`), so no case stores patch text. The base is the repository before the pull request: for a case from merged work, its tree without its changed files, since each of #7 to #9 only added its helper and its test; for a planted case, its base case's. So a case from merged work shows each added file in full, and a planted case shows its base's files as merged with its planted edits, and `qa-truncate-readme-change` also shows `README.md` as a modified file. The merge base the input names is an id made up from the base's files, as the planted cases' head commits are made up. No case file changed, so every case stays at version 1; the set has not run yet.
 
 ### The run (next slice)
 
@@ -137,6 +137,6 @@ A case changes only by a pull request Didi merges. Editing a case's input, tree 
 ## Open points
 
 - **Where the weekly run executes.** A Windmill flow may import only `flows/lib/`, `src/core/` and `src/adapters/` (ADR 0101, build plan M3.1), so a flow cannot call `src/eval/` as it stands. Either a flow starts a Job whose image is built from `src/eval/`, behind an egress proxy that adds the key, or the flow boundary widens. The next slice proposes one.
-- **QA's missing diff.** QA's real input has no diff and no changed-file list, unlike ADR 0112's default context. In a fixture of three files that costs QA nothing; in a real repository it may be part of why tiny helpers pass without a strict reading. It is a question about the runner's QA input, outside this set.
+- **QA's missing diff.** Fixed by D-431 (O-154): QA's real input now carries the changed files and the diff at the head commit, and the set's QA inputs carry them through the same builder. The rest of ADR 0112's default context (the files the changed files import, related tests, the spec and ADRs) QA still reaches through its read-only tools.
 - **Recorded texts.** The work items of the QA cases are written for the set from the pull requests and the plans, since the items Triage made are in Foreman's database and were not read. The truncate plan was given with its middle part left out, and the case uses it that way. A later version of those cases should use the texts exactly as Foreman recorded them.
 - **One run per case.** Whether one run per model and case is steady enough to compare models week to week, or each case needs three runs as the vision model test uses.

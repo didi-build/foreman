@@ -84,7 +84,10 @@ export interface QaInput {
   repo: string;
   pullRequest: number;
   headSha: string;
-  /** For the record and the checks; a real QA run's input does not list them (ADR 0117). */
+  /**
+   * The files the pull request changed. The harness computes their diff from the trees and gives
+   * it in the input, as a real run gets it from GitHub (./change.ts, D-431).
+   */
   changedFiles: string[];
   /** The runner's evidence on the head. The run gets the ids only, as a real one does. */
   evidence: { id: string; kind: (typeof QA_EVIDENCE_KINDS)[number]; summary: string }[];

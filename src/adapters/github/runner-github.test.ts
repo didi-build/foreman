@@ -3,8 +3,9 @@
 // REST shape. Checked: the exact paths, queries and bodies; that each request carries the token
 // minted for that call, for exactly its repository and permission; pagination and its bounds;
 // 404 as null where the core defines it; refusals before any token or request; malformed
-// answers; the merge's answers; the compare's relations; the branch name's encoding; and that no
-// error holds a token, a body or a branch name. No network, no real repository or token.
+// answers; the merge's answers; the compare's relations; the branch name's encoding; the change
+// at a head pinned to that head (D-431); and that no error holds a token, a body or a branch
+// name. No network, no real repository or token.
 import { describe, expect, it } from "vitest";
 
 import type { PullRequest } from "../../core/github.ts";
@@ -854,10 +855,257 @@ describe("the runner's GitHub client: commits and branches (unit with fakes, D-3
   });
 });
 
+describe("the runner's GitHub client: a pull request's change at a head (unit with fakes, D-431, O-154)", () => {
+  const MERGE_BASE = "e".repeat(40);
+  /** The pull request's newest head, a commit after the one QA reviews. */
+  const NEWER = "f".repeat(40);
+  const compared = (files: unknown[], extra: Record<string, unknown> = {}) => ({
+    status: "diverged",
+    ahead_by: 2,
+    behind_by: 1,
+    base_commit: { sha: BASE },
+    merge_base_commit: { sha: MERGE_BASE, commit: { message: BODY_TEXT } },
+    commits: [{ sha: HEAD }],
+    files,
+    ...extra,
+  });
+  /** GitHub's answers by path: the pull request, its base branch, then the compare. */
+  const answers =
+    (over: { pull?: Answer; branch?: Answer; compare?: Answer } = {}) =>
+    (path: string): Answer => {
+      if (path === `/repos/${REPO}/pulls/7`) {
+        return (
+          over.pull ?? {
+            status: 200,
+            body: pull({ head: { ...pull().head, sha: NEWER } }),
+          }
+        );
+      }
+      if (path.startsWith(`/repos/${REPO}/branches/`)) {
+        return (
+          over.branch ?? { status: 200, body: { name: "main", commit: { sha: BASE } } }
+        );
+      }
+      return over.compare ?? { status: 200, body: compared([]) };
+    };
+
+  it("reads the base branch from the pull request, its head, then the compare of that commit and the head given, each with its own token", async () => {
+    const f = fakes(
+      answers({
+        compare: {
+          status: 200,
+          body: compared([
+            {
+              sha: "1".repeat(40),
+              filename: "src/slugify.ts",
+              status: "added",
+              additions: 17,
+              deletions: 0,
+              changes: 17,
+              blob_url: BODY_TEXT,
+              patch: "@@ -0,0 +1,17 @@\n+export function slugify() {}",
+            },
+          ]),
+        },
+      }),
+    );
+    expect(await f.github.readChange(REPO, 7, HEAD)).toEqual({
+      headSha: HEAD,
+      mergeBaseSha: MERGE_BASE,
+      files: [
+        {
+          path: "src/slugify.ts",
+          status: "added",
+          additions: 17,
+          deletions: 0,
+          previousPath: null,
+          patch: "@@ -0,0 +1,17 @@\n+export function slugify() {}",
+        },
+      ],
+      complete: true,
+    });
+    expect(f.minted).toEqual([
+      { repository: REPO, permission: "pull_requests" },
+      { repository: REPO, permission: "contents" },
+      { repository: REPO, permission: "contents" },
+    ]);
+    // Pinned to the head it was given, never the pull request's newest head.
+    expect(f.gets.map((g) => [g.path, g.token, g.maxBytes])).toEqual([
+      [`/repos/${REPO}/pulls/7`, "test-only-pull_requests-token-1", 1024 * 1024],
+      [`/repos/${REPO}/branches/main`, "test-only-contents-token-2", 1024 * 1024],
+      [
+        `/repos/${REPO}/compare/${BASE}...${HEAD}?per_page=1`,
+        "test-only-contents-token-3",
+        16 * 1024 * 1024,
+      ],
+    ]);
+    expect(f.gets.some((g) => g.path.includes(NEWER))).toBe(false);
+  });
+
+  it("reads each file's status, counts, a rename's old path and a missing patch as none, and a list of 300 as possibly cut", async () => {
+    const f = fakes(
+      answers({
+        compare: {
+          status: 200,
+          body: compared([
+            {
+              filename: "docs/new.md",
+              previous_filename: "docs/old.md",
+              status: "renamed",
+              additions: 0,
+              deletions: 0,
+            },
+            { filename: "logo.png", status: "modified", additions: 0, deletions: 0 },
+            {
+              filename: "gone.ts",
+              status: "removed",
+              additions: 0,
+              deletions: 3,
+              patch: "@@ -1,3 +0,0 @@\n-a\n-b\n-c",
+            },
+          ]),
+        },
+      }),
+    );
+    expect((await f.github.readChange(REPO, 7, HEAD)).files).toEqual([
+      {
+        path: "docs/new.md",
+        status: "renamed",
+        additions: 0,
+        deletions: 0,
+        previousPath: "docs/old.md",
+        patch: null,
+      },
+      {
+        path: "logo.png",
+        status: "modified",
+        additions: 0,
+        deletions: 0,
+        previousPath: null,
+        patch: null,
+      },
+      {
+        path: "gone.ts",
+        status: "removed",
+        additions: 0,
+        deletions: 3,
+        previousPath: null,
+        patch: "@@ -1,3 +0,0 @@\n-a\n-b\n-c",
+      },
+    ]);
+    const file = (i: number) => ({
+      filename: `src/f${i}.ts`,
+      status: "added",
+      additions: 1,
+      deletions: 0,
+    });
+    for (const [n, complete] of [
+      [299, true],
+      [300, false],
+    ] as const) {
+      const g = fakes(
+        answers({
+          compare: {
+            status: 200,
+            body: compared(Array.from({ length: n }, (_, i) => file(i))),
+          },
+        }),
+      );
+      const change = await g.github.readChange(REPO, 7, HEAD);
+      expect([change.files.length, change.complete]).toEqual([n, complete]);
+    }
+  });
+
+  it("refuses a pull request or base branch GitHub does not have, a base branch it does not read, and any failed read", async () => {
+    for (const [over, message] of [
+      [{ pull: { status: 404, body: BODY_TEXT } }, "the pull request is not on GitHub"],
+      [
+        { pull: { status: 500, body: BODY_TEXT } },
+        "reading the pull request failed with 500",
+      ],
+      [
+        {
+          pull: {
+            status: 200,
+            body: pull({ base: { ref: "a..b", repo: { full_name: REPO } } }),
+          },
+        },
+        "the pull request answer is malformed",
+      ],
+      [
+        { pull: { status: 200, body: pull({ base: { repo: { full_name: REPO } } }) } },
+        "the pull request answer is malformed",
+      ],
+      [
+        { pull: { status: 200, body: pull({ number: 8 }) } },
+        "the pull request answer is for another pull request",
+      ],
+      [
+        { branch: { status: 404, body: BODY_TEXT } },
+        "the pull request's base branch is not on GitHub",
+      ],
+      [
+        { branch: { status: 200, body: { name: "other", commit: { sha: BASE } } } },
+        "the branch answer is for another branch",
+      ],
+      [
+        { compare: { status: 404, body: BODY_TEXT } },
+        "comparing the commits failed with 404",
+      ],
+    ] as const) {
+      const f = fakes(answers(over));
+      expect(await failure(() => f.github.readChange(REPO, 7, HEAD)), message).toEqual(
+        new GitHubReadError(message),
+      );
+    }
+  });
+
+  it("refuses a compare with no files, no merge base or a file it cannot read, whole", async () => {
+    const ok = { filename: "a.ts", status: "modified", additions: 1, deletions: 1 };
+    for (const [body, message] of [
+      [
+        compared([], { files: undefined }),
+        "the compare answer has no files the runner reads",
+      ],
+      [
+        compared([], { merge_base_commit: null }),
+        "the compare answer has no merge base the runner reads",
+      ],
+      [
+        compared([], { merge_base_commit: { sha: "e".repeat(39) } }),
+        "the compare answer has no merge base the runner reads",
+      ],
+      [
+        compared([], { status: "unknown" }),
+        "the compare answer has no relation the runner reads",
+      ],
+      [
+        compared([ok, { ...ok, status: "moved" }]),
+        "the changed files answer is malformed",
+      ],
+      [compared([{ ...ok, additions: -1 }]), "the changed files answer is malformed"],
+      [compared([{ ...ok, deletions: 1.5 }]), "the changed files answer is malformed"],
+      [compared([{ ...ok, patch: 7 }]), "the changed files answer is malformed"],
+      [
+        compared([{ ...ok, previous_filename: "/etc/passwd" }]),
+        "the changed files answer is malformed",
+      ],
+      [compared([{ ...ok, filename: "" }]), "the changed files answer is malformed"],
+      ["not json", "the compare answer is not JSON"],
+    ] as const) {
+      const f = fakes(answers({ compare: { status: 200, body } }));
+      expect(await failure(() => f.github.readChange(REPO, 7, HEAD)), message).toEqual(
+        new GitHubReadError(message),
+      );
+    }
+  });
+});
+
 describe("the runner's GitHub client: refusals and errors (unit with fakes, D-381)", () => {
   const calls = (repo: string, f: ReturnType<typeof fakes>) => [
     () => f.github.getPullRequest(repo, 7),
     () => f.github.listChangedPaths(repo, 7),
+    () => f.github.readChange(repo, 7, HEAD),
     () => f.github.listCheckRuns(repo, HEAD),
     () => f.github.listOpenPullRequests(repo),
     () => f.github.getMergeability(repo, 7),
@@ -893,6 +1141,11 @@ describe("the runner's GitHub client: refusals and errors (unit with fakes, D-38
       [() => f.github.getPullRequest(REPO, 0), "not a pull request number"],
       [() => f.github.getMergeability(REPO, -1), "not a pull request number"],
       [() => f.github.listChangedPaths(REPO, Number.NaN), "not a pull request number"],
+      [() => f.github.readChange(REPO, 0, HEAD), "not a pull request number"],
+      [
+        () => f.github.readChange(REPO, 7, "main"),
+        "a commit must be a full 40-character sha",
+      ],
       [
         () => f.github.listCheckRuns(REPO, "main"),
         "a commit must be a full 40-character sha",

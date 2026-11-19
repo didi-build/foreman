@@ -7,6 +7,7 @@ import { fixture } from "../core/guards/testing.ts";
 import { quoted } from "../core/task-input.ts";
 import { NEEDS_DECISION_ESCALATION_REASON } from "../core/run-reports.ts";
 import { loadCases, type CouncilCase, type QaCase, type TriageCase } from "./cases.ts";
+import { caseChange } from "./change.ts";
 import { buildCaseRun } from "./inputs.ts";
 
 const bots = readBotFiles();
@@ -21,7 +22,7 @@ const of = <R extends "qa" | "triage" | "council">(role: R) =>
 describe("weekly model test set inputs (unit: each case's run, built by the runner's builders, ADR 0117)", () => {
   it("builds every case's task file, and the runner's task file check accepts it", () => {
     for (const c of cases) {
-      const run = buildCaseRun(c, bots);
+      const run = buildCaseRun(c, bots, cases);
       expect(() => taskFileJson(c.role, run.task), c.id).not.toThrow();
       expect(run.taskType, c.id).toBe(c.taskType);
       // The role's own instructions from its bot file, never a copy.
@@ -29,9 +30,9 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
     }
   });
 
-  it("gives QA the item, the pull request and head commit, the evidence ids and the tree", async () => {
+  it("gives QA the item, the pull request and head commit, its change, the evidence ids and the tree", async () => {
     for (const c of of("qa")) {
-      const run = buildCaseRun(c, bots);
+      const run = buildCaseRun(c, bots, cases);
       const { input } = run.task;
       expect(input, c.id).toContain(quoted(c.input.item.title));
       for (const criterion of c.input.item.acceptanceCriteria) {
@@ -39,6 +40,21 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
       }
       expect(input, c.id).toContain(`## Pull request\n\n${c.input.pullRequest}`);
       expect(input, c.id).toContain(`## Head commit\n\n${c.input.headSha}`);
+      // The pull request's change at the head, computed from the trees (D-431): every changed
+      // file listed, and its diff in full, as a real run gets them from GitHub.
+      expect(run.change, c.id).toEqual(caseChange(c, cases));
+      expect(input, c.id).toContain("# The pull request's change");
+      expect(input, c.id).toContain(`to head commit ${c.input.headSha}.`);
+      for (const file of run.change.files) {
+        expect(input, `${c.id}: ${file.path}`).toContain(
+          `- \`${file.path}\` (${file.status}, +${file.additions} -${file.deletions})`,
+        );
+        expect(input, `${c.id}: ${file.path}`).toContain(
+          `### \`${file.path}\`\n\n\`\`\`diff\n${file.patch ?? ""}\n\`\`\``,
+        );
+      }
+      expect(input, c.id).not.toContain("not shown here");
+      expect(input, c.id).not.toContain("is cut here");
       expect(run.task.nodeId, c.id).toBe(c.input.item.id);
       expect(run.evidenceIds, c.id).toEqual(c.input.evidence.map((e) => e.id));
       expect(run.task.outputSchema, c.id).toBeUndefined();
@@ -56,7 +72,7 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
 
   it("gives Triage the plan and the repo map built from the tree at the case's commit", () => {
     for (const c of of("triage")) {
-      const run = buildCaseRun(c, bots);
+      const run = buildCaseRun(c, bots, cases);
       expect(run.map.commitSha, c.id).toBe(c.input.commitSha);
       expect(
         run.map.files.map((f) => f.path),
@@ -71,6 +87,7 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
     const page = buildCaseRun(
       of("triage").find((c) => c.id === "triage-helper-then-page") as TriageCase,
       bots,
+      cases,
     );
     expect(page.map.files.find((f) => f.path === "gallery/App.tsx")?.exports).toEqual([
       "App",
@@ -79,7 +96,7 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
 
   it("gives the Council the escalated item and why, with the escalation schema", () => {
     for (const c of of("council")) {
-      const run = buildCaseRun(c, bots);
+      const run = buildCaseRun(c, bots, cases);
       expect(run.task.input, c.id).toContain("# Council question");
       expect(run.task.input, c.id).toContain(
         `## Escalated from\n\n${c.input.escalatedFrom}`,

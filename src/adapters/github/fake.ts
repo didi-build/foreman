@@ -1,5 +1,6 @@
 // A fake GitHub for every test (ADR 0113 section 7, D-178): pull requests, check runs, changed
-// files, workflow runs and their jobs (D-354), mergeability and a commit history held in memory, a squash merge that behaves like
+// files, a pull request's change at a head (D-431), workflow runs and their jobs (D-354),
+// mergeability and a commit history held in memory, a squash merge that behaves like
 // GitHub's (it refuses a head that moved, a PR GitHub cannot merge and a PR that is not open), a
 // compare that walks the history it was given (D-225), plus builders for webhook
 // payloads in GitHub's shape (only the fields ingestion reads). Signatures use the real HMAC
@@ -9,6 +10,7 @@ import type {
   CommitRelation,
   ComparedPaths,
   PullRequest,
+  PullRequestChange,
   WorkflowJob,
   WorkflowRun,
 } from "../../core/github.ts";
@@ -23,6 +25,18 @@ export interface FakeGitHub extends GitHubAdapter {
   merge(repo: string, number: number, mergeCommitSha: string): void;
   setCheckRuns(repo: string, sha: string, runs: CheckRun[]): void;
   setChangedPaths(repo: string, number: number, paths: string[]): void;
+  /**
+   * What `readChange` gives for a PR at a head commit (D-431), or the error it throws, as a read
+   * GitHub refused would. A pair never set gives a change with no files.
+   */
+  setChange(
+    repo: string,
+    number: number,
+    headSha: string,
+    change: PullRequestChange | Error,
+  ): void;
+  /** Each `readChange` call, in order, for tests that check the head it was pinned to. */
+  readonly changeReads: readonly { repo: string; number: number; headSha: string }[];
   /**
    * What GitHub lists for a workflow file's runs on a commit, exactly as given, so a test can make
    * GitHub answer with a run the core must refuse (another workflow, a fork, another commit).
@@ -65,6 +79,9 @@ export interface FakeGitHub extends GitHubAdapter {
 
 const prKey = (repo: string, number: number): string => `${repo}#${number}`;
 
+/** The merge base of a change never set: a fake commit of 40 hex digits. */
+export const FAKE_MERGE_BASE = "e".repeat(40);
+
 export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub {
   const pulls = new Map<string, PullRequest>();
   const checks = new Map<string, CheckRun[]>();
@@ -76,6 +93,8 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
   const parentsOf = new Map<string, string[]>();
   const branchHeads = new Map<string, string>();
   const compared = new Map<string, { paths: string[]; complete: boolean }>();
+  const changes = new Map<string, PullRequestChange | Error>();
+  const changeReads: { repo: string; number: number; headSha: string }[] = [];
   let reads = 0;
 
   function relation(repo: string, base: string, head: string): CommitRelation {
@@ -115,6 +134,9 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     get merges() {
       return merges.map((m) => ({ ...m }));
     },
+    get changeReads() {
+      return changeReads.map((r) => ({ ...r }));
+    },
 
     async getPullRequest(repo, number) {
       reads++;
@@ -124,6 +146,15 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     async listChangedPaths(repo, number) {
       reads++;
       return [...(paths.get(prKey(repo, number)) ?? [])];
+    },
+    async readChange(repo, number, headSha) {
+      reads++;
+      changeReads.push({ repo, number, headSha });
+      const change = changes.get(`${prKey(repo, number)}@${headSha}`);
+      if (change instanceof Error) throw change;
+      return change
+        ? structuredClone(change)
+        : { headSha, mergeBaseSha: FAKE_MERGE_BASE, files: [], complete: true };
     },
     async listCheckRuns(repo, sha) {
       reads++;
@@ -207,6 +238,12 @@ export function createFakeGitHub(options: { webhookSecret: string }): FakeGitHub
     },
     setChangedPaths(repo, number, list) {
       paths.set(prKey(repo, number), [...list]);
+    },
+    setChange(repo, number, headSha, change) {
+      changes.set(
+        `${prKey(repo, number)}@${headSha}`,
+        change instanceof Error ? change : structuredClone(change),
+      );
     },
     setWorkflowRuns(repo, workflowFile, sha, runs) {
       workflowRuns.set(`${repo}:${workflowFile}@${sha}`, structuredClone(runs));

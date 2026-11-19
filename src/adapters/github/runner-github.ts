@@ -31,6 +31,17 @@
 //   first page, at most 300; a list of 300 is reported as possibly cut, never as complete.
 // - `getBranchHead`: `GET /repos/{repo}/branches/{branch}` with the name encoded,
 //   `contents: read`, the branch's `commit.sha`. 404 is null.
+// - `readChange` (D-431, O-154): the pull request's change at one head commit, for QA's input.
+//   Three reads, each with its own token as above: the pull request (`pull_requests: read`) for
+//   its base branch's name, that branch's head (`getBranchHead`'s read), and the compare of that
+//   commit and the head commit (`compareCommits`' read, `contents: read`). Both ends of the compare
+//   are full shas, so it is the change at that head even after a newer push; the PR's own files
+//   listing always answers for its newest head and has no sha to pin, so it is not used. GitHub's
+//   three-dot compare diffs from the merge base, as the PR's "Files changed" does: its `files`
+//   give each file's path, status, line counts, a renamed file's old path and its `patch` (none
+//   for a binary file or a diff too large), at most 300 files as for `listComparedPaths`, and
+//   `merge_base_commit` the commit the diff starts from. A 404 for the pull request or the branch
+//   throws: there is no change to give.
 //
 // Strict: a repository outside `didi-build`, a number, sha or branch name the runner does not
 // read is refused before any token is minted. An answer with another status, one that is not
@@ -45,12 +56,15 @@ import {
   organizationRepositoryName,
 } from "../../core/bootstrap-access.ts";
 import {
+  CHANGE_STATUSES,
   COMPARE_FILE_CAP,
   REPOSITORY,
+  type ChangedFile,
   type CheckRun,
   type CommitRelation,
   type GitHub,
   type PullRequest,
+  type PullRequestChange,
 } from "../../core/github.ts";
 import type { RunnerMergeTokens } from "./merge-tokens.ts";
 import {
@@ -148,7 +162,7 @@ function readPull(
   raw: unknown,
   what: string,
   listed: boolean,
-): { pr: PullRequest; mergeable: unknown } {
+): { pr: PullRequest; mergeable: unknown; baseBranch: unknown } {
   const malformed = () => new GitHubReadError(`the ${what} answer is malformed`);
   if (!isObject(raw)) throw malformed();
   const { number, state, head, base, user } = raw;
@@ -192,6 +206,7 @@ function readPull(
       author: user.login,
     },
     mergeable: raw.mergeable,
+    baseBranch: base.ref,
   };
 }
 
@@ -202,6 +217,31 @@ function readFilePaths(raw: unknown): string[] {
   if (raw.previous_filename === undefined) return [raw.filename];
   if (!isPath(raw.previous_filename)) throw malformed();
   return [raw.filename, raw.previous_filename];
+}
+
+const isCount = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) >= 0;
+
+/** One file of a compare's `files`, whole (D-431). A file the runner cannot read throws. */
+function readChangedFile(raw: unknown): ChangedFile {
+  const malformed = () => new GitHubReadError("the changed files answer is malformed");
+  if (!isObject(raw) || !isPath(raw.filename)) throw malformed();
+  const status = CHANGE_STATUSES.find((s) => s === raw.status);
+  if (status === undefined || !isCount(raw.additions) || !isCount(raw.deletions)) {
+    throw malformed();
+  }
+  if (raw.previous_filename !== undefined && !isPath(raw.previous_filename)) {
+    throw malformed();
+  }
+  if (raw.patch !== undefined && typeof raw.patch !== "string") throw malformed();
+  return {
+    path: raw.filename,
+    status,
+    additions: raw.additions,
+    deletions: raw.deletions,
+    previousPath: raw.previous_filename ?? null,
+    patch: raw.patch ?? null,
+  };
 }
 
 function readCheckRun(raw: unknown): CheckRun {
@@ -299,11 +339,11 @@ export function createRunnerGitHub({
     );
   }
 
-  /** The pull request for `getPullRequest` and `getMergeability`, or null on 404. */
+  /** The pull request for `getPullRequest`, `getMergeability` and `readChange`, or null on 404. */
   async function readPullRequest(
     repo: string,
     number: number,
-  ): Promise<{ pr: PullRequest; mergeable: unknown } | null> {
+  ): Promise<{ pr: PullRequest; mergeable: unknown; baseBranch: unknown } | null> {
     const name = repository(repo, readFail);
     pullNumber(number, readFail);
     const token = await tokens.mint({ repository: name, permission: "pull_requests" });
@@ -358,6 +398,33 @@ export function createRunnerGitHub({
     return { relation, answer: parsed };
   }
 
+  /** The commit a branch points at now, or null when GitHub has no such branch. */
+  async function branchHead(repo: string, branch: string): Promise<string | null> {
+    const name = repository(repo, readFail);
+    if (!isBranchName(branch)) throw readFail("not a branch name the runner reads");
+    const token = await tokens.mint({ repository: name, permission: "contents" });
+    const answer = await http.get({
+      path: `/repos/${name}/branches/${encodeURIComponent(branch)}`,
+      token,
+      accept: "json",
+      maxBytes: MAX_OBJECT_BYTES,
+    });
+    if (answer.status === 404) return null;
+    if (answer.status !== 200) {
+      throw new GitHubReadError(`reading the branch failed with ${answer.status}`);
+    }
+    const parsed = parseJson(answer.body, "branch");
+    const sha =
+      isObject(parsed) && isObject(parsed.commit) ? parsed.commit.sha : undefined;
+    if (!isObject(parsed) || typeof sha !== "string" || !FULL_SHA.test(sha)) {
+      throw new GitHubReadError("the branch answer is malformed");
+    }
+    if (parsed.name !== branch) {
+      throw new GitHubReadError("the branch answer is for another branch");
+    }
+    return sha;
+  }
+
   return {
     ...createGitHubWorkflowReads({ tokens, http }),
 
@@ -377,6 +444,38 @@ export function createRunnerGitHub({
         readFilePaths,
       );
       return [...new Set(paths)];
+    },
+
+    async readChange(repo, number, headSha): Promise<PullRequestChange> {
+      const name = repository(repo, readFail);
+      pullNumber(number, readFail);
+      commit(headSha, readFail);
+      const pull = await readPullRequest(name, number);
+      if (pull === null) throw readFail("the pull request is not on GitHub");
+      if (!isBranchName(pull.baseBranch)) {
+        throw readFail("the pull request answer is malformed");
+      }
+      // The base branch's commit now, so both ends of the compare are shas (O-154): the diff from
+      // the merge base is the one the PR shows for this head, whatever is pushed after.
+      const baseSha = await branchHead(name, pull.baseBranch);
+      if (baseSha === null)
+        throw readFail("the pull request's base branch is not on GitHub");
+      const { answer } = await compare(name, baseSha, headSha);
+      const files = isObject(answer) ? answer.files : undefined;
+      if (!Array.isArray(files)) {
+        throw readFail("the compare answer has no files the runner reads");
+      }
+      const mergeBase = isObject(answer) ? answer.merge_base_commit : undefined;
+      const mergeBaseSha = isObject(mergeBase) ? mergeBase.sha : undefined;
+      if (typeof mergeBaseSha !== "string" || !FULL_SHA.test(mergeBaseSha)) {
+        throw readFail("the compare answer has no merge base the runner reads");
+      }
+      return {
+        headSha,
+        mergeBaseSha,
+        files: files.map(readChangedFile),
+        complete: files.length < COMPARE_FILE_CAP,
+      };
     },
 
     async listCheckRuns(repo, sha) {
@@ -468,30 +567,6 @@ export function createRunnerGitHub({
       return { relation, paths, complete: files.length < COMPARE_FILE_CAP };
     },
 
-    async getBranchHead(repo, branch) {
-      const name = repository(repo, readFail);
-      if (!isBranchName(branch)) throw readFail("not a branch name the runner reads");
-      const token = await tokens.mint({ repository: name, permission: "contents" });
-      const answer = await http.get({
-        path: `/repos/${name}/branches/${encodeURIComponent(branch)}`,
-        token,
-        accept: "json",
-        maxBytes: MAX_OBJECT_BYTES,
-      });
-      if (answer.status === 404) return null;
-      if (answer.status !== 200) {
-        throw new GitHubReadError(`reading the branch failed with ${answer.status}`);
-      }
-      const parsed = parseJson(answer.body, "branch");
-      const sha =
-        isObject(parsed) && isObject(parsed.commit) ? parsed.commit.sha : undefined;
-      if (!isObject(parsed) || typeof sha !== "string" || !FULL_SHA.test(sha)) {
-        throw new GitHubReadError("the branch answer is malformed");
-      }
-      if (parsed.name !== branch) {
-        throw new GitHubReadError("the branch answer is for another branch");
-      }
-      return sha;
-    },
+    getBranchHead: branchHead,
   };
 }

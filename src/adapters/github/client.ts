@@ -22,6 +22,7 @@ export function createGitHubClient(options: { webhookSecret: string }): GitHubAd
       verifyWebhookSignature(options.webhookSecret, rawBody, header),
     getPullRequest: refuse,
     listChangedPaths: refuse,
+    readChange: refuse,
     listCheckRuns: refuse,
     listOpenPullRequests: refuse,
     // CI's preview check (D-354, O-111): read with the runner App's `actions: read` token, which
