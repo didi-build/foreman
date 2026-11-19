@@ -12,6 +12,9 @@ import { chooseRoute } from "../../src/core/routing.ts";
 import {
   CLOSE_ROUTES_POLICY,
   DEEPINFRA_MODEL_CATALOG,
+  DEEPINFRA_ROUTING_POLICY,
+  DEEPSEEK_PRO,
+  deepSeekProRunPrice,
   FIRST_MODEL_CATALOG,
   FIRST_ROUTING_POLICY,
   QWEN_CODER,
@@ -20,6 +23,7 @@ import {
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
   seededRunPrice,
+  SONNET_CACHE_MODEL_CATALOG,
 } from "../../src/core/routing-testing.ts";
 import type { AgentRole, Json } from "../../src/core/store.ts";
 import {
@@ -299,6 +303,13 @@ describe.skipIf(!adminUrl)(
       sql(
         `select string_agg((old_value ->> 'version') || '>' || (new_value ->> 'version'), ',' order by id) from factory.settings_log where key = '${key}' and changed_by = 'migration' and old_value is not null;`,
       ).out;
+    /** Sets a routing setting by hand, as an operator would. */
+    const setByHand = (key: string, value: Json) => {
+      const done = sql(
+        `update factory.settings set value = '${JSON.stringify(value)}'::jsonb, updated_by = 'didi', updated_at = ${AT} where key = '${key}';`,
+      );
+      expect(done.ok, done.err).toBe(true);
+    };
 
     describe("the close runs' routes (migration 0019, D-318, D-324)", () => {
       const CLOSE_ROUTES = "db/migrations/0019_close_routes.sql";
@@ -335,9 +346,9 @@ describe.skipIf(!adminUrl)(
         const s = settings();
         expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
         expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
-        // 0019's change, then 0024's.
+        // 0019's change, then 0024's, then 0026's.
         expect(versionsLogged("model_routing_policy")).toBe(
-          "2026-10-31.1>2026-11-04.1,2026-11-04.1>2026-11-18.1",
+          "2026-10-31.1>2026-11-04.1,2026-11-04.1>2026-11-18.1,2026-11-18.1>2026-11-18.2",
         );
       });
 
@@ -397,13 +408,6 @@ describe.skipIf(!adminUrl)(
         sql(
           "select count(*) from factory.settings_log where key in ('model_routing_policy', 'model_catalog');",
         ).out;
-      /** Sets a routing setting by hand, as an operator would. */
-      const setByHand = (key: string, value: Json) => {
-        const done = sql(
-          `update factory.settings set value = '${JSON.stringify(value)}'::jsonb, updated_by = 'didi', updated_at = ${AT} where key = '${key}';`,
-        );
-        expect(done.ok, done.err).toBe(true);
-      };
       /** Runs the migration again; returns what psql printed on stderr (the NOTICEs). */
       const migrate = (): string => {
         const again = sql(readFileSync(MOVE, "utf8"));
@@ -430,8 +434,10 @@ describe.skipIf(!adminUrl)(
             tier: "flex",
             failFast: false,
             onCapacity: "wait",
-            policyVersion: "2026-11-18.1",
-            // 0025 has since changed Sonnet's cache read price (O-150), and the catalog's version.
+            // 0026 has since moved QA, the Council and Triage (D-425), and the policy's version.
+            policyVersion: SEEDED_ROUTING_POLICY.version,
+            // 0025 has since changed Sonnet's cache read price (O-150), and 0026 added DeepSeek V4
+            // Pro (D-425), each with the catalog's version.
             catalogVersion: SEEDED_MODEL_CATALOG.version,
             price: qwenCoderRunPrice(),
           });
@@ -445,10 +451,17 @@ describe.skipIf(!adminUrl)(
           };
           expect(runCostUsd(choice.route.price, million, "flex")).toBe(1.36);
         }
-        const s = settings();
-        const policy = s.model_routing_policy as Policy;
-        // The close runs never call the model (D-324); QA, the Council and Triage stay on
-        // Anthropic until the Messages API image reaches DeepInfra (D-342, D-400).
+        // The policy and catalog as 0024 wrote them, from their log rows. 0026 has since moved QA,
+        // the Council and Triage to DeepInfra (D-425).
+        const written = sql(
+          "select json_build_object('policy', (select new_value from factory.settings_log where key = 'model_routing_policy' and changed_by = 'migration' and new_value ->> 'version' = '2026-11-18.1' order by id limit 1), 'catalog', (select new_value from factory.settings_log where key = 'model_catalog' and changed_by = 'migration' and new_value ->> 'version' = '2026-11-18.1' order by id limit 1));",
+        );
+        expect(written.ok, written.err).toBe(true);
+        const by0024 = JSON.parse(written.out) as { policy: Policy; catalog: Catalog };
+        expect(by0024.policy).toEqual(DEEPINFRA_ROUTING_POLICY);
+        expect(by0024.catalog).toEqual(DEEPINFRA_MODEL_CATALOG);
+        // The close runs never call the model (D-324); QA, the Council and Triage stayed on
+        // Anthropic until the Messages API image could reach DeepInfra (D-342, D-400).
         for (const taskType of [
           "developer:close",
           "designer:close",
@@ -456,17 +469,18 @@ describe.skipIf(!adminUrl)(
           "council",
           "triage",
         ] as const) {
-          expect(policy.taskTypes[taskType]).toEqual(
+          expect(by0024.policy.taskTypes[taskType]).toEqual(
             CLOSE_ROUTES_POLICY.taskTypes[taskType],
           );
         }
+        const s = settings();
         expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
         expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
         // Unchanged: 16000 for each task type, below the model's cap of 16,384.
         expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
-        // 0024's change, then 0025's.
+        // 0024's change, then 0025's, then 0026's.
         expect(versionsLogged("model_catalog")).toBe(
-          "2026-10-31.1>2026-11-18.1,2026-11-18.1>2026-11-18.2",
+          "2026-10-31.1>2026-11-18.1,2026-11-18.1>2026-11-18.2,2026-11-18.2>2026-11-18.3",
         );
       });
 
@@ -613,20 +627,25 @@ describe.skipIf(!adminUrl)(
         const change = JSON.parse(written.out) as { old: Catalog; new: Catalog };
         expect(change.old).toEqual(DEEPINFRA_MODEL_CATALOG);
         expect(change.new).toEqual(withSonnetCache(change.old, 0.1, "2026-11-18.2"));
-        expect(settings().model_catalog).toEqual(SEEDED_MODEL_CATALOG);
+        expect(change.new).toEqual(SONNET_CACHE_MODEL_CATALOG);
+        // 0026 has since added DeepSeek V4 Pro (D-425) and left Sonnet's entry as 0025 set it.
+        expect((settings().model_catalog as Catalog).models[SONNET]).toEqual(
+          SONNET_CACHE_MODEL_CATALOG.models[SONNET],
+        );
         // Opus 5.5 keeps its list price (docs/costs.md section 2): 4, 0.20 cached, 20.
         expect(SEEDED_MODEL_CATALOG.models["claude-opus-5-5"]).toEqual(
           FIRST_MODEL_CATALOG.models["claude-opus-5-5"],
         );
-        // A Council run is routed to Sonnet at the new price, under the new catalog version.
-        const council = route("council", "council");
-        if (!council.routed) throw new Error(JSON.stringify(council.noRoute));
-        expect(council.route).toMatchObject({
+        // A close run is still routed to Sonnet, at the new price. The Council was too until 0026
+        // moved it to DeepSeek V4 Pro (D-425).
+        const close = route("developer", "developer:close");
+        if (!close.routed) throw new Error(JSON.stringify(close.noRoute));
+        expect(close.route).toMatchObject({
           model: SONNET,
-          catalogVersion: "2026-11-18.2",
+          catalogVersion: SEEDED_MODEL_CATALOG.version,
           price: seededRunPrice(SONNET),
         });
-        expect(council.route.price.pricePerMTok.standard?.cachedInput).toBe(0.1);
+        expect(close.route.price.pricePerMTok.standard?.cachedInput).toBe(0.1);
       });
 
       it("changes nothing when it runs again", () => {
@@ -671,6 +690,240 @@ describe.skipIf(!adminUrl)(
           expect(settings().model_catalog).toEqual(withoutSonnet);
         } finally {
           setCatalog(before);
+        }
+      });
+    });
+
+    describe("QA, the Council and Triage on DeepSeek V4 Pro at DeepInfra Flex (migration 0026, D-425, O-153)", () => {
+      const MOVE = "db/migrations/0026_qa_council_triage_deepinfra.sql";
+      const logged = (): string =>
+        sql(
+          "select count(*) from factory.settings_log where key in ('model_routing_policy', 'model_catalog');",
+        ).out;
+      /** Runs the migration again; returns what psql printed on stderr (the NOTICEs). */
+      const migrate = (): string => {
+        const again = sql(readFileSync(MOVE, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        return again.err;
+      };
+      /**
+       * The migration's change of `key`, from its log row: the value before and after. The first
+       * row that wrote `version` is the migration's own; a test that later restores a value can
+       * log the same version again.
+       */
+      const change = (key: string, version: string) => {
+        const written = sql(
+          `select json_build_object('old', old_value, 'new', new_value) from factory.settings_log where key = '${key}' and changed_by = 'migration' and new_value ->> 'version' = '${version}' order by id limit 1;`,
+        );
+        expect(written.ok, written.err).toBe(true);
+        return JSON.parse(written.out) as { old: Json; new: Json };
+      };
+      type Policy = {
+        version: string;
+        qaIndependence: string;
+        taskTypes: Record<string, Json>;
+      };
+      type Catalog = { version: string; models: Record<string, Record<string, Json>> };
+      const MOVED = ["qa:review", "council", "triage"] as const;
+
+      it("routes the three task types to DeepSeek V4 Pro at Flex, priced at Flex, logged under new versions", () => {
+        for (const [role, taskType] of [
+          ["qa", "qa:review"],
+          ["council", "council"],
+          ["triage", "triage"],
+        ] as const) {
+          const choice = route(role, taskType);
+          if (!choice.routed) throw new Error(JSON.stringify(choice.noRoute));
+          expect(choice.route).toEqual({
+            taskType,
+            provider: "deepinfra",
+            model: DEEPSEEK_PRO,
+            family: "deepseek",
+            tier: "flex",
+            failFast: false,
+            onCapacity: "wait",
+            policyVersion: "2026-11-18.2",
+            catalogVersion: "2026-11-18.3",
+            price: deepSeekProRunPrice(),
+          });
+          // A million of each token served at Flex: 1.04 + 0.08 + 1.04 (a cache write at the
+          // input rate, as DeepInfra lists no cache-write price) + 2.08.
+          const million = {
+            uncachedInput: 1_000_000,
+            cachedInput: 1_000_000,
+            cacheWriteInput: 1_000_000,
+            output: 1_000_000,
+          };
+          expect(runCostUsd(choice.route.price, million, "flex")).toBe(4.24);
+        }
+        const s = settings();
+        const policy = s.model_routing_policy as Policy;
+        // Every other entry is as 0024 left it: the Developer and the Designer on Qwen3 Coder, the
+        // close task types on Anthropic. The visual task types still have no route, and QA
+        // independence is still by model id (D-209).
+        for (const [taskType, entry] of Object.entries(
+          DEEPINFRA_ROUTING_POLICY.taskTypes,
+        )) {
+          if (!(MOVED as readonly string[]).includes(taskType)) {
+            expect(policy.taskTypes[taskType]).toEqual(entry);
+          }
+        }
+        expect(policy.taskTypes["qa:visual"]).toBeUndefined();
+        expect(policy.taskTypes["council:visual"]).toBeUndefined();
+        expect(policy.qaIndependence).toBe("model_id");
+        expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
+        expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
+        // Unchanged: 16000 for each task type, below the model's cap of 16,384.
+        expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
+        // Both changes logged, each from the value the migration before left.
+        expect(change("model_routing_policy", "2026-11-18.2")).toEqual({
+          old: DEEPINFRA_ROUTING_POLICY,
+          new: SEEDED_ROUTING_POLICY,
+        });
+        expect(change("model_catalog", "2026-11-18.3")).toEqual({
+          old: SONNET_CACHE_MODEL_CATALOG,
+          new: SEEDED_MODEL_CATALOG,
+        });
+      });
+
+      it("routes QA after a Qwen3 Coder Developer run to DeepSeek V4 Pro: another model id and family", () => {
+        const s = settings();
+        const choice = chooseRoute({
+          role: "qa",
+          taskType: "qa:review",
+          earlierRuns: [{ bot: "developer", model: QWEN_CODER, modelFamily: "qwen" }],
+          settings: {
+            policy: s.model_routing_policy ?? null,
+            catalog: s.model_catalog ?? null,
+            providers: s.model_providers_approved ?? null,
+            outputNeeds: s.model_output_token_needs ?? null,
+          },
+        });
+        if (!choice.routed) throw new Error(JSON.stringify(choice.noRoute));
+        expect(choice.route).toMatchObject({ model: DEEPSEEK_PRO, family: "deepseek" });
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = settings();
+        const count = logged();
+        expect(migrate()).not.toContain("NOTICE");
+        expect(settings()).toEqual(before);
+        expect(logged()).toBe(count);
+      });
+
+      it("moves only the entries 0005 seeded, names the others, and keeps an operator's catalog entry", () => {
+        const before = settings();
+        const policy = before.model_routing_policy as Policy;
+        const catalog = before.model_catalog as Catalog;
+        const own = {
+          candidates: [
+            { provider: "anthropic", model: "claude-opus-5-5", tier: "standard" },
+          ],
+          onCapacity: "wait",
+        };
+        // qa:review is back to the entry 0005 seeded, council is the operator's own, and triage
+        // was removed.
+        const kept = Object.fromEntries(
+          Object.entries(policy.taskTypes).filter(([t]) => t !== "triage"),
+        );
+        const byHand = {
+          ...policy,
+          version: "operator.1",
+          taskTypes: {
+            ...kept,
+            "qa:review": FIRST_ROUTING_POLICY.taskTypes["qa:review"],
+            council: own,
+          },
+        };
+        const deepseek = catalog.models[DEEPSEEK_PRO] ?? {};
+        const ownCatalog = {
+          version: "operator.cat",
+          models: {
+            ...catalog.models,
+            [DEEPSEEK_PRO]: {
+              ...deepseek,
+              pricePerMTok: {
+                standard: { input: 2, cachedInput: 0.2, output: 4 },
+                flex: { input: 1.6, cachedInput: 0.16, output: 3.2 },
+              },
+            },
+          },
+        };
+        try {
+          setByHand("model_routing_policy", byHand);
+          setByHand("model_catalog", ownCatalog);
+          const notices = migrate();
+          expect(settings().model_catalog).toEqual(ownCatalog);
+          expect(settings().model_routing_policy).toEqual({
+            ...byHand,
+            version: "operator.1+d425",
+            taskTypes: {
+              ...byHand.taskTypes,
+              "qa:review": SEEDED_ROUTING_POLICY.taskTypes["qa:review"],
+            },
+          });
+          expect(notices).toContain("model_routing_policy.taskTypes.council");
+          expect(notices).toContain("model_routing_policy.taskTypes.triage");
+          expect(notices).not.toContain("qa:review");
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+          setByHand("model_catalog", before.model_catalog ?? null);
+        }
+      });
+
+      it("adds the entry to a catalog without it under the catalog's own version, marked", () => {
+        const before = settings();
+        const catalog = before.model_catalog as Catalog;
+        const withoutDeepSeek = {
+          version: "operator.cat",
+          models: Object.fromEntries(
+            Object.entries(catalog.models).filter(([model]) => model !== DEEPSEEK_PRO),
+          ),
+        };
+        try {
+          setByHand("model_catalog", withoutDeepSeek);
+          expect(migrate()).not.toContain("NOTICE");
+          expect(settings().model_catalog).toEqual({
+            version: "operator.cat+d425",
+            models: {
+              ...withoutDeepSeek.models,
+              [DEEPSEEK_PRO]: catalog.models[DEEPSEEK_PRO],
+            },
+          });
+          // The policy already routes the three task types there, so it is left as it is.
+          expect(settings().model_routing_policy).toEqual(before.model_routing_policy);
+        } finally {
+          setByHand("model_catalog", before.model_catalog ?? null);
+        }
+      });
+
+      it("moves no task type while the catalog does not list the model under DeepInfra", () => {
+        const before = settings();
+        const policy = before.model_routing_policy as Policy;
+        const catalog = before.model_catalog as Catalog;
+        const seeded = Object.fromEntries(
+          MOVED.map((t) => [t, FIRST_ROUTING_POLICY.taskTypes[t]]),
+        );
+        const onSeeded = { ...policy, taskTypes: { ...policy.taskTypes, ...seeded } };
+        const elsewhere = {
+          ...catalog,
+          models: {
+            ...catalog.models,
+            [DEEPSEEK_PRO]: {
+              ...(catalog.models[DEEPSEEK_PRO] ?? {}),
+              provider: "other",
+            },
+          },
+        };
+        try {
+          setByHand("model_routing_policy", onSeeded);
+          setByHand("model_catalog", elsewhere);
+          expect(migrate()).toContain("0026 moved no task type");
+          expect(settings().model_routing_policy).toEqual(onSeeded);
+          expect(settings().model_catalog).toEqual(elsewhere);
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+          setByHand("model_catalog", before.model_catalog ?? null);
         }
       });
     });

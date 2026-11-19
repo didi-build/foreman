@@ -9,6 +9,8 @@ import { createMemoryStore } from "./memory-store.ts";
 import { routeInputHash } from "./routing.ts";
 import { hashRunToken, RUN_TOKEN_MARGIN_MINUTES } from "./run-tokens.ts";
 import {
+  DEEPSEEK_PRO,
+  deepSeekProRunPrice,
   FIRST_APPROVED_PROVIDERS,
   FIRST_MODEL_CATALOG,
   FIRST_ROUTING_POLICY,
@@ -16,7 +18,6 @@ import {
   SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
-  seededRunPrice,
   qwenCoderRunPrice,
   seedRoutingSettings,
   TEST_TASK_TYPES,
@@ -507,28 +508,28 @@ describe("dry-run dispatch evaluation (build plan M2.4)", () => {
 });
 
 describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
-  const onDeepInfraFlex = {
+  const onQwenCoder = {
     model: QWEN_CODER,
     provider: "deepinfra",
     modelFamily: "qwen",
     serviceTierRequested: "flex",
     modelPrice: qwenCoderRunPrice(),
   } as const;
-  const onAnthropic = (model: string) => ({
-    model,
-    provider: "anthropic",
-    modelFamily: "claude",
-    serviceTierRequested: "standard",
-    modelPrice: seededRunPrice(model),
-  });
+  const onDeepSeekPro = {
+    model: DEEPSEEK_PRO,
+    provider: "deepinfra",
+    modelFamily: "deepseek",
+    serviceTierRequested: "flex",
+    modelPrice: deepSeekProRunPrice(),
+  } as const;
   it.each([
-    ["developer", "developer:code", onDeepInfraFlex],
-    ["designer", "designer", onDeepInfraFlex],
-    ["qa", "qa:review", onAnthropic("claude-opus-5-5")],
-    ["council", "council", onAnthropic("claude-sonnet-5-5")],
-    ["triage", "triage", onAnthropic("claude-sonnet-5-5")],
+    ["developer", "developer:code", onQwenCoder],
+    ["designer", "designer", onQwenCoder],
+    ["qa", "qa:review", onDeepSeekPro],
+    ["council", "council", onDeepSeekPro],
+    ["triage", "triage", onDeepSeekPro],
   ] as const)(
-    "records the seeded policy's route on a %s run: Qwen3 Coder on DeepInfra Flex for the builders (D-421), Claude for the rest (D-185, D-186)",
+    "records the seeded policy's route on a %s run: Qwen3 Coder on DeepInfra Flex for the builders (D-421), DeepSeek V4 Pro on DeepInfra Flex for the rest (D-425)",
     async (role, taskType, route) => {
       const t = await setup();
       const runId = await t.started(t.request(await t.item(), role));
@@ -649,7 +650,7 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     });
     await t.setting("model_routing_policy", SEEDED_ROUTING_POLICY);
     const result = await t.runs.dispatch(t.request(nodeId, "qa"), credential());
-    expect(result.admitted && result.run.model).toBe("claude-opus-5-5");
+    expect(result.admitted && result.run.model).toBe(DEEPSEEK_PRO);
   });
 
   it("checks the other admission rules before the route", async () => {
@@ -667,10 +668,10 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     const plan = await t.runs.planDispatch(t.request(nodeId, "qa"));
     expect(plan.admitted && plan.run).toMatchObject({
       id: plannedRunId(nodeId, "qa"),
-      model: "claude-opus-5-5",
+      model: DEEPSEEK_PRO,
       taskType: "qa:review",
-      provider: "anthropic",
-      serviceTierRequested: "standard",
+      provider: "deepinfra",
+      serviceTierRequested: "flex",
     });
     await t.setting("model_providers_approved", {});
     expect(await t.runs.planDispatch(t.request(nodeId))).toMatchObject({
@@ -721,6 +722,22 @@ describe("run ends (ADR 0107 outcomes)", () => {
       costUsd: 0.005568,
     });
   });
+
+  it.each(["qa", "council", "triage"] as const)(
+    "prices a %s run that reports Flex at DeepSeek V4 Pro's Flex price (D-207, D-425)",
+    async (role) => {
+      const t = await setup();
+      const runId = await t.started(t.request(await t.item(), role));
+      await t.runs.recordEnd(runId, t.report({ serviceTierServed: "flex" }));
+      // 1200 x 1.04 + 48000 x 0.08 + 3000 x 1.04 (no cache-write price, so the Flex input rate) +
+      // 900 x 2.08, per million.
+      expect(await t.store.getRun(runId)).toMatchObject({
+        model: DEEPSEEK_PRO,
+        serviceTierServed: "flex",
+        costUsd: 0.01008,
+      });
+    },
+  );
 
   it.each(["success", "fail", "timeout", "cancelled", "budget_exceeded"] as const)(
     "records the %s outcome",
@@ -1123,8 +1140,17 @@ describe("cost_usd from the run's recorded price (ADR 0114 sections 2, 5 and 8, 
     expect(run?.reportedCostUsd).toBe(9);
   });
 
-  it("prices today's Claude routes at the catalog's Standard price, cache writes included", async () => {
+  it("prices a Claude route at the catalog's Standard price, cache writes included", async () => {
     const t = await setup();
+    // QA on Opus 5.5 at Anthropic, as 0005 seeded it; the seeded policy now sends QA to DeepInfra
+    // (D-425), which lists no cache-write price.
+    await t.setting("model_routing_policy", {
+      ...SEEDED_ROUTING_POLICY,
+      taskTypes: {
+        ...SEEDED_ROUTING_POLICY.taskTypes,
+        "qa:review": FIRST_ROUTING_POLICY.taskTypes["qa:review"],
+      },
+    });
     const runId = await t.started(t.request(await t.item(), "qa"));
     await t.runs.recordEnd(
       runId,

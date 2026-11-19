@@ -15,6 +15,8 @@ import {
   FIRST_MODEL_CATALOG,
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
+  DEEPSEEK_PRO,
+  deepSeekProRunPrice,
   firstRunPrice,
   seededRunPrice,
   QWEN_CODER,
@@ -137,7 +139,7 @@ describe("the first policy (ADR 0114 section 5, D-185, D-186)", () => {
   });
 });
 
-describe("the seeded policy (migrations 0019, 0024 and 0025, D-324, D-421, O-150)", () => {
+describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421, O-150, D-425)", () => {
   const seeded = (
     role: AgentRole,
     taskType: string,
@@ -156,8 +158,8 @@ describe("the seeded policy (migrations 0019, 0024 and 0025, D-324, D-421, O-150
   const versions = {
     failFast: false,
     onCapacity: "wait",
-    policyVersion: "2026-11-18.1",
-    catalogVersion: "2026-11-18.2",
+    policyVersion: "2026-11-18.2",
+    catalogVersion: "2026-11-18.3",
   };
 
   it.each([
@@ -180,35 +182,77 @@ describe("the seeded policy (migrations 0019, 0024 and 0025, D-324, D-421, O-150
   );
 
   it.each([
-    ["developer", "developer:close", "claude-sonnet-5-5"],
-    ["designer", "designer:close", "claude-sonnet-5-5"],
-    ["qa", "qa:review", "claude-opus-5-5"],
-    ["council", "council", "claude-sonnet-5-5"],
-    ["triage", "triage", "claude-sonnet-5-5"],
+    ["qa", "qa:review"],
+    ["council", "council"],
+    ["triage", "triage"],
   ] as const)(
-    "keeps %s (%s) on %s on Anthropic at Standard",
-    (role, taskType, model) => {
+    "routes %s (%s) to DeepSeek V4 Pro on DeepInfra at Flex, which passes every hard rule",
+    (role, taskType) => {
       expect(routed(chooseRoute(seeded(role, taskType)))).toEqual({
         taskType,
-        provider: "anthropic",
-        model,
-        family: "claude",
-        tier: "standard",
+        provider: "deepinfra",
+        model: DEEPSEEK_PRO,
+        family: "deepseek",
+        tier: "flex",
         ...versions,
-        // Sonnet at the cache read price migration 0025 set (O-150).
-        price: seededRunPrice(model),
+        price: deepSeekProRunPrice(),
       });
     },
   );
 
-  it("routes QA after a Qwen3 Coder Developer run and a Sonnet close run to Opus 5.5 (model id independence)", () => {
+  it.each([
+    ["developer", "developer:close"],
+    ["designer", "designer:close"],
+  ] as const)(
+    "keeps %s (%s) on Claude Sonnet 5.5 on Anthropic at Standard",
+    (role, taskType) => {
+      expect(routed(chooseRoute(seeded(role, taskType)))).toEqual({
+        taskType,
+        provider: "anthropic",
+        model: "claude-sonnet-5-5",
+        family: "claude",
+        tier: "standard",
+        ...versions,
+        // At the cache read price migration 0025 set (O-150).
+        price: seededRunPrice("claude-sonnet-5-5"),
+      });
+    },
+  );
+
+  it.each([
+    ["qa", "qa:visual"],
+    ["council", "council:visual"],
+  ] as const)(
+    "still has no route for %s (%s): the vision model test picks it later",
+    (role, taskType) => {
+      const noRoute = refused(chooseRoute(seeded(role, taskType)));
+      expect(noRoute.rejected).toEqual([]);
+      expect(noRoute.settingsProblems).toContain(
+        "model_routing_policy.taskTypes has no entry for the run's task type",
+      );
+    },
+  );
+
+  it("routes QA after a Qwen3 Coder Developer run and a Sonnet close run to DeepSeek V4 Pro (model id independence)", () => {
     const choice = chooseRoute(
       seeded("qa", "qa:review", [
         developerRun(QWEN_CODER, "qwen"),
         developerRun("claude-sonnet-5-5", "claude"),
       ]),
     );
-    expect(routed(choice).model).toBe("claude-opus-5-5");
+    expect(routed(choice).model).toBe(DEEPSEEK_PRO);
+  });
+
+  it("refuses QA after a Developer run on DeepSeek V4 Pro (model id independence)", () => {
+    expect(
+      refused(
+        chooseRoute(
+          seeded("qa", "qa:review", [developerRun(DEEPSEEK_PRO, "deepseek")]),
+        ),
+      ),
+    ).toMatchObject({
+      rejected: [{ model: DEEPSEEK_PRO, failed: [{ rule: "qa_independence" }] }],
+    });
   });
 });
 

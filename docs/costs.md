@@ -29,7 +29,7 @@ Infrastructure without Didi's own plans comes to about 93, plus domains and the 
 
 Per 1 million tokens, Standard tier.
 
-**Source.** DeepInfra prices come from the data behind deepinfra.com/pricing and deepinfra.com/models, read on 2026-10-31. The list covers every text-generation model on those pages that is public, not deprecated and priced per token: 69 models. It leaves out Anthropic and Google models resold by DeepInfra, because D-208 covers only DeepInfra's own open models. Qwen3 Coder 480B Turbo was read again on 2026-11-18 from DeepInfra's public model list (api.deepinfra.com/models/list) before migration 0024 added it to the model catalog (D-421): unchanged, with Flex at 0.8 times each price and no cache-write price.
+**Source.** DeepInfra prices come from the data behind deepinfra.com/pricing and deepinfra.com/models, read on 2026-10-31. The list covers every text-generation model on those pages that is public, not deprecated and priced per token: 69 models. It leaves out Anthropic and Google models resold by DeepInfra, because D-208 covers only DeepInfra's own open models. Qwen3 Coder 480B Turbo was read again on 2026-11-18 from DeepInfra's public model list (api.deepinfra.com/models/list) before migration 0024 added it to the model catalog (D-421): unchanged, with Flex at 0.8 times each price and no cache-write price. DeepSeek V4 Pro 0813 was read again on 2026-11-18 from the same list before migration 0026 added it to the model catalog (D-425): unchanged, with Flex at 0.8 times each price and no cache-write price.
 
 **Columns.**
 
