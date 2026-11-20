@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "slug": "rehearsal",
+  "displayName": "Rehearsal",
+  "purpose": "Foreman rehearsal: a throwaway project for testing the factory end to end.",
+  "collectsPersonalData": true,
+  "quota": {
+    "pods": 12,
+    "cpu": "6",
+    "memory": "5Gi",
+    "ephemeralStorage": "11Gi",
+    "storage": "3Gi",
+    "persistentVolumeClaims": 3
+  },
+  "deployTarget": "cloudflare",
+  "createdOn": "2026-11-13"
+}

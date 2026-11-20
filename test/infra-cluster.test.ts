@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,12 +12,8 @@ import {
   TUNNEL_EDGE_PORT,
   serviceUrl,
 } from "../infra/kubernetes/platform.ts";
-import {
-  PLATFORM_SETTINGS,
-  PROJECT_SLUG,
-  projectStagingUrl,
-} from "../src/core/register-project.ts";
-import { committedSettings } from "./admin-workflows-fixture.ts";
+import { PROJECT_SLUG, projectStagingUrl } from "../src/core/register-project.ts";
+import { isProjectEntrySlug, parseProjectEntry } from "../src/core/project-entry.ts";
 
 // Unit: static checks on the cluster's infrastructure code (ADR 0106, ADR 0110, D-188, D-193 to
 // D-195). OpenTofu is not run here; these read the .tf files as text, so they hold without
@@ -475,21 +472,81 @@ describe("each project's staging name and Workers route (unit: D-345, D-357, O-1
     };
   }
 
-  it("reads the project list from the platform settings file, the one list the form reads too (D-345)", () => {
-    const path =
-      /settings\s*=\s*jsondecode\(file\("\$\{path\.module\}\/([^"]+)"\)\)/.exec(
-        stackLocals,
-      )?.[1];
-    expect(path).toBeDefined();
-    expect(resolve(STACK, path ?? "")).toBe(resolve(PLATFORM_SETTINGS.path));
-    expect(stackLocals).toMatch(
-      /project_slugs\s*=\s*\[for project in local\.settings\.projects : project\.slug\]/,
+  // The stack's reading of the settings repository (D-377, ADR 0118 appendix A, O-157).
+  const checkoutPath =
+    /projects_checkout\s*=\s*"\$\{path\.module\}\/([^"]+)"/.exec(stackLocals)?.[1] ??
+    "";
+  const targetMap =
+    /deploy_target_has_name\s*=\s*\{\s*cloudflare\s*=\s*(true|false),\s*cluster\s*=\s*(true|false)\s*\}/.exec(
+      stackLocals,
     );
+  const hasName: Record<string, boolean> = {
+    cloudflare: targetMap?.[1] === "true",
+    cluster: targetMap?.[2] === "true",
+  };
+  /** The slugs the stack passes the module for a checkout's project files, as its locals read them. */
+  const stackSlugs = (files: { slug: string; deployTarget: string }[]) =>
+    files
+      .filter((f) => {
+        if (!(f.deployTarget in hasName)) throw new Error("no entry: the plan fails");
+        return hasName[f.deployTarget];
+      })
+      .map((f) => f.slug);
+
+  it("reads the project list from the settings repository's checkout, the one list the render and the form read (D-377)", () => {
+    // A fixed folder at the repository's root that git ignores, where the workflows check it out.
+    expect(checkoutPath).toBe("../../../foreman-projects");
+    expect(resolve(STACK, checkoutPath)).toBe(resolve("foreman-projects"));
+    expect(
+      execFileSync("git", ["check-ignore", "foreman-projects/projects/x.json"], {
+        encoding: "utf8",
+      }).trim(),
+    ).toBe("foreman-projects/projects/x.json");
+    // The marker with file(), so a missing checkout fails the plan instead of planning an empty
+    // list (O-112), and only schema 1 gives the projects folder.
+    expect(stackLocals).toMatch(
+      /projects_folder\s*=\s*\{\s*"1"\s*=\s*"\$\{local\.projects_checkout\}\/projects"\s*\}\[tostring\(jsondecode\(file\("\$\{local\.projects_checkout\}\/foreman-projects\.json"\)\)\.schema\)\]/,
+    );
+    // Each projects/*.json, through fileset() and file().
+    expect(stackLocals).toMatch(
+      /projects\s*=\s*\[\s*for name in fileset\(local\.projects_folder, "\*\.json"\) :\s*jsondecode\(file\("\$\{local\.projects_folder\}\/\$\{name\}"\)\)\s*\]/,
+    );
+    expect(stackLocals).toMatch(
+      /project_slugs\s*=\s*\[\s*for project in local\.projects : project\.slug\s+if local\.deploy_target_has_name\[project\.deployTarget\]\s*\]/,
+    );
+    expect(stackCode).not.toMatch(/kubernetes\/settings/);
     expect(edge).toMatch(
       /project_staging\s*=\s*\{\s*domain\s*=\s*local\.project_domain\s+slugs\s*=\s*local\.project_slugs\s*\}/,
     );
     // The receiver's host name the module compares with is the one the stack gives the tunnel.
     expect(edge).toMatch(/hostname\s*=\s*var\.receiver_hostname/);
+  });
+
+  it("names only Cloudflare-target projects, and fails on any other target (D-441)", () => {
+    expect(targetMap, "the deploy target map").not.toBeNull();
+    expect(hasName).toEqual({ cloudflare: true, cluster: false });
+    expect(
+      stackSlugs([
+        { slug: "rehearsal", deployTarget: "cloudflare" },
+        { slug: "foreman", deployTarget: "cluster" },
+        { slug: "shop-2", deployTarget: "cloudflare" },
+      ]),
+    ).toEqual(["rehearsal", "shop-2"]);
+    expect(() => stackSlugs([{ slug: "x", deployTarget: "Cloudflare" }])).toThrow();
+  });
+
+  it("plans the rehearsal fixture's record and route, keyed by host name as before the move", () => {
+    const dir = "test/fixtures/foreman-projects/projects";
+    const files = readdirSync(dir).map((name) => {
+      const result = parseProjectEntry(name, readFileSync(join(dir, name), "utf8"));
+      if (!result.ok) throw new Error(result.message);
+      return result.entry;
+    });
+    expect(planned(stackSlugs(files), RECEIVER_HOST)).toEqual({
+      records: ["rehearsal.didi.build"],
+      routes: [{ pattern: "rehearsal.didi.build/*", script: "rehearsal-staging" }],
+    });
+    expect(record).toMatch(/for_each\s*=\s*local\.project_hosts\b/);
   });
 
   it("names each project <slug>.didi.build, the staging address the store records (D-345)", () => {
@@ -583,15 +640,14 @@ describe("each project's staging name and Workers route (unit: D-345, D-357, O-1
     );
   });
 
-  it("holds every slug in the committed settings file to those rules, so a bad one fails CI before any plan", () => {
-    const settings = committedSettings() as { projects: { slug: unknown }[] };
-    const slugs = settings.projects.map((p) => p.slug);
-    for (const slug of slugs) {
-      expect(typeof slug === "string" && PROJECT_SLUG.test(slug), String(slug)).toBe(
-        true,
-      );
+  it("holds every slug a project file may have to those rules: the entry rule is the narrower one", () => {
+    for (const slug of ["rehearsal", "shop-2", "a", "0x", "a-b-c", "a".repeat(47)]) {
+      expect(isProjectEntrySlug(slug), slug).toBe(true);
+      expect(PROJECT_SLUG.test(slug), slug).toBe(true);
     }
-    expect(new Set(slugs).size).toBe(slugs.length);
+    for (const slug of ["a".repeat(48), "a--b", "x-"]) {
+      expect(isProjectEntrySlug(slug), slug).toBe(false);
+    }
   });
 
   it("asks for a Cloudflare token that can edit what the stack makes: tunnels, DNS records and Workers routes (D-357, runbook step 3)", () => {

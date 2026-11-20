@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -843,10 +843,12 @@ describe("cluster objects (unit: render)", () => {
   it("renders the committed settings' weekly test namespace, outside the projects the stack and the form read", () => {
     const committed = JSON.parse(
       readFileSync("infra/kubernetes/settings/production.json", "utf8"),
-    ) as { projects: { slug: string }[]; eval?: { quota: typeof EVAL_QUOTA } };
+    ) as Record<string, unknown> & { eval?: { quota: typeof EVAL_QUOTA } };
     expect(committed.eval?.quota).toEqual(EVAL_QUOTA);
-    expect(committed.projects.map((p) => p.slug)).not.toContain(EVAL_NAMESPACE);
-    expect(committed.projects.map((p) => p.slug)).not.toContain("eval");
+    // The projects are the settings repository's files (D-377); the weekly test is none of them,
+    // and no project's namespace, `agents-<slug>`, can be its `foreman-eval`.
+    expect("projects" in committed).toBe(false);
+    expect(EVAL_NAMESPACE.startsWith("agents-")).toBe(false);
   });
 
   it("lists the platform, the runner's namespace and each project's agent namespace", () => {
@@ -971,11 +973,37 @@ describe("the objects as kubectl applies them (unit and integration: render outp
   it("is what `node infra/kubernetes/render.ts` prints for the Platform workflow", () => {
     const dir = mkdtempSync(join(tmpdir(), "render-"));
     try {
+      // The settings file as committed, and a checkout of the settings repository (D-377).
       const file = join(dir, "settings.json");
-      writeFileSync(file, JSON.stringify(settings));
-      const result = spawnSync(process.execPath, ["infra/kubernetes/render.ts", file], {
-        encoding: "utf8",
-      });
+      const [project] = settings.projects;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          platform: settings.platform,
+          projectStandardQuota: project?.quota,
+        }),
+      );
+      const projects = join(dir, "foreman-projects");
+      mkdirSync(join(projects, "projects"), { recursive: true });
+      writeFileSync(join(projects, "foreman-projects.json"), '{ "schema": 1 }\n');
+      writeFileSync(
+        join(projects, "projects", "rehearsal.json"),
+        JSON.stringify({
+          schema: 1,
+          slug: "rehearsal",
+          displayName: "Rehearsal",
+          purpose: "A throwaway project for tests.",
+          collectsPersonalData: false,
+          quota: project?.quota,
+          deployTarget: "cloudflare",
+          createdOn: "2026-11-13",
+        }),
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["infra/kubernetes/render.ts", file, projects],
+        { encoding: "utf8" },
+      );
       expect(result.stderr).not.toMatch(/error/i);
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual(

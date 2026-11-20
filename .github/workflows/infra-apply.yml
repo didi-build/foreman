@@ -4,18 +4,25 @@ name: Infra apply
 # exact saved plan (D-339, D-340, ADR 0110, O-105). This replaces the by-hand `tofu` commands of
 # first-hosting steps 5, 11 and 11a and every later infrastructure change.
 #
-# - `plan` runs in the environment `infra-plan` (main only, no reviewer). It plans with
+# - `plan` runs in the environment `infra-plan` (main only, no reviewer). It first resolves the
+#   settings repository didi-build/foreman-projects' main to one commit
+#   (.github/scripts/projects-commit.sh; a run started by hand may name `projects_commit`, which
+#   must be that commit or an ancestor), names it in the summary, and checks the repository out at
+#   that commit into the fixed folder the stack reads (D-377, ADR 0118 appendix A). It plans with
 #   `-input=false` against the R2 state backend, scans the plan text for the secret values
 #   (ADR 0110 secrets rule 6) before anything is published, writes the readable plan to the job
 #   summary with ids and the receiver's host name replaced by placeholders (the repository is
 #   public), and saves the encrypted plan file as an artifact kept for one day. The summary names
 #   each project's DNS record and Workers route that changes; a project's host name is public.
 # - `apply` runs in the environment `infra` (main only, Didi the required reviewer), only when the
-#   plan has changes, and applies the saved plan file. OpenTofu refuses it if the state moved on.
+#   plan has changes, checks the settings repository out at the plan's commit, since OpenTofu reads
+#   the stack's files again when it applies, and applies the saved plan file. OpenTofu refuses it
+#   if the state moved on.
 #
-# The stack reads its project list from the platform settings file, so a push that changes that
-# file plans again: adding a project is one pull request, then this plan for its name and route
-# and the Platform workflow's for its namespace, each approved by Didi (D-357, O-112).
+# The stack reads its project list from the settings repository's checkout (D-357, O-112). A
+# change there starts no run in this repository: after adding a project's file, start this
+# workflow by hand for its name and route, and the Platform workflow for its namespace, each
+# approved by Didi.
 #
 # Secrets come from the environment's own secrets, each into the one step that needs it. Pull
 # requests never run this workflow: `.github/workflows/infra.yml` validates them with no
@@ -28,12 +35,17 @@ on:
     paths:
       - "infra/stacks/factory/**"
       - "infra/modules/**"
-      - "infra/kubernetes/settings/production.json"
       - ".github/workflows/infra-apply.yml"
       - ".github/scripts/tofu-init.sh"
       - ".github/scripts/redact.sh"
       - ".github/scripts/infra-plan-summary.sh"
+      - ".github/scripts/projects-commit.sh"
   workflow_dispatch:
+    inputs:
+      projects_commit:
+        description: "A commit of didi-build/foreman-projects this run must contain (optional; the run uses its main)"
+        type: string
+        default: ""
 
 concurrency:
   group: infra-apply
@@ -46,6 +58,10 @@ env:
   TF_IN_AUTOMATION: "1"
   TF_INPUT: "0"
   REDACT_NAMES: CLOUDFLARE_ACCOUNT_ID,CLOUDFLARE_ZONE_ID,RECEIVER_HOSTNAME,STATE_BUCKET
+  # The project list (D-377, D-442): public, read with no token, checked out into the fixed,
+  # git-ignored folder the stack reads (infra/stacks/factory/main.tf).
+  PROJECTS_REPOSITORY: didi-build/foreman-projects
+  PROJECTS_DIR: foreman-projects
 
 jobs:
   plan:
@@ -58,6 +74,7 @@ jobs:
       contents: read
     outputs:
       changes: ${{ steps.plan.outputs.changes }}
+      projects_commit: ${{ steps.projects.outputs.commit }}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
@@ -66,6 +83,20 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+      - name: Resolve the project list's commit
+        id: projects
+        env:
+          PROJECTS_COMMIT: ${{ inputs.projects_commit }}
+        run: |
+          set -euo pipefail
+          .github/scripts/projects-commit.sh "https://github.com/${PROJECTS_REPOSITORY}.git"
+      - name: Check out the project list at that commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.PROJECTS_REPOSITORY }}
+          ref: ${{ steps.projects.outputs.commit }}
+          path: ${{ env.PROJECTS_DIR }}
           persist-credentials: false
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
@@ -169,6 +200,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
+      # The same commit the plan read: OpenTofu evaluates the stack's files again at the apply.
+      - name: Check out the project list at the plan's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.PROJECTS_REPOSITORY }}
+          ref: ${{ needs.plan.outputs.projects_commit }}
+          path: ${{ env.PROJECTS_DIR }}
           persist-credentials: false
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:

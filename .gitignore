@@ -50,3 +50,7 @@ plan.out
 plan.txt
 plan.json
 crash.log
+
+# The settings repository didi-build/foreman-projects (D-377, D-442), checked out here at one
+# commit by the Platform and Infra workflows and read by the render and the factory stack
+/foreman-projects/
