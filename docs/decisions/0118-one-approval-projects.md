@@ -1,6 +1,6 @@
 # 0118. One-approval projects, with backends on Cloudflare
 
-- **Status:** decided by Didi in the design interview of 2026-11-19 and 2026-11-20 for roadmap sitting 4 (D-434 to D-441). The technical design is proposed: nothing of it is built. The open points near the end are Didi's.
+- **Status:** decided by Didi in the design interview of 2026-11-19 and 2026-11-20 for roadmap sitting 4 (D-434 to D-441). The nine open points were settled by Didi on 2026-11-20 (D-442 to D-450). The technical design is proposed: nothing of it is built.
 - **Date:** 2026-11-20
 - **Related:** D-004, D-007, D-339, D-340, D-345, D-346, D-348, D-353, D-354, D-357, D-358, D-365, D-370, D-372, D-375, D-377, D-378, D-379, D-391, D-394, D-411, D-417, D-418, D-419, D-434 to D-441, N-92, N-103, N-104, O-109, O-112, O-113, O-114, O-116, O-126, O-140, [ADR 0101](./0101-repo-layout-and-tooling.md), [ADR 0106](./0106-agent-execution-environment.md), [ADR 0110](./0110-infrastructure-as-code.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0115](./0115-foreman-app.md), [ADR 0116](./0116-planning-chat.md)
 
@@ -39,7 +39,7 @@ The details are in the technical design (appendix sections A to G).
 - **The add-only rule (D-378).** A run is add-only when the cluster and Cloudflare already match `foreman`'s main and the existing projects, and the only difference is the new projects' standard objects. Then an apply job with no reviewer applies it. Anything else, including drift or a Foreman change Didi has not approved yet, waits for Didi as today. Any doubt fails closed to Didi's approval (B).
 - **The New project form.** After its checks, it makes the D1 database, then a placeholder Worker, then the settings file. It starts the Platform and Infra runs, creates the repository, records the project, and restarts Bootstrap with the display name and the personal-data answer. Each step finds before it creates, so running the form again completes what is missing and creates nothing twice (C).
 - **The Set project secret form.** The value field is a Windmill password field: Windmill keeps only a reference in the run's history, and the flow deletes the short-lived secret variable once the value is on the Worker (D).
-- **The template.** Launchpad gains a Worker module serving `/api` beside the assets at `/`, one D1 binding, a `migrations/` folder, a placeholder landing page, previews with no database or secret, and Bootstrap inputs for the display name and the personal-data answer (E).
+- **The template.** Launchpad gains a Worker module serving `/api` beside the assets at `/`, one D1 binding, a `migrations/` folder, a placeholder landing page, no hosted previews (D-446), and Bootstrap inputs for the display name and the personal-data answer (E).
 - **Cloudflare access.** Today's staging deploy token already covers every Worker call, secrets included. The only new right is D1, proposed as one new token with D1 Edit only. Names and routes still come from the infra plan, never from the runner (F).
 - **Deploy targets.** A `DeployTarget` port over today's staging deploy, with the Cloudflare adapter extended and a first, small cluster adapter for Foreman itself. The cluster adapter never applies to the cluster: Didi approves each release of Foreman (G).
 
@@ -48,7 +48,7 @@ The details are in the technical design (appendix sections A to G).
 | Decision     | What happens to it                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D-345        | Replaced by D-434 and D-435: one form with four fields, which writes the settings entry itself. No pull request on `foreman`. Kept: the repository name equals the slug, staging updates on every push to main with no approval, a project starts with no production, and every project shares the privileged paths.                                                                                                                                                                      |
-| D-346        | Kept: the runner App creates the repository with the same narrow token. The form also mints two other narrow tokens (open point 3).                                                                                                                                                                                                                                                                                                                                                       |
+| D-346        | Kept: the runner App creates the repository with the same narrow token. The form also mints two other narrow tokens (D-443).                                                                                                                                                                                                                                                                                                                                                              |
 | D-339        | Amended by D-378 as designed here: adding a project no longer needs Didi's approval in GitHub when the change is add-only. Every other admin change still does.                                                                                                                                                                                                                                                                                                                           |
 | D-353        | Kept: Foreman deploys staging itself from CI's build, with no secret in CI and no deploy secret in any project repository. Replaced for projects: the staging Worker is no longer assets-only. It runs the project's backend, with its D1 database and its product secrets held by Cloudflare. Replaced: "the backend runs in the project's own cluster namespace".                                                                                                                       |
 | D-357        | Kept: one proxied name and one route per project, made only by the infra plan. When the change is add-only, the form's approval covers it (D-378). The room D-357 left for "a same-origin `/api` to the project's backend" is now used inside the Worker.                                                                                                                                                                                                                                 |
@@ -93,8 +93,8 @@ The details are in the technical design (appendix sections A to G).
 
 - Adding a project no longer changes `foreman` (D-377), and a new project needs one approval (D-434, D-378).
 - Two new GitHub environments hold admin credentials with no reviewer. The add-only check, in privileged files Didi reviews, is their only guard.
-- Project code now runs on Cloudflare with its own data and secrets. A bad change merged by Foreman can read the project's secrets, including its model key. QA's review, secrets kept off previews, and the spending limit on the key at the provider bound the harm. Before D-439, the egress proxy kept the key away from the code.
-- Each project holds one of the Free plan's 10 D1 databases, even if it never uses it.
+- Project code now runs on Cloudflare with its own data and secrets. A bad change merged by Foreman can read the project's secrets, including its model key. QA's review, no hosted previews, and the spending limit on the key at the provider bound the harm. Before D-439, the egress proxy kept the key away from the code.
+- Each project holds one D1 database, even if it never uses it; on Workers Paid that has no practical limit (D-450).
 - Removing a project is still not built: its settings file, namespace, Worker, database and repository stay until a removal path exists, which is a drop-data gate (D-411).
 
 ## Costs
@@ -102,73 +102,38 @@ The details are in the technical design (appendix sections A to G).
 In short; details and sources in appendix H.
 
 - **Cluster:** no new node. A project adds a namespace, and its quota is a cap, not a reservation (O-126). How many runs go at once stays bounded by the cluster limit on the one agents node (D-194, D-372). More runs at once would need a bigger node: Didi's money gate.
-- **Cloudflare, per project, on the Free plan:** one Worker (100 per account), one D1 database (10 per account), the name and route (free), and asset requests (free and unlimited). Requests to `/api` share 100,000 a day across the account. Each request gets 10 ms of CPU and 50 subrequests. D1 allows 5 million rows read and 100,000 rows written a day, and 5 GB stored, across the account, with at most 500 MB per database.
-- **Workers Paid** costs 5 USD a month per account and lifts those limits. It is Didi's money gate (open point 9). Likely triggers: an eleventh D1 database (production databases later count too), a backend that needs more than 10 ms of CPU per request, or more than 100,000 `/api` requests a day.
+- **Cloudflare, per project** (the account is on Workers Paid, D-450; the Free plan's figures are kept for reference): one Worker (100 per account), one D1 database (10 per account), the name and route (free), and asset requests (free and unlimited). Requests to `/api` share 100,000 a day across the account. Each request gets 10 ms of CPU and 50 subrequests. D1 allows 5 million rows read and 100,000 rows written a day, and 5 GB stored, across the account, with at most 500 MB per database.
+- **Workers Paid,** 5 USD a month per account, is already in place (D-450), so those limits do not apply and this design adds no cost. Usage beyond the paid plan's included amounts (appendix H) would be billed and is watched in Cloudflare's dashboard.
 - **Unchanged:** GitHub (public repositories, D-348) and Windmill (one execution per form run, against the Free plan's 1,000 a month).
 - **Each project's runtime model key** (D-417) is the project's own spend, with its limit at the provider. Creating it is Didi's gate, for money and for the new credential.
 
-## Open points for Didi
+## Open points, settled (D-442 to D-450)
 
-Each needs Didi's answer before the slice that depends on it.
+Didi answered the nine open points on 2026-11-20, one at a time.
 
-1. **The settings repository: name, visibility, and who creates it.**
-   - Name: (a) `didi-build/foreman-projects`; (b) `didi-build/projects`; (c) another name.
-   - Visibility: (a) public, so the workflows read it with no token and its ruleset is free (D-348), and it holds nothing secret; (b) private, which needs a read token in each workflow and a paid plan for rulesets.
-   - Creator: (a) Didi, once, by hand, with the ruleset in appendix A; (b) the runner App with its "Repository creation" permission, after which Didi still sets the ruleset, since the App has no Administration (D-346, D-358).
-   - **Recommendation:** `didi-build/foreman-projects`, public, created by Didi with the ruleset.
-2. **Cloudflare access for the databases (a new credential).**
-   - (a) One new account-owned token with D1 Edit only, used only by the code that creates databases and applies migrations.
-   - (b) Widen today's staging deploy token with D1 Edit: one token, but the deploy pass, which handles every push, then holds D1 rights too.
-   - (c) D1 in the infra stack: the infra token gains D1 Edit, removing a project plans to destroy its database, and the runner cannot read the database id from the stack's state.
-   - Either way, Cloudflare's token form gives D1 per account, not per database, so the token can read every database in the account.
-   - Keep names and routes in the infra plan (D-357) rather than letting the runner make Custom Domains, which would put DNS outside the plan and need a zone permission.
-   - **Recommendation:** (a), and keep D-357's route.
-3. **New uses of the runner App's existing permissions.** The App gains no permission, but the form uses two it holds in new places.
-   - **Writing the settings file** needs `contents: write` on the settings repository. The alternative is Didi committing each file by hand, which defeats D-434.
-   - **Starting the two workflows** needs `actions: write` on `foreman`. That permission also lets a token cancel or re-run runs, delete runs and logs, and turn workflows off on `foreman`. The options: (a) a token narrowed to `foreman` with `actions: write`, minted only by the form's start step, sending only the two allowed calls; (b) a schedule in each workflow that checks the settings repository every few minutes, with no new token use but a delay, many idle runs, and the Infra plan taking the state lock each time; (c) Didi starts both runs by hand after the form (starting is not approving, but it is two more clicks).
-   - **Recommendation:** both narrow tokens, with (a) for the starts.
-4. **The add-only environments.** The add-only applies need two new environments with no reviewer, main only: `platform-add-project` and `infra-add-project`. They get copies of today's credentials: the DigitalOcean token for the first; the DigitalOcean token, the infra Cloudflare token, the R2 key pair and the passphrase for the second.
-   - (a) As proposed, with the add-only check as the guard and each unreviewed apply listed in the daily check.
-   - (b) As (a), but with a narrower Cloudflare token for the add-only apply (DNS Edit, Workers Routes Edit, and tunnel read for the plan's refresh), which is one more token to manage. The DigitalOcean token cannot be narrowed below cluster access.
-   - (c) Keep Didi's approval in GitHub for now, which leaves D-378 unbuilt.
-   - **Recommendation:** (a).
-5. **D1 on pull request previews.**
-   - (a) None: previews get no database binding and no secret.
-   - (b) A separate preview database with synthetic data only.
-   - Foreman itself dropped hosted previews (D-354). Launchpad still has its preview workflow, which ends neutral while it has no secrets.
-   - **Recommendation:** (a).
-6. **Where staging databases live.** D1 places a new database near the caller unless told otherwise, and the caller here is Windmill Cloud. Cloudflare's jurisdictions cover only the EU, FedRAMP and the US, not Canada.
-   - (a) The location hint `enam` (Eastern North America), near the cluster in Toronto.
-   - (b) No hint.
-   - (c) A jurisdiction (`us`).
-   - **Recommendation:** (a). Each project's own data map covers what its database holds.
-7. **A secret the code needs that is not set.**
-   - (a) The deploy holds, as an infrastructure refusal that names the missing secret and the form. It counts no failure, the daily check shows it, and the next pass deploys once the secret is set. This is how N-103's as-built rule treats infrastructure refusals, and N-103 itself is still open.
-   - (b) The deploy goes ahead, and the staging check fails the item.
-   - **Recommendation:** (a).
-8. **How a cluster-target item finishes (Foreman's own items).**
-   - (a) Done at merge, with a daily-check line "upgrade waiting for your Platform apply" until Didi applies.
-   - (b) The item waits in Verifying on staging until Didi's apply, then a health check.
-   - Either is a contract change in `docs/spec.md`.
-   - **Recommendation:** (a), because Foreman has no staging and a release is production (D-007).
-9. **When to move to Workers Paid (5 USD a month).**
-   - (a) Stay on Free. The form refuses, with fixed text naming the plan's limit, when Cloudflare refuses a database, and Didi decides then.
-   - (b) Move now.
-   - **Recommendation:** (a). Ask again before the first production database or the first backend that needs more than 10 ms of CPU per request.
+1. **The settings repository (D-442):** `didi-build/foreman-projects`, public, created by Didi once by hand with the ruleset in appendix A, so that only Foreman's form adds files.
+2. **The runner App's existing permissions in new places (D-443):** `contents: write` narrowed to `foreman-projects` for the settings file, and `actions: write` narrowed to `foreman`, minted only by the form's start step, which makes only the two workflow start calls.
+3. **The add-only environments (D-444):** `platform-add-project` and `infra-add-project`, with no reviewer, `main` only, holding copies of today's credentials, guarded by the add-only check, with each unreviewed apply listed in the daily check.
+4. **Cloudflare access for the databases (D-445):** one new account-owned token with D1 Edit only, used only by the code that creates databases and applies migrations. The staging deploy token is not widened; it already covers Worker secrets. Names and routes stay in the infra plan (D-357). Didi creates the token when slice 4 comes.
+5. **Pull request previews (D-446):** no database and no secret on previews, and no hosted pull request previews at all: the template's preview workflow and `wrangler.preview.jsonc` are removed (as D-354 did for Foreman). CI's `preview-check`, which builds and serves the site inside CI and deploys nothing, stays as QA's evidence.
+6. **Where staging databases live (D-447):** the location hint `enam` (Eastern North America).
+7. **A secret the code needs that is not set (D-448):** the staging deploy holds as an infrastructure refusal that names the missing secret and the form, counts no failure, shows in the daily check, and deploys on the next pass once the secret is set.
+8. **How a Foreman self-upgrade item finishes (D-449):** Done at merge, with a daily-check line "Foreman upgrade waiting for your Platform apply" until Didi applies; a contract change in `docs/spec.md`. A/B deployments for Foreman, which would give it a real staging step, are a later idea.
+9. **The Workers plan (D-450):** Didi's account is already on Workers Paid, so the Free plan's limits (10 databases, 10 ms of CPU per request) do not apply, and no new cost comes from this design.
 
 ## Build plan
 
 Each slice is one pull request, in this order. Slices 3 and 4 can be built while slice 2 is in review. No project should be registered between slice 5 (the template) and slice 6 (the form): a template build with a database binding needs the database that only the new form makes.
 
 1. **The settings repository, read; the rehearsal moves** (`foreman`).
-   - Before it: Didi answers open point 1, creates the repository with its ruleset, and adds the marker file and `projects/rehearsal.json` (appendix A).
+   - Before it: Didi creates the repository (D-442) with its ruleset, and adds the marker file and `projects/rehearsal.json` (appendix A).
    - Delivers: `src/core/project-entry.ts`, the entry rules and the standard size. `infra/kubernetes/render.ts` reads the platform settings and the projects folder. `production.json` loses `projects` and gains `projectStandardQuota`. The factory stack reads the project files and requires the marker. Both workflows resolve the settings repository's commit (with the `projects_commit` input) and print it, and the validate job checks the repository out too. The form's settings read moves (`src/adapters/github/project-settings.ts`).
    - Privileged paths: `.github/workflows/platform.yml`, `.github/workflows/infra-apply.yml`, `.github/workflows/infra.yml`, `.github/scripts/**`, `infra/**`.
    - Didi after: merges, then checks that both plans show no change.
 2. **The add-only rule and its applies** (`foreman`).
    - Delivers: the candidate list in the render job, the live checks in the plan jobs, the two add-only apply jobs, and the summary lines. Tests use fixture plans for each case in appendix B. The daily check lists unreviewed applies.
    - Privileged paths: the two workflows and `.github/scripts/**`.
-   - Didi after: answers open point 4, creates the two environments, pastes the existing secrets, and merges.
+   - Didi after: creates the two environments (D-444), pastes the existing secrets, and merges.
 3. **A Worker with code in the deploy adapter** (`foreman`).
    - Delivers: the `DeployTarget` port (`src/core/deploy-target.ts`) over `StagingTarget`. `site-files.ts` reads the new build layout and the old one. The upload carries the module, `keep_bindings` and `run_worker_first`. The staging check probes `/api/health` when the build has a Worker.
    - Privileged paths: none expected.
@@ -176,19 +141,19 @@ Each slice is one pull request, in this order. Slices 3 and 4 can be built while
 4. **Project setup on Cloudflare** (`foreman`).
    - Delivers: the database found or created, the placeholder Worker, the inherited `DB` binding, and the secret put and list calls, all in `src/adapters/deploy/cloudflare-staging.ts` with `ALLOWED_CALLS` extended.
    - Privileged paths: none expected.
-   - Didi after: answers open points 2 and 6, creates the D1 token and stores it in Windmill.
+   - Didi after: creates the D1 token (D-445) and stores it in Windmill.
 5. **The template** (`didi-build/launchpad`).
-   - Delivers: Bootstrap with D-358's lock (1) as O-113 built it for Foreman, plus the two inputs; the Worker, the landing page, the D1 binding and `migrations/`; the preview config without a database; nodrift's binding entry; CI's local probe and the new `staging-site` layout; `init-project`'s database name; the docs (appendix E).
+   - Delivers: Bootstrap with D-358's lock (1) as O-113 built it for Foreman, plus the two inputs; the Worker, the landing page, the D1 binding and `migrations/`; the preview workflow and its Worker config removed (D-446); nodrift's binding entry; CI's local probe and the new `staging-site` layout; `init-project`'s database name; the docs (appendix E).
    - Privileged paths in Launchpad: `.github/**`, `docs/privacy/**`, `**/migrations/**`.
-   - Didi after: answers open point 5, then reviews and merges in Launchpad.
+   - Didi after: reviews and merges in Launchpad.
 6. **The New project form** (`foreman`).
    - Delivers: `flows/new-project.ts` and `src/core/new-project.ts`; the settings-write and start tokens; a migration for the store's `deploy_target` (and `name` as the display name); the runbook's "Adding a project" rewritten. `f/foreman/register_project` is retired.
    - Privileged paths: `db/migrations/0028_*.sql`.
-   - Didi after: answers open point 3 and approves the Windmill deploy. Didi runs the form in dry run, then for a throwaway project, and checks that the add-only applies ran with no approval and that the placeholder answers.
+   - Didi after: approves the Windmill deploy. Didi runs the form in dry run, then for a throwaway project, and checks that the add-only applies ran with no approval and that the placeholder answers.
 7. **The Set project secret form** (`foreman`).
    - Delivers: `flows/set-project-secret.ts` and its core; the deploy's schema for the password field; the scopes and the deletion of the short-lived variable; the names table (a migration); the required-secret check at deploy.
    - Privileged paths: the new files (`**/*secret*`), `.github/scripts/windmill-deploy.sh`, the migration.
-   - Didi after: answers open point 7 and approves the deploy. Didi sets a test secret on the throwaway project and checks the run's arguments and the variable's removal.
+   - Didi after: approves the deploy. Didi sets a test secret on the throwaway project and checks the run's arguments and the variable's removal.
 8. **D1 migrations on staging** (`foreman`).
    - Delivers: the deploy applies new `migrations/*.sql` files to `<slug>-staging` with the D1 token before it uploads, and records them in `d1_migrations`. A migration that fails is the change's own failure, like a refused file set.
    - Privileged paths: none in `foreman`.
@@ -196,7 +161,7 @@ Each slice is one pull request, in this order. Slices 3 and 4 can be built while
 9. **Deploy targets and Foreman as its own project** (`foreman`).
    - Delivers: routing by target; the cluster adapter's first build (appendix G); the stack skipping names for cluster-target projects; Foreman's store row (a migration).
    - Privileged paths: the migration, `infra/**`.
-   - Didi after: answers open point 8, commits `projects/foreman.json` and approves its Platform plan (`agents-foreman`).
+   - Didi after: commits `projects/foreman.json` and approves its Platform plan (`agents-foreman`).
 
 Later, each its own design or decision: the chat sending the form's link (with ADR 0116's chat), the planner or Council prefilling the form (D-434), generated secrets (D-440), removing a project, a project's production (D-007), the cluster adapter proposing Foreman's new image pins itself, and a cluster backend for a product as an exception (D-439).
 
@@ -244,7 +209,7 @@ A project file, shown for the rehearsal as it moves over (D-375, D-379). Its dis
 
 The standard size stays in Foreman. `production.json` keeps `platform` and `eval`, loses `projects`, and gains `projectStandardQuota` with today's values. Changing the standard is a Foreman change that Didi reviews. Each project file states its quota in full, so changing the standard later never changes an existing project silently.
 
-**Who writes it.** The New project form, as the runner App (D-346, D-347). The token is minted for one write, narrowed to `foreman-projects` with `contents: write`, through the shared mint that refuses a wider grant (`src/adapters/github/narrow-tokens.ts`). The App already holds Contents read and write for its merges (D-365) and is installed on every repository of `didi-build` (D-347), so it gains no permission (open point 3). The write is GitHub's "Create or update file contents" without a `sha`. GitHub requires the file's sha to replace an existing file, so the write can only create; the exact status GitHub answers for an existing file is checked in slice 6. The commit message names the form and its Windmill run.
+**Who writes it.** The New project form, as the runner App (D-346, D-347). The token is minted for one write, narrowed to `foreman-projects` with `contents: write`, through the shared mint that refuses a wider grant (`src/adapters/github/narrow-tokens.ts`). The App already holds Contents read and write for its merges (D-365) and is installed on every repository of `didi-build` (D-347), so it gains no permission (D-443). The write is GitHub's "Create or update file contents" without a `sha`. GitHub requires the file's sha to replace an existing file, so the write can only create; the exact status GitHub answers for an existing file is checked in slice 6. The commit message names the form and its Windmill run.
 
 **The ruleset.** The settings repository's `main` gets a ruleset (free on public repositories): restrict updates, restrict deletions, and block force pushes. The runner App and the repository's admins (Didi) are on the bypass list. The Developer, Designer and QA Apps are installed on every repository too (D-347), so this is what stops them pushing there. Didi can still change a file by hand, for example to give a project a bigger size (D-436). Such a change is not add-only, so its plans wait for Didi.
 
@@ -262,7 +227,7 @@ The standard size stays in Foreman. `production.json` keeps `platform` and `eval
 
 The check fails closed. A failed read, an unknown field, a script error or any doubt sends the run to the reviewed apply job, never to the unreviewed one, and never to no apply.
 
-**The jobs.** Each workflow gets a second apply job, in a new environment with no reviewer that accepts main only: `platform-add-project` and `infra-add-project` (open point 4). The plan job sets `add_only` to `true` or `false`. When the plan has changes, the reviewed apply runs if `add_only` is false and the add-only apply runs if it is true. The workflow files and `.github/scripts/` are privileged paths that Didi reviews (D-339), so an agent's pull request cannot change the rule.
+**The jobs.** Each workflow gets a second apply job, in a new environment with no reviewer that accepts main only: `platform-add-project` and `infra-add-project` (D-444). The plan job sets `add_only` to `true` or `false`. When the plan has changes, the reviewed apply runs if `add_only` is false and the add-only apply runs if it is true. The workflow files and `.github/scripts/` are privileged paths that Didi reviews (D-339), so an agent's pull request cannot change the rule.
 
 **Platform: what is compared.**
 
@@ -307,7 +272,7 @@ A route created alone, for a project whose record already exists, is not add-onl
 
 | Step | What                                                                                                                                                                                   | Found first by                                                                                                | Why at this point                                                          |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| 1    | The D1 database `<slug>-staging`, with the location hint of open point 6                                                                                                               | Cloudflare's list by name, matched exactly                                                                    | The placeholder Worker binds to it                                         |
+| 1    | The D1 database `<slug>-staging`, with the location hint `enam` (D-447)                                                                                                                | Cloudflare's list by name, matched exactly                                                                    | The placeholder Worker binds to it                                         |
 | 2    | The placeholder Worker `<slug>-staging`                                                                                                                                                | A read of whether the Worker exists. If it does, the step is skipped, so a re-run never replaces a real build | The route needs the Worker (O-112, O-140)                                  |
 | 3    | The settings file `projects/<slug>.json`                                                                                                                                               | The create-only write. On a re-run the file is compared                                                       | The cluster and DNS pieces read it                                         |
 | 4    | The Platform and Infra runs, started with `projects_commit`                                                                                                                            | None needed: starting them again is harmless, since a plan with nothing to do applies nothing                 | They take minutes, so they run while the repository is set up              |
@@ -323,7 +288,7 @@ A route created alone, for a project whose record already exists, is not add-onl
 
 **What Didi sees.** The form returns `created`, or `completed` on a re-run, `dry_run`, or `refused` with fixed text, like today's refusals. It gives one line per step: the database created or reused, the placeholder uploaded or skipped, the settings commit, the two workflow runs (as links), the repository, the record, and Bootstrap's run. Then it says what to expect next: "In a few minutes `https://<slug>.didi.build` shows the placeholder. Once Bootstrap and CI finish, it shows the template's landing page." The form does not wait for the workflows. Running it again shows what is done and starts what is not. If a workflow run is not add-only, its line says that it waits for Didi's approval in GitHub.
 
-**Tokens.** The form mints each GitHub token for its one step (D-346): the repository creation token as today, `contents: write` on `foreman-projects` for the settings file, `actions: write` on `foreman` for the two starts (open point 3), and the D-358 tokens for Bootstrap. Its Cloudflare calls use the staging deploy token and the new database token (F).
+**Tokens.** The form mints each GitHub token for its one step (D-346): the repository creation token as today, `contents: write` on `foreman-projects` for the settings file, `actions: write` on `foreman` for the two starts (D-443), and the D-358 tokens for Bootstrap. Its Cloudflare calls use the staging deploy token and the new database token (F).
 
 ### D. The Set project secret form
 
@@ -362,11 +327,11 @@ In `didi-build/launchpad`:
 1. **Bootstrap.** First, carry out D-358's lock (1) in the template. O-113 built it for Foreman's own copy (`.github/workflows/bootstrap.yml` with `.github/scripts/bootstrap-*.mjs`) and noted that Launchpad needed the same change before the first project was registered. Launchpad's Bootstrap still passes `BOOTSTRAP_TOKEN` to `scripts/bootstrap.mjs`, template code outside `.github/`, and `didi-build/rehearsal` was set up that way. Then add two `workflow_dispatch` inputs, `display_name` and `collects_personal_data` (`yes` or `no`). They are passed through the environment, never written into a `run:` line, and used in place of the display name derived from the repository's name (`deriveInitArgs` in `scripts/lib/bootstrap.mjs`) and of the repository variable `LAUNCHPAD_COLLECTS_PERSONAL_DATA`.
 2. **The Worker.** A small module, for example `src/worker/index.ts`, with a fetch handler. `/api/health` answers `{"status":"ok"}`, and any other `/api/*` path answers a JSON 404. `wrangler.jsonc` gains `main`, `assets.run_worker_first: ["/api/*"]` (so only `/api` invokes the Worker and asset requests stay free), and one D1 binding, `DB`, with `database_name` `<slug>-staging` and `migrations_dir` `migrations`. The real database id is never committed (AGENTS.md section 5). The file holds a placeholder for local runs, and Foreman binds the real database at deploy (F). Slice 5 checks that Wrangler accepts the placeholder for local runs.
 3. **The landing page.** A placeholder page at `/` with the project's display name and purpose. The component gallery stays at `/gallery`.
-4. **Previews.** `wrangler.preview.jsonc` gets no D1 binding and no secret (open point 5). The deploy runbook already says that the preview token must not have D1 Edit.
+4. **Previews.** The hosted preview workflow (`.github/workflows/preview.yml`) and `wrangler.preview.jsonc` are removed, and the docs stop asking for a preview token (D-446). CI's `preview-check` stays.
 5. **Migrations.** A `migrations/` folder, empty at first. nodrift already reads `migrations/*.sql` as D1 migrations (its Check 1) and ignores the `d1_migrations` table (read in `@didi-build/nodrift` 0.1.0). Its Check 2 requires every D1 binding in `wrangler.jsonc` to appear in the data map's `other_items` with `binding:`, and `nodrift init` writes `other_items: []`. So `init-project` adds the `DB` entry after `nodrift init`. Without it, a personal-data project's `npm run check` fails right after Bootstrap.
 6. **Required secrets.** A committed file listing the names of the secrets the Worker needs (names only, empty at first). CI copies it into the build manifest (D).
 7. **CI.** The `preview-check` job also bundles the Worker with Wrangler's dry run, which needs no credential. It runs the bundle locally with a local database and probes `/` (the commit marker, as today) and `/api/health`. The kept build, `staging-site`, gets a new layout: `assets/`, `worker/`, `migrations/`, and `foreman-deploy.json` (the compatibility date and flags from `wrangler.jsonc`, and the required secret names). It holds no secret, as today.
-8. **Names.** `init-project` already renames the package, the Worker (`<slug>`) and the preview Worker (`<slug>-preview`). It also sets the D1 `database_name` to `<slug>-staging`. Foreman names the staging Worker `<slug>-staging` itself and ignores `name`.
+8. **Names.** `init-project` already renames the package and the Worker (`<slug>`); with previews gone it no longer names a preview Worker. It also sets the D1 `database_name` to `<slug>-staging`. Foreman names the staging Worker `<slug>-staging` itself and ignores `name`.
 9. **Docs.** The README and `docs/runbooks/deploy.md` describe the Worker, `/api`, D1, migrations, and secrets (names only, set through Foreman's form).
 
 Existing projects such as `didi-build/rehearsal` keep their assets-only build, and Foreman keeps deploying it as today.
@@ -375,14 +340,14 @@ Existing projects such as `didi-build/rehearsal` keep their assets-only build, a
 
 **The calls Foreman makes.** The permission names are those in Cloudflare's API reference.
 
-| Call                                                                                                 | Made by                                  | Permission                                      | Token                                 |
-| ---------------------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------- | ------------------------------------- |
-| D1: list by name, and create (`/accounts/<a>/d1/database`)                                           | New project form, step 1                 | List: D1 Read or Write. Create: D1 Write        | The new database token (open point 2) |
-| D1: run a migration (`.../d1/database/<id>/query`)                                                   | Staging deploy (slice 8)                 | D1 Write                                        | The new database token                |
-| Worker: the assets upload session, the assets upload, and the Worker upload with module and bindings | Staging deploy; New project form, step 2 | Workers Scripts Write                           | The staging deploy token, unchanged   |
-| Worker: whether it exists                                                                            | New project form, step 2                 | Workers Scripts Read or Write                   | The staging deploy token              |
-| Worker secrets: put, and list names (`.../workers/scripts/<name>/secrets`)                           | Set project secret form; staging deploy  | Put: Workers Scripts Write. List: Read or Write | The staging deploy token              |
-| DNS record and Workers route                                                                         | Infra plan, add-only or reviewed         | DNS Edit and Workers Routes Edit on the zone    | The infra token, unchanged (D-357)    |
+| Call                                                                                                 | Made by                                  | Permission                                      | Token                               |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------- | ----------------------------------- |
+| D1: list by name, and create (`/accounts/<a>/d1/database`)                                           | New project form, step 1                 | List: D1 Read or Write. Create: D1 Write        | The new database token (D-445)      |
+| D1: run a migration (`.../d1/database/<id>/query`)                                                   | Staging deploy (slice 8)                 | D1 Write                                        | The new database token              |
+| Worker: the assets upload session, the assets upload, and the Worker upload with module and bindings | Staging deploy; New project form, step 2 | Workers Scripts Write                           | The staging deploy token, unchanged |
+| Worker: whether it exists                                                                            | New project form, step 2                 | Workers Scripts Read or Write                   | The staging deploy token            |
+| Worker secrets: put, and list names (`.../workers/scripts/<name>/secrets`)                           | Set project secret form; staging deploy  | Put: Workers Scripts Write. List: Read or Write | The staging deploy token            |
+| DNS record and Workers route                                                                         | Infra plan, add-only or reviewed         | DNS Edit and Workers Routes Edit on the zone    | The infra token, unchanged (D-357)  |
 
 **Compared with today's staging deploy token.** Today's token is account-owned with one permission, Workers Scripts: Edit (runbook step 16, made at the rehearsal, O-140). It already covers every Worker call above, secrets included, so it is not widened. The only new right is D1. Cloudflare's token form gives D1 per account, not per database, so a D1 token can read and change every database in the account, including real product data once a product has users. Foreman's code only creates databases and applies migrations, and the token stays in Windmill (D-370), never in a project repository or an agent's run.
 
@@ -435,7 +400,7 @@ That is what "Foreman upgrades Foreman" means at first: Foreman's agents do the 
 - A staging space for Foreman, which needs more room in the cluster: Didi's money gate.
 - A cluster backend for a product, as D-439's exception. That needs D-437's first step, product namespaces and a products pool, which is also a money gate.
 
-How a cluster-target item finishes is open point 8.
+A cluster-target item is Done at merge (D-449).
 
 ### H. Costs in detail
 
@@ -465,9 +430,9 @@ With `run_worker_first` set to `/api/*`, only `/api` requests count. On the Free
 
 On the Free plan, queries fail with an error once the account reaches a day's limit.
 
-**What each new project costs.** On the Free plan, nothing in money: one Worker, one database, one record and one route on Cloudflare, plus a namespace and its quota on the cluster, with no new node. The Free plan's 10 databases cover about 8 to 10 projects' staging databases. That is the range D-004 expects, so the paid plan is likely needed around then, or sooner with the first production database. `docs/costs.md` already counts 0 to 5 USD a month for Cloudflare. The slice that ships the first backend updates its reason.
+**What each new project costs.** On the account's Workers Paid plan (D-450), nothing beyond the 5 USD a month already paid, within the included usage: one Worker, one database, one record and one route on Cloudflare, plus a namespace and its quota on the cluster, with no new node. `docs/costs.md` already counts 0 to 5 USD a month for Cloudflare. The slice that ships the first backend updates its reason.
 
-**What hits Didi's money gate:** Workers Paid (open point 9); a bigger agents node for more runs at once; each project's runtime model key with its spending limit (D-417).
+**What hits Didi's money gate:** usage beyond Workers Paid's included amounts; a bigger agents node for more runs at once; each project's runtime model key with its spending limit (D-417).
 
 ### I. Sources read on 2026-11-20
 
