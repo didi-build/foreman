@@ -1,11 +1,12 @@
 // A fake staging target and a fake of CI's builds for tests (O-116): the deploy port of the core
-// (`StagingTarget`) and the GitHub reads it deploys from (`StagingBuilds`), in memory. The target
-// records each deploy it is asked for and answers what the test sets (a deploy by default); the
-// builds hold runs and their `staging-site` archives. No network, no Cloudflare and no GitHub.
+// (`DeployTarget` over `StagingTarget`, named `cloudflare`, O-159) and the GitHub reads it deploys
+// from (`StagingBuilds`), in memory. The target records each deploy it is asked for and answers
+// what the test sets (a deploy by default); the builds hold runs and their `staging-site`
+// archives. No network, no Cloudflare and no GitHub.
+import type { DeployTarget } from "../../core/deploy-target.ts";
 import type {
   BuildRun,
   StagingBuilds,
-  StagingTarget,
   StagingUpload,
 } from "../../core/staging-deploy.ts";
 import {
@@ -14,7 +15,7 @@ import {
 } from "../../core/staging-deploy.ts";
 import { STAGING_MAIN_BRANCH } from "../../core/staging.ts";
 
-export interface FakeStagingTarget extends StagingTarget {
+export interface FakeStagingTarget extends DeployTarget {
   /** Each deploy asked for, in order: the project's slug, the commit and the archive's size. */
   readonly deploys: { slug: string; commitSha: string; archiveBytes: number }[];
   /** What the next deploys answer, in order; a deploy of one file once it is empty. */
@@ -25,6 +26,7 @@ export function createFakeStagingTarget(): FakeStagingTarget {
   const deploys: FakeStagingTarget["deploys"] = [];
   const answers: FakeStagingTarget["answers"] = [];
   return {
+    name: "cloudflare",
     deploys,
     answers,
     async deploy({ project, commitSha, archive }) {

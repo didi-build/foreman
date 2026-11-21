@@ -1,10 +1,13 @@
-// Seam: the deploy adapter's Cloudflare staging target (unit with a fake HTTP port, O-116). The
-// exact requests of Cloudflare's direct upload for Workers static assets, in order: the upload
+// Seam: the deploy adapter's Cloudflare staging target (unit with a fake HTTP port, O-116, O-159).
+// The exact requests of Cloudflare's direct upload for Workers static assets, in order: the upload
 // session with the manifest and its hashes (the guide's SHA-256 form), each bucket as base64 file
-// parts with their types and the session's JWT, then the Worker with only its metadata (the
-// completion token and the asset config) and no module. Every refusal is fixed text and sends
-// nothing more, a refused file set sends nothing at all, and no request ever names a route, a
-// custom domain, a zone or DNS. Fake credentials only; no network.
+// parts with their types and the session's JWT, then the Worker. For a build in the old layout the
+// Worker gets only its metadata (the completion token and the asset config) and no module, byte
+// for byte as before slice 3; for a build in the new layout it also gets the module, with
+// `main_module`, the manifest's date and flags, `keep_bindings` for secrets and
+// `run_worker_first` for `/api`. Every refusal is fixed text and sends nothing more, a refused
+// file set sends nothing at all, and no request ever names a route, a custom domain, a zone, DNS,
+// D1 or a secret. Fake credentials only; no network.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
@@ -21,7 +24,10 @@ import {
   createCloudflareStagingTarget,
   STAGING_ASSET_CONFIG,
   STAGING_COMPATIBILITY_DATE,
+  STAGING_KEEP_BINDINGS,
+  STAGING_RUN_WORKER_FIRST,
   stagingWorkerName,
+  workerMetadata,
   type CloudflareAnswer,
   type CloudflareRequest,
 } from "./cloudflare-staging.ts";
@@ -58,6 +64,26 @@ const HASHES = {
   index: guideHash("index.html", INDEX),
   script: guideHash("assets/index-1.js", SCRIPT),
 };
+
+/** A build in the new layout (O-159): the same site under assets/, a module and a migration. */
+const MODULE =
+  "export default { fetch() { return Response.json({ status: 'ok' }); } };";
+const WORKER_MODULE_PART = "index.js";
+const WORKER_MANIFEST = {
+  schema: 1,
+  compatibilityDate: "2026-11-02",
+  compatibilityFlags: ["nodejs_compat"],
+  requiredSecrets: ["MODEL_API_KEY"],
+};
+const workerArchive = (manifest = JSON.stringify(WORKER_MANIFEST)) =>
+  storedZip([
+    { name: "foreman-deploy.json", data: manifest },
+    { name: "assets/foreman-commit.txt", data: `${COMMIT}\n` },
+    { name: "assets/index.html", data: INDEX, deflate: true },
+    { name: "worker/index.js", data: MODULE, deflate: true },
+    { name: "migrations/0001_init.sql", data: "CREATE TABLE t (id INTEGER);" },
+  ]);
+const WORKER_ARCHIVE = workerArchive();
 
 const ok = (result: unknown, status = 200): CloudflareAnswer => ({
   status,
@@ -185,6 +211,24 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
       /"compatibility_date": "([^"]+)"/.exec(
         readFileSync("wrangler.jsonc", "utf8"),
       )?.[1],
+    );
+  });
+
+  it("sends today's assets-only upload byte for byte for a build in the old layout (pinned before O-159)", async () => {
+    // The rehearsal's builds have no foreman-deploy.json, so they must deploy exactly as before
+    // ADR 0118 slice 3: every request, its order, its fields and their values, serialized.
+    const { sent } = await deploy([
+      ok({
+        jwt: SESSION_JWT,
+        buckets: [[HASHES.index, HASHES.script], [HASHES.marker]],
+      }),
+      ok({}, 202),
+      ok({ jwt: DONE_JWT }, 201),
+      ok({ id: "rehearsal-staging" }),
+    ]);
+    const serialized = JSON.stringify(sent);
+    expect(createHash("sha256").update(serialized).digest("hex")).toBe(
+      "743bc88bc18cc921fc458fabcd4008bf820f57ba6cd05768d5ac96af7f7b5a92",
     );
   });
 
@@ -377,11 +421,136 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
     expect(worker.result).toMatchObject({ reason: "credential_refused" });
   });
 
-  it("never sends a request outside the three upload calls: no route, custom domain, zone or DNS", () => {
+  it("uploads a build with a Worker: the assets from assets/, then the module with its metadata, exactly", async () => {
+    const { result, sent } = await deploy(
+      [
+        ok({ jwt: SESSION_JWT, buckets: [[HASHES.index, HASHES.marker]] }),
+        ok({ jwt: DONE_JWT }, 201),
+        ok({ id: "rehearsal-staging" }),
+      ],
+      { archive: WORKER_ARCHIVE },
+    );
+    expect(result).toEqual({
+      outcome: "deployed",
+      files: 2,
+      worker: { requiredSecrets: ["MODEL_API_KEY"] },
+    });
+    expect(sent.map((r) => [r.method, r.path, r.bearer])).toEqual([
+      ["POST", SESSION_PATH, TOKEN],
+      ["POST", UPLOAD_PATH, SESSION_JWT],
+      ["PUT", WORKER_PATH, TOKEN],
+    ]);
+    // The site is assets/ only: the manifest, the module and the migrations are no assets.
+    expect(sent[0]?.json).toEqual({
+      manifest: {
+        "/foreman-commit.txt": { hash: HASHES.marker, size: 41 },
+        "/index.html": { hash: HASHES.index, size: Buffer.byteLength(INDEX) },
+      },
+    });
+    // The Worker: the metadata, then the module as an ES module part.
+    expect(sent[2]?.form).toEqual([
+      {
+        name: "metadata",
+        value: JSON.stringify({
+          main_module: "index.js",
+          bindings: [],
+          compatibility_date: "2026-11-02",
+          compatibility_flags: ["nodejs_compat"],
+          keep_bindings: ["secret_text", "secret_key"],
+          assets: {
+            jwt: DONE_JWT,
+            config: {
+              not_found_handling: "single-page-application",
+              run_worker_first: ["/api/*"],
+            },
+          },
+        }),
+      },
+      {
+        name: "index.js",
+        filename: "index.js",
+        contentType: "application/javascript+module",
+        value: MODULE,
+      },
+    ]);
+    const metadata = JSON.parse((sent[2]?.form?.[0] as { value: string }).value);
+    expect(metadata.keep_bindings).toEqual(["secret_text", "secret_key"]);
+    expect(metadata.assets.config.run_worker_first).toEqual(["/api/*"]);
+    expect(STAGING_KEEP_BINDINGS).toEqual(["secret_text", "secret_key"]);
+    expect(STAGING_RUN_WORKER_FIRST).toEqual(["/api/*"]);
+    // Nothing of the build reaches Cloudflare but its assets and its module: no secret value, no
+    // migration and no binding.
+    const everything = JSON.stringify(sent);
+    expect(everything).not.toContain("CREATE TABLE");
+    expect(everything).not.toContain("foreman-deploy");
+    expect(metadata.bindings).toEqual([]);
+  });
+
+  it("keeps today's metadata for a build without a module, and sets the module's only with one", () => {
+    expect(workerMetadata("jwt")).toEqual({
+      assets: { jwt: "jwt", config: STAGING_ASSET_CONFIG },
+      compatibility_date: STAGING_COMPATIBILITY_DATE,
+    });
+    expect(Object.keys(workerMetadata("jwt") as object)).toEqual([
+      "assets",
+      "compatibility_date",
+    ]);
+  });
+
+  it("refuses a build whose manifest fails before anything is read or sent", async () => {
+    let read = 0;
+    const creds = { read: async () => (read++, { accountId: ACCOUNT, token: TOKEN }) };
+    for (const [manifest, reason] of [
+      ["not json", "manifest_malformed"],
+      [{ ...WORKER_MANIFEST, compatibilityDate: "2021-11-02" }, "manifest_date"],
+      [" ".repeat(16 * 1024 + 1), "manifest_too_large"],
+    ] as const) {
+      const { result, sent } = await deploy([], {
+        archive: workerArchive(
+          typeof manifest === "string" ? manifest : JSON.stringify(manifest),
+        ),
+        creds,
+      });
+      expect(result, reason).toEqual({
+        outcome: "refused",
+        cause: "file_set",
+        reason,
+        text: SITE_REFUSALS[reason],
+      });
+      expect(sent).toEqual([]);
+    }
+    expect(read).toBe(0);
+  });
+
+  it("refuses as infrastructure when Cloudflare refuses the upload with the module, naming the call", async () => {
+    const { result, sent } = await deploy(
+      [
+        ok({ jwt: SESSION_JWT, buckets: [] }),
+        { status: 400, body: { success: false, errors: [{ code: 10021 }] } },
+      ],
+      { archive: WORKER_ARCHIVE },
+    );
+    expect(result).toEqual({
+      outcome: "refused",
+      cause: "infrastructure",
+      reason: "cloudflare_refused",
+      text: CLOUDFLARE_REFUSALS.cloudflare_refused,
+      detail: { call: "worker_upload", status: 400, codes: [10021] },
+    });
+    expect(sent.map((r) => r.path)).toEqual([SESSION_PATH, WORKER_PATH]);
+  });
+
+  it("never sends a request outside the three upload calls: no route, custom domain, zone, DNS, D1 or secret", () => {
     expect(everySent.length).toBeGreaterThan(10);
+    // Uploads with a module were among them.
+    expect(
+      everySent.some((r) => r.form?.some((part) => part.name === WORKER_MODULE_PART)),
+    ).toBe(true);
     for (const request of everySent) {
       expect(() => assertAllowedCall(request), request.path).not.toThrow();
-      expect(request.path).not.toMatch(/routes|domains|zones|dns|subdomain/);
+      expect(request.path).not.toMatch(
+        /routes|domains|zones|dns|subdomain|d1|secrets|\?bindings/,
+      );
     }
     const base = { bearer: TOKEN, json: {} };
     for (const [method, path] of [
@@ -395,6 +564,18 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
       ["PUT", SESSION_PATH],
       ["POST", WORKER_PATH],
       ["POST", `/accounts/${ACCOUNT}/workers/assets/upload`],
+      // Slice 4 and later (ADR 0118 appendix F): none of these is allowed in slice 3.
+      ["PUT", `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/secrets`],
+      ["GET", `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/secrets`],
+      ["GET", WORKER_PATH],
+      ["PUT", `${WORKER_PATH}?bindings_inherit=strict`],
+      ["POST", `/accounts/${ACCOUNT}/d1/database`],
+      ["GET", `/accounts/${ACCOUNT}/d1/database?name=rehearsal-staging`],
+      ["PUT", `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/content`],
+      [
+        "PATCH",
+        `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/script-settings`,
+      ],
     ] as const) {
       expect(
         () =>

@@ -1,10 +1,13 @@
-// The deploy adapter's staging target on Cloudflare (ADR 0111 section 2, `deploy`; D-353, O-116).
-// It checks CI's build (./site-files.ts) and, only when the set passes, uploads exactly those files
-// to the project's assets-only Worker `<slug>-staging` with Cloudflare's direct upload for Workers
-// static assets. Nothing from the project's repository runs: no Wrangler, no npm, no repository
+// The deploy adapter's staging target on Cloudflare (ADR 0111 section 2, `deploy`; D-353, O-116),
+// the `cloudflare` deploy target (ADR 0118 appendix G, O-159). It checks CI's build
+// (./site-files.ts) and, only when the set passes, uploads exactly those files to the project's
+// Worker `<slug>-staging` with Cloudflare's direct upload for Workers static assets: assets only
+// for a build in the old layout, with the build's Worker module for one in the new layout (below).
+// Nothing from the project's repository runs in the runner: no Wrangler, no npm, no repository
 // config. The route and the DNS name come from the infra stack (D-357, O-112): this adapter never
-// creates a route, a custom domain or a DNS record, and it can send only the three requests below
-// (`ALLOWED_CALLS`, checked before every send).
+// creates a route, a custom domain or a DNS record, makes no D1 or secret call (slice 4 and
+// later), and it can send only the three requests below (`ALLOWED_CALLS`, checked before every
+// send), with the staging deploy token as it is (Workers Scripts: Edit, D-445).
 //
 // Cloudflare's docs, read 2026-11-08: "Direct Uploads" (developers.cloudflare.com/workers/
 // static-assets/direct-upload/, last updated 2026-08-10) and the API reference pages "Create
@@ -39,6 +42,36 @@
 // assets-only Worker; the guide's example uses SHA-256, which this follows (a first real run
 // check, runbook step 16).
 //
+// A Worker with code (ADR 0118 slice 3, D-439, O-159). A build in the new layout
+// (./site-files.ts) carries the Worker's bundled ES module, and call 3 then sends it as well; calls
+// 1 and 2 do not change, and a build in the old layout (the rehearsal's) sends exactly what is
+// described above. Call 3 for a build with a module is the same `PUT`, with two parts: `metadata`,
+// then the module as a file part named `index.js` with the type `application/javascript+module`.
+// The metadata, in this order: `main_module: "index.js"`; `bindings: []`, so no binding comes from
+// the build (appendix G; the inherited `DB` is slice 4); `compatibility_date` and
+// `compatibility_flags` from the build's manifest, which passed its allow-list
+// (./deploy-manifest.ts); `keep_bindings: ["secret_text", "secret_key"]`, so the product secrets
+// set on the Worker by the Set project secret form survive each deploy (D-440, ADR 0118 appendix
+// D); and `assets` with the completion token and the runner's asset config plus
+// `run_worker_first: ["/api/*"]`, so `/api` requests go to the Worker before any asset. Every
+// other request that matches a file, and every browser navigation, is a free asset request
+// (D-439, ADR 0118 appendix H); a request outside `/api` that matches no file and is not a
+// navigation still reaches the Worker, which answers it as it chooses (the SPA page below).
+// Read 2026-11-21: the API reference "Upload Worker" (`main_module`, the module part's types,
+// `compatibility_date`, `compatibility_flags`, `keep_bindings` as "binding types to keep from
+// previous_upload", `assets.config.run_worker_first` as path rules, and `Workers Scripts Write`
+// among the accepted permissions), "Multipart upload metadata" (last updated 2026-11-11),
+// "Direct Uploads" (2026-11-12: `main_module` with the assets' completion token), "Static
+// Assets: Worker script" (2026-11-12: `run_worker_first` as a list of paths) and "Single Page
+// Application (SPA)" (2026-10-12: with a Worker, `not_found_handling` and a compatibility date
+// from 2025-04-01, a navigation that matches no file is served `index.html`, not the Worker).
+// Wrangler 4.160.0, read in the installed package (`createWorkerUploadForm`), sends the same
+// shape: `main_module`, `bindings`, the dates and flags, `keep_bindings: ["secret_text",
+// "secret_key"]` on every deploy, `assets`, and each ES module as
+// `application/javascript+module`. Not yet seen on a real upload: Cloudflare accepting this
+// exact request with the staging deploy token, and secrets surviving a deploy. The first Worker
+// deploy (slice 5's template, then a secret set in slice 7) shows both.
+//
 // Every refusal is infrastructure, with fixed text: the credential missing or malformed, Cloudflare
 // refusing the token (401 or 403), refusing the request (another 4xx), failing (429 or 5xx), not
 // answering, or answering in a shape the docs do not give. A refusal by Cloudflare also names the
@@ -49,14 +82,11 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
+import type { DeployTarget } from "../../core/deploy-target.ts";
 import { PROJECT_SLUG } from "../../core/register-project.ts";
 import type { Project } from "../../core/store.ts";
-import type {
-  DeployRefusalDetail,
-  StagingTarget,
-  StagingUpload,
-} from "../../core/staging-deploy.ts";
-import { readSiteFiles, type SiteFile } from "./site-files.ts";
+import type { DeployRefusalDetail, StagingUpload } from "../../core/staging-deploy.ts";
+import { readSiteFiles, type SiteFile, type SiteWorker } from "./site-files.ts";
 
 /** Cloudflare's API, under which every path below is sent. */
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -66,6 +96,16 @@ export const STAGING_ASSET_CONFIG = { not_found_handling: "single-page-applicati
 
 /** The compatibility date sent with the Worker: the date in Launchpad's `wrangler.jsonc`. */
 export const STAGING_COMPATIBILITY_DATE = "2026-10-26";
+
+/** The module's name in an upload with code, and the type of its part (see the header). */
+export const WORKER_MAIN_MODULE = "index.js";
+export const WORKER_MODULE_TYPE = "application/javascript+module";
+
+/** The binding types each upload with code keeps from the Worker's last version (D-440). */
+export const STAGING_KEEP_BINDINGS: readonly string[] = ["secret_text", "secret_key"];
+
+/** The paths that go to the Worker's code before any asset (D-439); the rest are assets first. */
+export const STAGING_RUN_WORKER_FIRST: readonly string[] = ["/api/*"];
 
 /** Cloudflare's longest Worker name. */
 const WORKER_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -292,10 +332,34 @@ export interface CloudflareStagingTargetOptions {
   http: CloudflareHttp;
 }
 
+/**
+ * The Worker upload's metadata: today's assets-only shape without code, or the module's shape
+ * with it (see the header). Bindings never come from the build.
+ */
+export function workerMetadata(completion: string, code?: SiteWorker): unknown {
+  if (!code) {
+    return {
+      assets: { jwt: completion, config: STAGING_ASSET_CONFIG },
+      compatibility_date: STAGING_COMPATIBILITY_DATE,
+    };
+  }
+  return {
+    main_module: WORKER_MAIN_MODULE,
+    bindings: [],
+    compatibility_date: code.manifest.compatibilityDate,
+    compatibility_flags: code.manifest.compatibilityFlags,
+    keep_bindings: STAGING_KEEP_BINDINGS,
+    assets: {
+      jwt: completion,
+      config: { ...STAGING_ASSET_CONFIG, run_worker_first: STAGING_RUN_WORKER_FIRST },
+    },
+  };
+}
+
 export function createCloudflareStagingTarget({
   credentials,
   http,
-}: CloudflareStagingTargetOptions): StagingTarget {
+}: CloudflareStagingTargetOptions): DeployTarget {
   /** Sends one request after checking it is one of the three this adapter may send. */
   async function send(
     call: CloudflareCall,
@@ -322,7 +386,11 @@ export function createCloudflareStagingTarget({
     return read;
   }
 
-  async function upload(worker: string, files: SiteFile[]): Promise<void> {
+  async function upload(
+    worker: string,
+    files: SiteFile[],
+    code: SiteWorker | undefined,
+  ): Promise<void> {
     const { accountId, token } = await readCredentials();
     const account = `/accounts/${accountId}`;
     const byHash = new Map<string, SiteFile>();
@@ -383,28 +451,32 @@ export function createCloudflareStagingTarget({
       throw new Refused("unexpected_answer", { call: "asset_upload" });
     }
 
-    // 3. The Worker: the assets and their config, and no code module.
+    // 3. The Worker: the assets and their config, and the build's module when it has one.
+    const form: CloudflareFormPart[] = [
+      { name: "metadata", value: JSON.stringify(workerMetadata(completion, code)) },
+    ];
+    if (code) {
+      form.push({
+        name: WORKER_MAIN_MODULE,
+        filename: WORKER_MAIN_MODULE,
+        contentType: WORKER_MODULE_TYPE,
+        value: code.module,
+      });
+    }
     resultOf(
       "worker_upload",
       await send("worker_upload", {
         method: "PUT",
         path: `${account}/workers/scripts/${worker}`,
         bearer: token,
-        form: [
-          {
-            name: "metadata",
-            value: JSON.stringify({
-              assets: { jwt: completion, config: STAGING_ASSET_CONFIG },
-              compatibility_date: STAGING_COMPATIBILITY_DATE,
-            }),
-          },
-        ],
+        form,
       }),
       [200, 201],
     );
   }
 
   return {
+    name: "cloudflare",
     async deploy({
       project,
       commitSha,
@@ -433,7 +505,7 @@ export function createCloudflareStagingTarget({
         };
       }
       try {
-        await upload(worker, set.files);
+        await upload(worker, set.files, set.worker);
       } catch (error) {
         // Anything but a refusal is a fault of this code: thrown, so the core records it as the
         // target's error (`target_error`) instead of as Cloudflare's answer.
@@ -446,7 +518,14 @@ export function createCloudflareStagingTarget({
           ...(error.detail ? { detail: error.detail } : {}),
         };
       }
-      return { outcome: "deployed", files: set.files.length };
+      // The required secret names ride along for slice 7's check (D-448); nothing holds yet.
+      return {
+        outcome: "deployed",
+        files: set.files.length,
+        ...(set.worker
+          ? { worker: { requiredSecrets: [...set.worker.manifest.requiredSecrets] } }
+          : {}),
+      };
     },
   };
 }
