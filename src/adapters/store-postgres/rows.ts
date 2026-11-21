@@ -12,6 +12,7 @@ import type {
   ModelEvalResult,
   Node,
   Project,
+  ProjectSecretName,
   Run,
   RunToken,
   ScanRecord,
@@ -263,4 +264,13 @@ export const toModelEvalResult = (r: Row): ModelEvalResult => ({
   facts: r.facts as Json | null,
   recordedBy: r.recorded_by as string,
   recordedAt: r.recorded_at as Date,
+});
+
+export const toProjectSecretName = (r: Row): ProjectSecretName => ({
+  id: r.id as string,
+  projectId: r.project_id as string,
+  name: r.name as string,
+  setAt: r.set_at as Date,
+  windmillRunId: r.windmill_run_id as string | null,
+  recordedBy: r.recorded_by as string,
 });

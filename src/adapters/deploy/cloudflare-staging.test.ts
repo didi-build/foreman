@@ -7,9 +7,11 @@
 // `main_module`, the manifest's date and flags, `keep_bindings` for secrets and
 // `run_worker_first` for `/api`, and the project's `DB` inherited strictly (O-160). Every refusal
 // is fixed text and sends nothing more, a refused file set sends nothing at all, and no deploy
-// request ever names a route, a custom domain, a zone, DNS, D1 or a secret. The setup, the
-// placeholder and the secret calls (O-160) are in cloudflare-setup.test.ts. Fake credentials
-// only; no network.
+// request ever names a route, a custom domain, a zone, DNS, D1 or a secret. For a build with a
+// Worker, the core's `beforeWorkerUpload` is asked first, with the manifest's required names, and
+// a refusal it gives is the answer, with no credential read and nothing sent (D-448, O-163). The
+// setup, the placeholder and the secret calls (O-160) are in cloudflare-setup.test.ts. Fake
+// credentials only; no network.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
@@ -17,6 +19,7 @@ import { describe, expect, it } from "vitest";
 
 import { storedZip, type ZipFixtureEntry } from "../../../test/zip-fixture.ts";
 import { readDeployRefusal } from "../../core/guards/evidence.ts";
+import type { StagingRefusal, WorkerDeploy } from "../../core/staging-deploy.ts";
 import type { Project } from "../../core/store.ts";
 import {
   assertAllowedCall,
@@ -127,7 +130,11 @@ const d1Credentials = {
 
 async function deploy(
   answers: (CloudflareAnswer | "throw")[],
-  options: { archive?: Uint8Array; creds?: ReturnType<typeof credentials> } = {},
+  options: {
+    archive?: Uint8Array;
+    creds?: ReturnType<typeof credentials>;
+    beforeWorkerUpload?: (worker: WorkerDeploy) => Promise<StagingRefusal | null>;
+  } = {},
 ) {
   const cloudflare = fakeCloudflare(answers);
   const target = createCloudflareStagingTarget({
@@ -139,6 +146,9 @@ async function deploy(
     project: PROJECT,
     commitSha: COMMIT,
     archive: options.archive ?? ARCHIVE,
+    ...(options.beforeWorkerUpload
+      ? { beforeWorkerUpload: options.beforeWorkerUpload }
+      : {}),
   });
   everySent.push(...cloudflare.sent);
   return { result, sent: cloudflare.sent };
@@ -501,6 +511,49 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
     expect(everything).not.toContain("foreman-deploy");
     expect(metadata.bindings).toEqual([{ type: "inherit", name: "DB" }]);
     expect(d1Reads).toBe(0);
+  });
+
+  it("asks the core's check once, with the manifest's names, before any credential is read or anything is sent (D-448, O-163)", async () => {
+    const asked: WorkerDeploy[] = [];
+    let read = 0;
+    const creds = { read: async () => (read++, { accountId: ACCOUNT, token: TOKEN }) };
+    const hold: StagingRefusal = {
+      outcome: "refused",
+      cause: "infrastructure",
+      reason: "secrets_missing",
+      text: "the build needs product secrets not set on the staging Worker: MODEL_API_KEY. Set each with the Set project secret form",
+      missingSecrets: ["MODEL_API_KEY"],
+    };
+    const held = await deploy([], {
+      archive: WORKER_ARCHIVE,
+      creds,
+      beforeWorkerUpload: async (worker) => (asked.push(worker), hold),
+    });
+    expect(held.result).toEqual(hold);
+    expect(held.sent).toEqual([]);
+    expect(read).toBe(0);
+    expect(asked).toEqual([{ requiredSecrets: ["MODEL_API_KEY"] }]);
+    // With no refusal, the upload goes on exactly as before.
+    const passed = await deploy(
+      [ok({ jwt: SESSION_JWT, buckets: [] }), ok({ id: "rehearsal-staging" })],
+      {
+        archive: WORKER_ARCHIVE,
+        beforeWorkerUpload: async (worker) => (asked.push(worker), null),
+      },
+    );
+    expect(passed.result).toMatchObject({ outcome: "deployed", files: 2 });
+    expect(passed.sent.map((r) => r.path)).toEqual([SESSION_PATH, STRICT_WORKER_PATH]);
+    expect(asked).toHaveLength(2);
+    // A build without a Worker, and a refused file set, never ask.
+    await deploy(
+      [ok({ jwt: SESSION_JWT, buckets: [] }), ok({ id: "rehearsal-staging" })],
+      { beforeWorkerUpload: async (worker) => (asked.push(worker), hold) },
+    );
+    await deploy([], {
+      archive: workerArchive("not json"),
+      beforeWorkerUpload: async (worker) => (asked.push(worker), hold),
+    });
+    expect(asked).toHaveLength(2);
   });
 
   it("fails loudly when the Worker has no DB to carry over, and refuses other codes as before (O-160)", async () => {

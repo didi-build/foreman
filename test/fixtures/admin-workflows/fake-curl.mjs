@@ -31,7 +31,7 @@
 // script's JSON) must come first and a part `file` (the bundle) must follow, or it answers 400.
 // A path with no script gets its first version; a path with one needs `auto_parent` (or it answers
 // 400, a path conflict), and with `?skip_if_noop=true` a script whose content, codebase, summary,
-// description, language and job token scopes equal its newest version's adds none. Either way it
+// description, language, job token scopes and schema equal its newest version's adds none. Either way it
 // answers 201. `GET .../schedules/exists/<path>` answers `true` or `false`; `POST
 // .../schedules/create` adds the schedule (200), or answers 400 when the path exists; `POST
 // .../schedules/update/<path>` changes its cron, time zone, arguments, cron version and
@@ -169,6 +169,7 @@ const COMPARED = [
   "description",
   "language",
   "job_token_scopes",
+  "schema",
 ];
 if (snapshot && method === "POST") {
   const script = form[0]?.name === "script" ? JSON.parse(form[0].text) : undefined;

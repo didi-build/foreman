@@ -2641,6 +2641,314 @@ describe.skipIf(process.platform === "win32")(
         }
       });
 
+      describe("the Set project secret form's schema and scope (ADR 0118 appendix D, O-163)", () => {
+        const FORM = "set_project_secret";
+        const FORM_SCOPE = "variables:write:u/{WINDMILL_FORM_USERNAME}/secret_arg/*";
+        const USER = "test_only_user";
+        const FORM_BUNDLES: Record<string, string> = {
+          ...BUNDLES,
+          [FORM]: "exports.main = async (project, name, value) => name;\n",
+        };
+        const SCHEMA = {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          properties: {
+            project: { type: "string", description: "The project's short name." },
+            name: { type: "string", description: "The secret's name." },
+            value: {
+              type: "string",
+              description: "The secret's value.",
+              password: true,
+            },
+          },
+          required: ["project", "name", "value"],
+          order: ["project", "name", "value"],
+        };
+        /** The form as the bundle job writes it: its scopes, then its schema (O-163). */
+        const formManifest = (): ManifestShape => {
+          const m = manifestOf(FORM_BUNDLES);
+          m.scripts = m.scripts.map((x) =>
+            x.path === `f/foreman/${FORM}`
+              ? {
+                  path: x.path,
+                  content: x.content,
+                  job_token_scopes: [READ, FORM_SCOPE],
+                  schema: structuredClone(SCHEMA),
+                  sha256: x.sha256,
+                  size: x.size,
+                }
+              : x,
+          );
+          return m;
+        };
+        const formIndex = () =>
+          formManifest().scripts.findIndex((x) => x.path === `f/foreman/${FORM}`);
+        const scriptJsonOf = (box: Sandbox, path: string) =>
+          curlCalls(box)
+            .filter((c) => c.form.length > 0)
+            .map((c) => JSON.parse(c.form[0]?.text ?? "{}") as Record<string, unknown>)
+            .find((json) => json.path === path);
+
+        it("sends the schema with the form only, and its scope with the username put in, never printing it", () => {
+          const box = sandbox();
+          const result = deployRun(box, artifact(box, formManifest(), FORM_BUNDLES), {
+            WINDMILL_FORM_USERNAME: USER,
+          });
+          expect(result.status, result.stderr).toBe(0);
+          expect(scriptJsonOf(box, `f/foreman/${FORM}`)).toMatchObject({
+            path: `f/foreman/${FORM}`,
+            job_token_scopes: [READ, `variables:write:u/${USER}/secret_arg/*`],
+            schema: SCHEMA,
+          });
+          for (const name of Object.keys(BUNDLES)) {
+            const json = scriptJsonOf(box, `f/foreman/${name}`);
+            expect(json, name).toEqual(scriptBody(name));
+            expect(json, name).not.toHaveProperty("schema");
+          }
+          const versions = stored(box, "scripts") as Record<
+            string,
+            { schema?: unknown; job_token_scopes: string[] }[]
+          >;
+          expect(versions[`f/foreman/${FORM}`]?.[0]?.schema).toEqual(SCHEMA);
+          for (const text of [
+            withoutMasks(result.stdout),
+            result.stderr,
+            reportOf(box),
+          ])
+            expect(text).not.toContain(USER);
+          expect(result.stdout).not.toContain(`::add-mask::${USER}`);
+          expectNothingShown(box, result);
+        });
+
+        it("adds a version when only the schema changed", () => {
+          const box = sandbox();
+          const env = { WINDMILL_FORM_USERNAME: USER };
+          expect(
+            deployRun(box, artifact(box, formManifest(), FORM_BUNDLES), env).status,
+          ).toBe(0);
+          const changed = formManifest();
+          const form = changed.scripts[formIndex()] as { schema: typeof SCHEMA };
+          form.schema.properties.value.description = "The secret's value, changed.";
+          expect(
+            deployRun(box, artifact(box, changed, FORM_BUNDLES, "artifact-2"), env)
+              .status,
+          ).toBe(0);
+          const versions = stored(box, "scripts") as Record<string, unknown[]>;
+          expect(versions[`f/foreman/${FORM}`]).toHaveLength(2);
+          expect(versions["f/foreman/scan"]).toHaveLength(1);
+        });
+
+        it("refuses, before any call, a manifest with the form's scope while the username is missing or not a Windmill username, showing none of it", () => {
+          for (const user of [
+            "",
+            "1didi",
+            "didi/../x",
+            "didi*",
+            "di di",
+            "didi\n::warning::injected",
+            "a".repeat(51),
+          ]) {
+            const box = sandbox();
+            const result = deployRun(
+              box,
+              artifact(box, formManifest(), FORM_BUNDLES),
+              user === "" ? {} : { WINDMILL_FORM_USERNAME: user },
+            );
+            expect(result.status, user).toBe(1);
+            expect(result.stderr, user).toContain(
+              "::error::WINDMILL_FORM_USERNAME is not a Windmill username (a letter, then at most 49 letters, digits or underscores)",
+            );
+            expect(curlCalls(box), user).toEqual([]);
+            expect(`${result.stdout}${result.stderr}`).not.toContain("::warning::");
+            if (user !== "") expect(result.stderr).not.toContain(user);
+          }
+          // Fifty characters is Windmill's longest.
+          const box = sandbox();
+          expect(
+            deployRun(box, artifact(box, formManifest(), FORM_BUNDLES), {
+              WINDMILL_FORM_USERNAME: `D${"a".repeat(48)}_`,
+            }).status,
+          ).toBe(0);
+        });
+
+        it("refuses, naming the field, a schema or the form's scope anywhere else, and a schema off its shape", () => {
+          const refused = (text: string) =>
+            `The bundle job's manifest is refused: ${text}.`;
+          const form = (m: ManifestShape) =>
+            m.scripts[formIndex()] as Record<string, unknown> & {
+              schema: typeof SCHEMA;
+            };
+          const i = formIndex();
+          const notShape = refused(
+            `scripts[${i}].schema is not a form schema of the expected shape`,
+          );
+          const cases: [string, (m: ManifestShape) => unknown, string][] = [
+            [
+              "a schema on another script",
+              (m) => void ((m.scripts[2] as Record<string, unknown>).schema = SCHEMA),
+              refused(
+                "scripts[2] carries a schema, which only the Set project secret form may",
+              ),
+            ],
+            [
+              "the form's scope on another script",
+              (m) =>
+                void ((m.scripts[2] as Record<string, unknown>).job_token_scopes = [
+                  READ,
+                  FORM_SCOPE,
+                ]),
+              refused(
+                "scripts[2].job_token_scopes holds a scope this script does not allow there",
+              ),
+            ],
+            [
+              "a username written in",
+              (m) =>
+                void (form(m).job_token_scopes = [
+                  READ,
+                  "variables:write:u/someone/secret_arg/*",
+                ]),
+              refused(
+                `scripts[${i}].job_token_scopes holds a scope this script does not allow there`,
+              ),
+            ],
+            [
+              "every user's variables",
+              (m) => void (form(m).job_token_scopes = [READ, "variables:write:u/*"]),
+              refused(
+                `scripts[${i}].job_token_scopes holds a scope this script does not allow there`,
+              ),
+            ],
+            [
+              "an extra key on the form",
+              (m) => void (form(m).lock = "x"),
+              refused(
+                `scripts[${i}] does not hold exactly content, job_token_scopes, path, sha256 and size`,
+              ),
+            ],
+            [
+              "a schema that is not an object",
+              (m) => void (form(m).schema = "x" as never),
+              notShape,
+            ],
+            [
+              "an extra schema key",
+              (m) => void ((form(m).schema as Record<string, unknown>).title = "x"),
+              notShape,
+            ],
+            [
+              "another draft",
+              (m) =>
+                void (form(m).schema.$schema =
+                  "http://json-schema.org/draft-07/schema#"),
+              notShape,
+            ],
+            [
+              "no password field",
+              (m) =>
+                void delete (form(m).schema.properties.value as { password?: true })
+                  .password,
+              notShape,
+            ],
+            [
+              "a password that is not true",
+              (m) =>
+                void ((
+                  form(m).schema.properties.value as Record<string, unknown>
+                ).password = "yes"),
+              notShape,
+            ],
+            [
+              "a default value",
+              (m) =>
+                void ((
+                  form(m).schema.properties.name as Record<string, unknown>
+                ).default = "MODEL_API_KEY"),
+              notShape,
+            ],
+            [
+              "an enum",
+              (m) =>
+                void ((form(m).schema.properties.name as Record<string, unknown>).enum =
+                  ["A"]),
+              notShape,
+            ],
+            [
+              "a number field",
+              (m) =>
+                void ((form(m).schema.properties.name as Record<string, unknown>).type =
+                  "number"),
+              notShape,
+            ],
+            [
+              "a description on two lines",
+              (m) => void (form(m).schema.properties.name.description = "two\nlines"),
+              notShape,
+            ],
+            [
+              "an empty description",
+              (m) => void (form(m).schema.properties.name.description = ""),
+              notShape,
+            ],
+            [
+              "an order that is not the fields",
+              (m) => void (form(m).schema.order = ["project", "name"]),
+              notShape,
+            ],
+            [
+              "a field twice in the order",
+              (m) =>
+                void (form(m).schema.order = ["project", "name", "value", "value"]),
+              notShape,
+            ],
+            [
+              "an optional field",
+              (m) => void (form(m).schema.required = ["project", "name"]),
+              notShape,
+            ],
+            [
+              "a field name with a path",
+              (m) => {
+                const sc = form(m).schema as Record<string, unknown> & {
+                  properties: Record<string, unknown>;
+                };
+                sc.properties = { "../x": sc.properties.value, ...sc.properties };
+                delete sc.properties.value;
+                sc.order = ["../x", "project", "name"];
+                sc.required = ["../x", "project", "name"];
+              },
+              notShape,
+            ],
+            [
+              "nine fields",
+              (m) => {
+                const sc = form(m).schema as {
+                  properties: Record<string, unknown>;
+                  order: string[];
+                  required: string[];
+                };
+                for (let n = 0; n < 6; n++)
+                  sc.properties[`extra${n}`] = { type: "string", description: "x" };
+                sc.order = Object.keys(sc.properties);
+                sc.required = [...sc.order];
+              },
+              notShape,
+            ],
+          ];
+          for (const [what, mutate, message] of cases) {
+            const box = sandbox();
+            const manifest = formManifest();
+            mutate(manifest);
+            const result = deployRun(box, artifact(box, manifest, FORM_BUNDLES), {
+              WINDMILL_FORM_USERNAME: USER,
+            });
+            expect(result.status, what).toBe(1);
+            expect(result.stderr, what).toContain(`::error::${message}`);
+            expect(curlCalls(box), what).toEqual([]);
+          }
+        });
+      });
+
       it("refuses a bundle that is missing, a link, or not the one the manifest names, and a folder or manifest it cannot use, before any call", () => {
         const cases: [string, (box: Sandbox) => string, string][] = [
           [

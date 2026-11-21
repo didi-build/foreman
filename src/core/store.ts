@@ -443,6 +443,21 @@ export interface ModelEvalResult {
   recordedAt: Date;
 }
 
+/**
+ * A product secret's name, set on a project's staging Worker by the Set project secret form
+ * (migration 0030, D-440, O-163). Append-only: one row each time a secret is set. Never a value.
+ */
+export interface ProjectSecretName {
+  id: string;
+  projectId: string;
+  /** The form's rule (`isProductSecretName`, ./deploy-target.ts). */
+  name: string;
+  setAt: Date;
+  /** The form's Windmill run, when its id is a UUID; null otherwise. */
+  windmillRunId: string | null;
+  recordedBy: string;
+}
+
 /** A write the store refused because of a uniqueness rule, for example a second open gate request. */
 export class StoreConflictError extends Error {
   readonly constraint: string;
@@ -610,6 +625,11 @@ export interface StoreOps {
   insertModelEvalResult(result: ModelEvalResult): Promise<void>;
   /** The results of the given Jobs, by Job and then by their place in the Job's order. */
   listModelEvalResults(jobIds: readonly string[]): Promise<ModelEvalResult[]>;
+
+  /** Records a product secret's name as set on the project's staging Worker (migration 0030). */
+  insertProjectSecretName(record: ProjectSecretName): Promise<void>;
+  /** The product secret names recorded for a project, oldest first. */
+  listProjectSecretNames(projectId: string): Promise<ProjectSecretName[]>;
 }
 
 export interface Store extends StoreOps {

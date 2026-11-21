@@ -20,6 +20,7 @@ import {
   toGithubDelivery,
   toNode,
   toProject,
+  toProjectSecretName,
   toRun,
   toRunToken,
   toModelEvalJob,
@@ -762,6 +763,24 @@ function ops(db: Queryable): StoreOps {
           [jobIds],
         )
       ).map(toModelEvalResult);
+    },
+
+    async insertProjectSecretName(r) {
+      await exec(
+        `insert into factory.project_secret_names (id, project_id, name, set_at, windmill_run_id,
+           recorded_by)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [r.id, r.projectId, r.name, r.setAt, r.windmillRunId, r.recordedBy],
+      );
+    },
+    async listProjectSecretNames(projectId) {
+      return (
+        await rows(
+          `select * from factory.project_secret_names where project_id = $1
+           order by set_at, id`,
+          [projectId],
+        )
+      ).map(toProjectSecretName);
     },
   };
 }

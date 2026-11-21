@@ -7,12 +7,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
 import {
+  FORM_SECRET_ARGS_SCOPE,
   READ_USAGE_SCOPE,
   READ_VARIABLES_SCOPE,
   WINDMILL_READ_TIMEOUT_MS,
   windmillEnvironment,
   WindmillNotConfiguredError,
   WindmillReadError,
+  windmillShortLivedVariables,
   windmillVariablePath,
   type WindmillFetch,
 } from "../../flows/lib/windmill.ts";
@@ -360,8 +362,47 @@ describe("the Windmill binding's refusals (unit with a fake fetch, O-121)", () =
     );
   });
 
-  it("names the scopes the deploy caps each job token to (D-371)", () => {
+  it("names the scopes the deploy caps each job token to (D-371, O-163)", () => {
     expect(READ_VARIABLES_SCOPE).toBe("variables:read:f/foreman/*");
     expect(READ_USAGE_SCOPE).toBe("workspaces:read");
+    expect(FORM_SECRET_ARGS_SCOPE).toBe(
+      "variables:write:u/{WINDMILL_FORM_USERNAME}/secret_arg/*",
+    );
+  });
+});
+
+describe("the Windmill binding of the form's short-lived variable (unit with a fake fetch, O-163)", () => {
+  const JOB_ID = "0192f0a0-1234-4abc-8def-0123456789ab";
+  const PATH = "u/test_only_user/secret_arg/TestOnly0123456789";
+
+  it("reads the job's own record and deletes the variable at the job's address, with its token and id", async () => {
+    const f = fakeFetch((url) =>
+      url.includes("/jobs_u/get/")
+        ? json({ args: { value: `$var:${PATH}` } })
+        : new Response("", { status: 200 }),
+    );
+    const variables = windmillShortLivedVariables({
+      env: { ...JOB_ENV, WM_JOB_ID: JOB_ID },
+      fetch: f.fetch,
+    });
+    expect(await variables.find("value")).toEqual({ kind: "variable", path: PATH });
+    expect(await variables.remove(PATH)).toEqual({ removed: true });
+    expect(f.asked.map((a) => [a.init.method, a.url])).toEqual([
+      ["GET", `${API}/jobs_u/get/${JOB_ID}`],
+      ["DELETE", `${API}/variables/delete/${PATH}`],
+    ]);
+    for (const { init } of f.asked) {
+      expect(init.headers).toEqual({ authorization: `Bearer ${TOKEN}` });
+    }
+  });
+
+  it("asks nothing outside a Windmill job or without its id, and answers that it could not", async () => {
+    const f = fakeFetch(() => json({}));
+    for (const env of [{}, JOB_ENV, { ...JOB_ENV, WM_JOB_ID: "not-a-job-id" }]) {
+      const variables = windmillShortLivedVariables({ env, fetch: f.fetch });
+      expect(await variables.find("value")).toEqual({ kind: "unreadable" });
+      expect(await variables.remove(PATH)).toEqual({ removed: false });
+    }
+    expect(f.asked).toEqual([]);
   });
 });

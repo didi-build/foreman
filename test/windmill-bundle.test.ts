@@ -26,6 +26,8 @@ import type { KubernetesRunSettings } from "../src/adapters/agent-runtime/kubern
 import {
   AGENT_RUNS_FILE,
   DEPLOYED_VALUES,
+  FORM_SCHEMA_DRAFT,
+  FORM_USERNAME_PLACEHOLDER,
   bundleForWindmill,
   summary,
   writeBundleResult,
@@ -43,6 +45,7 @@ const description = parseYaml(readFileSync("flows/windmill.yaml", "utf8")) as {
     trigger: string;
     job_token_scopes: string[];
     schedule?: { cron: string; timezone: string };
+    form?: { name: string; description: string; password?: true }[];
   }[];
 };
 const digest = (c: string) => `@sha256:${c.repeat(64)}`;
@@ -167,6 +170,109 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
     expect(empty.manifest.version).toBe(1);
     expect(empty.manifest.commit).toBe(COMMIT);
   });
+
+  it("carries a schema for the Set project secret form only, with its value a password field, and leaves the user in its scope for the deploy (O-163)", () => {
+    const withSchema = empty.manifest.scripts.filter((s) => s.schema !== undefined);
+    expect(withSchema.map((s) => s.path)).toEqual(["f/foreman/set_project_secret"]);
+    const [form] = withSchema;
+    expect(Object.keys(form ?? {})).toEqual([
+      "path",
+      "content",
+      "job_token_scopes",
+      "schema",
+      "sha256",
+      "size",
+    ]);
+    const fields =
+      description.flows.find((f) => f.name === "set_project_secret")?.form ?? [];
+    expect(form?.schema).toEqual({
+      $schema: FORM_SCHEMA_DRAFT,
+      type: "object",
+      properties: {
+        project: { type: "string", description: fields[0]?.description },
+        name: { type: "string", description: fields[1]?.description },
+        value: {
+          type: "string",
+          description: fields[2]?.description,
+          password: true,
+        },
+      },
+      required: ["project", "name", "value"],
+      order: ["project", "name", "value"],
+    });
+    expect(form?.job_token_scopes).toEqual([
+      "variables:read:f/foreman/*",
+      `variables:write:u/${FORM_USERNAME_PLACEHOLDER}/secret_arg/*`,
+    ]);
+    for (const script of empty.manifest.scripts.filter((s) => s !== form)) {
+      expect(script.job_token_scopes.join(" "), script.path).not.toContain(
+        FORM_USERNAME_PLACEHOLDER,
+      );
+    }
+  });
+
+  it("refuses a form that is not a password form of plain fields, naming the entry", async () => {
+    const probe = (form: string) => {
+      const root = folder();
+      mkdirSync(join(root, "flows"));
+      mkdirSync(join(root, "contracts"));
+      symlinkSync(join(ROOT, "node_modules"), join(root, "node_modules"));
+      writeFileSync(join(root, "contracts", "probe.txt"), "probe\n");
+      writeFileSync(
+        join(root, "flows", "probe.ts"),
+        "export async function main(value: string) {\n  return value.length;\n}\n",
+      );
+      writeFileSync(
+        join(root, "flows", "windmill.yaml"),
+        [
+          "workspace_folder: f/foreman",
+          "bundle_files:",
+          "  - contracts/",
+          "flows:",
+          "  - name: probe",
+          "    path: f/foreman/probe",
+          "    entry: flows/probe.ts",
+          "    trigger: called",
+          '    job_token_scopes: ["variables:read:f/foreman/*"]',
+          form,
+          "resources:",
+          "  values: []",
+          "",
+        ].join("\n"),
+      );
+      return bundleForWindmill({ commit: COMMIT, root, ...settingsFiles() });
+    };
+    const cases: [string, string][] = [
+      ["    form: []", "probe's form is not a list of 1 to 8 fields"],
+      [
+        "    form:\n      - { name: value, description: The value. }",
+        "probe's form has no password field",
+      ],
+      [
+        "    form:\n      - { name: value, description: The value., password: false }",
+        "probe's form: field 1's password is not true",
+      ],
+      [
+        "    form:\n      - { name: value, description: The value., password: true, default: x }",
+        "probe's form: field 1 must hold exactly name and description, and password",
+      ],
+      [
+        "    form:\n      - { name: Value, description: The value., password: true }",
+        "probe's form: field 1 has no name of a letter then letters and digits",
+      ],
+      [
+        '    form:\n      - { name: value, description: "two\\nlines", password: true }',
+        "probe's form: field 1 has no one-line description of printable ASCII",
+      ],
+      [
+        "    form:\n      - { name: value, description: A., password: true }\n      - { name: value, description: B. }",
+        "probe's form names value twice",
+      ],
+    ];
+    for (const [form, message] of cases) {
+      await expect(probe(form), message).rejects.toThrow(message);
+    }
+  }, 120_000);
 
   it("lists each schedule with its cron, time zone and script, as the yaml gives them", () => {
     expect(empty.manifest.schedules).toEqual(
@@ -433,6 +539,14 @@ describe("the bundle job's summary and files (integration, D-371, O-123)", () =>
       if (value.name !== "spec_version") expect(text).not.toContain(value.value);
     }
     expect(text).toContain("Not deployed: `f/foreman/approval`");
+    // The one form schema, named with its fields and its password field (O-163).
+    const form = filled.manifest.scripts.find((s) => s.schema !== undefined);
+    expect(text).toContain(
+      `| \`f/foreman/set_project_secret\` | \`project\`, \`name\`, \`value\` | \`value\` | \`${sha(JSON.stringify(form?.schema))}\` |`,
+    );
+    expect(text).toContain(
+      `The deploy job puts the GitHub variable WINDMILL_FORM_USERNAME in place of \`${FORM_USERNAME_PLACEHOLDER}\``,
+    );
     expect(summary(empty)).toContain(
       `Not written: \`f/foreman/agent_images\`, since claude-api is empty in ${AGENT_RUNS_FILE}.`,
     );
@@ -491,6 +605,7 @@ describe("the bundle job's summary and files (integration, D-371, O-123)", () =>
           RUNNER_TEMP: join(box, "runner-temp"),
           SETTINGS_FILE: join(box, "settings.json"),
           WINDMILL_DEPLOY_TOKEN: "test-only-windmill-deploy-token-0002",
+          WINDMILL_FORM_USERNAME: "test_only_user",
         },
       });
       expect(result.status, result.stderr).toBe(0);
@@ -498,15 +613,30 @@ describe("the bundle job's summary and files (integration, D-371, O-123)", () =>
         readFileSync(join(box, "curl.log.scripts"), "utf8"),
       ) as Record<
         string,
-        { codebase: string; bundle: string; job_token_scopes: string[] }[]
+        {
+          codebase: string;
+          bundle: string;
+          job_token_scopes: string[];
+          schema?: unknown;
+        }[]
       >;
       for (const script of filled.manifest.scripts) {
-        expect(scripts[script.path]?.[0]).toMatchObject({
+        const stored = scripts[script.path]?.[0];
+        expect(stored).toMatchObject({
           codebase: script.sha256,
           bundle: script.sha256,
-          job_token_scopes: script.job_token_scopes,
+          // The username in place of the placeholder, on the form's scope only (O-163).
+          job_token_scopes: script.job_token_scopes.map((x) =>
+            x.replace(FORM_USERNAME_PLACEHOLDER, "test_only_user"),
+          ),
         });
+        expect(stored?.schema, script.path).toEqual(script.schema);
       }
+      expect(scripts["f/foreman/set_project_secret"]?.[0]?.job_token_scopes).toEqual([
+        "variables:read:f/foreman/*",
+        "variables:write:u/test_only_user/secret_arg/*",
+      ]);
+      expect(result.stdout).not.toContain("test_only_user");
       const variables = JSON.parse(
         readFileSync(join(box, "curl.log.variables"), "utf8"),
       ) as Record<string, { value: string; is_secret: boolean }>;

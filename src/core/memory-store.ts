@@ -2,6 +2,7 @@
 // (ADR 0104). For unit tests now and the dry run later (M2.5). Every operation, and every
 // transaction as a whole, runs one at a time; a transaction works on a copy and commits it only
 // if it finishes, so rollback and the version check behave like Postgres.
+import { isProductSecretName } from "./deploy-target.ts";
 import {
   StoreConflictError,
   type CounterKind,
@@ -20,6 +21,7 @@ import {
   type ModelEvalResult,
   type Node,
   type Project,
+  type ProjectSecretName,
   type Run,
   type RunToken,
   type ScanRecord,
@@ -55,6 +57,7 @@ interface State {
   scans: Map<string, ScanRecord>;
   modelEvalJobs: Map<string, ModelEvalJob>;
   modelEvalResults: Map<string, ModelEvalResult>;
+  projectSecretNames: Map<string, ProjectSecretName>;
 }
 
 const emptyState = (): State => ({
@@ -80,6 +83,7 @@ const emptyState = (): State => ({
   scans: new Map(),
   modelEvalJobs: new Map(),
   modelEvalResults: new Map(),
+  projectSecretNames: new Map(),
 });
 
 /** Copies on the way in and out, so callers can never change stored rows by reference. */
@@ -551,6 +555,29 @@ function ops(state: State): StoreOps {
           ),
       );
     },
+
+    async insertProjectSecretName(record) {
+      if (!state.projects.has(record.projectId)) {
+        throw new Error("project_secret_names.project_id must name a project");
+      }
+      // The schema's check (migration 0030): the form's name rule, never DB or ASSETS.
+      if (!isProductSecretName(record.name)) {
+        throw new Error("project_secret_names.name must be a product secret's name");
+      }
+      insertUnique(
+        state.projectSecretNames,
+        record.id,
+        record,
+        "project_secret_names_pkey",
+      );
+    },
+    async listProjectSecretNames(projectId) {
+      return copy(
+        [...state.projectSecretNames.values()]
+          .filter((r) => r.projectId === projectId)
+          .sort(byTimeThenId<ProjectSecretName>((r) => r.setAt)),
+      );
+    },
   };
 }
 
@@ -578,6 +605,7 @@ function cloneState(state: State): State {
     scans: new Map(state.scans),
     modelEvalJobs: new Map(state.modelEvalJobs),
     modelEvalResults: new Map(state.modelEvalResults),
+    projectSecretNames: new Map(state.projectSecretNames),
   };
 }
 

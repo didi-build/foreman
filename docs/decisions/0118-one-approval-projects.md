@@ -316,9 +316,11 @@ If a password field cannot be made to work, the fallback is the other form of D-
 3. `PUT /accounts/<account>/workers/scripts/<slug>-staging/secrets` with `{"name", "text", "type": "secret_text"}`, using the staging deploy token. The adapter allows this call only for the project's staging Worker name, so no product secret can reach a preview Worker (D-440).
 4. The name and the time go into a new append-only table (a migration). The variable is deleted. The form returns the project and the name, never the value.
 
+Slice 7 built these steps (O-163) with one change of order: the form deletes the variable as soon as it has found its path in its own run's record, before the checks, so the variable goes in every outcome but the kill switch's. A run whose value argument is not a reference to such a variable is refused before any check.
+
 **Keeping secrets across deploys.** Every staging upload sends `keep_bindings: ["secret_text", "secret_key"]` in its metadata. Without it, Cloudflare would drop the secrets on the next deploy.
 
-**Checking that every secret is set.** The project lists the names its Worker needs in a committed file (E), and CI copies the list into the build's manifest. Before each upload, the deploy compares that list with the names Cloudflare lists for the staging Worker (`GET .../secrets`, which gives names and types only). Open point 7 decides what a missing name does.
+**Checking that every secret is set.** The project lists the names its Worker needs in a committed file (E), and CI copies the list into the build's manifest. Before each upload, the deploy compares that list with the names Cloudflare lists for the staging Worker (`GET .../secrets`, which gives names and types only). Open point 7 decides what a missing name does (D-448, built in slice 7, O-163).
 
 ### E. The template (Launchpad, a later pull request)
 

@@ -5,8 +5,10 @@
 // repo map's Job (and its scan mode), each run's task, the staging check, the staging deploy (CI's
 // builds and the deploy adapter's target, O-116), the ports for `BOOTSTRAP_TOKEN`'s access, the New
 // project form's settings, workflow starts and DNS lookup (O-161), and the GitHub Apps' token
-// ports, each App's key and id read on its first token (O-125). Flows take these as `FlowDeps`
-// and hold no rule of their own (architecture section 2.4); tests build `FlowDeps` from fakes.
+// ports, each App's key and id read on its first token (O-125), and the Set project secret form's
+// short-lived secret variable, read and deleted with the job's own token (O-163). Flows take these
+// as `FlowDeps` and hold no rule of their own (architecture section 2.4); tests build `FlowDeps`
+// from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -117,6 +119,7 @@ import type {
 } from "../../src/core/new-project.ts";
 import type { ProjectRepositories } from "../../src/core/project-repository.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
+import type { ShortLivedVariables } from "../../src/core/set-project-secret.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import type { DeployTarget } from "../../src/core/deploy-target.ts";
@@ -132,6 +135,7 @@ import type {
 import { SECRET_PATHS, VALUE_NAMES, type FlowEnvironment } from "./environment.ts";
 import type { ModelEvalPorts } from "./model-eval.ts";
 import { createTaskSource } from "./tasks.ts";
+import { windmillShortLivedVariables } from "./windmill.ts";
 
 /** An agent runtime as flows see it. `cleanup` runs after a run's end is recorded (ADR 0107). */
 export interface FlowRuntime extends AgentRuntime<unknown, unknown> {
@@ -192,10 +196,16 @@ export interface FlowDeps extends ReconcileDeps {
    * file set's check and Cloudflare's direct upload to `<slug>-staging` (O-116), with the build's
    * Worker module and its inherited `DB` when it has one. Refuses on its credential until Didi
    * creates the staging deploy token (D-353, runbook step 16), so nothing is uploaded. It also
-   * sets a new project up with the D1 token for the New project form (O-160, O-161), and puts
-   * product secrets, which no flow calls yet (ADR 0118 slice 7).
+   * sets a new project up with the D1 token for the New project form (O-160, O-161), puts the Set
+   * project secret form's product secrets and lists their names for the deploy's required-secret
+   * check (D-440, D-448, O-163).
    */
   stagingTarget: DeployTarget;
+  /**
+   * The Set project secret form's short-lived secret variable (ADR 0118 appendix D, O-163): its
+   * path from the job's own record, and its deletion, with the job's own token.
+   */
+  shortLivedVariables: ShortLivedVariables;
   tasks: TaskSource;
   /**
    * CI's screenshot bundles for the visual comparison (D-242), read as workflow artifacts with the
@@ -721,6 +731,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
       windmillStagingDeployCredentials(env),
       windmillD1Credentials(env),
     ),
+    shortLivedVariables: windmillShortLivedVariables(),
     screenshots: runnerScreenshotBundles(apps.runner),
     repoFolders: runnerRepoFolders(apps.runner),
     repoMaps: runnerRepoMaps(clusterParts, apps.runner),

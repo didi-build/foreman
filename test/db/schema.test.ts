@@ -82,6 +82,7 @@ const ID = {
   scan: "00000000-0000-4000-8000-00000000000c",
   evalJob: "00000000-0000-4000-8000-00000000000d",
   evalResult: "00000000-0000-4000-8000-00000000000e",
+  secretName: "00000000-0000-4000-8000-00000000000f",
 };
 const SHA = "a".repeat(40);
 const AT = "'2026-10-29T00:00:00Z'";
@@ -129,6 +130,9 @@ insert into factory.model_eval_results (id, job_id, seq, case_id, case_version, 
   values ('${ID.evalResult}', '${ID.evalJob}', 1, 'qa-truncate-pass', 1, 'qa', 'm', 'deepinfra',
     'flex', false, 'correct', 'as_expected', 3, '{}', 0.1, 1.5,
     '{"verdict": "pass", "findingPaths": []}', 'runner:weekly-model-test', ${AT});
+insert into factory.project_secret_names (id, project_id, name, set_at, windmill_run_id, recorded_by)
+  values ('${ID.secretName}', '${ID.project}', 'MODEL_API_KEY', ${AT}, null,
+    'runner:set-project-secret');
 `;
 
 const APPEND_ONLY = [
@@ -143,6 +147,7 @@ const APPEND_ONLY = [
   "github_deliveries",
   "scans",
   "model_eval_results",
+  "project_secret_names",
 ];
 
 describe("database integration (test environment guard)", () => {
@@ -176,8 +181,9 @@ describe.skipIf(!adminUrl)(
       expect(tables.ok, tables.err).toBe(true);
       expect(tables.out).toBe("");
       const count = sql("select count(*) from pg_tables where schemaname = 'factory';");
-      // 0017 adds factory.scans (O-92), and 0027 the weekly model test's two tables (O-156).
-      expect(Number(count.out)).toBe(21);
+      // 0017 adds factory.scans (O-92), 0027 the weekly model test's two tables (O-156), and
+      // 0030 the product secret names (O-163).
+      expect(Number(count.out)).toBe(22);
     });
 
     /** A time column each append-only table has, for an UPDATE that touches every row. */
@@ -187,6 +193,7 @@ describe.skipIf(!adminUrl)(
         transitions: "at",
         settings_log: "changed_at",
         github_deliveries: "received_at",
+        project_secret_names: "set_at",
       })[table] ?? "recorded_at";
 
     it.each(APPEND_ONLY)(
@@ -1257,6 +1264,95 @@ describe.skipIf(!adminUrl)(
       expect(sql("delete from factory.projects where slug = 'garden-notes';").ok).toBe(
         true,
       );
+    });
+
+    describe("the product secret names (migration 0030, D-440, O-163)", () => {
+      const insert = (
+        id: string,
+        name: string,
+        run = "null",
+        role = "factory_runner",
+      ) =>
+        sql(
+          `insert into factory.project_secret_names (id, project_id, name, set_at, windmill_run_id,
+             recorded_by)
+           values ('${id}', '${ID.project}', ${name}, ${AT}, ${run}, 'runner:set-project-secret');`,
+          role,
+        );
+
+      it("has no column that could hold a value: a project, a name, a time, a run and who recorded it", () => {
+        expect(
+          sql(
+            "select string_agg(column_name || ':' || data_type, ',' order by ordinal_position) from information_schema.columns where table_schema = 'factory' and table_name = 'project_secret_names';",
+          ).out,
+        ).toBe(
+          "id:uuid,project_id:uuid,name:text,set_at:timestamp with time zone,windmill_run_id:uuid,recorded_by:text",
+        );
+      });
+
+      it("lets the runner record a name again and read them, and takes only the form's names", () => {
+        const again = insert(
+          "00000000-0000-4000-8000-0000000000a1",
+          "'MODEL_API_KEY'",
+          "'0192f0a0-1234-4abc-8def-0123456789ab'",
+        );
+        expect(again.ok, again.err).toBe(true);
+        const longest = insert(
+          "00000000-0000-4000-8000-0000000000a2",
+          `'K${"E".repeat(63)}'`,
+        );
+        expect(longest.ok, longest.err).toBe(true);
+        expect(
+          sql(
+            `select count(*) from factory.project_secret_names where project_id = '${ID.project}' and name = 'MODEL_API_KEY';`,
+            "factory_runner",
+          ).out,
+        ).toBe("2");
+        for (const name of [
+          "'DB'",
+          "'ASSETS'",
+          "'model_api_key'",
+          "'1KEY'",
+          "'_KEY'",
+          "'MODEL-KEY'",
+          "''",
+          `'K${"E".repeat(64)}'`,
+        ]) {
+          expectRejected(
+            insert("00000000-0000-4000-8000-0000000000a3", name),
+            /project_secret_names_name_check/,
+          );
+        }
+        expectRejected(
+          insert("00000000-0000-4000-8000-0000000000a4", "null"),
+          /null value in column "name"/,
+        );
+        expectRejected(
+          insert("00000000-0000-4000-8000-0000000000a5", "'KEY'", "'not-a-uuid'"),
+          /invalid input syntax for type uuid/,
+        );
+        expectRejected(
+          sql(
+            `insert into factory.project_secret_names (id, project_id, name, set_at, recorded_by)
+               values ('00000000-0000-4000-8000-0000000000a6', '00000000-0000-4000-8000-0000000000ff', 'KEY', ${AT}, 'runner');`,
+            "factory_runner",
+          ),
+          /project_secret_names_project_id_fkey/,
+        );
+      });
+
+      it("gives the state API's and the receiver's roles no access", () => {
+        for (const role of ["factory_api", "factory_ingest"]) {
+          expectRejected(
+            sql("select count(*) from factory.project_secret_names;", role),
+            /permission denied/,
+          );
+          expectRejected(
+            insert("00000000-0000-4000-8000-0000000000a7", "'KEY'", "null", role),
+            /permission denied/,
+          );
+        }
+      });
     });
 
     describe("Triage back on Claude Sonnet 5.5, and QA independence by family (migration 0029, D-451, D-452, O-162)", () => {

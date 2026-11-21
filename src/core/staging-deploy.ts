@@ -10,7 +10,14 @@
 //    set and, only when it passes, uploads exactly those files to the project's staging site,
 //    with the build's Worker module when it has one (O-159). A set that fails is refused with
 //    fixed text and nothing is uploaded (`file_set`); a refusal by Cloudflare, the deploy
-//    credential or GitHub's artifact is `infrastructure`.
+//    credential or GitHub's artifact is `infrastructure`. Before a build with a Worker is
+//    uploaded, every product secret its manifest requires must be set on the project's staging
+//    Worker (D-448, O-163): the target hands the names to `beforeWorkerUpload`, which compares
+//    them with the names the target lists (`listSecretNames`). A missing name holds the deploy as
+//    an infrastructure refusal (`secrets_missing`) whose text names the missing secrets and the
+//    Set project secret form, and nothing is uploaded; names that cannot be read hold it too
+//    (`secrets_unreadable`). Like any infrastructure refusal it counts no failure, shows in the
+//    daily check, and the backstop deploys on its next pass once the secret is set.
 // 4. Records the outcome on each item in Verifying on staging whose merge commit the deployed
 //    commit counts for, by GitHub's compare as O-38 does (D-225 rule 1): `staging_deploy` for a
 //    deploy (with `worker: true` when it carried a Worker module, O-159),
@@ -36,6 +43,7 @@
 //
 // Plain logic over injected ports (D-162): no Cloudflare, HTTP or GitHub code here (essential 9).
 import {
+  DEPLOY_REFUSAL_TEXT_MAX_CHARS,
   INFRASTRUCTURE_CAUSE,
   countsAsFailedDeploy,
   latest,
@@ -45,6 +53,7 @@ import {
   PREVIEW_CHECK_WORKFLOW,
   PREVIEW_CHECK_WORKFLOW_FILE,
 } from "./preview-check.ts";
+import type { DeployTarget, SecretNames } from "./deploy-target.ts";
 import {
   createCoverReader,
   createStaging,
@@ -113,25 +122,32 @@ export interface DeployRefusalDetail {
 
 /**
  * What a deploy with a Worker module adds (ADR 0118 slice 3, O-159): the names of the product
- * secrets the build's manifest says the Worker needs (D-440), never a value. Carried for slice 7,
- * which holds the deploy while one is not set (D-448); nothing checks them yet.
+ * secrets the build's manifest says the Worker needs (D-440), never a value. The deploy holds
+ * while one of them is not set on the staging Worker (D-448, O-163).
  */
 export interface WorkerDeploy {
   requiredSecrets: string[];
 }
 
+/** A deploy that was not made: why, in fixed text. */
+export interface StagingRefusal {
+  outcome: "refused";
+  cause: DeployRefusalCause;
+  /** A short fixed code. */
+  reason: string;
+  /**
+   * Fixed text: never a path, a value or a word from the build or from Cloudflare, except the
+   * names of missing secrets (`secrets_missing`), which passed the manifest's name rule (D-448).
+   */
+  text: string;
+  detail?: DeployRefusalDetail;
+  /** `secrets_missing`: every missing secret's name, sorted. Names only, never a value. */
+  missingSecrets?: string[];
+}
+
 export type StagingUpload =
   /** `worker` only when the build carried a Worker module, so `/api` runs code. */
-  | { outcome: "deployed"; files: number; worker?: WorkerDeploy }
-  | {
-      outcome: "refused";
-      cause: DeployRefusalCause;
-      /** A short fixed code. */
-      reason: string;
-      /** Fixed text: never a path, a value or a word from the build or from Cloudflare. */
-      text: string;
-      detail?: DeployRefusalDetail;
-    };
+  { outcome: "deployed"; files: number; worker?: WorkerDeploy } | StagingRefusal;
 
 /**
  * The deploy adapter's staging target (ADR 0111 section 2, `deploy`): it checks the site and, only
@@ -143,6 +159,12 @@ export interface StagingTarget {
     project: Project;
     commitSha: string;
     archive: Uint8Array;
+    /**
+     * For a build with a Worker module: called once its file set has passed and before anything
+     * is uploaded, with the names its manifest requires. A refusal it returns is the deploy's
+     * answer, and nothing is uploaded (D-448, O-163).
+     */
+    beforeWorkerUpload?: (worker: WorkerDeploy) => Promise<StagingRefusal | null>;
   }): Promise<StagingUpload>;
 }
 
@@ -152,13 +174,42 @@ export const DEPLOY_REFUSALS = {
   artifact_missing: "the CI run kept no staging-site build, or it has expired",
   artifact_unreadable: "the CI run's staging-site build could not be downloaded",
   target_error: "the deploy target failed without saying why",
+  secrets_unreadable:
+    "the staging Worker's secret names could not be read, so the build's required secrets could not be checked and nothing was uploaded",
 } as const;
+
+/** The two halves of a `secrets_missing` text, around the missing names (D-448). */
+const MISSING_SECRETS_LEAD =
+  "the build needs product secrets not set on the staging Worker: ";
+const MISSING_SECRETS_TAIL = ". Set each with the Set project secret form";
+
+/**
+ * The fixed text of a deploy held for missing secrets (D-448): the names, in order, as many as fit
+ * in the bound the daily check shows (`readDeployRefusal` in ./guards/evidence.ts), then how many
+ * more. Each name follows the manifest's rule, so the text keeps to the characters it shows.
+ */
+export function missingSecretsText(missing: readonly string[]): string {
+  const room =
+    DEPLOY_REFUSAL_TEXT_MAX_CHARS -
+    MISSING_SECRETS_LEAD.length -
+    MISSING_SECRETS_TAIL.length;
+  let names = `${missing.length} secrets`;
+  for (let shown = missing.length; shown >= 1; shown--) {
+    const rest = missing.length - shown;
+    const list = `${missing.slice(0, shown).join(", ")}${rest > 0 ? ` and ${rest} more` : ""}`;
+    if (list.length <= room) {
+      names = list;
+      break;
+    }
+  }
+  return `${MISSING_SECRETS_LEAD}${names}${MISSING_SECRETS_TAIL}`;
+}
 
 /** Why a deploy result names no covered item: GitHub's compare could not be read. */
 export const COVER_UNREADABLE =
   "GitHub's compare could not be read, so no item was recorded; the reconcile pass retries";
 
-const infrastructure = (reason: keyof typeof DEPLOY_REFUSALS): StagingUpload => ({
+const infrastructure = (reason: keyof typeof DEPLOY_REFUSALS): StagingRefusal => ({
   outcome: "refused",
   cause: INFRASTRUCTURE_CAUSE,
   reason,
@@ -223,8 +274,10 @@ export interface StagingDeployResult {
   detail?: DeployRefusalDetail;
   /** For a deploy: how many files the site has. */
   files?: number;
-  /** For a deploy with a Worker module: the secret names it requires (O-159, for slice 7). */
+  /** For a deploy with a Worker module: the secret names it requires (O-159). */
   worker?: WorkerDeploy;
+  /** For a deploy held for missing secrets (D-448): each missing name, sorted. Never a value. */
+  missingSecrets?: string[];
   /** The items in Verifying on staging whose merge commit the deployed commit counts for. */
   covers?: string[];
   /** What was recorded on each covered item. */
@@ -251,7 +304,8 @@ export interface StagingBackstopStep {
 
 export interface StagingDeployDeps extends StagingDeps {
   builds: StagingBuilds;
-  target: StagingTarget;
+  /** The deploy, and the secret names the required-secret check compares with (D-448). */
+  target: StagingTarget & Pick<DeployTarget, "listSecretNames">;
 }
 
 /**
@@ -402,6 +456,43 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     return { covers: covered.map((c) => c.node), recorded };
   }
 
+  /**
+   * D-448: a build with a Worker is uploaded only when every secret its manifest requires is set
+   * on the project's staging Worker. Otherwise the deploy is held as an infrastructure refusal
+   * naming the missing secrets and the Set project secret form; names the target cannot list hold
+   * it too. A build that requires none asks nothing.
+   */
+  async function requiredSecretsHold(
+    project: Project,
+    worker: WorkerDeploy,
+  ): Promise<StagingRefusal | null> {
+    if (worker.requiredSecrets.length === 0) return null;
+    let listed: SecretNames | null;
+    try {
+      listed = await target.listSecretNames(project.slug);
+    } catch {
+      listed = null;
+    }
+    if (listed?.outcome !== "listed") {
+      return {
+        ...infrastructure("secrets_unreadable"),
+        ...(listed?.detail ? { detail: listed.detail } : {}),
+      };
+    }
+    const set = new Set(listed.names);
+    const missing = [...new Set(worker.requiredSecrets)]
+      .filter((name) => !set.has(name))
+      .sort();
+    if (missing.length === 0) return null;
+    return {
+      outcome: "refused",
+      cause: INFRASTRUCTURE_CAUSE,
+      reason: "secrets_missing",
+      text: missingSecretsText(missing),
+      missingSecrets: missing,
+    };
+  }
+
   /** The upload, from the run's artifact. Every error becomes an infrastructure refusal. */
   async function upload(project: Project, run: BuildRun): Promise<StagingUpload> {
     let archive: Uint8Array | null;
@@ -412,7 +503,12 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     }
     if (archive === null) return infrastructure("artifact_missing");
     try {
-      return await target.deploy({ project, commitSha: run.headSha, archive });
+      return await target.deploy({
+        project,
+        commitSha: run.headSha,
+        archive,
+        beforeWorkerUpload: (worker) => requiredSecretsHold(project, worker),
+      });
     } catch {
       return infrastructure("target_error");
     }
@@ -475,6 +571,9 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
             reason: outcome.reason,
             text: outcome.text,
             ...(outcome.detail ? { detail: outcome.detail } : {}),
+            ...(outcome.missingSecrets
+              ? { missingSecrets: outcome.missingSecrets }
+              : {}),
           };
     let recorded;
     try {

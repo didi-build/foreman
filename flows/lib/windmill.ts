@@ -14,12 +14,16 @@
 // and the API's internal address, `BASE_INTERNAL_URL` for most languages and `BASE_URL` for Bun
 // and Node jobs; Windmill's own client reads them in the same order. The token reaches only what
 // the script's `job_token_scopes` allow (D-371): `variables:read:f/foreman/*` for every flow, plus
-// `workspaces:read` on the reconcile flow, the only one that reads the count.
+// `workspaces:read` on the reconcile flow, the only one that reads the count, and on the Set
+// project secret form only, write on the short-lived secret variables its password field makes
+// under the Windmill user who runs it (`windmillShortLivedVariables` below, O-163).
 //
 // Nothing here logs, and nothing returns a value except to its caller. Each refusal is fixed text
 // that names the variable or the path and, for an answer, its status: never the token, a value or
 // Windmill's answer. A job without these environment variables (tests, local runs) is refused.
 import { parseWindmillWorkspace } from "../../src/adapters/windmill/client.ts";
+import { createWindmillShortLivedVariables } from "../../src/adapters/windmill/short-lived-variables.ts";
+import type { ShortLivedVariables } from "../../src/core/set-project-secret.ts";
 import type { FlowEnvironment } from "./environment.ts";
 
 /** The folder every flow, secret and value lives in (`workspace_folder` in flows/windmill.yaml). */
@@ -30,6 +34,16 @@ export const READ_VARIABLES_SCOPE = `variables:read:${WINDMILL_FOLDER}/*`;
 
 /** Added on the reconcile flow only, for the execution count. Windmill cannot limit it to paths. */
 export const READ_USAGE_SCOPE = "workspaces:read";
+
+/**
+ * Added on the Set project secret form only (ADR 0118 appendix D, O-163): write, which includes
+ * read, on the short-lived secret variables its password field makes under the Windmill user who
+ * runs the form. flows/windmill.yaml gives it with the user left as this placeholder; the Windmill
+ * deploy's protected script puts in the username from the GitHub variable of that name, which is
+ * not committed (.github/scripts/windmill-deploy.sh).
+ */
+export const FORM_SECRET_ARGS_SCOPE =
+  "variables:write:u/{WINDMILL_FORM_USERNAME}/secret_arg/*";
 
 /** The environment variables Windmill sets in every job. None is read for anything else. */
 export const WINDMILL_JOB_ENV = {
@@ -226,4 +240,30 @@ export function windmillJobId(
 ): string | null {
   const id = env[WINDMILL_JOB_ID_ENV] ?? "";
   return JOB_ID.test(id) ? id : null;
+}
+
+/**
+ * The short-lived secret variable behind one of this job's arguments, the Set project secret
+ * form's password field (ADR 0118 appendix D, O-163): the Windmill adapter with this job's token,
+ * API address and id, read from the job's environment each time a call needs them. Outside a
+ * Windmill job, or without a job id, each call answers that it could not read or delete.
+ */
+export function windmillShortLivedVariables(
+  options: WindmillEnvironmentOptions = {},
+): ShortLivedVariables {
+  const env = options.env ?? process.env;
+  const what = "this run's short-lived secret variable";
+  return createWindmillShortLivedVariables({
+    job: () => {
+      const jobId = windmillJobId(env);
+      if (jobId === null) {
+        throw new WindmillNotConfiguredError(
+          `${WINDMILL_JOB_ID_ENV} is not a job id, so ${what} cannot be read`,
+        );
+      }
+      return { ...jobOf(env, what), jobId };
+    },
+    fetch: options.fetch ?? ((url, init) => fetch(url, init)),
+    timeoutMs: WINDMILL_READ_TIMEOUT_MS,
+  });
 }

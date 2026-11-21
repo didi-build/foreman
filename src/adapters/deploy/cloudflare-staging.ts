@@ -112,6 +112,11 @@
 // variable). The value is sent once and is never logged, kept, returned or put in an error, and
 // Cloudflare's answer to the put is not read beyond `success`.
 //
+// The required-secret check (D-448, O-163) is the core's (src/core/staging-deploy.ts): for a build
+// with a Worker module, `deploy` calls the request's `beforeWorkerUpload` with the manifest's
+// required names once the file set has passed and before any credential is read or anything is
+// sent. A refusal it returns is the deploy's answer, and nothing is uploaded.
+//
 // Every refusal is infrastructure, with fixed text: the credential missing or malformed, Cloudflare
 // refusing the token (401 or 403), refusing the request (another 4xx), failing (429 or 5xx), not
 // answering, or answering in a shape the docs do not give. A refusal by Cloudflare also names the
@@ -124,14 +129,17 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
-import type {
-  DatabaseStep,
-  DeployTarget,
-  ProjectSetUp,
-  ProjectSetUpRequest,
-  SecretNames,
-  SecretPut,
-  TargetRefusal,
+import {
+  PRODUCT_SECRET_VALUE_MAX_BYTES,
+  isProductSecretName,
+  isProductSecretValue,
+  type DatabaseStep,
+  type DeployTarget,
+  type ProjectSetUp,
+  type ProjectSetUpRequest,
+  type SecretNames,
+  type SecretPut,
+  type TargetRefusal,
 } from "../../core/deploy-target.ts";
 import {
   isProjectDisplayName,
@@ -140,8 +148,12 @@ import {
 } from "../../core/project-entry.ts";
 import { PROJECT_SLUG } from "../../core/project-repository.ts";
 import type { Project } from "../../core/store.ts";
-import type { DeployRefusalDetail, StagingUpload } from "../../core/staging-deploy.ts";
-import { isProductSecretName } from "./deploy-manifest.ts";
+import type {
+  DeployRefusalDetail,
+  StagingRefusal,
+  StagingUpload,
+  WorkerDeploy,
+} from "../../core/staging-deploy.ts";
 import {
   PLACEHOLDER_MODULE,
   PLACEHOLDER_PAGE_FILE,
@@ -193,8 +205,8 @@ export const STAGING_DATABASE_LOCATION = "enam";
 /** The size of the one page of databases read by name; a full page without the name refuses. */
 export const DATABASE_LIST_PAGE = 100;
 
-/** The largest product secret value, in UTF-8 bytes ("Workers platform limits": 5 KB). */
-export const SECRET_VALUE_MAX_BYTES = 5 * 1024;
+/** The largest product secret value, in UTF-8 bytes ("Workers platform limits": 5 KB; the core's). */
+export const SECRET_VALUE_MAX_BYTES = PRODUCT_SECRET_VALUE_MAX_BYTES;
 
 /** The secret binding types a list of the Worker's secrets reports. */
 const SECRET_TYPES: readonly unknown[] = ["secret_text", "secret_key"];
@@ -892,10 +904,12 @@ export function createCloudflareStagingTarget({
       project,
       commitSha,
       archive,
+      beforeWorkerUpload,
     }: {
       project: Project;
       commitSha: string;
       archive: Uint8Array;
+      beforeWorkerUpload?: (worker: WorkerDeploy) => Promise<StagingRefusal | null>;
     }): Promise<StagingUpload> {
       const worker = stagingWorkerName(project.slug);
       if (worker === null) {
@@ -914,6 +928,15 @@ export function createCloudflareStagingTarget({
           reason: set.reason,
           text: set.text,
         };
+      }
+      const code: WorkerDeploy | undefined = set.worker
+        ? { requiredSecrets: [...set.worker.manifest.requiredSecrets] }
+        : undefined;
+      // The core's check before a Worker is uploaded (D-448, O-163): a refusal it returns is the
+      // answer, before any credential is read or anything is sent for the upload.
+      if (code && beforeWorkerUpload) {
+        const held = await beforeWorkerUpload(code);
+        if (held) return held;
       }
       try {
         // A build with a Worker carries the project's database over (O-160); one without, none.
@@ -936,13 +959,10 @@ export function createCloudflareStagingTarget({
           ...(detail ? { detail } : {}),
         };
       }
-      // The required secret names ride along for slice 7's check (D-448); nothing holds yet.
       return {
         outcome: "deployed",
         files: set.files.length,
-        ...(set.worker
-          ? { worker: { requiredSecrets: [...set.worker.manifest.requiredSecrets] } }
-          : {}),
+        ...(code ? { worker: code } : {}),
       };
     },
 
@@ -991,13 +1011,7 @@ export function createCloudflareStagingTarget({
       const worker = stagingWorkerName(slug);
       if (worker === null) return secretRefusal("bad_project");
       if (!isProductSecretName(name)) return secretRefusal("bad_secret_name");
-      if (
-        typeof value !== "string" ||
-        value === "" ||
-        Buffer.byteLength(value, "utf8") > SECRET_VALUE_MAX_BYTES
-      ) {
-        return secretRefusal("bad_secret_value");
-      }
+      if (!isProductSecretValue(value)) return secretRefusal("bad_secret_value");
       try {
         const { path, token } = await secretsPath(worker);
         // Only `success` is read: the answer's `result` may echo the value, and is dropped.

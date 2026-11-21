@@ -11,8 +11,10 @@ name: Windmill deploy
 # - `deploy` (environment `windmill`, main only, Didi the only required reviewer): checks out
 #   `.github/` and the settings file only (the Windmill host and workspace), and runs
 #   `.github/scripts/windmill-deploy.sh` with bash, curl and jq and the one secret
-#   WINDMILL_DEPLOY_TOKEN. The script checks the manifest strictly, then creates or updates each
-#   script, schedule and plain value, and prints paths and statuses only. The token can write
+#   WINDMILL_DEPLOY_TOKEN, and the variable WINDMILL_FORM_USERNAME, Didi's Windmill username,
+#   which the Set project secret form's scope names and which is not committed (O-163). The script
+#   checks the manifest strictly, then creates or updates each script, schedule and plain value,
+#   and prints paths and statuses only. The token can write
 #   scripts and schedules under `f/foreman/` and exactly the plain value paths, and no secret
 #   variable, resource, flow, job, user or workspace (first-hosting runbook step 15).
 #
@@ -118,6 +120,7 @@ jobs:
       - name: Upload the scripts, schedules and plain values to Windmill
         env:
           WINDMILL_DEPLOY_TOKEN: ${{ secrets.WINDMILL_DEPLOY_TOKEN }}
+          WINDMILL_FORM_USERNAME: ${{ vars.WINDMILL_FORM_USERNAME }}
         run: |
           set -euo pipefail
           # The report holds paths and statuses only; the script's own output, with its mask, stays in the log.
