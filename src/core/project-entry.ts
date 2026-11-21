@@ -48,7 +48,7 @@ export const PROJECT_ENTRY_SLUG = /^(?=[a-z0-9-]{1,47}$)[a-z0-9]+(?:-[a-z0-9]+)*
 
 /** Where a project runs its product (D-441). Every new project defaults to Cloudflare. */
 export const DEPLOY_TARGETS = ["cloudflare", "cluster"] as const;
-export type DeployTarget = (typeof DEPLOY_TARGETS)[number];
+export type DeployTargetName = (typeof DEPLOY_TARGETS)[number];
 
 /**
  * A project's agent space quota (ADR 0106 section 4), the shape of `AgentQuota` in
@@ -70,7 +70,7 @@ export interface ProjectEntry {
   purpose: string;
   collectsPersonalData: boolean;
   quota: ProjectQuota;
-  deployTarget: DeployTarget;
+  deployTarget: DeployTargetName;
   /** The day the project was created, `YYYY-MM-DD`. */
   createdOn: string;
 }
@@ -181,7 +181,7 @@ const isDate = (value: unknown): value is string => {
   return day <= (days[month - 1] ?? 0);
 };
 
-const isDeployTarget = (value: unknown): value is DeployTarget =>
+const isDeployTarget = (value: unknown): value is DeployTargetName =>
   (DEPLOY_TARGETS as readonly unknown[]).includes(value);
 
 /** Whether a slug follows the entry's slug rule. */

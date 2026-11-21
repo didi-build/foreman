@@ -1,9 +1,9 @@
 // Seam: the staging deploy in the flows (flow, D-353, D-356, O-116) on the memory store, through the
 // flow layer's deps (`flowDepsFor`): the called flow `f/foreman/deploy_staging` with the real
-// deploy adapter (the file-set check and Cloudflare's three upload calls) behind a fake HTTP port
-// and fake credentials, on a real zip; the same with the composition's credential port, which
-// refuses until Didi creates the token, so nothing is sent, nothing counts and the daily check
-// shows the deploy that did not go through; and with the runner's own GitHub reads and no runner
+// deploy adapter (the file-set check and Cloudflare's three upload calls, with a Worker module for
+// a build in the new layout, O-159) behind a fake HTTP port and fake credentials, on a real zip;
+// the same with the composition's credential port, which refuses until Didi creates the token,
+// so nothing is sent, nothing counts and the daily check shows the deploy that did not go through; and with the runner's own GitHub reads and no runner
 // App key stored, so the token is refused before anything is sent. Synthetic data only; nothing
 // reaches GitHub, Cloudflare or Windmill.
 import { describe, expect, it } from "vitest";
@@ -108,6 +108,47 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     ]);
     expect(await t.kind("staging_deploy")).toHaveLength(1);
     expect(await t.state()).toBe("done");
+  });
+
+  it("uploads a build with a Worker module in the same three calls, and the check then probes the Worker (O-159)", async () => {
+    const { t, deps, cloudflare } = await flow();
+    const archive = storedZip([
+      {
+        name: "foreman-deploy.json",
+        data: JSON.stringify({
+          schema: 1,
+          compatibilityDate: "2026-10-26",
+          compatibilityFlags: [],
+          requiredSecrets: ["MODEL_API_KEY"],
+        }),
+      },
+      { name: "assets/foreman-commit.txt", data: `${t.mergeSha}\n` },
+      { name: "assets/index.html", data: "<!doctype html><title>Rehearsal</title>" },
+      { name: "worker/index.js", data: "export default { fetch() {} };" },
+    ]);
+    t.builds.putRun(REPO, mainBuild(REPO, 36, t.mergeSha), archive);
+    const result = await deployStaging(deps, { repo: REPO, runId: 36 });
+    expect(result).toMatchObject({
+      outcome: "done",
+      deploy: {
+        step: "deployed",
+        files: 2,
+        worker: { requiredSecrets: ["MODEL_API_KEY"] },
+        verified: [{ move: { toState: "done", outcome: "applied" } }],
+      },
+    });
+    expect(
+      cloudflare.sent.map((r) => `${r.method} ${r.path.split("/").slice(3).join("/")}`),
+    ).toEqual([
+      "POST workers/scripts/rehearsal-staging/assets-upload-session",
+      "POST workers/assets/upload?base64=true",
+      "PUT workers/scripts/rehearsal-staging",
+    ]);
+    expect(cloudflare.sent[2]?.form?.map((part) => part.name)).toEqual([
+      "metadata",
+      "index.js",
+    ]);
+    expect(t.checker.calls.map((c) => c.worker)).toEqual([true]);
   });
 
   it("refuses a build with _worker.js before anything is sent, and sends the item back with one failure", async () => {

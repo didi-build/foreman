@@ -1,11 +1,16 @@
-// Seam: the staging site's file set (unit, O-116), on synthetic zips made in memory, as GitHub serves
-// a workflow artifact. Each rule refuses on its own, with fixed text that names no path or value
-// from the build, and a set that passes gives exactly its files. No network.
+// Seam: the staging site's file set (unit, O-116, O-159), on synthetic zips made in memory, as GitHub
+// serves a workflow artifact. Each rule refuses on its own, with fixed text that names no path or
+// value from the build, and a set that passes gives exactly its files. Both layouts: the old one
+// (the site at the root, as the rehearsal builds it) gives no Worker; the new one (the manifest,
+// `assets/`, `worker/index.js`, `migrations/`) gives the site from `assets/` and the Worker's
+// module, manifest and migrations. No network.
 import { describe, expect, it } from "vitest";
 
 import { storedZip, type ZipFixtureEntry } from "../../../test/zip-fixture.ts";
+import { DEPLOY_MANIFEST_MAX_BYTES } from "./deploy-manifest.ts";
 import {
   CLOUDFLARE_STATIC_ASSET_LIMITS,
+  MAX_MIGRATIONS,
   readSiteFiles,
   SITE_REFUSALS,
   SITE_TOTAL_BYTES,
@@ -164,10 +169,222 @@ describe("the staging site's file set (unit: O-116)", () => {
     }
   });
 
+  it("reads a site in the old layout as before: an `assets/` folder at the root is the site's own, and no Worker", () => {
+    const set = site(
+      { name: "index.html", data: "<html></html>" },
+      { name: "assets/index-1.js", data: "console.log(1)" },
+      { name: "worker/index.js", data: "export default {}" },
+    );
+    expect(set.ok).toBe(true);
+    if (!set.ok) return;
+    expect(set.files.map((f) => f.path)).toEqual([
+      "foreman-commit.txt",
+      "index.html",
+      "assets/index-1.js",
+      "worker/index.js",
+    ]);
+    expect(set).not.toHaveProperty("worker");
+  });
+
   it("names no path or value from the build in any refusal text", () => {
     for (const text of Object.values(SITE_REFUSALS)) {
       expect(text).toMatch(/^[A-Za-z0-9 ,.;:'()_/-]{1,200}$/);
       expect(text).not.toMatch(/\u2014/);
     }
+  });
+});
+
+const MANIFEST = {
+  schema: 1,
+  compatibilityDate: "2026-10-26",
+  compatibilityFlags: ["nodejs_compat"],
+  requiredSecrets: ["MODEL_API_KEY"],
+};
+const MODULE =
+  "export default { fetch() { return Response.json({ status: 'ok' }); } };";
+
+/** A build in the new layout (O-159), with the given entries in place of the defaults. */
+function workerBuild(
+  options: {
+    manifest?: unknown;
+    marker?: boolean;
+    module?: ZipFixtureEntry | null;
+    extra?: ZipFixtureEntry[];
+  } = {},
+): SiteFileSet {
+  const entries: ZipFixtureEntry[] = [
+    {
+      name: "foreman-deploy.json",
+      data:
+        typeof options.manifest === "string"
+          ? options.manifest
+          : JSON.stringify(options.manifest ?? MANIFEST),
+    },
+    ...(options.marker === false
+      ? []
+      : [{ name: "assets/foreman-commit.txt", data: `${COMMIT}\n` }]),
+    { name: "assets/index.html", data: "<html></html>", deflate: true },
+    { name: "assets/assets/index-1.js", data: "console.log(1)" },
+    ...(options.module === null
+      ? []
+      : [options.module ?? { name: "worker/index.js", data: MODULE, deflate: true }]),
+    ...(options.extra ?? []),
+  ];
+  return readSiteFiles(storedZip(entries), COMMIT);
+}
+
+describe("a build in the new layout, with a Worker (unit: ADR 0118 slice 3, O-159)", () => {
+  it("gives the site from assets/, the module as text, the manifest and the migrations by name", () => {
+    const set = workerBuild({
+      extra: [
+        { name: "migrations/0002_more.sql", data: "ALTER TABLE t ADD c;" },
+        { name: "migrations/", data: "" },
+        { name: "migrations/0001_init.sql", data: "CREATE TABLE t (id INTEGER);" },
+      ],
+    });
+    expect(set.ok).toBe(true);
+    if (!set.ok) return;
+    expect(set.files.map((f) => f.path)).toEqual([
+      "foreman-commit.txt",
+      "index.html",
+      "assets/index-1.js",
+    ]);
+    expect(set.worker?.module).toBe(MODULE);
+    expect(set.worker?.manifest).toEqual({
+      compatibilityDate: "2026-10-26",
+      compatibilityFlags: ["nodejs_compat"],
+      requiredSecrets: ["MODEL_API_KEY"],
+    });
+    expect(set.worker?.migrations.map((m) => m.path)).toEqual([
+      "0001_init.sql",
+      "0002_more.sql",
+    ]);
+    expect(Buffer.from(set.worker!.migrations[0]!.bytes).toString()).toBe(
+      "CREATE TABLE t (id INTEGER);",
+    );
+    // No migrations folder at all is the template's first build.
+    const first = workerBuild();
+    expect(first.ok && first.worker?.migrations).toEqual([]);
+  });
+
+  it("refuses anything at the root but the manifest and the three folders", () => {
+    for (const name of [
+      "foreman-commit.txt",
+      "index.html",
+      "wrangler.jsonc",
+      "other/x.txt",
+    ]) {
+      expect(refusal(workerBuild({ extra: [{ name, data: "x" }] })), name).toEqual({
+        cause: "file_set",
+        reason: "layout_unexpected",
+        text: SITE_REFUSALS.layout_unexpected,
+      });
+    }
+  });
+
+  it("refuses a malformed or oversized manifest before anything else is read", () => {
+    expect(refusal(workerBuild({ manifest: "not json" }))).toEqual({
+      cause: "file_set",
+      reason: "manifest_malformed",
+      text: SITE_REFUSALS.manifest_malformed,
+    });
+    expect(
+      refusal(
+        workerBuild({
+          manifest: { ...MANIFEST, compatibilityFlags: ["experimental"] },
+        }),
+      ),
+    ).toMatchObject({ cause: "file_set", reason: "manifest_flags" });
+    expect(
+      refusal(workerBuild({ manifest: { ...MANIFEST, requiredSecrets: ["DB"] } })),
+    ).toMatchObject({ cause: "file_set", reason: "manifest_secrets" });
+    expect(
+      refusal(
+        workerBuild({
+          manifest: JSON.stringify(MANIFEST).padEnd(DEPLOY_MANIFEST_MAX_BYTES + 1, " "),
+          marker: false,
+        }),
+      ),
+    ).toEqual({
+      cause: "file_set",
+      reason: "manifest_too_large",
+      text: SITE_REFUSALS.manifest_too_large,
+    });
+  });
+
+  it("applies the site's rules to assets/: its marker, and no _worker.js", () => {
+    expect(refusal(workerBuild({ marker: false }))).toEqual({
+      cause: "file_set",
+      reason: "assets_marker_missing",
+      text: SITE_REFUSALS.assets_marker_missing,
+    });
+    expect(
+      refusal(
+        workerBuild({
+          marker: false,
+          extra: [{ name: "assets/foreman-commit.txt", data: `${"d".repeat(40)}\n` }],
+        }),
+      ),
+    ).toMatchObject({ reason: "marker_mismatch" });
+    expect(
+      refusal(
+        workerBuild({
+          extra: [{ name: "assets/_worker.js", data: "export default {}" }],
+        }),
+      ),
+    ).toMatchObject({ reason: "worker_code" });
+  });
+
+  it("requires worker/index.js, alone and as UTF-8 text", () => {
+    expect(refusal(workerBuild({ module: null }))).toEqual({
+      cause: "file_set",
+      reason: "worker_missing",
+      text: SITE_REFUSALS.worker_missing,
+    });
+    expect(
+      refusal(workerBuild({ module: { name: "worker/main.js", data: MODULE } })),
+    ).toMatchObject({ reason: "worker_missing" });
+    for (const name of ["worker/index.js.map", "worker/README.md", "worker/lib/a.js"]) {
+      expect(refusal(workerBuild({ extra: [{ name, data: "x" }] })), name).toEqual({
+        cause: "file_set",
+        reason: "worker_extra",
+        text: SITE_REFUSALS.worker_extra,
+      });
+    }
+    expect(
+      refusal(
+        workerBuild({
+          module: { name: "worker/index.js", data: new Uint8Array([0x61, 0xff, 0x62]) },
+        }),
+      ),
+    ).toEqual({
+      cause: "file_set",
+      reason: "worker_not_text",
+      text: SITE_REFUSALS.worker_not_text,
+    });
+  });
+
+  it("refuses migrations that are not plain .sql files directly in their folder, or too many", () => {
+    for (const name of [
+      "migrations/0001_init.txt",
+      "migrations/sub/0001_init.sql",
+      "migrations/0001 init.sql",
+      "migrations/.sql",
+    ]) {
+      expect(refusal(workerBuild({ extra: [{ name, data: "x" }] })), name).toEqual({
+        cause: "file_set",
+        reason: "migrations_not_plain",
+        text: SITE_REFUSALS.migrations_not_plain,
+      });
+    }
+    expect(MAX_MIGRATIONS).toBe(1000);
+    const many = Array.from({ length: MAX_MIGRATIONS + 1 }, (_, i) => ({
+      name: `migrations/${String(i).padStart(4, "0")}_m.sql`,
+      data: "",
+    }));
+    expect(refusal(workerBuild({ extra: many }))).toMatchObject({
+      reason: "migrations_not_plain",
+    });
+    expect(workerBuild({ extra: many.slice(1) }).ok).toBe(true);
   });
 });

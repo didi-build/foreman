@@ -6,7 +6,9 @@
 // their staging check, in that order. A refused file set counts as a failed deploy (D-225 rule 2);
 // a refusal by infrastructure counts no failure (N-103). Under the kill switch nothing is read;
 // dry run says what it would deploy. The reconcile backstop deploys main's newest build for a
-// project whose item waits with no deploy recorded. Fake data only.
+// project whose item waits with no deploy recorded. A deploy with a Worker module is recorded as
+// such, carries its required secret names in its result only, and has the check probe the Worker
+// (O-159). Fake data only.
 import { describe, expect, it } from "vitest";
 
 import { mainBuild } from "../src/adapters/deploy/fake.ts";
@@ -223,6 +225,76 @@ describe("the runner's staging deploy (unit: D-353, D-356, O-116)", () => {
       step: "not_a_project",
     });
     expect(t.builds.reads).toEqual([]);
+  });
+});
+
+describe("a staging deploy with a Worker module (unit: ADR 0118 slice 3, O-159)", () => {
+  it("records the Worker on the deploy, carries the required secret names, and has the check probe it", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.answers.push({
+      outcome: "deployed",
+      files: 2,
+      worker: { requiredSecrets: ["MODEL_API_KEY"] },
+    });
+    const result = await t.deploys().deployRun(REPO, runId);
+    expect(result).toMatchObject({
+      step: "deployed",
+      files: 2,
+      worker: { requiredSecrets: ["MODEL_API_KEY"] },
+      verified: [{ move: { toState: "done", outcome: "applied" } }],
+    });
+    const [deploy] = await t.kind("staging_deploy");
+    expect(deploy?.payload).toMatchObject({ files: 2, worker: true });
+    // Names only reach the result; the evidence keeps only that the build had a Worker.
+    expect(JSON.stringify(deploy?.payload)).not.toContain("MODEL_API_KEY");
+    expect(t.checker.calls).toEqual([
+      {
+        project: expect.objectContaining({ slug: "rehearsal" }),
+        commitSha: t.mergeSha,
+        worker: true,
+      },
+    ]);
+  });
+
+  it("asks only the marker for a deploy without a Worker, as before", async () => {
+    const t = await setup();
+    const result = await t.deploys().deployRun(REPO, t.built());
+    expect(result).not.toHaveProperty("worker");
+    const [deploy] = await t.kind("staging_deploy");
+    expect(deploy?.payload).not.toHaveProperty("worker");
+    expect(t.checker.calls).toHaveLength(1);
+    expect(t.checker.calls[0]).not.toHaveProperty("worker");
+  });
+
+  it("records a failed health probe as a failed check with its reason, which sends the item back with one failure", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.answers.push({
+      outcome: "deployed",
+      files: 2,
+      worker: { requiredSecrets: [] },
+    });
+    t.checker.answers.push({
+      result: "fail",
+      servedCommitSha: t.mergeSha,
+      reason: "api_health",
+    });
+    const result = await t.deploys().deployRun(REPO, runId);
+    expect(result).toMatchObject({
+      step: "deployed",
+      verified: [
+        { step: "checked", move: { toState: "in_development", outcome: "applied" } },
+      ],
+    });
+    const [check] = await t.kind("staging_check");
+    expect(check?.payload).toMatchObject({
+      pass: false,
+      servedCommitSha: t.mergeSha,
+      reason: "api_health",
+      containment: "identical",
+    });
+    expect(await t.counter("failure")).toBe(1);
   });
 });
 

@@ -7,12 +7,14 @@
 // 2. Fetches that run's `staging-site` artifact (`StagingBuilds`, the runner App's `actions: read`
 //    token for that one repository, D-267).
 // 3. Hands it to the deploy target (`StagingTarget`, src/adapters/deploy/), which checks the file
-//    set and, only when it passes, uploads exactly those files to the project's staging site. A
-//    set that fails is refused with fixed text and nothing is uploaded (`file_set`); a refusal by
-//    Cloudflare, the deploy credential or GitHub's artifact is `infrastructure`.
+//    set and, only when it passes, uploads exactly those files to the project's staging site,
+//    with the build's Worker module when it has one (O-159). A set that fails is refused with
+//    fixed text and nothing is uploaded (`file_set`); a refusal by Cloudflare, the deploy
+//    credential or GitHub's artifact is `infrastructure`.
 // 4. Records the outcome on each item in Verifying on staging whose merge commit the deployed
 //    commit counts for, by GitHub's compare as O-38 does (D-225 rule 1): `staging_deploy` for a
-//    deploy, `staging_deploy_failed` for a refusal, keyed per CI run, cause and merge commit. A
+//    deploy (with `worker: true` when it carried a Worker module, O-159),
+//    `staging_deploy_failed` for a refusal, keyed per CI run, cause and merge commit. A
 //    refused file set counts as a failed deploy (D-225 rule 2: the build is the change's own
 //    output); an infrastructure refusal counts no failure, and the item keeps waiting for a deploy
 //    and shows on the attention list after the wait setting (O-40) and in the daily check (N-103).
@@ -109,8 +111,18 @@ export interface DeployRefusalDetail {
   codes?: number[];
 }
 
+/**
+ * What a deploy with a Worker module adds (ADR 0118 slice 3, O-159): the names of the product
+ * secrets the build's manifest says the Worker needs (D-440), never a value. Carried for slice 7,
+ * which holds the deploy while one is not set (D-448); nothing checks them yet.
+ */
+export interface WorkerDeploy {
+  requiredSecrets: string[];
+}
+
 export type StagingUpload =
-  | { outcome: "deployed"; files: number }
+  /** `worker` only when the build carried a Worker module, so `/api` runs code. */
+  | { outcome: "deployed"; files: number; worker?: WorkerDeploy }
   | {
       outcome: "refused";
       cause: DeployRefusalCause;
@@ -211,6 +223,8 @@ export interface StagingDeployResult {
   detail?: DeployRefusalDetail;
   /** For a deploy: how many files the site has. */
   files?: number;
+  /** For a deploy with a Worker module: the secret names it requires (O-159, for slice 7). */
+  worker?: WorkerDeploy;
   /** The items in Verifying on staging whose merge commit the deployed commit counts for. */
   covers?: string[];
   /** What was recorded on each covered item. */
@@ -340,8 +354,9 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     const key = deployed
       ? stagingDeployRecordKey(repo, run.id, item.mergeSha)
       : stagingDeployRefusedKey(repo, run.id, upload.cause, item.mergeSha);
+    // `worker: true` tells the staging check to probe `/api/health` too (O-159).
     const payload: Json = deployed
-      ? { ...facts, files: upload.files }
+      ? { ...facts, files: upload.files, ...(upload.worker ? { worker: true } : {}) }
       : {
           ...facts,
           // `failure` counts as D-225 rule 2 reads it; `error` with the cause counts nothing.
@@ -443,7 +458,13 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     const outcome = await upload(project, run);
     const done: StagingDeployResult =
       outcome.outcome === "deployed"
-        ? { ...base, step: "deployed", commitSha, files: outcome.files }
+        ? {
+            ...base,
+            step: "deployed",
+            commitSha,
+            files: outcome.files,
+            ...(outcome.worker ? { worker: outcome.worker } : {}),
+          }
         : {
             ...base,
             step:

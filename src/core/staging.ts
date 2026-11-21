@@ -20,9 +20,11 @@
 //    and leaves the item waiting for a deploy (N-103). GitHub's deployments are no longer read.
 // 3. The check (O-35, O-39): in live mode only. A check that finds staging serving the merge
 //    commit, or a commit on main that contains it, gives `staging_check {pass, servedCommitSha}`
-//    with that proof, once per merge commit under its key. A check that ends without a result, or
-//    finds staging serving a commit that does not count, gives `staging_no_result`: the first is
-//    re-dispatched on the next call, the second sends the item to the Council (O-36).
+//    with that proof, once per merge commit under its key. When the deploy recorded a Worker
+//    module (`worker: true`, O-159), the check also asks `/api/health`, and a fail it causes is
+//    recorded with `reason: "api_health"`. A check that ends without a result, or finds staging
+//    serving a commit that does not count, gives `staging_no_result`: the first is re-dispatched
+//    on the next call, the second sends the item to the Council (O-36).
 // 4. The move (O-37): a pass moves to Done and resets the counters in the same transaction, then
 //    releases the items it blocked. A fail takes the fallback move back to the building state and
 //    adds one to `failure` in the same transaction, then asks for the escalation, which the
@@ -91,16 +93,23 @@ export interface StagingCheckRequest {
   project: Project;
   /** The merge commit on main. */
   commitSha: string;
+  /**
+   * Set when the deploy recorded for the merge commit carried a Worker module (O-159): the check
+   * then also asks the Worker's health at `/api`. Absent for an assets-only site, as before.
+   */
+  worker?: true;
 }
 
 /**
  * What a staging check found. `servedCommitSha` is the commit staging reports it runs; a result
- * counts only when that is the merge commit or a commit on main that contains it (O-39).
+ * counts only when that is the merge commit or a commit on main that contains it (O-39). A fail's
+ * `reason` says which part failed: `api_health`, the Worker's health (O-159).
  * `no_result`: the check could not reach staging, ran out of time, or staging answered without a
  * commit marker (`no_marker`), so it says nothing about the change.
  */
 export type StagingCheckResult =
-  | { result: "pass" | "fail"; servedCommitSha: string }
+  | { result: "pass"; servedCommitSha: string }
+  | { result: "fail"; servedCommitSha: string; reason?: "api_health" }
   | { result: "no_result"; reason: "unreachable" | "timed_out" | "no_marker" };
 
 /**
@@ -576,7 +585,11 @@ export function createStaging(deps: StagingDeps) {
 
     let outcome: StagingCheckResult;
     try {
-      outcome = await checker.check({ project, commitSha: sha });
+      outcome = await checker.check({
+        project,
+        commitSha: sha,
+        ...(field(deploy.payload, "worker") === true ? { worker: true as const } : {}),
+      });
     } catch {
       return { ...withDeploy, step: "check_error" };
     }
@@ -607,6 +620,9 @@ export function createStaging(deps: StagingDeps) {
           {
             pass: outcome.result === "pass",
             servedCommitSha: outcome.servedCommitSha,
+            ...(outcome.result === "fail" && outcome.reason
+              ? { reason: outcome.reason }
+              : {}),
             ...proof,
           },
           key,

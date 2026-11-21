@@ -106,7 +106,8 @@ import type {
 import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
-import type { StagingBuilds, StagingTarget } from "../../src/core/staging-deploy.ts";
+import type { DeployTarget } from "../../src/core/deploy-target.ts";
+import type { StagingBuilds } from "../../src/core/staging-deploy.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
 import type { Node, Project, Run } from "../../src/core/store.ts";
@@ -174,11 +175,12 @@ export interface FlowDeps extends ReconcileDeps {
    */
   stagingBuilds: StagingBuilds;
   /**
-   * The deploy adapter's staging target (ADR 0111): the file set's check and Cloudflare's direct
-   * upload to `<slug>-staging` (O-116). Refuses on its credential until Didi creates the staging
+   * The deploy adapter's staging target (ADR 0111), the `cloudflare` deploy target (O-159): the
+   * file set's check and Cloudflare's direct upload to `<slug>-staging` (O-116), with the build's
+   * Worker module when it has one. Refuses on its credential until Didi creates the staging
    * deploy token (D-353, runbook step 16), so nothing is uploaded.
    */
-  stagingTarget: StagingTarget;
+  stagingTarget: DeployTarget;
   tasks: TaskSource;
   /**
    * CI's screenshot bundles for the visual comparison (D-242), read as workflow artifacts with the
@@ -282,10 +284,10 @@ export function windmillStagingDeployCredentials(
   };
 }
 
-/** The deploy adapter's Cloudflare target (O-116), with the credential port it reads. */
+/** The deploy adapter's Cloudflare target (O-116, O-159), with the credential port it reads. */
 export function runnerStagingTarget(
   credentials: StagingDeployCredentials,
-): StagingTarget {
+): DeployTarget {
   return createCloudflareStagingTarget({ credentials, http: createCloudflareHttp() });
 }
 
