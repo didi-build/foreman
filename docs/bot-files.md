@@ -33,7 +33,7 @@ QA's verdict schema is not in its bot file. The verdict is the state API's contr
 
 ## The Messages API bots on DeepInfra (O-152)
 
-QA, the Council and Triage each list two providers: `anthropic`, and `deepinfra`, DeepInfra's Anthropic-compatible endpoint (`upstream: https://api.deepinfra.com/anthropic`, the key at `projects/{project}/models/deepinfra` sent as `x-api-key`, `base_url_env: ANTHROPIC_BASE_URL`). The run's route picks the entry, as for every run. Migration 0026 moves the routes of `qa:review`, `council` and `triage` to DeepSeek V4 Pro on `deepinfra` (D-425), so those runs use this entry; `qa:visual` and `council:visual` have no route yet.
+QA, the Council and Triage each list two providers: `anthropic`, and `deepinfra`, DeepInfra's Anthropic-compatible endpoint (`upstream: https://api.deepinfra.com/anthropic`, the key at `projects/{project}/models/deepinfra` sent as `x-api-key`, `base_url_env: ANTHROPIC_BASE_URL`). The run's route picks the entry, as for every run. Migration 0026 moves the routes of `qa:review`, `council` and `triage` to DeepSeek V4 Pro on `deepinfra` (D-425), so those runs use this entry, and migration 0029 moves `triage` back to Claude Sonnet 5.5 on `anthropic` (D-451), so Triage runs use the `anthropic` entry again; `qa:visual` and `council:visual` have no route yet.
 
 DeepInfra's endpoint takes the Messages API's tools, `tool_choice`, `service_tier` and `prompt_cache_key`, but its `output_config` takes only `effort`. It has no `output_config.format`, so Anthropic's structured outputs are not available there. A Messages API provider says how to use its endpoint in `messages_api`, an optional mapping with only these keys, each optional:
 

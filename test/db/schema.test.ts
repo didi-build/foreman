@@ -18,6 +18,7 @@ import {
   DEEPSEEK_FLASH_ENTRY,
   DEEPSEEK_PRO,
   DEEPSEEK_PRO_MODEL_CATALOG,
+  DEEPSEEK_PRO_ROUTING_POLICY,
   deepSeekProRunPrice,
   FIRST_MODEL_CATALOG,
   FIRST_ROUTING_POLICY,
@@ -366,9 +367,9 @@ describe.skipIf(!adminUrl)(
         const s = settings();
         expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
         expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
-        // 0019's change, then 0024's, then 0026's.
+        // 0019's change, then 0024's, then 0026's, then 0029's.
         expect(versionsLogged("model_routing_policy")).toBe(
-          "2026-10-31.1>2026-11-04.1,2026-11-04.1>2026-11-18.1,2026-11-18.1>2026-11-18.2",
+          "2026-10-31.1>2026-11-04.1,2026-11-04.1>2026-11-18.1,2026-11-18.1>2026-11-18.2,2026-11-18.2>2026-11-21.1",
         );
       });
 
@@ -454,7 +455,8 @@ describe.skipIf(!adminUrl)(
             tier: "flex",
             failFast: false,
             onCapacity: "wait",
-            // 0026 has since moved QA, the Council and Triage (D-425), and the policy's version.
+            // 0026 has since moved QA, the Council and Triage (D-425), and 0029 moved Triage back
+            // and set QA independence to family (D-451, D-452), each with the policy's version.
             policyVersion: SEEDED_ROUTING_POLICY.version,
             // 0025 has since changed Sonnet's cache read price (O-150), 0026 added DeepSeek V4
             // Pro (D-425) and 0027 the weekly test's two models (D-429), each with the catalog's
@@ -748,12 +750,15 @@ describe.skipIf(!adminUrl)(
       const MOVED = ["qa:review", "council", "triage"] as const;
 
       it("routes the three task types to DeepSeek V4 Pro at Flex, priced at Flex, logged under new versions", () => {
+        // The policy as 0026 wrote it, from its log row. 0029 has since moved Triage back to Claude
+        // Sonnet 5.5 and set QA independence to family (D-451, D-452).
+        const by0026 = change("model_routing_policy", "2026-11-18.2").new as Policy;
         for (const [role, taskType] of [
           ["qa", "qa:review"],
           ["council", "council"],
           ["triage", "triage"],
         ] as const) {
-          const choice = route(role, taskType);
+          const choice = route(role, taskType, by0026);
           if (!choice.routed) throw new Error(JSON.stringify(choice.noRoute));
           expect(choice.route).toEqual({
             taskType,
@@ -777,21 +782,21 @@ describe.skipIf(!adminUrl)(
           };
           expect(runCostUsd(choice.route.price, million, "flex")).toBe(4.24);
         }
-        const s = settings();
-        const policy = s.model_routing_policy as Policy;
         // Every other entry is as 0024 left it: the Developer and the Designer on Qwen3 Coder, the
-        // close task types on Anthropic. The visual task types still have no route, and QA
-        // independence is still by model id (D-209).
+        // close task types on Anthropic. The visual task types still had no route, and QA
+        // independence was still by model id (D-209).
         for (const [taskType, entry] of Object.entries(
           DEEPINFRA_ROUTING_POLICY.taskTypes,
         )) {
           if (!(MOVED as readonly string[]).includes(taskType)) {
-            expect(policy.taskTypes[taskType]).toEqual(entry);
+            expect(by0026.taskTypes[taskType]).toEqual(entry);
           }
         }
-        expect(policy.taskTypes["qa:visual"]).toBeUndefined();
-        expect(policy.taskTypes["council:visual"]).toBeUndefined();
-        expect(policy.qaIndependence).toBe("model_id");
+        expect(by0026.taskTypes["qa:visual"]).toBeUndefined();
+        expect(by0026.taskTypes["council:visual"]).toBeUndefined();
+        expect(by0026.qaIndependence).toBe("model_id");
+        const s = settings();
+        // QA's review and the Council are still where 0026 put them.
         expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
         expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
         // Unchanged: 16000 for each task type, below the model's cap of 16,384.
@@ -799,7 +804,7 @@ describe.skipIf(!adminUrl)(
         // Both changes logged, each from the value the migration before left.
         expect(change("model_routing_policy", "2026-11-18.2")).toEqual({
           old: DEEPINFRA_ROUTING_POLICY,
-          new: SEEDED_ROUTING_POLICY,
+          new: DEEPSEEK_PRO_ROUTING_POLICY,
         });
         expect(change("model_catalog", "2026-11-18.3")).toEqual({
           old: SONNET_CACHE_MODEL_CATALOG,
@@ -824,12 +829,27 @@ describe.skipIf(!adminUrl)(
         expect(choice.route).toMatchObject({ model: DEEPSEEK_PRO, family: "deepseek" });
       });
 
+      /**
+       * 0029 has since moved Triage back to the entry 0005 seeded (D-451), which this migration's
+       * guard matches, so run on today's policy it would move Triage again. Each migration runs
+       * once (ADR 0104), so a test that runs it again where that matters starts from the policy it
+       * left.
+       */
+      const policyAsLeft = () =>
+        setByHand("model_routing_policy", DEEPSEEK_PRO_ROUTING_POLICY);
+
       it("changes nothing when it runs again", () => {
         const before = settings();
-        const count = logged();
-        expect(migrate()).not.toContain("NOTICE");
-        expect(settings()).toEqual(before);
-        expect(logged()).toBe(count);
+        try {
+          policyAsLeft();
+          const left = settings();
+          const count = logged();
+          expect(migrate()).not.toContain("NOTICE");
+          expect(settings()).toEqual(left);
+          expect(logged()).toBe(count);
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+        }
       });
 
       it("moves only the entries 0005 seeded, names the others, and keeps an operator's catalog entry", () => {
@@ -902,6 +922,7 @@ describe.skipIf(!adminUrl)(
           ),
         };
         try {
+          policyAsLeft();
           setByHand("model_catalog", withoutDeepSeek);
           expect(migrate()).not.toContain("NOTICE");
           expect(settings().model_catalog).toEqual({
@@ -912,8 +933,9 @@ describe.skipIf(!adminUrl)(
             },
           });
           // The policy already routes the three task types there, so it is left as it is.
-          expect(settings().model_routing_policy).toEqual(before.model_routing_policy);
+          expect(settings().model_routing_policy).toEqual(DEEPSEEK_PRO_ROUTING_POLICY);
         } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
           setByHand("model_catalog", before.model_catalog ?? null);
         }
       });
@@ -1121,7 +1143,8 @@ describe.skipIf(!adminUrl)(
         expect(catalog.models[DEEPSEEK_FLASH]).toEqual(DEEPSEEK_FLASH_ENTRY);
         expect(catalog.models[KIMI]).toEqual(KIMI_ENTRY);
         expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
-        // The routing policy is the one 0026 left: no task type is routed to either model.
+        // The routing policy (0026's, with 0029's change since) routes no task type to either
+        // model.
         expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
         expect(JSON.stringify(s.model_routing_policy)).not.toMatch(/Flash-1017|Kimi/);
         // Each prices a run at Flex from the catalog, as the weekly plan takes it.
@@ -1234,6 +1257,206 @@ describe.skipIf(!adminUrl)(
       expect(sql("delete from factory.projects where slug = 'garden-notes';").ok).toBe(
         true,
       );
+    });
+
+    describe("Triage back on Claude Sonnet 5.5, and QA independence by family (migration 0029, D-451, D-452, O-162)", () => {
+      const MOVE = "db/migrations/0029_triage_sonnet_qa_family.sql";
+      const SONNET = "claude-sonnet-5-5";
+      const logged = (): string =>
+        sql(
+          "select count(*) from factory.settings_log where key in ('model_routing_policy', 'model_catalog');",
+        ).out;
+      /** Runs the migration again; returns what psql printed on stderr (the NOTICEs). */
+      const migrate = (): string => {
+        const again = sql(readFileSync(MOVE, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        return again.err;
+      };
+      type Catalog = { version: string; models: Record<string, Record<string, Json>> };
+      /** The route QA gets on the stored settings after one builder run on the item. */
+      const qaAfter = (
+        bot: "developer" | "designer",
+        model: string,
+        modelFamily: string,
+      ) => {
+        const s = settings();
+        return chooseRoute({
+          role: "qa",
+          taskType: "qa:review",
+          earlierRuns: [{ bot, model, modelFamily }],
+          settings: {
+            policy: s.model_routing_policy ?? null,
+            catalog: s.model_catalog ?? null,
+            providers: s.model_providers_approved ?? null,
+            outputNeeds: s.model_output_token_needs ?? null,
+          },
+        });
+      };
+      const own = {
+        candidates: [
+          { provider: "anthropic", model: "claude-opus-5-5", tier: "standard" },
+        ],
+        onCapacity: "wait",
+      };
+
+      it("routes Triage to Sonnet at Standard, keeps QA and the Council on DeepSeek V4 Pro, sets family, and logs one change", () => {
+        const triage = route("triage", "triage");
+        if (!triage.routed) throw new Error(JSON.stringify(triage.noRoute));
+        expect(triage.route).toEqual({
+          taskType: "triage",
+          provider: "anthropic",
+          model: SONNET,
+          family: "claude",
+          tier: "standard",
+          failFast: false,
+          onCapacity: "wait",
+          policyVersion: "2026-11-21.1",
+          catalogVersion: SEEDED_MODEL_CATALOG.version,
+          // At the cache read price 0025 set (O-150).
+          price: seededRunPrice(SONNET),
+        });
+        for (const [role, taskType] of [
+          ["qa", "qa:review"],
+          ["council", "council"],
+        ] as const) {
+          const choice = route(role, taskType);
+          if (!choice.routed) throw new Error(JSON.stringify(choice.noRoute));
+          expect(choice.route).toMatchObject({
+            provider: "deepinfra",
+            model: DEEPSEEK_PRO,
+            tier: "flex",
+            policyVersion: "2026-11-21.1",
+          });
+        }
+        const s = settings();
+        expect(s.model_routing_policy).toEqual(SEEDED_ROUTING_POLICY);
+        expect(
+          (s.model_routing_policy as { qaIndependence: string }).qaIndependence,
+        ).toBe("family");
+        // The catalog and the output needs are as 0027 and 0019 left them: Sonnet has no output
+        // cap, and Triage needs 16000 tokens (hard rule 4).
+        expect(s.model_catalog).toEqual(SEEDED_MODEL_CATALOG);
+        expect(s.model_output_token_needs).toEqual(SEEDED_OUTPUT_TOKEN_NEEDS);
+        expect((s.model_catalog as Catalog).models[SONNET]?.maxOutputTokens).toBeNull();
+        // One change, from the policy 0026 left: the only migration change from 2026-11-18.2,
+        // as the version chain in 0019's block shows. The first row that wrote 2026-11-21.1 is
+        // 0029's own; a test that later restores the policy can log the same version again.
+        const written = sql(
+          "select json_build_object('old', old_value, 'new', new_value) from factory.settings_log where key = 'model_routing_policy' and changed_by = 'migration' and new_value ->> 'version' = '2026-11-21.1' order by id limit 1;",
+        );
+        expect(written.ok, written.err).toBe(true);
+        expect(JSON.parse(written.out)).toEqual({
+          old: DEEPSEEK_PRO_ROUTING_POLICY,
+          new: SEEDED_ROUTING_POLICY,
+        });
+        expect(
+          sql(
+            "select count(*) from factory.settings_log where key = 'model_routing_policy' and changed_by = 'migration' and old_value ->> 'version' = '2026-11-18.2';",
+          ).out,
+        ).toBe("1");
+      });
+
+      it("admits QA after a Qwen3 Coder builder run, and refuses it after a builder run of its own family", () => {
+        for (const bot of ["developer", "designer"] as const) {
+          const choice = qaAfter(bot, QWEN_CODER, "qwen");
+          if (!choice.routed) throw new Error(JSON.stringify(choice.noRoute));
+          expect(choice.route).toMatchObject({
+            model: DEEPSEEK_PRO,
+            family: "deepseek",
+          });
+        }
+        // Another model id of the same family: admitted by model id, refused by family.
+        const refused = qaAfter("developer", DEEPSEEK_FLASH, "deepseek");
+        expect(refused).toMatchObject({
+          routed: false,
+          noRoute: {
+            rejected: [
+              {
+                model: DEEPSEEK_PRO,
+                failed: [
+                  {
+                    rule: "qa_independence",
+                    detail: "the same model family as a Developer run on the item",
+                  },
+                ],
+              },
+            ],
+          },
+        });
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = settings();
+        const count = logged();
+        expect(migrate()).not.toContain("NOTICE");
+        expect(settings()).toEqual(before);
+        expect(logged()).toBe(count);
+      });
+
+      it("leaves an operator's own Triage entry with a NOTICE, and switches QA independence under the operator's version, marked", () => {
+        const before = settings();
+        const byHand = {
+          ...DEEPSEEK_PRO_ROUTING_POLICY,
+          version: "operator.1",
+          taskTypes: { ...DEEPSEEK_PRO_ROUTING_POLICY.taskTypes, triage: own },
+        };
+        try {
+          setByHand("model_routing_policy", byHand);
+          const notices = migrate();
+          expect(notices).toContain("model_routing_policy.taskTypes.triage");
+          expect(notices).not.toContain("qaIndependence");
+          expect(settings().model_routing_policy).toEqual({
+            ...byHand,
+            version: "operator.1+d451",
+            qaIndependence: "family",
+          });
+          // Once QA independence is by family too, nothing is left to change: the version stays.
+          const again = settings().model_routing_policy;
+          expect(migrate()).toContain("model_routing_policy.taskTypes.triage");
+          expect(settings().model_routing_policy).toEqual(again);
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+        }
+      });
+
+      it("leaves a qaIndependence that is neither model_id nor family, with a NOTICE", () => {
+        const before = settings();
+        const odd = { ...SEEDED_ROUTING_POLICY, qaIndependence: "other" };
+        try {
+          setByHand("model_routing_policy", odd);
+          expect(migrate()).toContain("model_routing_policy.qaIndependence");
+          expect(settings().model_routing_policy).toEqual(odd);
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+        }
+      });
+
+      it("moves Triage from 0026's entry only while the catalog lists Sonnet under Anthropic", () => {
+        const before = settings();
+        const catalog = before.model_catalog as Catalog;
+        const elsewhere = {
+          ...catalog,
+          models: {
+            ...catalog.models,
+            [SONNET]: { ...(catalog.models[SONNET] ?? {}), provider: "other" },
+          },
+        };
+        try {
+          setByHand("model_routing_policy", DEEPSEEK_PRO_ROUTING_POLICY);
+          setByHand("model_catalog", elsewhere);
+          expect(migrate()).toContain("0029 moved no task type");
+          // Triage stays on DeepSeek V4 Pro; QA independence still switches.
+          expect(settings().model_routing_policy).toEqual({
+            ...DEEPSEEK_PRO_ROUTING_POLICY,
+            version: "2026-11-21.1",
+            qaIndependence: "family",
+          });
+          expect(settings().model_catalog).toEqual(elsewhere);
+        } finally {
+          setByHand("model_routing_policy", before.model_routing_policy ?? null);
+          setByHand("model_catalog", before.model_catalog ?? null);
+        }
+      });
     });
 
     it("seeds the usage-exhausted wait (migration 0003) and the cluster run limit of two (migration 0023, D-372)", () => {

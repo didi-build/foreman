@@ -1,5 +1,5 @@
 // Test support for model routing (ADR 0114): the routing settings migrations 0005, 0019, 0024, 0025,
-// 0026 and 0027 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
+// 0026, 0027 and 0029 seed, the task types in contracts/task-types.yaml and the bot files, and the route columns
 // of a run on an Anthropic route. Tests only. test/db/runs.test.ts checks the seeded settings equal these values, and
 // test/contracts-task-types.test.ts checks the files equal TEST_TASK_TYPES, so neither copy can
 // drift from the source it stands in for.
@@ -11,7 +11,7 @@ const SONNET = "claude-sonnet-5-5";
 const OPUS = "claude-opus-5-5";
 /** The Developer's and Designer's model since migration 0024 (D-421). */
 export const QWEN_CODER = "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo";
-/** QA's review, the Council's and Triage's model since migration 0026 (D-425). */
+/** QA's review and the Council's model since migration 0026 (D-425); Triage's until 0029. */
 export const DEEPSEEK_PRO = "deepseek-ai/DeepSeek-V4-Pro-0813";
 /** The weekly model test's two other models, in the catalog since migration 0027 (D-429). */
 export const DEEPSEEK_FLASH = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
@@ -113,10 +113,9 @@ export const DEEPINFRA_ROUTING_POLICY = {
 /**
  * The routing policy as migration 0026 leaves it (D-425): QA's review, the Council and Triage move
  * to DeepSeek V4 Pro on DeepInfra Flex; the Developer and the Designer stay on Qwen3 Coder, and the
- * close task types on Anthropic. The visual task types have no route. This is what a migrated store
- * holds, so the tests seed it; test/db/runs.test.ts and test/db/schema.test.ts check it is equal.
+ * close task types on Anthropic. The visual task types have no route.
  */
-export const SEEDED_ROUTING_POLICY = {
+export const DEEPSEEK_PRO_ROUTING_POLICY = {
   ...DEEPINFRA_ROUTING_POLICY,
   version: "2026-11-18.2",
   taskTypes: {
@@ -124,6 +123,22 @@ export const SEEDED_ROUTING_POLICY = {
     "qa:review": deepInfraFlex(DEEPSEEK_PRO),
     council: deepInfraFlex(DEEPSEEK_PRO),
     triage: deepInfraFlex(DEEPSEEK_PRO),
+  },
+} satisfies Json;
+
+/**
+ * The routing policy as migration 0029 leaves it (D-451, D-452): Triage is back on the entry 0005
+ * seeded, Claude Sonnet 5.5 on Anthropic at Standard, and QA independence is by model family. QA's
+ * review and the Council stay on DeepSeek V4 Pro. This is what a migrated store holds, so the tests
+ * seed it; test/db/runs.test.ts and test/db/schema.test.ts check it is equal.
+ */
+export const SEEDED_ROUTING_POLICY = {
+  ...DEEPSEEK_PRO_ROUTING_POLICY,
+  version: "2026-11-21.1",
+  qaIndependence: "family",
+  taskTypes: {
+    ...DEEPSEEK_PRO_ROUTING_POLICY.taskTypes,
+    triage: FIRST_ROUTING_POLICY.taskTypes.triage,
   },
 } satisfies Json;
 
@@ -274,7 +289,7 @@ export const SEEDED_OUTPUT_TOKEN_NEEDS = {
   "designer:close": FIRST_OUTPUT_TOKEN_NEEDS.designer,
 } satisfies Json;
 
-/** Seeds the four routing settings as migrations 0005, 0019, 0024, 0025, 0026 and 0027 leave them. */
+/** Seeds the four routing settings as migrations 0005, 0019, 0024, 0025, 0026, 0027 and 0029 leave them. */
 export async function seedRoutingSettings(store: StoreOps, at: Date): Promise<void> {
   for (const [key, value] of [
     [ROUTING_SETTINGS.policy, SEEDED_ROUTING_POLICY],

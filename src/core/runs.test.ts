@@ -19,6 +19,7 @@ import {
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
   qwenCoderRunPrice,
+  seededRunPrice,
   seedRoutingSettings,
   TEST_TASK_TYPES,
 } from "./routing-testing.ts";
@@ -523,14 +524,21 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     serviceTierRequested: "flex",
     modelPrice: deepSeekProRunPrice(),
   } as const;
+  const onSonnet = {
+    model: "claude-sonnet-5-5",
+    provider: "anthropic",
+    modelFamily: "claude",
+    serviceTierRequested: "standard",
+    modelPrice: seededRunPrice("claude-sonnet-5-5"),
+  } as const;
   it.each([
     ["developer", "developer:code", onQwenCoder],
     ["designer", "designer", onQwenCoder],
     ["qa", "qa:review", onDeepSeekPro],
     ["council", "council", onDeepSeekPro],
-    ["triage", "triage", onDeepSeekPro],
+    ["triage", "triage", onSonnet],
   ] as const)(
-    "records the seeded policy's route on a %s run: Qwen3 Coder on DeepInfra Flex for the builders (D-421), DeepSeek V4 Pro on DeepInfra Flex for the rest (D-425)",
+    "records the seeded policy's route on a %s run: Qwen3 Coder on DeepInfra Flex for the builders (D-421), DeepSeek V4 Pro on DeepInfra Flex for QA and the Council (D-425), Claude Sonnet 5.5 on Anthropic for Triage (D-451)",
     async (role, taskType, route) => {
       const t = await setup();
       const runId = await t.started(t.request(await t.item(), role));
@@ -631,10 +639,11 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     expect(t.records).toEqual([]);
   });
 
-  it("refuses a QA run whose only candidate is a Developer run's model id, and admits another", async () => {
+  it("refuses a QA run whose only candidate is of a Developer run's model family, and admits another", async () => {
     const t = await setup();
     const nodeId = await t.item();
-    // The Developer ran on Qwen3 Coder; a policy that puts QA on Qwen3 Coder too has no route.
+    // The Developer ran on Qwen3 Coder; a policy that puts QA on Qwen3 Coder too has no route,
+    // by family since 0029 (D-452).
     await t.runs.recordEnd(await t.started(t.request(nodeId)), t.report());
     const qwenQa = {
       ...SEEDED_ROUTING_POLICY,
@@ -647,7 +656,18 @@ describe("the model route at admission (ADR 0114 sections 2 and 5)", () => {
     expect(await t.runs.dispatch(t.request(nodeId, "qa"), credential())).toMatchObject({
       admitted: false,
       reason: "no_route",
-      noRoute: { rejected: [{ failed: [{ rule: "qa_independence" }] }] },
+      noRoute: {
+        rejected: [
+          {
+            failed: [
+              {
+                rule: "qa_independence",
+                detail: "the same model family as a Developer run on the item",
+              },
+            ],
+          },
+        ],
+      },
     });
     await t.setting("model_routing_policy", SEEDED_ROUTING_POLICY);
     const result = await t.runs.dispatch(t.request(nodeId, "qa"), credential());
@@ -724,7 +744,7 @@ describe("run ends (ADR 0107 outcomes)", () => {
     });
   });
 
-  it.each(["qa", "council", "triage"] as const)(
+  it.each(["qa", "council"] as const)(
     "prices a %s run that reports Flex at DeepSeek V4 Pro's Flex price (D-207, D-425)",
     async (role) => {
       const t = await setup();
