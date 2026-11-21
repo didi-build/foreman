@@ -284,6 +284,7 @@ describe("the form takes exactly what POST /plans takes (flow, D-383)", () => {
       privilegedPathsExtra: [],
       prodRequiresApproval: false,
       stagingUrl: null,
+      deployTarget: "cloudflare",
       createdAt: f.clock.now(),
     });
     const accepted = await ideaIn(f, "plan_accepted");

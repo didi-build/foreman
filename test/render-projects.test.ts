@@ -32,7 +32,7 @@ import {
   isProjectEntrySlug,
   parseProjectQuota,
 } from "../src/core/project-entry.ts";
-import { PROJECT_SLUG } from "../src/core/register-project.ts";
+import { PROJECT_SLUG } from "../src/core/project-repository.ts";
 import { RUN_WATCHER_ENV } from "../src/run-watcher/settings.ts";
 import {
   SETTINGS_FILE,

@@ -70,6 +70,7 @@ export async function fixture(nodePatch: Partial<Node> = {}): Promise<Fixture> {
     privilegedPathsExtra: ["config/billing/**"],
     prodRequiresApproval: true,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: at(),
   });
   const start = at();

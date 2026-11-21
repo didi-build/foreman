@@ -12,7 +12,9 @@
 //   token.
 // - `restart`: "Create a workflow dispatch event",
 //   `POST /repos/didi-build/<name>/actions/workflows/bootstrap.yml/dispatches` with exactly
-//   `{"ref":"main"}`, which answers 204, with the restart token. A repository the form created
+//   `{"ref":"main","inputs":{"display_name":<name>,"collects_personal_data":"yes"|"no"}}`, the two
+//   inputs Launchpad's Bootstrap declares (ADR 0118 appendix E item 1, O-161), which answers 204,
+//   with the restart token. A repository the form created
 //   seconds earlier may not have its workflows yet, and GitHub then answers 404 (2026-11-13,
 //   O-114): that one answer is tried again with the same token after `RESTART_RETRY_DELAYS_MS`,
 //   about a minute in all. A 404 starts no run, so a later 204 is the only start. Any other answer
@@ -228,8 +230,12 @@ export function createGitHubBootstrapRuns({
   const workflowPath = (name: string) =>
     `/repos/${GITHUB_ORGANIZATION}/${name}/actions/workflows/${BOOTSTRAP_WORKFLOW_FILE}`;
   return {
-    async restart(name) {
+    async restart(name, inputs) {
       if (!isRepositoryName(name)) return refused("call");
+      // Launchpad refuses a display name it cannot take (one line, at most 60 characters).
+      if (typeof inputs?.displayName !== "string" || inputs.displayName.trim() === "")
+        return refused("call");
+      if (typeof inputs.collectsPersonalData !== "boolean") return refused("call");
       let token: string;
       try {
         // Minted for this one start, and never again with a wider request (D-358).
@@ -243,7 +249,13 @@ export function createGitHubBootstrapRuns({
           const answer = await post.post({
             path: `${workflowPath(name)}/dispatches`,
             token,
-            body: { ref: BOOTSTRAP_REF },
+            body: {
+              ref: BOOTSTRAP_REF,
+              inputs: {
+                display_name: inputs.displayName,
+                collects_personal_data: inputs.collectsPersonalData ? "yes" : "no",
+              },
+            },
             maxBytes: MAX_ANSWER_BYTES,
           });
           status = answer.status;

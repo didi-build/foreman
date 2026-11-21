@@ -138,7 +138,7 @@ import {
   isProjectEntrySlug,
   isProjectPurpose,
 } from "../../core/project-entry.ts";
-import { PROJECT_SLUG } from "../../core/register-project.ts";
+import { PROJECT_SLUG } from "../../core/project-repository.ts";
 import type { Project } from "../../core/store.ts";
 import type { DeployRefusalDetail, StagingUpload } from "../../core/staging-deploy.ts";
 import { isProductSecretName } from "./deploy-manifest.ts";

@@ -37,6 +37,7 @@ export const toProject = (r: Row): Project => ({
   privilegedPathsExtra: r.privileged_paths_extra as Json,
   prodRequiresApproval: r.prod_requires_approval as boolean,
   stagingUrl: r.staging_url as string | null,
+  deployTarget: r.deploy_target as Project["deployTarget"],
   createdAt: r.created_at as Date,
 });
 

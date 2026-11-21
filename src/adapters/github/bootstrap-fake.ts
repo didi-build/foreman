@@ -4,6 +4,7 @@
 import {
   RESTART_EVENT,
   type BootstrapAccess,
+  type BootstrapInputs,
   type BootstrapRun,
   type BootstrapRuns,
   type GitHubChange,
@@ -16,6 +17,8 @@ export interface FakeBootstrap extends BootstrapAccess, BootstrapRuns {
   selected: Set<string>;
   /** Each call in order, as `"<method> <name>"`, or `"list"`. */
   calls: string[];
+  /** The inputs of each restart, in order. */
+  restartInputs: BootstrapInputs[];
   /** Runs by repository name, oldest first. */
   runs: Map<string, BootstrapRun[]>;
   /** A step each call of that method refuses at, until cleared. */
@@ -47,6 +50,7 @@ export function createFakeBootstrap(): FakeBootstrap {
   const fake: FakeBootstrap = {
     selected: new Set(),
     calls: [],
+    restartInputs: [],
     runs: new Map(),
     refuse: {},
     failList: false,
@@ -62,8 +66,9 @@ export function createFakeBootstrap(): FakeBootstrap {
       if (fake.failList) throw new Error("the fake list failed");
       return [...fake.selected];
     },
-    async restart(name) {
+    async restart(name, inputs) {
       fake.calls.push(`restart ${name}`);
+      fake.restartInputs.push({ ...inputs });
       const step = fake.refuse.restart;
       if (step) {
         const status = fake.restartStatus;

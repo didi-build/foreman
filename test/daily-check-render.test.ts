@@ -431,7 +431,7 @@ describe("the daily check's project setup lines (unit, D-358, O-114)", () => {
     failed: [
       {
         slug: "garden-notes",
-        message: "Bootstrap failed for garden-notes; run the register form again",
+        message: "Bootstrap failed for garden-notes; run the New project form again",
       },
     ],
     unreadable: ["seed-swap", "tool-library"],
@@ -441,7 +441,7 @@ describe("the daily check's project setup lines (unit, D-358, O-114)", () => {
     const c = check([project("p")], { projectSetup: setup });
     const text = renderDailyCheck(c).split("\n");
     const failed = text.indexOf(
-      "Bootstrap failed for garden-notes; run the register form again.",
+      "Bootstrap failed for garden-notes; run the New project form again.",
     );
     expect(failed).toBeGreaterThan(0);
     expect(text[failed + 1]).toBe(
@@ -450,7 +450,7 @@ describe("the daily check's project setup lines (unit, D-358, O-114)", () => {
     expect(failed).toBeLessThan(text.findIndex((l) => l.startsWith("== p")));
     const html = renderDailyCheckHtml(c, PAGES);
     expect(html).toContain(
-      "Bootstrap failed for garden-notes; run the register form again.",
+      "Bootstrap failed for garden-notes; run the New project form again.",
     );
     expect(html.indexOf("<h3")).toBeGreaterThan(0);
     expect(html.indexOf("Bootstrap failed")).toBeLessThan(html.indexOf("<h3"));

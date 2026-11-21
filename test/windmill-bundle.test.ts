@@ -306,6 +306,11 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
     for (const [name, bundle] of empty.bundles) {
       const text = Buffer.from(bundle).toString("utf8");
       expect(text, name).not.toMatch(/versionMajorMinor|createProgram\(/);
+      // The retired register-project entry reads nothing, so it carries no file (O-161).
+      if (name === "register_project") {
+        expect(text, name).not.toContain('"contracts/bots/qa.yaml"');
+        continue;
+      }
       expect(text, name).toContain('"contracts/bots/qa.yaml"');
       expect(text, name).toContain(
         Buffer.from(

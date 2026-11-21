@@ -1,17 +1,17 @@
 // Seam: the flows of BOOTSTRAP_TOKEN's access only during a repository's own setup (flow, D-358
 // lock (2), O-114) on the memory store, through the flow layer's deps (`flowDepsFor`) with the
-// fake of the secret's list and Bootstrap's runs: the register form's grant and restart, the
+// fake of the secret's list and Bootstrap's runs: the New project form's grant and restart, the
 // called flow `f/foreman/remove_bootstrap_access` once Bootstrap's restarted run ends, the
 // reconcile flow's backstop in live mode, in dry run and under the kill switch, and the daily
 // check's failed setup. Once more with the runner's own GitHub parts and no runner App key stored,
 // so each token is refused before anything is sent. The rules themselves are in
-// test/bootstrap-access.test.ts and test/register-project.test.ts. Synthetic data only; nothing
+// test/bootstrap-access.test.ts and test/new-project.test.ts. Synthetic data only; nothing
 // reaches GitHub or Windmill.
 import { describe, expect, it } from "vitest";
 
 import { run as dailyCheck } from "../../flows/daily-check.ts";
 import { run as reconcile } from "../../flows/reconcile.ts";
-import { run as registerProject } from "../../flows/register-project.ts";
+import { run as newProject } from "../../flows/new-project.ts";
 import { run as removeAccess } from "../../flows/remove-bootstrap-access.ts";
 import { runnerBootstrapAccess, runnerBootstrapRuns } from "../../flows/lib/compose.ts";
 import {
@@ -19,23 +19,21 @@ import {
   REMOVAL_TEXTS,
   SETUP_WINDOW_MINUTES,
 } from "../../src/core/bootstrap-access.ts";
-import { REGISTER_REFUSALS } from "../../src/core/register-project.ts";
+import { NEW_PROJECT_REFUSALS } from "../../src/core/new-project.ts";
 import { appTokensWithoutKeys, createFlowFixture } from "./flow-fixture.ts";
 
 const INPUT = {
   slug: "garden-notes",
-  description: "A small notes app for the garden club.",
+  displayName: "Garden Notes",
+  purpose: "A small notes app for the garden club.",
+  collectsPersonalData: true,
 };
 const REPO = "didi-build/garden-notes";
 
 async function registered() {
   const f = await createFlowFixture();
   await f.live();
-  f.projectSettings.listed = [INPUT.slug];
-  expect(await registerProject(f.deps, INPUT)).toMatchObject({
-    outcome: "registered",
-    setup: "started",
-  });
+  expect(await newProject(f.deps, INPUT)).toMatchObject({ outcome: "created" });
   return f;
 }
 
@@ -51,11 +49,9 @@ describe("BOOTSTRAP_TOKEN's access in the flows (flow, D-358, O-114)", () => {
     });
     expect(f.bootstrap.selected.size).toBe(0);
     // Run again after the failure, the form picks up where it stopped.
-    expect(await registerProject(f.deps, INPUT)).toEqual({
-      outcome: "setup_restarted",
-      slug: INPUT.slug,
-      repo: REPO,
-    });
+    const again = await newProject(f.deps, INPUT);
+    expect(again.outcome).toBe("completed");
+    expect(again.steps.at(-1)).toMatchObject({ step: "bootstrap", outcome: "started" });
     expect([...f.bootstrap.selected]).toEqual([INPUT.slug]);
   });
 
@@ -131,19 +127,19 @@ describe("BOOTSTRAP_TOKEN's access in the flows (flow, D-358, O-114)", () => {
       failed: [
         {
           slug: INPUT.slug,
-          message: "Bootstrap failed for garden-notes; run the register form again",
+          message: "Bootstrap failed for garden-notes; run the New project form again",
         },
       ],
       unreadable: [],
     });
     expect(json.text).toContain(
-      "Bootstrap failed for garden-notes; run the register form again.",
+      "Bootstrap failed for garden-notes; run the New project form again.",
     );
     expect(html).toContain(
-      "Bootstrap failed for garden-notes; run the register form again.",
+      "Bootstrap failed for garden-notes; run the New project form again.",
     );
     // Once the form's next restart succeeds, the check no longer says so.
-    await registerProject(f.deps, INPUT);
+    await newProject(f.deps, INPUT);
     f.bootstrap.finish(INPUT.slug, "success");
     const after = (await dailyCheck(f.deps)).render_all[1].json;
     expect(after.check.projectSetup?.failed).toEqual([]);
@@ -153,21 +149,20 @@ describe("BOOTSTRAP_TOKEN's access in the flows (flow, D-358, O-114)", () => {
   it("with the runner's own GitHub parts and no runner App key stored, the form stops at the grant's token with the project recorded, and nothing else acts", async () => {
     const f = await createFlowFixture();
     await f.live();
-    f.projectSettings.listed = [INPUT.slug];
     const apps = appTokensWithoutKeys();
     const deps = {
       ...f.deps,
       bootstrapAccess: runnerBootstrapAccess(apps.bootstrap),
       bootstrapRuns: runnerBootstrapRuns(apps.bootstrap, apps.runner),
     };
-    expect(await registerProject(deps, INPUT)).toEqual({
+    expect(await newProject(deps, INPUT)).toMatchObject({
       outcome: "refused",
       reason: "grant_token_refused",
-      message: REGISTER_REFUSALS.grant_token_refused,
+      message: NEW_PROJECT_REFUSALS.grant_token_refused,
     });
     expect(await f.store.getProjectBySlug(INPUT.slug)).not.toBeNull();
     // Run again, it cannot read Bootstrap's runs either, and grants nothing.
-    expect(await registerProject(deps, INPUT)).toMatchObject({
+    expect(await newProject(deps, INPUT)).toMatchObject({
       reason: "setup_unreadable",
     });
     expect(await removeAccess(deps, { repo: REPO })).toEqual({

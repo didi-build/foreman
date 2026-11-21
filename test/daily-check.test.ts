@@ -51,6 +51,7 @@ async function fixture() {
       privilegedPathsExtra: [],
       prodRequiresApproval: false,
       stagingUrl,
+      deployTarget: "cloudflare",
       createdAt: f.clock.now(),
     };
     await f.store.insertProject(created);

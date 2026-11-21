@@ -211,3 +211,19 @@ export function windmillEnvironment(
     },
   };
 }
+
+/** The job's own id, which Windmill sets in every job as `WM_JOB_ID` (its reserved variables). */
+export const WINDMILL_JOB_ID_ENV = "WM_JOB_ID";
+
+const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The job's id, or null outside Windmill or when it is not a UUID. Not a secret: the New project
+ * form names it in the settings commit's message, so the commit points at its run (O-161).
+ */
+export function windmillJobId(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const id = env[WINDMILL_JOB_ID_ENV] ?? "";
+  return JOB_ID.test(id) ? id : null;
+}

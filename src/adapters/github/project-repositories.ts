@@ -1,5 +1,6 @@
-// The runner's port for project repositories (src/core/register-project.ts `ProjectRepositories`,
-// D-345, D-346, D-348, O-109), used only by Didi's register-project form.
+// The runner's port for project repositories (src/core/project-repository.ts `ProjectRepositories`,
+// D-345, D-346, D-348, O-109), used only by Didi's New project form (ADR 0118 appendix C step 5,
+// O-161).
 //
 // `generate` mints the repository creation token (./repository-creation-tokens.ts) for this one
 // call and sends GitHub's "Create a repository using a template",
@@ -23,7 +24,7 @@ import {
   type ProjectRepositories,
   type RepositoryFacts,
   type TemplateGenerate,
-} from "../../core/register-project.ts";
+} from "../../core/project-repository.ts";
 import type { GitHubPostHttp } from "./post-http.ts";
 import type { RepositoryCreationTokens } from "./repository-creation-tokens.ts";
 import {

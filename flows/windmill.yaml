@@ -304,21 +304,35 @@ flows:
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
 
+  - name: new_project
+    path: f/foreman/new_project
+    entry: flows/new-project.ts
+    # Didi's New project form (ADR 0118 appendix C, D-434, D-435, O-161): running it is her one
+    # approval for a project. Its four boxes come from `main`'s parameters, as Windmill reads
+    # them (the deploy sends no schema): slug, displayName, purpose, and collectsPersonalData, a
+    # box ticked by default. Didi starts it from its page in the Windmill workspace, signed in,
+    # as cancel_item (O-97, D-295). Never a public or signed-token link; no service's Windmill
+    # token, schedule, pass or other flow starts it. In order, each found before it is made: the
+    # D1 database and the placeholder Worker (the D1 token and the staging deploy token, O-160),
+    # the file projects/<slug>.json in didi-build/foreman-projects (a create-only write), the
+    # Platform and Infra runs on didi-build/foreman with that commit, didi-build/<slug> from
+    # didi-build/launchpad (D-346, D-348), the project's row, then BOOTSTRAP_TOKEN's access and
+    # Bootstrap with the display name and the personal-data answer (D-358). The kill switch
+    # refuses; dry run only reads and says what each step would do. Run again, it does what is
+    # missing and makes nothing twice. No new Windmill secret, value or scope: it reads what the
+    # other flows read under the folder. Its GitHub tokens are the runner App's, each minted for
+    # its one step with an existing permission (D-443): contents write on foreman-projects for
+    # the file, actions write on foreman for the two starts, the creation token, and D-358's.
+    trigger: called
+    job_token_scopes: ["variables:read:f/foreman/*"]
+
   - name: register_project
     path: f/foreman/register_project
     entry: flows/register-project.ts
-    # Didi's register-project form (D-345, D-346, D-348, O-109), with the project's slug and a
-    # one-line description, which becomes the repository's description that Launchpad's Bootstrap
-    # reads. Didi starts it from its page in the Windmill workspace, signed in, as cancel_item
-    # (O-97, D-295). Never a public or signed-token link. No schedule, pass or other flow starts
-    # it. It refuses a slug with no projects/<slug>.json in didi-build/foreman-projects on main,
-    # creates didi-build/<slug> from didi-build/launchpad, always public (D-348), and records the
-    # project; a project already recorded is already_registered. The kill switch refuses; dry run
-    # creates and writes nothing. No new Windmill credential: the GitHub tokens are the runner
-    # App's, minted per step, and only this form's carries Repository creation (D-346). Then
-    # (D-358, O-114) it adds the repository to BOOTSTRAP_TOKEN's selected repositories and starts
-    # Bootstrap again on main, each with a token narrowed to the new repository. Run again on a
-    # project whose setup has not finished, it grants and restarts again.
+    # Retired (ADR 0118 slice 6, O-161): new_project replaces it. Kept as an entry that refuses
+    # with fixed text naming new_project, because the deploy never deletes a script: without
+    # it, the old form would stay in the workspace, still able to create a repository and
+    # record a project. It takes no box, reads nothing and changes nothing.
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
 
@@ -330,7 +344,7 @@ flows:
     # boxes, once per plan (D-376): projectSlug, title, plan, productDirection, needsDidi (yes, no
     # or unsure), needsDidiReason, answers (a list of question and answer) and, only to resubmit
     # an idea's plan, ideaId. Didi starts it from its page in the Windmill workspace, signed in, as
-    # register_project (D-295). Never a public or signed-token link; no service's Windmill token,
+    # new_project (D-295). Never a public or signed-token link; no service's Windmill token,
     # schedule, pass or other flow starts it. It checks the boxes as POST /plans checks the
     # planning chat's body, records the submission with the same core code and the planning
     # chat's identity, then takes the plan approval step in this same run, as the plan_approval

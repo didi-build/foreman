@@ -1,4 +1,4 @@
-// The runner App's repository creation token (D-346, O-109). Only Didi's register-project form
+// The runner App's repository creation token (D-346, O-109). Only Didi's New project form (O-161)
 // mints it, for one create from the template. The installation token request names exactly the
 // template repository and two permissions (GitHub's `repositories` and `permissions` parameters):
 // `contents: read` on `launchpad` and `repository_creation: write`, the set GitHub's docs give for

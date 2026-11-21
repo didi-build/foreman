@@ -121,6 +121,7 @@ export async function createReconcileFixture(
     privilegedPathsExtra: [],
     prodRequiresApproval: options.prodRequiresApproval ?? false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: clock.now(),
   });
 
