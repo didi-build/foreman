@@ -24,7 +24,7 @@ import {
   SUBMIT_REFUSAL_MESSAGES,
 } from "../core/plans.ts";
 import { createPlanningReads, PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
-import { PROJECT_SLUG } from "../core/register-project.ts";
+import { PROJECT_SLUG } from "../core/project-repository.ts";
 import { startErrorFields } from "../adapters/windmill/client.ts";
 import type { PlanApprovalFlow } from "../adapters/windmill/plan-approval-flow.ts";
 import type { Logger } from "../service-kit/logger.ts";

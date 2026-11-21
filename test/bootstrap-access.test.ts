@@ -4,7 +4,7 @@
 // removal once Bootstrap's restarted run ends (on success and on failure), the reconcile pass's
 // backstop (a repository inside its window kept, every other one removed), dry run, the kill
 // switch, and the daily check's failed setups. The form's grant and restart are in
-// test/register-project.test.ts. Synthetic data only; no real repository, token or GitHub call.
+// test/new-project.test.ts. Synthetic data only; no real repository, token or GitHub call.
 import { describe, expect, it } from "vitest";
 
 import { createFakeBootstrap } from "../src/adapters/github/bootstrap-fake.ts";
@@ -21,11 +21,14 @@ import {
   startSetup,
 } from "../src/core/bootstrap-access.ts";
 import { createMemoryStore } from "../src/core/memory-store.ts";
-import { PROJECT_OWNER, plannedProject } from "../src/core/register-project.ts";
+import { plannedProject } from "../src/core/new-project.ts";
+import { PROJECT_OWNER } from "../src/core/project-repository.ts";
 import type { Json } from "../src/core/store.ts";
 
 const T0 = new Date("2026-11-07T12:00:00Z");
 const MINUTE = 60_000;
+/** Bootstrap's two inputs, as the New project form sends them (O-161). */
+const INPUTS = { displayName: "Garden Notes", collectsPersonalData: true };
 
 async function setup(options: { live?: boolean } = {}) {
   const store = createMemoryStore();
@@ -40,7 +43,7 @@ async function setup(options: { live?: boolean } = {}) {
   /** A project registered `minutesAgo` before now, as the form records it. */
   const project = (slug: string, minutesAgo = 0) =>
     store.insertProject({
-      ...plannedProject(slug),
+      ...plannedProject(slug, "Garden Notes"),
       id: `75000000-0000-4000-8000-${String(++n).padStart(12, "0")}`,
       createdAt: new Date(now - minutesAgo * MINUTE),
     });
@@ -110,8 +113,10 @@ describe("what a finished setup is (unit, O-114)", () => {
 
   it("starts setup with the grant first, then the restart", async () => {
     const f = await setup();
-    expect(await startSetup(f.deps, "garden-notes")).toEqual({ started: true });
+    expect(await startSetup(f.deps, "garden-notes", INPUTS)).toEqual({ started: true });
     expect(f.bootstrap.calls).toEqual(["grant garden-notes", "restart garden-notes"]);
+    // The restart carries the form's two inputs (O-161).
+    expect(f.bootstrap.restartInputs).toEqual([INPUTS]);
   });
 });
 
@@ -119,7 +124,7 @@ describe("removing the access once Bootstrap's restarted run ends (unit, O-114)"
   it("removes the repository whatever the run's conclusion, without reading the run", async () => {
     for (const conclusion of ["success", "failure"]) {
       const f = await setup();
-      await startSetup(f.deps, "garden-notes");
+      await startSetup(f.deps, "garden-notes", INPUTS);
       f.bootstrap.finish("garden-notes", conclusion);
       f.bootstrap.calls = [];
       expect(await removeAfterBootstrap(f.deps, "didi-build/garden-notes")).toEqual({
@@ -204,10 +209,10 @@ describe("the reconcile pass's backstop (unit, D-358, O-114)", () => {
     await f.project("old-one", SETUP_WINDOW_MINUTES); // registered an hour ago
     await f.project("done-one", 5); // its restart ended well
     await f.project("failed-one", 5); // its restart failed
-    await f.bootstrap.restart("running-one");
-    await f.bootstrap.restart("done-one");
+    await f.bootstrap.restart("running-one", INPUTS);
+    await f.bootstrap.restart("done-one", INPUTS);
     f.bootstrap.finish("done-one", "success");
-    await f.bootstrap.restart("failed-one");
+    await f.bootstrap.restart("failed-one", INPUTS);
     f.bootstrap.finish("failed-one", "failure");
     for (const name of [
       "new-one",
@@ -261,7 +266,7 @@ describe("the reconcile pass's backstop (unit, D-358, O-114)", () => {
   it("removes a kept repository once its hour has passed", async () => {
     const f = await setup();
     await f.project("garden-notes");
-    await startSetup(f.deps, "garden-notes");
+    await startSetup(f.deps, "garden-notes", INPUTS);
     expect((await f.pass())?.kept).toEqual(["didi-build/garden-notes"]);
     f.later(SETUP_WINDOW_MINUTES - 1);
     expect((await f.pass())?.kept).toEqual(["didi-build/garden-notes"]);
@@ -293,7 +298,7 @@ describe("the reconcile pass's backstop (unit, D-358, O-114)", () => {
   it("does not take a project of another repository as the one on the list", async () => {
     const f = await setup();
     await f.store.insertProject({
-      ...plannedProject("garden-notes"),
+      ...plannedProject("garden-notes", "Garden Notes"),
       repo: "someone-else/garden-notes",
       id: "75000000-0000-4000-8000-000000000099",
       createdAt: T0,
@@ -376,27 +381,27 @@ describe("the daily check's failed setups (unit, O-114)", () => {
     await f.project("tool-library");
     await f.project("not-started");
     await f.store.insertProject({
-      ...plannedProject("elsewhere"),
+      ...plannedProject("elsewhere", "Garden Notes"),
       repo: "someone-else/elsewhere",
       id: "75000000-0000-4000-8000-000000000098",
       createdAt: T0,
     });
-    await f.bootstrap.restart("seed-swap");
+    await f.bootstrap.restart("seed-swap", INPUTS);
     f.bootstrap.finish("seed-swap", "failure");
-    await f.bootstrap.restart("garden-notes");
+    await f.bootstrap.restart("garden-notes", INPUTS);
     f.bootstrap.finish("garden-notes", "timed_out");
-    await f.bootstrap.restart("tool-library");
+    await f.bootstrap.restart("tool-library", INPUTS);
     f.bootstrap.finish("tool-library", "success");
     f.bootstrap.calls = [];
     expect(await failedSetups(f.deps, await f.store.listProjects())).toEqual({
       failed: [
         {
           slug: "garden-notes",
-          message: "Bootstrap failed for garden-notes; run the register form again",
+          message: "Bootstrap failed for garden-notes; run the New project form again",
         },
         {
           slug: "seed-swap",
-          message: "Bootstrap failed for seed-swap; run the register form again",
+          message: "Bootstrap failed for seed-swap; run the New project form again",
         },
       ],
       unreadable: [],
@@ -413,12 +418,12 @@ describe("the daily check's failed setups (unit, O-114)", () => {
   it("drops a failure once the form's next restart succeeds", async () => {
     const f = await setup();
     await f.project("garden-notes");
-    await f.bootstrap.restart("garden-notes");
+    await f.bootstrap.restart("garden-notes", INPUTS);
     f.bootstrap.finish("garden-notes", "failure");
     expect(
       (await failedSetups(f.deps, await f.store.listProjects())).failed,
     ).toHaveLength(1);
-    await f.bootstrap.restart("garden-notes");
+    await f.bootstrap.restart("garden-notes", INPUTS);
     expect((await failedSetups(f.deps, await f.store.listProjects())).failed).toEqual(
       [],
     );

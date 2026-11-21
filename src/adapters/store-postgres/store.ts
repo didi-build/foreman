@@ -79,8 +79,8 @@ function ops(db: Queryable): StoreOps {
     async insertProject(p) {
       await exec(
         `insert into factory.projects (id, slug, name, repo, linear_project_id, gallery_path_override,
-           privileged_paths_extra, prod_requires_approval, staging_url, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+           privileged_paths_extra, prod_requires_approval, staging_url, deploy_target, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           p.id,
           p.slug,
@@ -91,6 +91,7 @@ function ops(db: Queryable): StoreOps {
           json(p.privilegedPathsExtra),
           p.prodRequiresApproval,
           p.stagingUrl,
+          p.deployTarget,
           p.createdAt,
         ],
       );

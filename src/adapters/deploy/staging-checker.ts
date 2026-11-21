@@ -29,7 +29,7 @@
 // - No answer, or none in time: `no_result` `unreachable` or `timed_out`, as for the marker.
 // Without `worker`, nothing but the marker is read, as before.
 import { COMMIT_MARKER_FILE } from "../../core/preview-check.ts";
-import { PROJECT_SLUG, projectStagingUrl } from "../../core/register-project.ts";
+import { PROJECT_SLUG, projectStagingUrl } from "../../core/project-repository.ts";
 import type {
   StagingCheckRequest,
   StagingCheckResult,

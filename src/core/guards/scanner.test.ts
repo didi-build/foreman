@@ -58,6 +58,7 @@ async function fixture(idea: Partial<Node> = {}) {
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: at(0),
   });
   const node: Node = {

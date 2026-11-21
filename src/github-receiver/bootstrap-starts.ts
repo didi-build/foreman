@@ -7,7 +7,7 @@
 //
 // It starts `f/foreman/remove_bootstrap_access` with the repository when the signed payload is a
 // `workflow_run` `completed` for `.github/workflows/bootstrap.yml` (or that path with `@<ref>`),
-// started by `workflow_dispatch` (the register form's restart, the run that had the token), in a
+// started by `workflow_dispatch` (the New project form's restart, the run that had the token), in a
 // repository of didi-build, whatever its conclusion, and only for a delivery recorded now (never a
 // replay or a delivery ingestion rejected) while neither switch holds the runner. A run started by
 // a push is left alone: the form's grant can come while Bootstrap's first run, at creation, is

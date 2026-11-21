@@ -52,6 +52,7 @@ async function secondProject(f: FlowFixture) {
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: f.clock.now(),
   });
   return id;

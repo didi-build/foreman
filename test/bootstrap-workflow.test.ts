@@ -49,7 +49,7 @@ const uses = (job: Job, action: string) =>
   job.steps.filter((step) => step.uses?.startsWith(`${action}@`));
 
 describe("the Bootstrap workflow (unit: repo guard, D-358 lock 1)", () => {
-  it("runs on a push to main and by hand (the register form restarts it with workflow_dispatch)", () => {
+  it("runs on a push to main and by hand (the New project form restarts it with workflow_dispatch)", () => {
     expect(Object.keys(wf.on).sort()).toEqual(["push", "workflow_dispatch"]);
     expect((wf.on.push as { branches: string[] }).branches).toEqual(["main"]);
     expect(wf.concurrency).toEqual({ group: "bootstrap", "cancel-in-progress": false });

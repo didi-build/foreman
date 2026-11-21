@@ -4,9 +4,10 @@
 // nothing here reads, moves or logs one.
 //
 // Three steps change the secret's list of selected repositories, each through the ports below:
-// 1. Didi's register-project form (./register-project.ts), once the repository exists and the
-//    project is recorded: `startSetup` adds the repository to the list, then starts Bootstrap
-//    again on main (its first run, at creation, had no token).
+// 1. Didi's New project form (./new-project.ts, ADR 0118 appendix C step 7, O-161), once the
+//    repository exists and the project is recorded: `startSetup` adds the repository to the list,
+//    then starts Bootstrap again on main (its first run, at creation, had no token), with the
+//    project's display name and personal-data answer as its two inputs (D-435, N-92).
 // 2. When Bootstrap's restarted run ends, whatever its conclusion, `removeAfterBootstrap` removes
 //    the repository. The GitHub receiver starts it on `workflow_run` `completed` for
 //    `.github/workflows/bootstrap.yml` (flows/remove-bootstrap-access.ts).
@@ -119,12 +120,25 @@ export interface BootstrapRun {
   conclusion: string | null;
 }
 
+/**
+ * Bootstrap's two `workflow_dispatch` inputs, which Launchpad's template declares (ADR 0118
+ * appendix E item 1): `display_name` and `collects_personal_data` (`yes` or `no`). They replace
+ * the name made from the repository's and the repository variable, so no variable is set and the
+ * runner App needs no "Variables" permission.
+ */
+export interface BootstrapInputs {
+  /** The project file's display name: one line of at most 60 characters. */
+  displayName: string;
+  /** The form's personal-data answer (D-435): `yes` turns nodrift's scaffolding on. */
+  collectsPersonalData: boolean;
+}
+
 export interface BootstrapRuns {
   /**
-   * Starts Bootstrap on main of `didi-build/<name>`, with a token narrowed to that repository and
-   * `actions: write`. Never tries again.
+   * Starts Bootstrap on main of `didi-build/<name>` with its two inputs, with a token narrowed to
+   * that repository and `actions: write`. Never tries again.
    */
-  restart(name: string): Promise<GitHubChange>;
+  restart(name: string, inputs: BootstrapInputs): Promise<GitHubChange>;
   /**
    * The newest run of Bootstrap on `didi-build/<name>` started by `workflow_dispatch`, or null
    * when there is none, read with the runner App's `actions: read` token. Throws on a failed read.
@@ -145,7 +159,7 @@ export function setupStateOf(run: BootstrapRun | null): SetupState {
 export const setupFinished = (state: SetupState): boolean =>
   state === "succeeded" || state === "failed";
 
-/** Why the form's setup step stopped. Its fixed text is in `REGISTER_REFUSALS`. */
+/** Why the form's setup step stopped. Its fixed text is in `NEW_PROJECT_REFUSALS`. */
 export type SetupRefusal =
   | "grant_token_refused"
   | "secret_not_selected"
@@ -163,6 +177,7 @@ export type SetupRefusal =
 export async function startSetup(
   deps: { bootstrapAccess: BootstrapAccess; bootstrapRuns: BootstrapRuns },
   name: string,
+  inputs: BootstrapInputs,
 ): Promise<
   { started: true } | { started: false; reason: SetupRefusal; githubStatus?: number }
 > {
@@ -178,7 +193,7 @@ export async function startSetup(
     return { started: false, reason: reason[grant.step] };
   }
   const restart = await deps.bootstrapRuns
-    .restart(name)
+    .restart(name, inputs)
     .catch((): GitHubChange => ({ kind: "refused", step: "call" }));
   if (restart.kind === "refused") {
     return {
@@ -358,7 +373,7 @@ export interface SetupReport {
 }
 
 export const failedSetupMessage = (slug: string): string =>
-  `Bootstrap failed for ${slug}; run the register form again`;
+  `Bootstrap failed for ${slug}; run the New project form again`;
 
 /**
  * For the daily check: each registered project whose setup failed. Reads only. A project whose

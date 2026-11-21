@@ -668,7 +668,7 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
 });
 
 describe("the staging Worker's name (unit: repo guard, O-112, O-116)", () => {
-  it("is the name the infra stack's route invokes, for a slug the register form accepts", () => {
+  it("is the name the infra stack's route invokes, for a slug the project-slug pattern accepts", () => {
     const projects = readFileSync(
       "infra/modules/platform/cloudflare/projects.tf",
       "utf8",

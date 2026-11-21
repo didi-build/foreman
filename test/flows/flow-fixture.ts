@@ -20,11 +20,13 @@ import {
   type FakeStagingBuilds,
   type FakeStagingTarget,
 } from "../../src/adapters/deploy/fake.ts";
+import { createFakePublicNames } from "../../src/adapters/dns/fake.ts";
 import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import {
   createFakeProjectRepositories,
   createFakeProjectSettings,
-} from "../../src/adapters/github/project-registration-fake.ts";
+  createFakeProjectWorkflows,
+} from "../../src/adapters/github/new-project-fake.ts";
 import {
   createFakeRepoMaps,
   createFakeRepoScans,
@@ -168,6 +170,8 @@ export function flowDepsFor(
   const repoMaps = createFakeRepoMaps();
   const repoScans = createFakeRepoScans();
   const projectSettings = createFakeProjectSettings();
+  const projectWorkflows = createFakeProjectWorkflows();
+  const publicNames = createFakePublicNames();
   const projectRepositories = createFakeProjectRepositories();
   // One fake for both ports, so a grant, a restart and a removal see the same state (O-114).
   const bootstrap = createFakeBootstrap();
@@ -187,6 +191,8 @@ export function flowDepsFor(
     repoMaps,
     repoScans,
     projectSettings,
+    projectWorkflows,
+    publicNames,
     projectRepositories,
     bootstrapAccess: bootstrap,
     bootstrapRuns: bootstrap,
@@ -226,6 +232,8 @@ export function flowDepsFor(
     repoMaps,
     repoScans,
     projectSettings,
+    projectWorkflows,
+    publicNames,
     projectRepositories,
     bootstrap,
     addOnlyApplies,
@@ -251,6 +259,8 @@ export async function createFlowFixture() {
     repoMaps,
     repoScans,
     projectSettings,
+    projectWorkflows,
+    publicNames,
     projectRepositories,
     bootstrap,
     addOnlyApplies,
@@ -285,6 +295,8 @@ export async function createFlowFixture() {
     repoMaps,
     repoScans,
     projectSettings,
+    projectWorkflows,
+    publicNames,
     projectRepositories,
     bootstrap,
     addOnlyApplies,

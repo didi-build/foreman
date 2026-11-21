@@ -1,6 +1,6 @@
 // The runner App's tokens for `BOOTSTRAP_TOKEN`'s access (D-358 lock (2), O-114). D-358 gives the
 // runner App "Organization secrets: write" and "Actions: write"; only these tokens carry them, and
-// only the register form's setup step and the two removal steps mint them (src/core/bootstrap-access.ts).
+// only the New project form's setup step and the two removal steps mint them (src/core/bootstrap-access.ts).
 // Each is narrowed at creation through the shared mint (./narrow-tokens.ts), which refuses a token
 // GitHub grants wider than asked:
 //

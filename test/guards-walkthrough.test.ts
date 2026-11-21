@@ -46,6 +46,7 @@ describe("code track with the real guards (integration: contracts, library and g
       privilegedPathsExtra: [],
       prodRequiresApproval: true,
       stagingUrl: null,
+      deployTarget: "cloudflare",
       createdAt: time.now(),
     });
     for (const [key, value] of [

@@ -356,9 +356,12 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
   // (O-121), but shows a `string` or `boolean` parameter as its own box.
   const DIDI_FORMS: Record<string, [name: string, type: string, optional: boolean][]> =
     {
-      "f/foreman/register_project": [
+      // O-161: the personal-data box is ticked by default (D-435).
+      "f/foreman/new_project": [
         ["slug", "string", false],
-        ["description", "string", false],
+        ["displayName", "string", false],
+        ["purpose", "string", false],
+        ["collectsPersonalData", "boolean", true],
       ],
       "f/foreman/cancel_item": [
         ["nodeId", "string", false],
@@ -700,18 +703,34 @@ describe("Didi's cancel flow (unit: repo guard, D-308, O-97)", () => {
   });
 });
 
-describe("Didi's register-project form (unit: repo guard, D-345, O-109)", () => {
-  it("is a called flow, never on a schedule, and no service's Windmill token can start it", () => {
-    const flow = description.flows.find((f) => f.name === "register_project");
-    expect(flow?.path).toBe("f/foreman/register_project");
+describe("Didi's New project form (unit: repo guard, D-434, O-161)", () => {
+  it("is a called flow, never on a schedule, with the folder's read scope only, that no service's Windmill token can start", () => {
+    const flow = description.flows.find((f) => f.name === "new_project");
+    expect(flow?.path).toBe("f/foreman/new_project");
     expect(flow?.trigger).toBe("called");
-    expect(flow?.entry).toBe("flows/register-project.ts");
+    expect(flow?.entry).toBe("flows/new-project.ts");
     expect(flow?.schedule).toBeUndefined();
+    expect(flow?.job_token_scopes).toEqual([READ_VARIABLES_SCOPE]);
     expect([
       PLAN_APPROVAL_FLOW_PATH,
       ...RECEIVER_FLOW_PATHS,
       ...RUN_WATCHER_FLOW_PATHS,
     ]).not.toContain(flow?.path);
+  });
+
+  it("keeps the retired register-project form as an entry with no box, so each deploy replaces the old script", () => {
+    const flow = description.flows.find((f) => f.name === "register_project");
+    expect(flow?.path).toBe("f/foreman/register_project");
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/register-project.ts");
+    expect(flow?.job_token_scopes).toEqual([READ_VARIABLES_SCOPE]);
+    expect(readFileSync("flows/register-project.ts", "utf8")).toMatch(
+      /export async function main\(\): Promise<RegisterProjectRetired>/,
+    );
+    // The deploy never deletes a script, which is why the entry stays.
+    expect(readFileSync(".github/scripts/windmill-deploy.sh", "utf8")).toMatch(
+      /Nothing is ever deleted\./,
+    );
   });
 });
 

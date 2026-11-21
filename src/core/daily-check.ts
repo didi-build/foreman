@@ -78,8 +78,8 @@
 // 8 weeks in a row (D-428). A Job still running or one that failed is said too. Before the first
 // Job: "No weekly model test yet." Only model ids, case ids, counts and amounts: no model's text.
 //
-// Project setup (D-358, O-114), before the projects: "Bootstrap failed for <slug>; run the
-// register form again" for each registered project whose newest restarted Bootstrap run failed
+// Project setup (D-358, O-114), before the projects: "Bootstrap failed for <slug>; run the New
+// project form again" for each registered project whose newest restarted Bootstrap run failed
 // (./bootstrap-access.ts, `failedSetups`), whether or not the project has items yet. GitHub keeps
 // the runs, so this is read from GitHub with the runner App's `actions: read` token, not from the
 // store; a project whose runs cannot be read is named as such. With no `bootstrapRuns` port given

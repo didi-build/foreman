@@ -1189,6 +1189,53 @@ describe.skipIf(!adminUrl)(
       });
     });
 
+    it("keeps a project's deploy target to cloudflare or cluster, cloudflare unless given (migration 0028, D-441, O-161)", () => {
+      // The fixture's project is inserted without one.
+      expect(
+        sql(`select deploy_target from factory.projects where id = '${ID.project}';`)
+          .out,
+      ).toBe("cloudflare");
+      const insert = (id: string, slug: string, target: string) =>
+        sql(
+          `insert into factory.projects (id, slug, name, repo, deploy_target, created_at)
+             values ('${id}', '${slug}', 'Garden Notes', 'didi-build/${slug}', ${target}, ${AT});`,
+          "factory_runner",
+        );
+      const made = insert(
+        "00000000-0000-4000-8000-0000000000f1",
+        "garden-notes",
+        "'cluster'",
+      );
+      expect(made.ok, made.err).toBe(true);
+      expectRejected(
+        insert("00000000-0000-4000-8000-0000000000f2", "seed-swap", "'aws'"),
+        /projects_deploy_target_check/,
+      );
+      expectRejected(
+        insert("00000000-0000-4000-8000-0000000000f3", "seed-swap", "'Cloudflare'"),
+        /projects_deploy_target_check/,
+      );
+      expectRejected(
+        insert("00000000-0000-4000-8000-0000000000f4", "seed-swap", "null"),
+        /null value in column "deploy_target"/,
+      );
+      // The state API reads it with the rest of the row; nobody gains a delete.
+      expect(
+        sql(
+          "select count(*) from factory.projects where deploy_target in ('cloudflare', 'cluster');",
+          "factory_api",
+        ).out,
+      ).toBe("2");
+      const removed = sql(
+        "delete from factory.projects where slug = 'garden-notes';",
+        "factory_runner",
+      );
+      expect(removed.ok).toBe(false);
+      expect(sql("delete from factory.projects where slug = 'garden-notes';").ok).toBe(
+        true,
+      );
+    });
+
     it("seeds the usage-exhausted wait (migration 0003) and the cluster run limit of two (migration 0023, D-372)", () => {
       const values = sql(
         "select string_agg(key || '=' || value::text, ',' order by key) from factory.settings where key in ('usage_exhausted_wait_minutes', 'agent_cluster_max_active_runs');",
@@ -1683,6 +1730,46 @@ describe.skipIf(!adminUrl)(
         "select count(*) from factory.settings where key like 'model_%';",
       );
       expect(settings.out).toBe("0");
+    });
+  },
+);
+
+describe.skipIf(!adminUrl)(
+  "migration 0028 on a table that already holds projects (database integration, O-161)",
+  () => {
+    const name = `foreman_deploy_target_migration_test_${process.pid}`;
+    let url = "";
+    beforeAll(() => {
+      url = createTestDatabase(name);
+    });
+    afterAll(() => dropTestDatabase(name));
+
+    it("gives each existing project the Cloudflare target and changes nothing else", () => {
+      const dir = "db/migrations";
+      const files = readdirSync(dir)
+        .filter((f) => f.endsWith(".sql"))
+        .sort();
+      const target = files.indexOf("0028_project_deploy_target.sql");
+      expect(target).toBeGreaterThan(0);
+      for (const file of files.slice(0, target)) {
+        const applied = psql(url, readFileSync(join(dir, file), "utf8"));
+        expect(applied.ok, `${file}: ${applied.err}`).toBe(true);
+      }
+      const seeded = psql(
+        url,
+        `insert into factory.projects (id, slug, name, repo, staging_url, created_at)
+           values ('${ID.project}', 'rehearsal', 'rehearsal', 'didi-build/rehearsal',
+             'https://rehearsal.didi.build', ${AT});`,
+      );
+      expect(seeded.ok, seeded.err).toBe(true);
+      const migrated = psql(url, readFileSync(join(dir, files[target] ?? ""), "utf8"));
+      expect(migrated.ok, migrated.err).toBe(true);
+      expect(
+        psql(
+          url,
+          "select slug || ' ' || name || ' ' || staging_url || ' ' || deploy_target from factory.projects;",
+        ).out,
+      ).toBe("rehearsal rehearsal https://rehearsal.didi.build cloudflare");
     });
   },
 );

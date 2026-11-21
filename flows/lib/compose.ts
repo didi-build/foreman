@@ -3,10 +3,10 @@
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
 // the runner's GitHub client over the runner App's narrow tokens (D-381), the agent runtime, the
 // repo map's Job (and its scan mode), each run's task, the staging check, the staging deploy (CI's
-// builds and the deploy adapter's target, O-116), the ports for `BOOTSTRAP_TOKEN`'s access, and the
-// GitHub Apps' token ports, each App's key and id read on its first token (O-125). Flows take these
-// as `FlowDeps` and hold no rule of their own (architecture section 2.4); tests build `FlowDeps`
-// from fakes.
+// builds and the deploy adapter's target, O-116), the ports for `BOOTSTRAP_TOKEN`'s access, the New
+// project form's settings, workflow starts and DNS lookup (O-161), and the GitHub Apps' token
+// ports, each App's key and id read on its first token (O-125). Flows take these as `FlowDeps`
+// and hold no rule of their own (architecture section 2.4); tests build `FlowDeps` from fakes.
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
@@ -72,6 +72,7 @@ import {
 } from "../../src/adapters/github/post-http.ts";
 import { createGitHubProjectRepositories } from "../../src/adapters/github/project-repositories.ts";
 import { createGitHubProjectSettings } from "../../src/adapters/github/project-settings.ts";
+import { createGitHubProjectWorkflows } from "../../src/adapters/github/project-workflows.ts";
 import {
   createRepositoryCreationTokens,
   type RepositoryCreationTokens,
@@ -83,8 +84,17 @@ import {
 } from "../../src/adapters/github/runner-app-tokens.ts";
 import { createRunnerGitHub } from "../../src/adapters/github/runner-github.ts";
 import { createRunnerAppTokens } from "../../src/adapters/github/runner-read-tokens.ts";
+import {
+  createSettingsWriteTokens,
+  type SettingsWriteTokens,
+} from "../../src/adapters/github/settings-write-tokens.ts";
 import { createGitHubStagingBuilds } from "../../src/adapters/github/staging-builds.ts";
+import {
+  createWorkflowStartTokens,
+  type WorkflowStartTokens,
+} from "../../src/adapters/github/workflow-start-tokens.ts";
 import { createGitHubWriteHttp } from "../../src/adapters/github/write-http.ts";
+import { createPublicNames } from "../../src/adapters/dns/public-names.ts";
 import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/github-artifacts.ts";
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
@@ -101,9 +111,11 @@ import type { Clock } from "../../src/core/library.ts";
 import { EVAL_KEY_PATH_PREFIX } from "../../src/core/model-eval.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type {
-  ProjectRepositories,
   ProjectSettings,
-} from "../../src/core/register-project.ts";
+  ProjectWorkflows,
+  PublicNames,
+} from "../../src/core/new-project.ts";
+import type { ProjectRepositories } from "../../src/core/project-repository.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
@@ -180,8 +192,8 @@ export interface FlowDeps extends ReconcileDeps {
    * file set's check and Cloudflare's direct upload to `<slug>-staging` (O-116), with the build's
    * Worker module and its inherited `DB` when it has one. Refuses on its credential until Didi
    * creates the staging deploy token (D-353, runbook step 16), so nothing is uploaded. It also
-   * sets a new project up with the D1 token and puts product secrets (O-160); no flow calls
-   * those yet (ADR 0118 slices 6 and 7).
+   * sets a new project up with the D1 token for the New project form (O-160, O-161), and puts
+   * product secrets, which no flow calls yet (ADR 0118 slice 7).
    */
   stagingTarget: DeployTarget;
   tasks: TaskSource;
@@ -207,11 +219,20 @@ export interface FlowDeps extends ReconcileDeps {
    */
   repoScans: RepoScans;
   /**
-   * Didi's register-project form (D-345, O-109): the slugs in the platform settings file on
-   * `didi-build/foreman`'s main, read with the runner App's `contents: read` token for that one
-   * repository (D-267, O-125).
+   * Didi's New project form (ADR 0118 appendix C, O-161): Foreman's standard size on
+   * `didi-build/foreman`'s main and the project's file on `didi-build/foreman-projects`' main, each
+   * read with the runner App's `contents: read` token for that one repository (D-267, O-125), and
+   * the file's create-only write with the settings write token, `contents: write` on
+   * `foreman-projects` only (D-443).
    */
   projectSettings: ProjectSettings;
+  /**
+   * The form's start of the Platform and Infra runs with the workflow start token, `actions:
+   * write` on `foreman` only, for exactly those two calls (D-443).
+   */
+  projectWorkflows: ProjectWorkflows;
+  /** The form's public DNS lookup of `<slug>.didi.build` (appendix C, check 3). */
+  publicNames: PublicNames;
   /**
    * The form's repository step (D-345, D-346, D-348): the create from `didi-build/launchpad` with
    * the creation token, and the read of an existing repository with a `contents: read` token
@@ -329,6 +350,10 @@ export interface GitHubAppTokens {
   merge: RunnerMergeTokens;
   /** The runner App's repository creation token (D-346). */
   repositoryCreation: RepositoryCreationTokens;
+  /** The runner App's settings write token: `foreman-projects`, `contents: write` (D-443). */
+  settingsWrite: SettingsWriteTokens;
+  /** The runner App's workflow start token: `foreman`, `actions: write` (D-443). */
+  workflowStart: WorkflowStartTokens;
   /** The runner App's tokens for `BOOTSTRAP_TOKEN`'s access (D-358). */
   bootstrap: BootstrapTokens;
   /** A Developer, Designer or QA run's token, from that role's own App (D-156, D-159). */
@@ -417,6 +442,12 @@ export function windmillGitHubAppTokens(
     repositoryCreation: {
       mint: async () => createRepositoryCreationTokens(await runner()).mint(),
     },
+    settingsWrite: {
+      mint: async () => createSettingsWriteTokens(await runner()).mint(),
+    },
+    workflowStart: {
+      mint: async () => createWorkflowStartTokens(await runner()).mint(),
+    },
     bootstrap: {
       secretsChange: async (name) =>
         createBootstrapTokens(await runner()).secretsChange(name),
@@ -499,9 +530,25 @@ export function runnerRepoScans(
   });
 }
 
-/** The settings file's listed slugs on main (D-345, O-109). */
-export function runnerProjectSettings(tokens: RunnerAppTokens): ProjectSettings {
-  return createGitHubProjectSettings({ tokens, http: createGitHubHttp() });
+/**
+ * The New project form's settings (O-161): reads with the runner's `contents: read` tokens, and
+ * the file's create-only write with the settings write token (D-443).
+ */
+export function runnerProjectSettings(
+  readTokens: RunnerAppTokens,
+  writeTokens: SettingsWriteTokens,
+): ProjectSettings {
+  return createGitHubProjectSettings({
+    readTokens,
+    writeTokens,
+    http: createGitHubHttp(),
+    write: createGitHubWriteHttp(),
+  });
+}
+
+/** The Platform and Infra starts with the workflow start token, two calls only (D-443, O-161). */
+export function runnerProjectWorkflows(tokens: WorkflowStartTokens): ProjectWorkflows {
+  return createGitHubProjectWorkflows({ tokens, post: createGitHubPostHttp() });
 }
 
 /**
@@ -678,7 +725,9 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     repoFolders: runnerRepoFolders(apps.runner),
     repoMaps: runnerRepoMaps(clusterParts, apps.runner),
     repoScans: runnerRepoScans(clusterParts, apps.runner),
-    projectSettings: runnerProjectSettings(apps.runner),
+    projectSettings: runnerProjectSettings(apps.runner, apps.settingsWrite),
+    projectWorkflows: runnerProjectWorkflows(apps.workflowStart),
+    publicNames: createPublicNames(),
     projectRepositories: runnerProjectRepositories(
       apps.repositoryCreation,
       apps.runner,

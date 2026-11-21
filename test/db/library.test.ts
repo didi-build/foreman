@@ -90,6 +90,7 @@ describe.skipIf(!adminUrl)(
         privilegedPathsExtra: [],
         prodRequiresApproval: false,
         stagingUrl: null,
+        deployTarget: "cloudflare",
         createdAt: clock.now(),
       });
     });

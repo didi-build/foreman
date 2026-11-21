@@ -265,26 +265,57 @@ describe("the secret's list (unit with fakes, O-114)", () => {
   });
 });
 
+/** The New project form's two inputs (O-161). */
+const INPUTS = { displayName: "Garden Notes", collectsPersonalData: true };
+const INPUTS_BODY =
+  '{"ref":"main","inputs":{"display_name":"Garden Notes","collects_personal_data":"yes"}}';
+
 describe("Bootstrap's restart and its newest restarted run (unit with fakes, O-114)", () => {
-  it('restarts Bootstrap on main with exactly {"ref":"main"} and the restart token', async () => {
+  it("restarts Bootstrap on main with exactly the ref, its two inputs and the restart token (O-161)", async () => {
     const f = fakes();
-    expect(await f.runs.restart("garden-notes")).toEqual({ kind: "done" });
+    expect(await f.runs.restart("garden-notes", INPUTS)).toEqual({ kind: "done" });
     expect(f.mints).toEqual(["restart garden-notes"]);
     expect(f.posts).toEqual([
       {
         path: "/repos/didi-build/garden-notes/actions/workflows/bootstrap.yml/dispatches",
         token: RESTART_TOKEN,
-        body: { ref: "main" },
+        body: {
+          ref: "main",
+          inputs: { display_name: "Garden Notes", collects_personal_data: "yes" },
+        },
         maxBytes: 4 * 1024 * 1024,
       },
     ]);
-    expect(JSON.stringify(f.posts[0]?.body)).toBe('{"ref":"main"}');
+    expect(JSON.stringify(f.posts[0]?.body)).toBe(INPUTS_BODY);
+    const no = fakes();
+    await no.runs.restart("garden-notes", { ...INPUTS, collectsPersonalData: false });
+    expect(no.posts[0]?.body).toMatchObject({
+      inputs: { collects_personal_data: "no" },
+    });
+  });
+
+  it("refuses inputs Launchpad would not take before minting anything", async () => {
+    for (const inputs of [
+      { displayName: "", collectsPersonalData: true },
+      { displayName: "   ", collectsPersonalData: true },
+      { displayName: "Garden Notes", collectsPersonalData: "yes" },
+      undefined,
+    ]) {
+      const f = fakes();
+      expect(
+        await f.runs.restart(
+          "garden-notes",
+          inputs as unknown as Parameters<typeof f.runs.restart>[1],
+        ),
+      ).toEqual({ kind: "refused", step: "call" });
+      expect([f.mints, f.posts]).toEqual([[], []]);
+    }
   });
 
   it("refuses at once, naming GitHub's status, a restart answered with anything but 204 or 404, and whose token was refused", async () => {
     for (const status of [200, 401, 403, 422, 500]) {
       const f = fakes({ postStatus: status });
-      expect(await f.runs.restart("garden-notes")).toEqual({
+      expect(await f.runs.restart("garden-notes", INPUTS)).toEqual({
         kind: "refused",
         step: "call",
         status,
@@ -292,13 +323,13 @@ describe("Bootstrap's restart and its newest restarted run (unit with fakes, O-1
       expect([f.posts.length, f.waits]).toEqual([1, []]);
     }
     const dropped = fakes({ postThrows: true });
-    expect(await dropped.runs.restart("garden-notes")).toEqual({
+    expect(await dropped.runs.restart("garden-notes", INPUTS)).toEqual({
       kind: "refused",
       step: "call",
     });
     expect([dropped.posts.length, dropped.waits]).toEqual([1, []]);
     const f = fakes({ refuseMint: true });
-    expect(await f.runs.restart("garden-notes")).toEqual({
+    expect(await f.runs.restart("garden-notes", INPUTS)).toEqual({
       kind: "refused",
       step: "token",
     });
@@ -307,21 +338,21 @@ describe("Bootstrap's restart and its newest restarted run (unit with fakes, O-1
 
   it("tries a restart answered 404 again, with the same token, until GitHub has the new repository's workflow (O-114)", async () => {
     const f = fakes({ postStatuses: [404, 404, 204] });
-    expect(await f.runs.restart("garden-notes")).toEqual({ kind: "done" });
+    expect(await f.runs.restart("garden-notes", INPUTS)).toEqual({ kind: "done" });
     expect(f.waits).toEqual([5_000, 10_000]);
     expect(f.mints).toEqual(["restart garden-notes"]);
     expect(f.posts.map((p) => [p.path, p.token, JSON.stringify(p.body)])).toEqual(
       Array.from({ length: 3 }, () => [
         "/repos/didi-build/garden-notes/actions/workflows/bootstrap.yml/dispatches",
         RESTART_TOKEN,
-        '{"ref":"main"}',
+        INPUTS_BODY,
       ]),
     );
   });
 
   it("stops after about a minute of 404s and names the status, and stops at any other answer in between", async () => {
     const f = fakes({ postStatus: 404 });
-    expect(await f.runs.restart("garden-notes")).toEqual({
+    expect(await f.runs.restart("garden-notes", INPUTS)).toEqual({
       kind: "refused",
       step: "call",
       status: 404,
@@ -331,7 +362,7 @@ describe("Bootstrap's restart and its newest restarted run (unit with fakes, O-1
     expect(f.posts).toHaveLength(RESTART_RETRY_DELAYS_MS.length + 1);
     expect(f.mints).toEqual(["restart garden-notes"]);
     const other = fakes({ postStatuses: [404, 422] });
-    expect(await other.runs.restart("garden-notes")).toEqual({
+    expect(await other.runs.restart("garden-notes", INPUTS)).toEqual({
       kind: "refused",
       step: "call",
       status: 422,

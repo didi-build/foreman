@@ -12,7 +12,7 @@ import {
   TUNNEL_EDGE_PORT,
   serviceUrl,
 } from "../infra/kubernetes/platform.ts";
-import { PROJECT_SLUG, projectStagingUrl } from "../src/core/register-project.ts";
+import { PROJECT_SLUG, projectStagingUrl } from "../src/core/project-repository.ts";
 import { isProjectEntrySlug, parseProjectEntry } from "../src/core/project-entry.ts";
 
 // Unit: static checks on the cluster's infrastructure code (ADR 0106, ADR 0110, D-188, D-193 to

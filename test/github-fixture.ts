@@ -129,6 +129,7 @@ export async function createIngestFixture(
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: clock.now(),
   });
 

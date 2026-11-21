@@ -65,6 +65,7 @@ async function project(id: string, slug: string) {
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: NOW,
   });
 }

@@ -53,6 +53,7 @@ async function setup() {
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: clock.now(),
   });
   for (const [key, value] of [

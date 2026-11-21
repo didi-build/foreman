@@ -2,6 +2,7 @@
 // implements it (src/adapters/store-postgres/). Shapes follow the factory schema (ADR 0104).
 // Ids and times are always passed in: the core takes them from its injected id source and
 // clock (D-162), so nothing here generates them.
+import type { DeployTargetName } from "./project-entry.ts";
 import type { RunPrice } from "./routing.ts";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -16,6 +17,11 @@ export interface Project {
   privilegedPathsExtra: Json;
   prodRequiresApproval: boolean;
   stagingUrl: string | null;
+  /**
+   * Where the project's product runs (migration 0028, D-441, O-161): `cloudflare` for every
+   * project the New project form records, and for every row recorded before the column.
+   */
+  deployTarget: DeployTargetName;
   createdAt: Date;
 }
 

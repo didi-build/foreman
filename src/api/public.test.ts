@@ -102,6 +102,7 @@ beforeAll(async () => {
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: new Date(START),
   });
   const logger = createLogger("state-api-public-test", (line) => logLines.push(line));

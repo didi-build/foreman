@@ -104,6 +104,7 @@ async function setup(clusterLimit: number | null = 10) {
       privilegedPathsExtra: [],
       prodRequiresApproval: false,
       stagingUrl: null,
+      deployTarget: "cloudflare",
       createdAt: clock.now(),
     });
   }

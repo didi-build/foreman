@@ -479,14 +479,29 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     expect(SECRET_PATHS.cloudflareAccountId).toBe("platform/cloudflare/account-id");
   });
 
-  it("mints the register-project form's tokens with the runner App, refusing a key that is not a PEM before anything is sent (D-345, D-346, O-125)", async () => {
+  it("mints the New project form's tokens with the runner App, refusing a key that is not a PEM before anything is sent (D-345, D-346, D-443, O-125, O-161)", async () => {
     const { env, secretsRead } = fakeEnvironment();
     const deps = await compose(env);
     try {
-      // The settings file on main is read with the runner App's contents read token (O-109).
-      await expect(deps.projectSettings.listedSlugs()).rejects.toThrow(
+      // Foreman's standard size and the project's file are read with contents read tokens.
+      await expect(deps.projectSettings.standardQuota()).rejects.toThrow(
         GitHubAppJwtError,
       );
+      await expect(deps.projectSettings.readFile("x")).rejects.toThrow(
+        GitHubAppJwtError,
+      );
+      // The file's write and the two starts mint their own tokens first; refused, nothing is sent.
+      expect(
+        await deps.projectSettings.createFile({
+          slug: "x",
+          text: "{}\n",
+          message: "Add project x (New project form, ADR 0118)",
+        }),
+      ).toEqual({ kind: "refused", step: "token" });
+      expect(await deps.projectWorkflows.start("a".repeat(40))).toEqual({
+        platform: { kind: "refused", step: "token" },
+        infra: { kind: "refused", step: "token" },
+      });
       // The create mints the creation token first; refused, nothing is sent and nothing retried.
       expect(
         await deps.projectRepositories.generate({
@@ -514,7 +529,10 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       for (const change of [
         await deps.bootstrapAccess.grant("x"),
         await deps.bootstrapAccess.remove("x"),
-        await deps.bootstrapRuns.restart("x"),
+        await deps.bootstrapRuns.restart("x", {
+          displayName: "X",
+          collectsPersonalData: true,
+        }),
       ]) {
         expect(change).toEqual({ kind: "refused", step: "token" });
       }
@@ -696,6 +714,8 @@ describe("the GitHub Apps' tokens from the flow environment (unit: flow layer, D
       "merge",
       "repositoryCreation",
       "runner",
+      "settingsWrite",
+      "workflowStart",
     ]);
     expect([f.secretsRead, f.valuesRead, f.gets, f.posts]).toEqual([[], [], [], []]);
   });
@@ -775,17 +795,22 @@ describe("the GitHub Apps' tokens from the flow environment (unit: flow layer, D
     expect([refused.secretsRead, refused.posts]).toEqual([[], []]);
   });
 
-  it("the creation and BOOTSTRAP_TOKEN access tokens use the same runner App, read once", async () => {
+  it("the creation, BOOTSTRAP_TOKEN access, settings write and workflow start tokens use the same runner App, read once", async () => {
     const f = appTokens();
     await f.tokens.repositoryCreation.mint();
     await f.tokens.bootstrap.secretsChange("garden-notes");
     await f.tokens.bootstrap.secretsList();
     await f.tokens.bootstrap.restart("garden-notes");
+    // The New project form's two narrow tokens (D-443, O-161).
+    await f.tokens.settingsWrite.mint();
+    await f.tokens.workflowStart.mint();
     expect(f.posts.map((p) => JSON.stringify(p.body))).toEqual([
       '{"repositories":["launchpad"],"permissions":{"contents":"read","repository_creation":"write"}}',
       '{"repositories":["garden-notes"],"permissions":{"organization_secrets":"write","metadata":"read"}}',
       '{"repositories":["foreman"],"permissions":{"organization_secrets":"read"}}',
       '{"repositories":["garden-notes"],"permissions":{"actions":"write"}}',
+      '{"repositories":["foreman-projects"],"permissions":{"contents":"write"}}',
+      '{"repositories":["foreman"],"permissions":{"actions":"write"}}',
     ]);
     for (const post of f.posts) {
       expect(readJwt(post.token).verifiedBy(KEYS.runner.publicKey)).toBe(true);

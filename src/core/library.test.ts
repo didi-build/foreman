@@ -78,6 +78,7 @@ async function setup(settings: Record<string, boolean | null> = {}) {
     privilegedPathsExtra: [],
     prodRequiresApproval: false,
     stagingUrl: null,
+    deployTarget: "cloudflare",
     createdAt: clock.now(),
   });
   for (const [key, value] of Object.entries({
@@ -457,6 +458,7 @@ describe("state library (unit, build plan M1.3, schema invariants)", () => {
       privilegedPathsExtra: [],
       prodRequiresApproval: false,
       stagingUrl: null,
+      deployTarget: "cloudflare",
       createdAt: fixedClock().now(),
     });
     const node = await library.createNode({

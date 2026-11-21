@@ -1,41 +1,26 @@
-// Didi's register-project form (D-345, D-346, D-348, O-109). Called with a project's slug and a
-// one-line description, only when Didi starts it from its page in the Windmill workspace, signed
-// in, as Didi's cancel is (O-97, D-295); never from a public or signed-token link. No schedule,
-// pass or other flow starts it.
+// The register-project form, `f/foreman/register_project` (D-345), is retired (ADR 0118 slice 6,
+// O-161): the New project form, `f/foreman/new_project` (flows/new-project.ts), replaces it.
 //
-// It refuses a slug with no file in the settings repository didi-build/foreman-projects on main,
-// creates `didi-build/<slug>` from the `didi-build/launchpad` template with the description,
-// always public, and records the project in the store (src/core/register-project.ts). A project already
-// recorded is `already_registered` and nothing is created; a repository an earlier run created is
-// reused. The creation token is minted for the one create and refused fail closed (D-346). The
-// kill switch refuses; dry run creates and writes nothing and says what would happen. Launchpad's
-// Bootstrap workflow then sets up the new repository on its first push.
-import {
-  createProjectRegistration,
-  type RegisterProjectInput,
-  type RegisterProjectResult,
-} from "../src/core/register-project.ts";
-import { withFlowDeps, type FlowDeps } from "./lib/compose.ts";
-import { windmillEnvironment } from "./lib/windmill.ts";
+// The entry stays, refusing with fixed text, because the Windmill deploy never deletes a script
+// (.github/scripts/windmill-deploy.sh): without an entry, the old script would stay in the
+// workspace and could still create a repository and record a project with no database, Worker,
+// project file or deploy target. Each deploy replaces it with this one, which takes no box, reads
+// no setting, secret or variable, and changes nothing.
 
-export type { RegisterProjectInput, RegisterProjectResult };
+/** The one answer, fixed text. */
+export const REGISTER_PROJECT_RETIRED = {
+  outcome: "refused",
+  reason: "retired",
+  message:
+    "This form is retired (ADR 0118): start a project with the New project form, f/foreman/new_project, from its page in this workspace. Nothing was read, created or recorded.",
+} as const;
 
-export function run(
-  deps: FlowDeps,
-  input: RegisterProjectInput,
-): Promise<RegisterProjectResult> {
-  return createProjectRegistration(deps).register(input);
+export type RegisterProjectRetired = typeof REGISTER_PROJECT_RETIRED;
+
+export async function run(): Promise<RegisterProjectRetired> {
+  return REGISTER_PROJECT_RETIRED;
 }
 
-/**
- * Didi's form: one plain field per value, which Windmill shows as its own box (D-376). A type
- * imported from another file would show as a single resource picker instead (O-121).
- */
-export async function main(
-  slug: string,
-  description: string,
-): Promise<RegisterProjectResult> {
-  return withFlowDeps(windmillEnvironment(), (deps) =>
-    run(deps, { slug, description }),
-  );
+export async function main(): Promise<RegisterProjectRetired> {
+  return run();
 }

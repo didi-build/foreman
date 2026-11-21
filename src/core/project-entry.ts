@@ -17,7 +17,7 @@
 // file states its quota in full, so changing the standard later never changes an existing project.
 //
 // Every refusal is fixed text from `PROJECT_ENTRY_REFUSALS`: it quotes nothing from the file.
-import { DESCRIPTION_MAX_CHARS, checkDescription } from "./register-project.ts";
+import { DESCRIPTION_MAX_CHARS, checkDescription } from "./project-repository.ts";
 
 /** The settings repository (D-442): public, so the workflows read it with no token. */
 export const PROJECTS_REPOSITORY = "didi-build/foreman-projects";

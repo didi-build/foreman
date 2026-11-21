@@ -130,6 +130,7 @@ describe.skipIf(!adminUrl)(
         privilegedPathsExtra: ["infra/**"],
         prodRequiresApproval: true,
         stagingUrl: null,
+        deployTarget: "cloudflare",
         createdAt: T0,
       });
       await store.insertSpecVersion({ version: SHA, contentHash: "h", loadedAt: T0 });
