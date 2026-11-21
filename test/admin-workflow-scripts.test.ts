@@ -180,6 +180,156 @@ describe.skipIf(process.platform === "win32")(
   "admin workflow scripts (integration: bash with fake tools, D-339, D-340, O-105)",
   { timeout: 60_000 },
   () => {
+    describe("projects-commit.sh (D-377, D-442, ADR 0118 appendix A, O-157)", () => {
+      // The settings repository is a bare repository made here, read through file://, so no
+      // network and no token: the same git commands the workflows run against github.com.
+      const PROJECTS_REPOSITORY = "didi-build/foreman-projects";
+
+      function settingsRemote(box: Sandbox) {
+        const env = {
+          ...box.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+        };
+        const git = (cwd: string, args: string[]) => {
+          const result = spawnSync(
+            "git",
+            [
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=test@example.com",
+              "-c",
+              "commit.gpgsign=false",
+              ...args,
+            ],
+            { cwd, env, encoding: "utf8" },
+          );
+          if (result.status !== 0)
+            throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+          return result.stdout.trim();
+        };
+        const work = join(box.root, "settings-work");
+        mkdirSync(join(work, "projects"), { recursive: true });
+        git(work, ["init", "-q", "-b", "main"]);
+        const commit = (file: string, text: string, message: string) => {
+          writeFileSync(join(work, file), text);
+          git(work, ["add", "-A"]);
+          git(work, ["commit", "-q", "-m", message]);
+          return git(work, ["rev-parse", "HEAD"]);
+        };
+        const first = commit("foreman-projects.json", '{ "schema": 1 }\n', "marker");
+        const second = commit("projects/rehearsal.json", "{}\n", "rehearsal");
+        git(work, ["checkout", "-q", "-b", "elsewhere"]);
+        const elsewhere = commit("projects/shop-2.json", "{}\n", "not on main");
+        git(work, ["checkout", "-q", "main"]);
+        const remote = join(box.root, "settings.git");
+        git(box.root, ["init", "-q", "--bare", "-b", "main", remote]);
+        git(work, ["push", "-q", remote, "main", "elsewhere"]);
+        const empty = join(box.root, "empty.git");
+        git(box.root, ["init", "-q", "--bare", "-b", "main", empty]);
+        return {
+          url: `file://${remote}`,
+          emptyUrl: `file://${empty}`,
+          first,
+          second,
+          elsewhere,
+        };
+      }
+
+      const resolveRun = (box: Sandbox, url: string, requested = "") => {
+        const summary = join(box.root, "summary.md");
+        writeFileSync(summary, "");
+        const result = run(box, "projects-commit.sh", [url], {
+          PROJECTS_REPOSITORY,
+          PROJECTS_COMMIT: requested,
+          GITHUB_STEP_SUMMARY: summary,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+        });
+        return {
+          ...result,
+          output: readFileSync(box.env.GITHUB_OUTPUT as string, "utf8"),
+          summary: readFileSync(summary, "utf8"),
+        };
+      };
+
+      it("resolves main to its head with no input, and names it in the summary", () => {
+        const box = sandbox();
+        const remote = settingsRemote(box);
+        const result = resolveRun(box, remote.url);
+        expect(result.status).toBe(0);
+        expect(result.output).toBe(`commit=${remote.second}\n`);
+        expect(result.summary).toContain(
+          `\`${PROJECTS_REPOSITORY}\` at commit \`${remote.second}\`, its main when this run started`,
+        );
+        expect(result.summary).not.toContain("started with");
+      });
+
+      it("takes main's head, not the input, when the input is the head or one of its ancestors", () => {
+        for (const which of ["second", "first"] as const) {
+          const box = sandbox();
+          const remote = settingsRemote(box);
+          const result = resolveRun(box, remote.url, remote[which]);
+          expect(result.status, which).toBe(0);
+          expect(result.output, which).toBe(`commit=${remote.second}\n`);
+          expect(result.summary, which).toContain(
+            `It contains the commit \`${remote[which]}\` this run was started with.`,
+          );
+        }
+      });
+
+      it("stops on an input main does not contain: a commit on another branch, or one that does not exist", () => {
+        const box = sandbox();
+        const remote = settingsRemote(box);
+        for (const requested of [remote.elsewhere, "1".repeat(40)]) {
+          const result = resolveRun(box, remote.url, requested);
+          expect(result.status, requested).toBe(1);
+          expect(result.stdout, requested).toContain(
+            "::error::The projects_commit input is not main's head of didi-build/foreman-projects or one of its ancestors: nothing was planned.",
+          );
+          expect(result.output, requested).toBe("");
+        }
+      });
+
+      it("stops on an input that is not a full commit id, before reading anything", () => {
+        const box = sandbox();
+        const remote = settingsRemote(box);
+        for (const requested of [
+          remote.second.slice(0, 12),
+          remote.second.toUpperCase(),
+          "main",
+          "HEAD~1",
+          `${remote.second} `,
+          `$(touch ${join(box.root, "ran")})`,
+        ]) {
+          const result = resolveRun(box, remote.url, requested);
+          expect(result.status, requested).toBe(1);
+          expect(result.stdout, requested).toContain(
+            "::error::The projects_commit input must be a full commit id: 40 lowercase hexadecimal characters.",
+          );
+          expect(result.output, requested).toBe("");
+        }
+        expect(existsSync(join(box.root, "ran"))).toBe(false);
+      });
+
+      it("stops when the repository or its main cannot be read, planning nothing", () => {
+        const box = sandbox();
+        const remote = settingsRemote(box);
+        for (const url of [
+          remote.emptyUrl,
+          `file://${join(box.root, "missing.git")}`,
+        ]) {
+          const result = resolveRun(box, url);
+          expect(result.status, url).toBe(1);
+          expect(result.stdout, url).toContain(
+            "::error::The main branch of didi-build/foreman-projects could not be read.",
+          );
+          expect(result.output, url).toBe("");
+        }
+      });
+    });
+
     describe("redact.sh", () => {
       it("replaces the named values and every id, and keeps image digests", () => {
         const box = sandbox();

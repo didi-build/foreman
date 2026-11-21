@@ -1,11 +1,11 @@
-// Seam: the read of the platform settings file on main (unit with fakes, D-345, O-109). A fake
-// token port and a fake HTTP port stand in for the runner App and GitHub; the answers are
-// synthetic contents answers made here, plus the committed settings file itself, read from disk.
-// No network, no real token.
-import { existsSync, readFileSync } from "node:fs";
+// Seam: the read of the settings repository's project list on main (unit with fakes, D-345, O-109,
+// D-377, ADR 0118 appendix A, O-157). A fake token port and a fake HTTP port stand in for the
+// runner App and GitHub; the answers are synthetic folder listings made here, in the shape
+// GitHub's "Get repository content" gives for a folder. No network, no real token.
+import { readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { PLATFORM_SETTINGS } from "../../core/register-project.ts";
+import { PROJECTS_REPOSITORY } from "../../core/project-entry.ts";
 import { createGitHubProjectSettings, listedSlugsOf } from "./project-settings.ts";
 import type {
   GitHubGetRequest,
@@ -14,22 +14,15 @@ import type {
   RunnerAppTokens,
 } from "./runner-app-tokens.ts";
 
-const PATH = "infra/kubernetes/settings/production.json";
-const QUOTA = { pods: 10, cpu: "2", memory: "4Gi" };
-
-/** GitHub's contents answer for a file, its text in base64 with line breaks, as GitHub sends it. */
-const contentsAnswer = (text: string, extra: Record<string, unknown> = {}) => ({
+/** One entry of GitHub's listing of `projects/`. */
+const entry = (name: string, extra: Record<string, unknown> = {}) => ({
   type: "file",
-  path: PATH,
-  encoding: "base64",
-  content: Buffer.from(text)
-    .toString("base64")
-    .replace(/(.{60})/g, "$1\n"),
+  name,
+  path: `projects/${name}`,
+  sha: "0".repeat(40),
+  size: 400,
   ...extra,
 });
-
-const settingsText = (projects: unknown) =>
-  JSON.stringify({ platform: { serviceUser: 1000 }, projects });
 
 function fakes(status: number, body: unknown) {
   const minted: RunnerAppTokenRequest[] = [];
@@ -50,24 +43,17 @@ function fakes(status: number, body: unknown) {
   return { settings: createGitHubProjectSettings({ tokens, http }), minted, requests };
 }
 
-describe("the settings file's listed slugs (unit with fakes, D-345, O-109)", () => {
-  it("reads the file at main with a contents read token for didi-build/foreman only", async () => {
-    const f = fakes(
-      200,
-      contentsAnswer(
-        settingsText([
-          { slug: "rehearsal", quota: QUOTA },
-          { slug: "garden-notes", quota: QUOTA },
-        ]),
-      ),
-    );
-    expect(await f.settings.listedSlugs()).toEqual(["rehearsal", "garden-notes"]);
+describe("the project list's listed slugs (unit with fakes, D-345, O-109, D-377)", () => {
+  it("lists projects/ at main with a contents read token for didi-build/foreman-projects only", async () => {
+    const f = fakes(200, [entry("rehearsal.json"), entry("garden-notes.json")]);
+    expect(await f.settings.listedSlugs()).toEqual(["garden-notes", "rehearsal"]);
+    expect(PROJECTS_REPOSITORY).toBe("didi-build/foreman-projects");
     expect(f.minted).toEqual([
-      { repository: "didi-build/foreman", permission: "contents" },
+      { repository: "didi-build/foreman-projects", permission: "contents" },
     ]);
     expect(f.requests).toEqual([
       {
-        path: `/repos/didi-build/foreman/contents/${PATH}?ref=main`,
+        path: "/repos/didi-build/foreman-projects/contents/projects?ref=main",
         token: "fake-read-token-not-real",
         accept: "json",
         maxBytes: 2 * 1024 * 1024,
@@ -75,47 +61,42 @@ describe("the settings file's listed slugs (unit with fakes, D-345, O-109)", () 
     ]);
   });
 
-  it("names the committed settings file, which reads as a list of projects", () => {
-    expect(PLATFORM_SETTINGS).toEqual({
-      repository: "didi-build/foreman",
-      path: PATH,
-      ref: "main",
-    });
-    expect(existsSync(PLATFORM_SETTINGS.path)).toBe(true);
-    const committed = readFileSync(PLATFORM_SETTINGS.path, "utf8");
-    const slugs = listedSlugsOf(committed);
-    expect(slugs).toEqual(
-      (JSON.parse(committed) as { projects: { slug: string }[] }).projects.map(
-        (p) => p.slug,
-      ),
-    );
+  it("reads the test fixture's folder as the rehearsal alone", () => {
+    const names = readdirSync("test/fixtures/foreman-projects/projects");
+    expect(listedSlugsOf(names.map((name) => entry(name)))).toEqual(["rehearsal"]);
   });
 
-  it("throws on a failed read or an answer that is not the settings file", async () => {
-    const text = settingsText([{ slug: "rehearsal", quota: QUOTA }]);
+  it("throws on a failed read or an answer that is not a folder listing", async () => {
     const answers: [number, unknown][] = [
       [404, { message: "Not Found" }],
       [403, { message: "Resource not accessible by integration" }],
       [200, "not json"],
-      [200, [contentsAnswer(text)]],
-      [200, contentsAnswer(text, { type: "dir" })],
-      [200, contentsAnswer(text, { path: "infra/kubernetes/settings/other.json" })],
-      [200, contentsAnswer(text, { encoding: "none", content: "" })],
-      [200, contentsAnswer(text, { content: 7 })],
+      [200, { type: "file", name: "projects", path: "projects", content: "" }],
+      [200, { message: "a folder listing is a list" }],
     ];
     for (const [status, body] of answers) {
       await expect(fakes(status, body).settings.listedSlugs()).rejects.toThrow();
     }
   });
 
-  it("throws on a file with no projects list or a project with no slug", () => {
-    expect(() => listedSlugsOf("not json")).toThrow(/not JSON/);
-    expect(() => listedSlugsOf(JSON.stringify({ platform: {} }))).toThrow(/projects/);
-    expect(() => listedSlugsOf(settingsText({ slug: "rehearsal" }))).toThrow(
-      /projects/,
-    );
-    expect(() => listedSlugsOf(settingsText([{ quota: QUOTA }]))).toThrow(/slug/);
-    expect(() => listedSlugsOf(settingsText([{ slug: 7 }]))).toThrow(/slug/);
-    expect(listedSlugsOf(settingsText([]))).toEqual([]);
+  it("throws on an entry in the folder that is not a project file, as the render does", () => {
+    expect(listedSlugsOf([])).toEqual([]);
+    for (const bad of [
+      [entry("README.md")],
+      [entry("rehearsal.json"), entry("notes.txt")],
+      [entry("Rehearsal.json")],
+      [entry("re--hearsal.json")],
+      [entry("-rehearsal.json")],
+      [entry(".json")],
+      [entry("rehearsal.json", { type: "dir" })],
+      [entry("rehearsal.json", { type: "symlink" })],
+      [entry("rehearsal.json", { path: "elsewhere/rehearsal.json" })],
+      [entry("rehearsal.json", { name: 7 })],
+      ["rehearsal.json"],
+    ]) {
+      expect(() => listedSlugsOf(bad), JSON.stringify(bad)).toThrow(
+        /projects folder holds/,
+      );
+    }
   });
 });

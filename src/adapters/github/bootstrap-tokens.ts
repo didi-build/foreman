@@ -13,8 +13,8 @@
 // - The list token: `{"repositories":["foreman"],"permissions":{"organization_secrets":"read"}}`.
 //   "List selected repositories for an organization secret" needs "Secrets" organization
 //   permissions (read) and reads no repository. A token without `repositories` reaches every
-//   repository of the installation, so it names the one repository the runner already reads its
-//   settings from (D-345, O-109), for GitHub's metadata only.
+//   repository of the installation, so it names Foreman's own repository, `didi-build/foreman`
+//   (D-345, O-109), for GitHub's metadata only.
 // - The restart token: `{"repositories":[<name>],"permissions":{"actions":"write"}}`. "Create a
 //   workflow dispatch event" needs "Actions" repository permissions (write).
 //
@@ -23,7 +23,6 @@
 // organization secret, which is why it is minted for one call and never kept. The runner signs each
 // with its App's private key, read on the first token (flows/lib/compose.ts, O-125); tests pass a
 // fake. Nothing here logs.
-import { PLATFORM_SETTINGS } from "../../core/register-project.ts";
 import { isRepositoryName } from "../../core/bootstrap-access.ts";
 import { mintNarrowToken, type NarrowTokenOptions } from "./narrow-tokens.ts";
 
@@ -35,9 +34,7 @@ export const SECRETS_CHANGE_PERMISSIONS = {
 
 /** The list token's permissions and its one repository, exactly. */
 export const SECRETS_LIST_PERMISSIONS = { organization_secrets: "read" } as const;
-export const SECRETS_LIST_REPOSITORIES = [
-  PLATFORM_SETTINGS.repository.split("/")[1] as string,
-] as const;
+export const SECRETS_LIST_REPOSITORIES = ["foreman"] as const;
 
 /** The restart token's permissions, exactly. */
 export const RESTART_PERMISSIONS = { actions: "write" } as const;

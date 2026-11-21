@@ -8,8 +8,9 @@
 //    `DESCRIPTION_MAX_CHARS` long (GitHub documents no limit, so the cap is conservative, O-109).
 // 2. The kill switch refuses before anything is read, created or written. Dry run goes on with
 //    the reads only and says what would happen; it creates and writes nothing.
-// 3. The slug must be listed in `projects[].slug` of the platform settings file as merged on main
-//    (`PLATFORM_SETTINGS`), read through the `ProjectSettings` port.
+// 3. The slug must have its file, `projects/<slug>.json`, in the settings repository
+//    `didi-build/foreman-projects` on main (D-377, ADR 0118 appendix A, ./project-entry.ts), read
+//    through the `ProjectSettings` port.
 // 4. A project already in the store with this slug is `already_registered`: nothing is created.
 // 5. `didi-build/<slug>` is created from the `didi-build/launchpad` template with the description,
 //    always public (D-348), through the `ProjectRepositories` port. Its token is minted for that
@@ -62,13 +63,6 @@ export const PROJECT_OWNER = GITHUB_ORGANIZATION;
 /** The template every project repository is created from (D-345). */
 export const PROJECT_TEMPLATE = "didi-build/launchpad";
 
-/** Where the slugs a project may be registered with are listed (D-345). */
-export const PLATFORM_SETTINGS = {
-  repository: "didi-build/foreman",
-  path: "infra/kubernetes/settings/production.json",
-  ref: "main",
-} as const;
-
 /**
  * The longest description the form sends, in UTF-16 code units (JavaScript's `length`), which is
  * never fewer than the characters GitHub could count. GitHub's docs state no limit (O-109).
@@ -81,7 +75,7 @@ export const projectRepository = (slug: string): string => `${PROJECT_OWNER}/${s
 /** The project's staging address, updated on every push to main with no approval (D-345). */
 export const projectStagingUrl = (slug: string): string => `https://${slug}.didi.build`;
 
-/** The slugs listed in the platform settings file on main. A failed read throws. */
+/** The slugs with a project file in the settings repository on main. A failed read throws. */
 export interface ProjectSettings {
   listedSlugs(): Promise<string[]>;
 }
@@ -153,9 +147,9 @@ export const REGISTER_REFUSALS = {
   description_too_long: `The description is longer than ${DESCRIPTION_MAX_CHARS} characters.`,
   kill_switch: "The kill switch is on: nothing was read, created or recorded.",
   settings_unreadable:
-    "The platform settings file on main could not be read through GitHub (the runner App's read token was refused or is not available yet): nothing was created or recorded.",
+    "The project list in didi-build/foreman-projects on main could not be read through GitHub (the runner App's read token was refused or is not available yet): nothing was created or recorded.",
   not_in_settings:
-    "The slug is not listed in projects in infra/kubernetes/settings/production.json on main. Add it with its quota in a pull request, merge it and approve the platform apply first: nothing was created or recorded.",
+    "The slug has no file projects/<slug>.json in didi-build/foreman-projects on main. Add the project's file there, then start the Platform and Infra workflows and approve their applies first: nothing was created or recorded.",
   creation_token_refused:
     "The repository creation token was not minted (GitHub refused it, or the runner App is not registered yet): nothing was created or recorded.",
   create_refused:
@@ -436,7 +430,7 @@ export function createProjectRegistration(deps: RegisterProjectDeps) {
         return refused("kill_switch");
       const dryRun = (await store.getSetting("dry_run"))?.value !== false;
 
-      // 3. The settings file on main.
+      // 3. The project list on main.
       let listed: string[];
       try {
         listed = await projectSettings.listedSlugs();

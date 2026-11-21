@@ -7,11 +7,36 @@
 # factory's own zone, from the project list below (D-357, O-112).
 
 locals {
-  # The project list is the platform settings file's `projects[]`, the one list the Platform
-  # workflow renders and the register-project form reads (D-345). The plan reads it from the
-  # commit it runs on, so the names Didi approves are that commit's projects (D-357).
-  settings      = jsondecode(file("${path.module}/../../kubernetes/settings/production.json"))
-  project_slugs = [for project in local.settings.projects : project.slug]
+  # The project list is the settings repository didi-build/foreman-projects (D-377, D-442, ADR
+  # 0118 appendix A), the one list the Platform workflow renders and the register-project form
+  # reads. The Infra workflows check it out at one resolved commit into this fixed, git-ignored
+  # folder at the repository's root, so the names Didi approves are that commit's projects
+  # (D-357). Locally, clone it there to plan or validate.
+  projects_checkout = "${path.module}/../../../foreman-projects"
+
+  # The marker, {"schema": 1}. file() fails the plan when the checkout is missing, so a missing
+  # folder never plans an empty list, which would delete every project's name (O-112). A marker
+  # with another schema has no entry in this map and fails the plan too.
+  projects_folder = {
+    "1" = "${local.projects_checkout}/projects"
+  }[tostring(jsondecode(file("${local.projects_checkout}/foreman-projects.json")).schema)]
+
+  # One file per project. The Platform workflow's render holds each to every entry rule
+  # (src/core/project-entry.ts); here a file that is not JSON, or has no slug or target, fails the
+  # plan.
+  projects = [
+    for name in fileset(local.projects_folder, "*.json") :
+    jsondecode(file("${local.projects_folder}/${name}"))
+  ]
+
+  # A record and a route only for a project on the Cloudflare target (D-441): a cluster-target
+  # project gets neither. A target that is neither has no entry here and fails the plan, so a
+  # misspelt target never plans to delete a project's name.
+  deploy_target_has_name = { cloudflare = true, cluster = false }
+  project_slugs = [
+    for project in local.projects : project.slug
+    if local.deploy_target_has_name[project.deployTarget]
+  ]
 
   # Each project's staging name is `<slug>.didi.build` (D-345, projectStagingUrl in
   # src/core/register-project.ts).

@@ -334,11 +334,10 @@ describe("the infra apply workflow (unit: D-339, ADR 0110)", () => {
     expect(run).not.toMatch(/show -json plan\.out\s*>/);
   });
 
-  it("plans again when the settings file changes, since the stack reads its project list there (D-357)", () => {
-    expect(wf.on.push?.paths).toContain(SETTINGS_FILE);
-    expect(text("infra/stacks/factory/main.tf")).toContain(
-      'file("${path.module}/../../kubernetes/settings/production.json")',
-    );
+  it("no longer plans on the platform settings file, since the stack reads its project list from the settings repository (D-357, D-377)", () => {
+    expect(wf.on.push?.paths).not.toContain(SETTINGS_FILE);
+    expect(wf.on.push?.paths).toContain(".github/scripts/projects-commit.sh");
+    expect(text("infra/stacks/factory/main.tf")).not.toContain("kubernetes/settings");
   });
 
   it("plans with the reviewed variables file and saves the encrypted plan for one day", () => {
@@ -547,6 +546,134 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
     const name = /default\s*=\s*"([^"]+)"/.exec(block)?.[1];
     expect(wf.env?.CLUSTER_NAME).toBe(name);
     expect(wf.env?.SETTINGS_FILE).toBe(SETTINGS_FILE);
+  });
+});
+
+describe("the project list at one commit per run (unit: D-377, D-442, ADR 0118 appendix A, O-157)", () => {
+  const platform = workflow(WORKFLOWS.platform);
+  const infra = workflow(WORKFLOWS.infra);
+  const validate = workflow(".github/workflows/infra.yml");
+  const RESOLVE =
+    'set -euo pipefail\n.github/scripts/projects-commit.sh "https://github.com/${PROJECTS_REPOSITORY}.git"\n';
+  const CHECKOUT_PIN = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262";
+
+  /** The job's checkout of the settings repository, and the steps before it. */
+  function settingsCheckout(job: Job) {
+    const at = job.steps.findIndex(
+      (s) =>
+        s.uses?.startsWith("actions/checkout@") && s.with?.repository !== undefined,
+    );
+    return { step: job.steps[at] as Step, before: job.steps.slice(0, at) };
+  }
+
+  it("names the public settings repository and one fixed, git-ignored folder, the one the stack reads", () => {
+    for (const wf of [platform, infra, validate]) {
+      expect(wf.env?.PROJECTS_REPOSITORY).toBe("didi-build/foreman-projects");
+      expect(wf.env?.PROJECTS_DIR).toBe("foreman-projects");
+    }
+    expect(text(".gitignore").split("\n")).toContain("/foreman-projects/");
+    expect(text("infra/stacks/factory/main.tf")).toContain(
+      'projects_checkout = "${path.module}/../../../foreman-projects"',
+    );
+  });
+
+  it("takes an optional projects_commit input on a run started by hand, passed to the script through env only", () => {
+    for (const wf of [platform, infra]) {
+      expect(
+        (wf.on.workflow_dispatch?.inputs as Record<string, unknown>).projects_commit,
+      ).toMatchObject({ type: "string", default: "" });
+    }
+    const resolves = [
+      platform.jobs.render as Job,
+      infra.jobs.plan as Job,
+      validate.jobs.validate as Job,
+    ].map((job) => job.steps.find((s) => s.id === "projects") as Step);
+    for (const step of resolves) expect(step.run).toBe(RESOLVE);
+    expect(resolves[0]?.env).toEqual({
+      PROJECTS_COMMIT: "${{ inputs.projects_commit }}",
+    });
+    expect(resolves[1]?.env).toEqual({
+      PROJECTS_COMMIT: "${{ inputs.projects_commit }}",
+    });
+    // A pull request's validation takes main's head; it has no input.
+    expect(resolves[2]?.env).toBeUndefined();
+    for (const path of [
+      WORKFLOWS.platform,
+      WORKFLOWS.infra,
+      ".github/workflows/infra.yml",
+    ]) {
+      for (const line of text(path)
+        .split("\n")
+        .filter((l) => l.includes("inputs.projects_commit"))) {
+        expect(line.trim(), path).toBe(
+          "PROJECTS_COMMIT: ${{ inputs.projects_commit }}",
+        );
+      }
+    }
+  });
+
+  it("checks the settings repository out at the resolved commit, keeping no credential, after resolving it", () => {
+    const resolved = "${{ steps.projects.outputs.commit }}";
+    for (const [label, job] of [
+      ["render", platform.jobs.render],
+      ["plan", infra.jobs.plan],
+      ["validate", validate.jobs.validate],
+    ] as const) {
+      const { step, before } = settingsCheckout(job as Job);
+      expect(step.uses, label).toBe(CHECKOUT_PIN);
+      expect(step.with, label).toEqual({
+        repository: "${{ env.PROJECTS_REPOSITORY }}",
+        ref: resolved,
+        path: "${{ env.PROJECTS_DIR }}",
+        "persist-credentials": false,
+      });
+      expect(
+        before.some((s) => s.id === "projects"),
+        label,
+      ).toBe(true);
+    }
+    // The render reads that folder, and only the render job runs it.
+    const render = (platform.jobs.render as Job).steps.find((s) =>
+      s.run?.includes("infra/kubernetes/render.ts"),
+    ) as Step;
+    expect(render.run).toContain(
+      'node infra/kubernetes/render.ts "$RUNNER_TEMP/render/settings.json" "$PROJECTS_DIR"',
+    );
+    for (const id of ["plan", "apply", "cluster-secrets", "runner-token"]) {
+      expect(JSON.stringify(platform.jobs[id]), id).not.toContain("PROJECTS_");
+    }
+  });
+
+  it("applies the infra plan with the settings repository at the plan's own commit, since OpenTofu reads the stack again", () => {
+    const plan = infra.jobs.plan as Job;
+    expect(plan.outputs).toEqual({
+      changes: "${{ steps.plan.outputs.changes }}",
+      projects_commit: "${{ steps.projects.outputs.commit }}",
+    });
+    const apply = infra.jobs.apply as Job;
+    const { step, before } = settingsCheckout(apply);
+    expect(step.with).toEqual({
+      repository: "${{ env.PROJECTS_REPOSITORY }}",
+      ref: "${{ needs.plan.outputs.projects_commit }}",
+      path: "${{ env.PROJECTS_DIR }}",
+      "persist-credentials": false,
+    });
+    expect(apply.steps.some((s) => s.id === "projects")).toBe(false);
+    // Before init and the apply, so the stack's files are all there.
+    expect(before.some((s) => s.run?.includes("tofu"))).toBe(false);
+    expect(settingsCheckout(plan).before.some((s) => s.run?.includes("tofu"))).toBe(
+      false,
+    );
+  });
+
+  it("runs the resolving script with git only, no token, and names the commit in the summary", () => {
+    const resolve = script("projects-commit.sh");
+    expect(resolve).toContain('git ls-remote --exit-code "$url" refs/heads/main');
+    expect(resolve).toContain("export GIT_TERMINAL_PROMPT=0");
+    expect(resolve).toContain("merge-base --is-ancestor");
+    expect(resolve).toContain('echo "commit=$head" >>"$GITHUB_OUTPUT"');
+    expect(resolve).toContain("GITHUB_STEP_SUMMARY");
+    expect(resolve).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|secrets\.|curl|gh /);
   });
 });
 

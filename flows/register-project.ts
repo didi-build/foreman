@@ -3,9 +3,9 @@
 // in, as Didi's cancel is (O-97, D-295); never from a public or signed-token link. No schedule,
 // pass or other flow starts it.
 //
-// It refuses a slug not listed in the platform settings file on main, creates
-// `didi-build/<slug>` from the `didi-build/launchpad` template with the description, always
-// public, and records the project in the store (src/core/register-project.ts). A project already
+// It refuses a slug with no file in the settings repository didi-build/foreman-projects on main,
+// creates `didi-build/<slug>` from the `didi-build/launchpad` template with the description,
+// always public, and records the project in the store (src/core/register-project.ts). A project already
 // recorded is `already_registered` and nothing is created; a repository an earlier run created is
 // reused. The creation token is minted for the one create and refused fail closed (D-346). The
 // kill switch refuses; dry run creates and writes nothing and says what would happen. Launchpad's

@@ -19,11 +19,12 @@
 # A project whose host name is the receiver's (`foreman.didi.build`, D-343) gets neither: that
 # name is the cluster's one public door, its record is the receiver's CNAME behind its own DNS
 # gate, and a route on it would send `/api` to a Worker. It is skipped, not refused, because the
-# `foreman` project is listed in the settings file like any other (D-344, D-345). How Foreman's own
-# frontend shares that host name is N-96.
+# `foreman` project could be listed like any other (D-344, D-345); listed with the cluster target
+# (D-441), the stack passes no slug for it at all. How Foreman's own frontend shares that host
+# name is N-96.
 
 variable "project_staging" {
-  description = "Each project's staging name and Workers route (D-357): the zone they are under and the project slugs from the platform settings file. Null makes none."
+  description = "Each project's staging name and Workers route (D-357): the zone they are under and the slugs of the Cloudflare-target projects in the settings repository didi-build/foreman-projects (D-377). Null makes none."
 
   type = object({
     domain = string
@@ -35,12 +36,12 @@ variable "project_staging" {
   # The project-slug rule the code uses (PROJECT_SLUG, src/core/register-project.ts).
   validation {
     condition     = alltrue([for slug in try(var.project_staging.slugs, []) : can(regex("^[a-z0-9][a-z0-9-]{0,99}$", slug))])
-    error_message = "Each project slug in infra/kubernetes/settings/production.json must follow the project-slug rule: lowercase letters, digits and hyphens, starting with a letter or a digit, at most 100 characters."
+    error_message = "Each project slug in didi-build/foreman-projects must follow the project-slug rule: lowercase letters, digits and hyphens, starting with a letter or a digit, at most 100 characters."
   }
 
   validation {
     condition     = length(distinct(try(var.project_staging.slugs, []))) == length(try(var.project_staging.slugs, []))
-    error_message = "A project slug is listed more than once in infra/kubernetes/settings/production.json."
+    error_message = "A project slug is listed more than once in didi-build/foreman-projects."
   }
 
   validation {
