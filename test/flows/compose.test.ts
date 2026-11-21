@@ -463,6 +463,10 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       await expect(deps.bootstrapRuns.latestRestart("x")).rejects.toThrow(
         GitHubAppJwtError,
       );
+      // So are the add-only apply jobs the daily check lists (O-158).
+      await expect(deps.addOnlyApplies.jobsSince(new Date(0))).rejects.toThrow(
+        GitHubAppJwtError,
+      );
       expect([...new Set(secretsRead)]).toEqual([
         SECRET_PATHS.database,
         SECRET_PATHS.runnerAppPrivateKey,

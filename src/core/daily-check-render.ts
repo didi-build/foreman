@@ -19,7 +19,9 @@
 // The text next to each link says the same thing (the address, or the flow's path and the item id
 // it takes), so the page still works if Windmill does not make links clickable. Small inline
 // styles only: no script, no external resource, no image and no form. As in the text, no approval
-// link, topic key, decision, run or evidence id is shown: only item ids and gate request ids.
+// link, topic key, decision, run or evidence id is shown: only item ids and gate request ids, and
+// an admin workflow's GitHub run number (O-158).
+import type { UnreviewedApply } from "./add-only-applies.ts";
 import {
   NO_SCAN_YET,
   REOPEN_LATER,
@@ -54,6 +56,8 @@ interface Section {
 
 interface CheckDocument {
   intro: Line[];
+  /** The applies made without approval (D-378, O-158), or that they could not be read. */
+  applies: Line[];
   /** Projects whose setup failed, and those whose setup could not be read (O-114). */
   setup: Line[];
   /** Said when no project has anything to show. */
@@ -423,6 +427,31 @@ function modelTestPart(t: ModelEvalSummary): CheckDocument["modelTest"] {
   return { text, items };
 }
 
+/** One apply made without approval (D-378, O-158), in one line. */
+function applyLine(a: UnreviewedApply): Line {
+  const what = `the ${a.label} workflow's add-only apply for ${
+    a.projects === null
+      ? "projects its job's name does not show"
+      : a.projects.join(", ")
+  }`;
+  if (a.outcome === "applied") {
+    return [
+      `Applied without approval (D-378): ${what}, ${when(a.at)}, run ${a.runNumber}.`,
+    ];
+  }
+  if (a.outcome === "running") {
+    return [
+      `Still running without approval (D-378): ${what}, started ${when(a.at)}, run ${a.runNumber}.`,
+    ];
+  }
+  return [
+    `Did not finish (${a.conclusion ?? "unknown"}), so part of its plan may be applied without approval (D-378): ${what}, ${when(a.at)}, run ${a.runNumber}. Check its run.`,
+  ];
+}
+
+export const ADD_ONLY_APPLIES_UNREADABLE =
+  "The add-only applies could not be read from GitHub, so whether any ran without approval in this window is not shown.";
+
 /** The check as one document, which both renderings read. */
 function documentOf(check: DailyCheck): CheckDocument {
   const { killSwitch, dryRun } = check.switches;
@@ -446,6 +475,8 @@ function documentOf(check: DailyCheck): CheckDocument {
       `Bootstrap's runs could not be read for: ${check.projectSetup.unreadable.join(", ")}. Whether their setup finished is not shown.`,
     ]);
   }
+  const applies: Line[] = (check.unreviewedApplies?.applies ?? []).map(applyLine);
+  if (check.unreviewedApplies?.unreadable) applies.push([ADD_ONLY_APPLIES_UNREADABLE]);
   return {
     intro: [
       [
@@ -456,6 +487,7 @@ function documentOf(check: DailyCheck): CheckDocument {
       ],
       [check.dataNotice],
     ],
+    applies,
     setup,
     nothing:
       check.projects.length === 0 ? ["Nothing moved and nothing is waiting."] : null,
@@ -486,6 +518,7 @@ const lineText = (l: Line): string => l.map(pieceText).join("");
 export function renderDailyCheck(check: DailyCheck): string {
   const doc = documentOf(check);
   const lines = doc.intro.map(lineText);
+  if (doc.applies.length > 0) lines.push("", ...doc.applies.map(lineText));
   if (doc.setup.length > 0) lines.push("", ...doc.setup.map(lineText));
   if (doc.nothing) lines.push("", lineText(doc.nothing));
   for (const project of doc.projects) {
@@ -599,13 +632,10 @@ export function renderDailyCheckHtml(
       el("p", i === rest.length - 1 ? STYLE.notice : STYLE.p, html(l)),
     ),
   ];
-  if (doc.setup.length > 0) {
+  for (const part of [doc.applies, doc.setup]) {
+    if (part.length === 0) continue;
     out.push(
-      el(
-        "section",
-        STYLE.project,
-        doc.setup.map((l) => el("p", STYLE.p, html(l))).join(""),
-      ),
+      el("section", STYLE.project, part.map((l) => el("p", STYLE.p, html(l))).join("")),
     );
   }
   if (doc.nothing) out.push(el("p", STYLE.p, html(doc.nothing)));

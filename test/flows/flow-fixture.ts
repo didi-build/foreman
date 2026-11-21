@@ -33,6 +33,10 @@ import {
   createFakeRepoFolders,
   createFakeScreenshotBundles,
 } from "../../src/adapters/screenshots/fake.ts";
+import type {
+  AddOnlyApplies,
+  AddOnlyApplyJob,
+} from "../../src/core/add-only-applies.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
@@ -91,6 +95,29 @@ function createFakeRuntime(): FakeRuntime {
 
 export type FlowFixture = Awaited<ReturnType<typeof createFlowFixture>>;
 
+/** The add-only apply jobs the daily check reads from GitHub (O-158), as the test sets them. */
+export interface FakeAddOnlyApplies extends AddOnlyApplies {
+  jobs: AddOnlyApplyJob[];
+  /** Makes the read throw, as a refused token or a failed call would. */
+  fail: boolean;
+  /** The window start each read was asked for. */
+  reads: Date[];
+}
+
+function createFakeAddOnlyApplies(): FakeAddOnlyApplies {
+  const fake: FakeAddOnlyApplies = {
+    jobs: [],
+    fail: false,
+    reads: [],
+    async jobsSince(since) {
+      fake.reads.push(since);
+      if (fake.fail) throw new Error("the fake GitHub refused the read");
+      return fake.jobs;
+    },
+  };
+  return fake;
+}
+
 /**
  * The composition's real GitHub App token ports (O-125) with no App key stored: each App's first
  * token fails on reading its key, so nothing is signed or sent. Its HTTP ports refuse and record,
@@ -144,6 +171,7 @@ export function flowDepsFor(
   const projectRepositories = createFakeProjectRepositories();
   // One fake for both ports, so a grant, a restart and a removal see the same state (O-114).
   const bootstrap = createFakeBootstrap();
+  const addOnlyApplies = createFakeAddOnlyApplies();
   const modelEval = createFakeModelEval();
   const tasksFor: RunToStart[] = [];
   const tokens: string[] = [];
@@ -162,6 +190,7 @@ export function flowDepsFor(
     projectRepositories,
     bootstrapAccess: bootstrap,
     bootstrapRuns: bootstrap,
+    addOnlyApplies,
     modelEval,
     // The task is what the fake runtime gets: the run's id, model and provider, and its token.
     tasks: {
@@ -199,6 +228,7 @@ export function flowDepsFor(
     projectSettings,
     projectRepositories,
     bootstrap,
+    addOnlyApplies,
     modelEval,
     tasksFor,
     tokens,
@@ -223,6 +253,7 @@ export async function createFlowFixture() {
     projectSettings,
     projectRepositories,
     bootstrap,
+    addOnlyApplies,
     modelEval,
     tasksFor,
     tokens,
@@ -256,6 +287,7 @@ export async function createFlowFixture() {
     projectSettings,
     projectRepositories,
     bootstrap,
+    addOnlyApplies,
     modelEval,
     tasksFor,
     tokens,

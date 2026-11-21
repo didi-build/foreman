@@ -94,6 +94,7 @@ function check(projects: ProjectCheck[], extra: Partial<DailyCheck> = {}): Daily
     stalledAfterMinutes: 120,
     stalledNote: null,
     projectSetup: null,
+    unreviewedApplies: null,
     modelTest: modelEvalSummary([], []),
     ...extra,
   };

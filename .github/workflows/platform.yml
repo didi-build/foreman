@@ -12,15 +12,26 @@ name: Platform
 #   ADR 0118 appendix A). Only this job runs the repository's TypeScript; the jobs that hold a
 #   credential check out `.github/` only and apply what this job rendered. The run watcher's
 #   policy gets a placeholder for the API server's address (192.0.2.1, TEST-NET-1, RFC 5737),
-#   so the artifact never holds the real one (D-349).
+#   so the artifact never holds the real one (D-349). It also lists the candidates for the
+#   add-only check: the project files with the standard size and the Cloudflare target
+#   (.github/scripts/add-only.mjs, kept in the same artifact).
 # - `plan` (environment `platform-plan`, main only, no reviewer): puts the API server's real
 #   address into its own copy of the objects (api-server-address.sh), then `kubectl diff
 #   --server-side`, published as the kind, namespace and name of each object to create or
-#   change, never content.
+#   change, never content. When there are changes, it runs the add-only check and sets
+#   `add_only`: true only when the check passed, false on a refusal, an error or any doubt.
 # - `apply` (environment `platform`, main only, Didi the required reviewer): only when the plan
-#   has changes, puts the address in its own copy the same way and applies the rendered objects
-#   the plan read, then runs the runbook's checks: the RBAC `kubectl auth can-i` list, default
-#   deny, and pods on their pools.
+#   has changes that are not add-only, puts the address in its own copy the same way and applies
+#   the rendered objects the plan read, then runs the runbook's checks: the RBAC `kubectl auth
+#   can-i` list, default deny, and pods on their pools.
+# - `add-only-apply` (environment `platform-add-project`, main only, no reviewer, D-378, D-444):
+#   only when the plan has changes and its add-only check passed
+#   (.github/scripts/platform-add-only.sh, ADR 0118 appendix B): the cluster matches main and the
+#   existing projects exactly, and the plan only adds the standard objects of one to three new
+#   standard-size projects and the run watcher's namespace list. It runs the same check again with
+#   its own credential, applies the same rendered objects and runs the same checks as `apply`. Its
+#   name carries the projects, which the daily check reads from GitHub to list each apply made
+#   without approval. Any doubt in the check sends the run to `apply` instead, never to this job.
 # - `cluster-secrets` (environment `platform`, Didi's approval): only when started by hand with
 #   `cluster_secrets`, creates or updates each Secret the runbook names from the environment's
 #   secrets, through stdin only, then restarts the deployments whose Secret changed.
@@ -87,6 +98,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      projects_commit: ${{ steps.projects.outputs.commit }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -137,11 +150,22 @@ jobs:
             exit 1
           fi
           jq -r '.items | group_by(.kind)[] | "\(.[0].kind): \(length)"' "$RUNNER_TEMP/render/manifests.json"
+      - name: List the standard-size projects for the add-only check (D-378)
+        run: |
+          set -euo pipefail
+          # The candidates (ADR 0118 appendix B). If they cannot be listed, the file is left out,
+          # and the plan's add-only check then refuses, so the apply waits for Didi (fail closed).
+          if ! node .github/scripts/add-only.mjs candidates "$SETTINGS_FILE" "$PROJECTS_DIR" >"$RUNNER_TEMP/render/candidates.json"; then
+            rm -f "$RUNNER_TEMP/render/candidates.json"
+            echo "::warning::The standard-size projects could not be listed, so this run's apply waits for Didi's approval."
+          fi
       - name: Keep the rendered objects for the plan and the apply
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: platform-manifests
-          path: ${{ runner.temp }}/render/manifests.json
+          path: |
+            ${{ runner.temp }}/render/manifests.json
+            ${{ runner.temp }}/render/candidates.json
           if-no-files-found: error
           retention-days: 1
 
@@ -156,6 +180,8 @@ jobs:
       contents: read
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
+      add_only: ${{ steps.add-only.outputs.add_only }}
+      add_only_projects: ${{ steps.add-only.outputs.projects }}
     env:
       CREDENTIAL_SECONDS: "600"
     steps:
@@ -168,6 +194,10 @@ jobs:
         with:
           name: platform-manifests
           path: ${{ runner.temp }}/render
+      # Node runs only .github/scripts/add-only.mjs here, which imports Node's built-ins only.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
       - name: Install kubectl and doctl at pinned versions
         run: |
           set -euo pipefail
@@ -187,6 +217,25 @@ jobs:
         run: |
           set -euo pipefail
           .github/scripts/platform-plan.sh "$RUNNER_TEMP/render/manifests.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check whether the plan only adds projects (D-378)
+        id: add-only
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          # Fails closed (ADR 0118 appendix B): only the check's exit 0 makes the run add-only. A
+          # refusal, an error or any doubt sends the apply to `kubectl-apply`, which waits for Didi.
+          status=0
+          .github/scripts/platform-add-only.sh "$RUNNER_TEMP/render/manifests.json" "$RUNNER_TEMP/render/candidates.json" >"$RUNNER_TEMP/add-only.md" || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "add_only=true" >>"$GITHUB_OUTPUT"
+            echo "So \`kubectl-apply-add-only\` applies it without approval, in the environment \`platform-add-project\`, after checking again with its own credential." >>"$RUNNER_TEMP/add-only.md"
+          else
+            echo "add_only=false" >>"$GITHUB_OUTPUT"
+            if [ ! -s "$RUNNER_TEMP/add-only.md" ]; then
+              printf '%s\n\n%s\n' "## Add-only check (D-378)" "**Not add-only:** the check stopped with an error. The reviewed apply waits for Didi's approval, as for any other change." >"$RUNNER_TEMP/add-only.md"
+            fi
+          fi
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/add-only.md"
       - name: Remove the credential
         if: always()
         run: |
@@ -196,7 +245,7 @@ jobs:
   apply:
     name: kubectl-apply
     needs: plan
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changed == 'true'
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changed == 'true' && needs.plan.outputs.add_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: platform
@@ -245,10 +294,86 @@ jobs:
           set -euo pipefail
           rm -f "$RUNNER_TEMP/kubeconfig"
 
+  # The add-only apply (D-378, D-444): the reviewed `apply` job's steps, with the add-only check
+  # run again just before the apply, and two summary lines. A test keeps the shared steps equal.
+  add-only-apply:
+    name: kubectl-apply-add-only (${{ needs.plan.outputs.add_only_projects }})
+    needs: [render, plan]
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changed == 'true' && needs.plan.outputs.add_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: platform-add-project
+    permissions:
+      contents: read
+    env:
+      CREDENTIAL_SECONDS: "1200"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Fetch the rendered objects the plan read
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: platform-manifests
+          path: ${{ runner.temp }}/render
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install kubectl and doctl at pinned versions
+        run: |
+          set -euo pipefail
+          .github/scripts/install-cluster-tools.sh
+      - name: Fetch a short-lived cluster credential
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          .github/scripts/cluster-credential.sh
+      - name: Put the API server's address into this runner's copy of the objects
+        run: |
+          set -euo pipefail
+          .github/scripts/api-server-address.sh "$RUNNER_TEMP/render/manifests.json"
+      # Appendix B: a change on the cluster since the plan fails this job, and nothing is applied.
+      - name: Check again, with this job's own credential, that the plan only adds the projects
+        env:
+          EXPECTED_PROJECTS: ${{ needs.plan.outputs.add_only_projects }}
+        run: |
+          set -euo pipefail
+          .github/scripts/platform-add-only.sh "$RUNNER_TEMP/render/manifests.json" "$RUNNER_TEMP/render/candidates.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Apply the rendered objects
+        run: |
+          set -euo pipefail
+          kubectl apply --server-side --field-manager="$FIELD_MANAGER" --filename "$RUNNER_TEMP/render/manifests.json"
+      - name: Say in the summary that this applied without approval
+        env:
+          PROJECT_LIST_COMMIT: ${{ needs.render.outputs.projects_commit }}
+          ADD_ONLY_PROJECTS: ${{ needs.plan.outputs.add_only_projects }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Add-only: applied without approval (D-378)"
+            echo
+            echo "The plan only added new standard-size projects, so this job applied it in the environment \`platform-add-project\`, which has no reviewer. Project list \`didi-build/foreman-projects\` at \`${PROJECT_LIST_COMMIT}\`; new projects \`${ADD_ONLY_PROJECTS}\`. The next daily check lists this apply."
+            echo
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Run the runbook's checks
+        run: |
+          set -euo pipefail
+          {
+            echo "## Platform checks"
+            .github/scripts/platform-checks.sh "$RUNNER_TEMP/render/manifests.json" all
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Remove the credential
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/kubeconfig"
+
   cluster-secrets:
     name: cluster-secrets
-    needs: [plan, apply]
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.cluster_secrets && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') }}
+    needs: [plan, apply, add-only-apply]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.cluster_secrets && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') && (needs.add-only-apply.result == 'success' || needs.add-only-apply.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: platform
@@ -319,8 +444,8 @@ jobs:
 
   runner-token:
     name: runner-token
-    needs: [plan, apply]
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.runner_token && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') }}
+    needs: [plan, apply, add-only-apply]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.runner_token && needs.plan.result == 'success' && (needs.apply.result == 'success' || needs.apply.result == 'skipped') && (needs.add-only-apply.result == 'success' || needs.add-only-apply.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: platform
