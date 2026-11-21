@@ -20,6 +20,7 @@ import {
   SEEDED_MODEL_CATALOG,
   SEEDED_OUTPUT_TOKEN_NEEDS,
   SEEDED_ROUTING_POLICY,
+  seededRunPrice,
   TEST_TASK_TYPES,
 } from "../../src/core/routing-testing.ts";
 import {
@@ -330,7 +331,7 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019, 0024, 0025 and 0026)", async () => {
+    it("seeds the routing policy, catalog, approved providers and output needs (migrations 0005, 0019, 0024 to 0027 and 0029)", async () => {
       const value = async (key: string) => (await store.getSetting(key))?.value;
       expect(await value(ROUTING_SETTINGS.policy)).toEqual(SEEDED_ROUTING_POLICY);
       expect(await value(ROUTING_SETTINGS.catalog)).toEqual(SEEDED_MODEL_CATALOG);
@@ -360,7 +361,8 @@ describe.skipIf(!adminUrl)(
           provider: "deepinfra",
           modelFamily: "qwen",
           serviceTierRequested: "flex",
-          // 0026 has since moved QA, the Council and Triage (D-425), and the policy's version.
+          // 0026 has since moved QA, the Council and Triage (D-425), and 0029 moved Triage back
+          // and set QA independence to family (D-451, D-452), each with the policy's version.
           routingPolicyVersion: SEEDED_ROUTING_POLICY.version,
           modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         });
@@ -388,7 +390,7 @@ describe.skipIf(!adminUrl)(
       },
     );
 
-    it.each(["qa", "council", "triage"] as const)(
+    it.each(["qa", "council"] as const)(
       "routes a %s run to DeepSeek V4 Pro on DeepInfra Flex and prices its Flex end at the Flex price (migration 0026, D-425)",
       async (role) => {
         const nodeId = await item(await project());
@@ -400,7 +402,9 @@ describe.skipIf(!adminUrl)(
           provider: "deepinfra",
           modelFamily: "deepseek",
           serviceTierRequested: "flex",
-          routingPolicyVersion: "2026-11-18.2",
+          // 0029 has since moved Triage back and set QA independence to family (D-451, D-452),
+          // with the policy's version.
+          routingPolicyVersion: "2026-11-21.1",
           modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
         });
         expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
@@ -426,6 +430,41 @@ describe.skipIf(!adminUrl)(
         });
       },
     );
+
+    it("routes a triage run to Claude Sonnet 5.5 on Anthropic at Standard and prices its end at the Standard price (migration 0029, D-451)", async () => {
+      const nodeId = await item(await project());
+      const result = await runs.dispatch(request(nodeId, "triage"), credential());
+      if (!result.admitted) throw new Error(result.reason);
+      expect(await store.getRun(result.run.id)).toMatchObject({
+        model: "claude-sonnet-5-5",
+        taskType: "triage",
+        provider: "anthropic",
+        modelFamily: "claude",
+        serviceTierRequested: "standard",
+        routingPolicyVersion: "2026-11-21.1",
+        modelCatalogVersion: SEEDED_MODEL_CATALOG.version,
+      });
+      expect((await store.getRun(result.run.id))?.modelPrice).toEqual(
+        seededRunPrice("claude-sonnet-5-5"),
+      );
+      await runs.recordEnd(result.run.id, {
+        outcome: "success",
+        turns: 3,
+        minutes: 2,
+        tokens: {
+          uncachedInput: 500,
+          cachedInput: 20000,
+          cacheWriteInput: 100,
+          output: 300,
+        },
+        serviceTierServed: "standard",
+      });
+      // 500 x 2 + 20000 x 0.1 (0025's cache read price) + 100 x 2.5 + 300 x 10, per million.
+      expect(await store.getRun(result.run.id)).toMatchObject({
+        serviceTierServed: "standard",
+        costUsd: 0.00625,
+      });
+    });
 
     it("records the route's price on the run, and prices the end from it after the catalog changes (migration 0008)", async () => {
       const nodeId = await item(await project());

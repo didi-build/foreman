@@ -15,6 +15,7 @@ import {
   FIRST_MODEL_CATALOG,
   FIRST_OUTPUT_TOKEN_NEEDS,
   FIRST_ROUTING_POLICY,
+  DEEPSEEK_FLASH,
   DEEPSEEK_PRO,
   deepSeekProRunPrice,
   firstRunPrice,
@@ -139,7 +140,7 @@ describe("the first policy (ADR 0114 section 5, D-185, D-186)", () => {
   });
 });
 
-describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421, O-150, D-425)", () => {
+describe("the seeded policy (migrations 0019, 0024, 0025, 0026 and 0029, D-324, D-421, O-150, D-425, D-451, D-452)", () => {
   const seeded = (
     role: AgentRole,
     taskType: string,
@@ -158,7 +159,7 @@ describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421,
   const versions = {
     failFast: false,
     onCapacity: "wait",
-    policyVersion: "2026-11-18.2",
+    policyVersion: "2026-11-21.1",
     catalogVersion: "2026-11-19.1",
   };
 
@@ -184,7 +185,6 @@ describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421,
   it.each([
     ["qa", "qa:review"],
     ["council", "council"],
-    ["triage", "triage"],
   ] as const)(
     "routes %s (%s) to DeepSeek V4 Pro on DeepInfra at Flex, which passes every hard rule",
     (role, taskType) => {
@@ -203,8 +203,10 @@ describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421,
   it.each([
     ["developer", "developer:close"],
     ["designer", "designer:close"],
+    // Back on the entry 0005 seeded since 0029 (D-451).
+    ["triage", "triage"],
   ] as const)(
-    "keeps %s (%s) on Claude Sonnet 5.5 on Anthropic at Standard",
+    "routes %s (%s) to Claude Sonnet 5.5 on Anthropic at Standard",
     (role, taskType) => {
       expect(routed(chooseRoute(seeded(role, taskType)))).toEqual({
         taskType,
@@ -233,27 +235,47 @@ describe("the seeded policy (migrations 0019, 0024, 0025 and 0026, D-324, D-421,
     },
   );
 
-  it("routes QA after a Qwen3 Coder Developer run and a Sonnet close run to DeepSeek V4 Pro (model id independence)", () => {
+  it("routes QA after Qwen3 Coder Developer and Designer runs and a Sonnet close run to DeepSeek V4 Pro: another family", () => {
     const choice = chooseRoute(
       seeded("qa", "qa:review", [
         developerRun(QWEN_CODER, "qwen"),
+        { bot: "designer", model: QWEN_CODER, modelFamily: "qwen" },
         developerRun("claude-sonnet-5-5", "claude"),
       ]),
     );
-    expect(routed(choice).model).toBe(DEEPSEEK_PRO);
+    expect(routed(choice)).toMatchObject({ model: DEEPSEEK_PRO, family: "deepseek" });
   });
 
-  it("refuses QA after a Developer run on DeepSeek V4 Pro (model id independence)", () => {
-    expect(
-      refused(
-        chooseRoute(
-          seeded("qa", "qa:review", [developerRun(DEEPSEEK_PRO, "deepseek")]),
+  // Under model id independence the second would have been admitted (D-452).
+  it.each([
+    ["DeepSeek V4 Pro, the same model", DEEPSEEK_PRO],
+    ["DeepSeek V4.1 Flash, another model id", DEEPSEEK_FLASH],
+  ])(
+    "refuses QA after a Developer run of the deepseek family on %s, by family",
+    (_, model) => {
+      expect(
+        refused(
+          chooseRoute(seeded("qa", "qa:review", [developerRun(model, "deepseek")])),
         ),
-      ),
-    ).toMatchObject({
-      rejected: [{ model: DEEPSEEK_PRO, failed: [{ rule: "qa_independence" }] }],
-    });
-  });
+      ).toEqual({
+        settingsProblems: [],
+        rejected: [
+          {
+            index: 0,
+            provider: "deepinfra",
+            model: DEEPSEEK_PRO,
+            tier: "flex",
+            failed: [
+              {
+                rule: "qa_independence",
+                detail: "the same model family as a Developer run on the item",
+              },
+            ],
+          },
+        ],
+      });
+    },
+  );
 });
 
 describe("candidate order", () => {
