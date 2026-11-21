@@ -29,6 +29,17 @@ import {
   filledSettings,
   renderedObjects,
 } from "./admin-workflows-fixture.ts";
+import {
+  BIGGER,
+  STANDARD,
+  clusterHolding,
+  diffName,
+  infraPlanAdd,
+  projectFile,
+  recordAddress,
+  renderWith,
+  resourceChange,
+} from "./add-only-fixture.ts";
 
 const SCRIPTS = resolve(".github/scripts");
 const FIXTURES = resolve("test/fixtures/admin-workflows");
@@ -73,6 +84,9 @@ function sandbox(state: Record<string, unknown> = {}): Sandbox {
       '  *"output -raw receiver_tunnel_token"*)',
       '    if [ -n "${FAKE_TUNNEL_TOKEN:-}" ]; then printf "%s" "$FAKE_TUNNEL_TOKEN"; else echo "Error: Output \\"receiver_tunnel_token\\" not found" >&2; exit 1; fi ;;',
       '  *" init "*) echo "Initializing the backend... bucket ${STATE_BUCKET:-} at https://${CLOUDFLARE_ACCOUNT_ID:-}.r2.cloudflarestorage.com" ;;',
+      // The saved plan's JSON form and its text, from the files a test names (the add-only check).
+      '  *"show -json plan.out"*) cat "$FAKE_TOFU_SHOW_JSON" ;;',
+      '  *"show -no-color plan.out"*) cat "$FAKE_TOFU_SHOW_TEXT" ;;',
       "esac",
     ].join("\n"),
   );
@@ -857,6 +871,314 @@ describe.skipIf(process.platform === "win32")(
         const result = planRun(box);
         expect(result.status).toBe(1);
         expect(result.stdout).toContain("::error::kubectl diff failed.");
+      });
+    });
+
+    describe("platform-add-only.sh with add-only.mjs (D-378, D-444, ADR 0118 appendix B, O-158)", () => {
+      const NEW = "garden-notes";
+      const OLD = "rehearsal";
+      const standard = (slug: string) => ({ slug, quota: STANDARD });
+      const before = renderWith([standard(OLD)]);
+      const after = renderWith([standard(OLD), standard(NEW)]);
+
+      /** A settings checkout with these project files, and the candidates the render job lists. */
+      function candidatesFor(box: Sandbox, files: Record<string, unknown>): string {
+        const dir = join(box.root, "foreman-projects");
+        mkdirSync(join(dir, "projects"), { recursive: true });
+        writeFileSync(join(dir, "foreman-projects.json"), '{ "schema": 1 }\n');
+        for (const [slug, file] of Object.entries(files))
+          writeFileSync(join(dir, "projects", `${slug}.json`), JSON.stringify(file));
+        const listed = spawnSync(
+          "node",
+          [
+            join(SCRIPTS, "add-only.mjs"),
+            "candidates",
+            "infra/kubernetes/settings/production.json",
+            dir,
+          ],
+          { encoding: "utf8" },
+        );
+        expect(listed.status).toBe(0);
+        const path = join(box.root, "candidates.json");
+        writeFileSync(path, listed.stdout);
+        return path;
+      }
+
+      const check = (
+        state: Record<string, unknown>,
+        manifests: unknown = after,
+        files: Record<string, unknown> = {
+          [OLD]: projectFile(OLD),
+          [NEW]: projectFile(NEW),
+        },
+        env: Record<string, string> = {},
+      ) => {
+        const box = sandbox(state);
+        const candidates = candidatesFor(box, files);
+        const result = run(
+          box,
+          "platform-add-only.sh",
+          [manifestsFile(box, manifests), candidates],
+          { FIELD_MANAGER: "foreman-platform-workflow", ...env },
+        );
+        return {
+          ...result,
+          box,
+          output: readFileSync(box.env.GITHUB_OUTPUT as string, "utf8"),
+        };
+      };
+      const NOT = "**Not add-only:** ";
+
+      it("passes a pure add of a standard project: the cluster matches main, and only the new namespace and the run watcher change", () => {
+        const result = check(clusterHolding(before.items));
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        expect(result.output).toBe(`projects=${NEW}\n`);
+        expect(result.stdout).toContain("## Add-only check (D-378)");
+        expect(result.stdout).toContain(
+          "**Add-only:** the plan only adds the standard objects of `agents-garden-notes`",
+        );
+        // Two diffs, server-side, by name only: the base list and the rest of the render.
+        const diffs = result.box.calls().filter((c) => c.args[0] === "diff");
+        expect(diffs).toHaveLength(2);
+        for (const d of diffs)
+          expect(d.args).toEqual(
+            expect.arrayContaining([
+              "--server-side",
+              "--field-manager=foreman-platform-workflow",
+            ]),
+          );
+        // With the same projects expected, as the add-only apply checks again.
+        expect(
+          check(clusterHolding(before.items), after, undefined, {
+            EXPECTED_PROJECTS: NEW,
+          }).status,
+        ).toBe(0);
+      });
+
+      it("fails a bigger quota: the project is not a candidate", () => {
+        const big = renderWith([standard(OLD), { slug: NEW, quota: BIGGER }]);
+        const result = check(clusterHolding(before.items), big, {
+          [OLD]: projectFile(OLD),
+          [NEW]: projectFile(NEW, { quota: BIGGER }),
+        });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(
+          `${NOT}a project it adds does not have the standard size and the Cloudflare target.`,
+        );
+        expect(result.output).toBe("");
+      });
+
+      it("fails drift: an object on the cluster differs from main, a pending image or a changed existing project", () => {
+        for (const [label, name] of [
+          ["pending image", "apps.v1.Deployment.foreman-platform.state-api"],
+          ["changed project", `v1.ResourceQuota.agents-${OLD}.agents`],
+          [
+            "run watcher's other fields",
+            "apps.v1.Deployment.foreman-platform.run-watcher",
+          ],
+        ] as const) {
+          const state = clusterHolding(before.items);
+          state.live[name] = { marker: "live-only-field-value-0002" } as never;
+          const result = check(state);
+          expect(result.status, label).toBe(1);
+          expect(result.stdout, label).toContain(
+            `${NOT}the cluster differs from main outside the new projects.`,
+          );
+          expect(`${result.stdout}${result.stderr}`, label).not.toContain(
+            "live-only-field-value-0002",
+          );
+        }
+      });
+
+      it("fails an extra object outside the new namespace, and a project taken out in the same run", () => {
+        const extra = structuredClone(after);
+        extra.items.push({
+          ...structuredClone(after.items.find((o) => o.kind === "NetworkPolicy")!),
+          metadata: { name: "extra", namespace: "foreman-platform", labels: {} },
+        } as never);
+        expect(check(clusterHolding(before.items), extra).stdout).toContain(
+          `${NOT}the cluster differs from main outside the new projects.`,
+        );
+        // The cluster still has `old-project`, which the render no longer lists.
+        const withOld = renderWith([standard(OLD), standard("old-project")]);
+        const result = check(clusterHolding(withOld.items));
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(
+          `${NOT}the cluster differs from main outside the new projects.`,
+        );
+      });
+
+      it("fails a plan that adds no project, a missing candidates list, a failed diff and other projects than the plan found", () => {
+        const pending = clusterHolding(before.items);
+        pending.live["apps.v1.Deployment.foreman-platform.state-api"] = {} as never;
+        expect(check(pending, before).stdout).toContain(
+          `${NOT}the plan adds no project.`,
+        );
+        const box = sandbox(clusterHolding(before.items));
+        const missing = run(
+          box,
+          "platform-add-only.sh",
+          [manifestsFile(box, after), join(box.root, "none.json")],
+          { FIELD_MANAGER: "foreman-platform-workflow" },
+        );
+        expect(missing.status).toBe(1);
+        expect(missing.stdout).toContain(
+          `${NOT}the render's list of standard-size projects is missing.`,
+        );
+        const failed = check({ ...clusterHolding(before.items), diffExit: 2 });
+        expect(failed.status).toBe(1);
+        expect(failed.stdout).toContain(`${NOT}kubectl diff failed.`);
+        const other = check(clusterHolding(before.items), after, undefined, {
+          EXPECTED_PROJECTS: "seed-swap",
+        });
+        expect(other.status).toBe(1);
+        expect(other.stdout).toContain("so the cluster changed since the plan.");
+        expect(other.output).toBe("");
+      });
+
+      it("names objects only: no content of a rendered or live object reaches the summary", () => {
+        const result = check(clusterHolding(before.items));
+        expect(result.stdout).not.toMatch(/192\.0\.2\.|sha256:|"kind"/);
+        expect(diffName(after.items[0]!)).toBe("v1.Namespace..foreman-platform");
+      });
+    });
+
+    describe("infra-add-only.sh with add-only.mjs (D-378, D-444, ADR 0118 appendix B, O-158)", () => {
+      const NEW = "garden-notes";
+      const OLD = "rehearsal";
+      const LINE = "Plan: 2 to add, 0 to change, 0 to destroy.";
+
+      const check = (
+        plan: unknown,
+        text = `  # module.edge.cloudflare_dns_record.project["${NEW}.didi.build"] will be created\n\n${LINE}\n`,
+        files: Record<string, unknown> = {
+          [OLD]: projectFile(OLD),
+          [NEW]: projectFile(NEW),
+        },
+        env: Record<string, string> = {},
+      ) => {
+        const box = sandbox();
+        const dir = join(box.root, "foreman-projects");
+        mkdirSync(join(dir, "projects"), { recursive: true });
+        writeFileSync(join(dir, "foreman-projects.json"), '{ "schema": 1 }\n');
+        for (const [slug, file] of Object.entries(files))
+          writeFileSync(
+            join(dir, "projects", `${slug}.json`),
+            typeof file === "string" ? file : JSON.stringify(file),
+          );
+        const json = join(box.root, "plan.json");
+        writeFileSync(json, typeof plan === "string" ? plan : JSON.stringify(plan));
+        const textFile = join(box.root, "plan.txt");
+        writeFileSync(textFile, text);
+        const result = run(box, "infra-add-only.sh", [], {
+          STACK: "infra/stacks/factory",
+          PROJECTS_DIR: dir,
+          FAKE_TOFU_SHOW_JSON: json,
+          FAKE_TOFU_SHOW_TEXT: textFile,
+          ...env,
+        });
+        return {
+          ...result,
+          tofu: readFileSync(box.env.FAKE_TOFU_LOG as string, "utf8"),
+          output: readFileSync(box.env.GITHUB_OUTPUT as string, "utf8"),
+        };
+      };
+      const NOT = "**Not add-only:** ";
+
+      it("passes the fixture plan that only creates a standard project's record and route, reading the saved plan's JSON form and its count", () => {
+        const result = check(infraPlanAdd());
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        expect(result.output).toBe(`projects=${NEW}\n`);
+        expect(result.stdout).toContain(
+          "**Add-only:** the plan only creates the DNS record and the Workers route of `garden-notes.didi.build`",
+        );
+        expect(result.tofu.split("\n").filter(Boolean)).toEqual([
+          "-chdir=infra/stacks/factory show -json plan.out",
+          "-chdir=infra/stacks/factory show -no-color plan.out",
+        ]);
+        // Addresses and actions only: no value of the plan reaches the summary.
+        expect(result.stdout).not.toMatch(/fedcba9876543210|made-up|192\.0\.2\.|100::/);
+        expect(
+          check(infraPlanAdd(), undefined, undefined, { EXPECTED_PROJECTS: NEW })
+            .status,
+        ).toBe(0);
+      });
+
+      it("fails an extra record, a delete, an update, a bigger quota and a plan it cannot read, each with its reason", () => {
+        const plus = (...changes: ReturnType<typeof resourceChange>[]) => {
+          const plan = infraPlanAdd();
+          plan.resource_changes.push(...changes);
+          return plan;
+        };
+        const cases: [string, unknown, string, Record<string, unknown>?][] = [
+          [
+            "extra record",
+            plus(
+              resourceChange("module.edge.cloudflare_dns_record.receiver[0]", [
+                "create",
+              ]),
+            ),
+            "the plan creates something other than a project's DNS record and Workers route",
+          ],
+          [
+            "delete",
+            plus(resourceChange(recordAddress("old-project"), ["delete"])),
+            "the plan deletes or replaces something",
+          ],
+          [
+            "update",
+            (() => {
+              const plan = infraPlanAdd();
+              const firewall = plan.resource_changes.find((c) =>
+                c.address.endsWith("digitalocean_firewall.workers"),
+              )!;
+              firewall.change.actions = ["update"];
+              return plan;
+            })(),
+            "the plan changes something that already exists",
+          ],
+          [
+            "bigger quota",
+            infraPlanAdd(),
+            "a project it adds does not have the standard size and the Cloudflare target",
+            { [OLD]: projectFile(OLD), [NEW]: projectFile(NEW, { quota: BIGGER }) },
+          ],
+          ["not JSON", "{ not json", "the plan could not be read"],
+        ];
+        for (const [label, plan, reason, files] of cases) {
+          const result = check(plan, undefined, files);
+          expect(result.status, label).toBe(1);
+          expect(result.stdout, label).toContain(`${NOT}${reason}.`);
+          expect(result.output, label).toBe("");
+        }
+      });
+
+      it("fails a plan whose own count is missing or another, and other projects than the plan job found", () => {
+        expect(check(infraPlanAdd(), "No changes.\n").stdout).toContain(
+          `${NOT}the plan's own count could not be read.`,
+        );
+        expect(
+          check(infraPlanAdd(), "Plan: 3 to add, 0 to change, 0 to destroy.\n").stdout,
+        ).toContain(`${NOT}the plan's own count is not two creates per project.`);
+        const other = check(infraPlanAdd(), undefined, undefined, {
+          EXPECTED_PROJECTS: "seed-swap",
+        });
+        expect(other.status).toBe(1);
+        expect(other.stdout).toContain(
+          `${NOT}the new projects are not those the plan job found.`,
+        );
+      });
+
+      it("fails when the project list cannot be read", () => {
+        const result = check(infraPlanAdd(), undefined, {
+          [NEW]: "{ not a project file",
+        });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(
+          `${NOT}the list of standard-size projects could not be read.`,
+        );
       });
     });
 

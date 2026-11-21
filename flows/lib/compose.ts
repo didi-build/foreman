@@ -39,6 +39,7 @@ import {
   type StagingDeployCredentials,
 } from "../../src/adapters/deploy/cloudflare-staging.ts";
 import { createMarkerStagingChecker } from "../../src/adapters/deploy/staging-checker.ts";
+import { createGitHubAddOnlyApplies } from "../../src/adapters/github/add-only-applies.ts";
 import {
   createGitHubAppJwt,
   parseGitHubId,
@@ -87,6 +88,7 @@ import { createGitHubScreenshotBundles } from "../../src/adapters/screenshots/gi
 import { createGitHubRepoFolders } from "../../src/adapters/screenshots/github-folders.ts";
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { databasePoolConfig } from "../../src/adapters/store-postgres/tls.ts";
+import type { AddOnlyApplies } from "../../src/core/add-only-applies.ts";
 import type {
   BootstrapAccess,
   BootstrapRuns,
@@ -222,6 +224,12 @@ export interface FlowDeps extends ReconcileDeps {
    * newest restarted run, read with the runner App's `actions: read` token (D-267, O-114, O-125).
    */
   bootstrapRuns: BootstrapRuns;
+  /**
+   * The Platform and Infra workflows' add-only apply jobs, for the daily check's list of applies
+   * made without approval (D-378, O-158), read with the runner App's `actions: read` token for
+   * `didi-build/foreman` (D-267, O-125).
+   */
+  addOnlyApplies: AddOnlyApplies;
   /**
    * The weekly model test (D-432, D-433, O-156): its Job in the weekly test's own namespace, its
    * keys from their own Windmill paths, and the case list from the bundled `eval/cases/`.
@@ -512,6 +520,11 @@ export function runnerBootstrapRuns(
   });
 }
 
+/** The add-only apply jobs on GitHub, read with an `actions: read` token (O-158). */
+export function runnerAddOnlyApplies(readTokens: RunnerAppTokens): AddOnlyApplies {
+  return createGitHubAddOnlyApplies({ tokens: readTokens, http: createGitHubHttp() });
+}
+
 /**
  * A weekly test key by its path (D-433): only a path under `eval/models/`, so no setting can make
  * the weekly test read a project's or the platform's secret.
@@ -640,6 +653,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     ),
     bootstrapAccess: runnerBootstrapAccess(apps.bootstrap),
     bootstrapRuns: runnerBootstrapRuns(apps.bootstrap, apps.runner),
+    addOnlyApplies: runnerAddOnlyApplies(apps.runner),
     modelEval: {
       jobs: createKubernetesEvalJobs({ cluster: clusterParts, bots: botFiles }),
       key: evalKeyReader(env),

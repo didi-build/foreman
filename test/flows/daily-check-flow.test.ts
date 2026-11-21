@@ -123,6 +123,34 @@ describe("the daily check flow (flow: fake adapters, M4.4)", () => {
     expect(html).toContain("Kill switch: on (the runner acts on nothing)");
   });
 
+  it("lists each apply made without approval that GitHub shows, from the window's start (D-378, O-158)", async () => {
+    const f = await createFlowFixture();
+    const at = new Date(f.clock.now().getTime() - 60 * 60_000);
+    f.addOnlyApplies.jobs = [
+      {
+        workflow: "infra",
+        runNumber: 31,
+        name: "tofu-apply-add-only (garden-notes)",
+        status: "completed",
+        conclusion: "success",
+        startedAt: at,
+        completedAt: at,
+      },
+    ];
+    const [{ html }, { json }] = (await dailyCheck(f.deps)).render_all;
+    expect(f.addOnlyApplies.reads).toEqual([json.check.window.from]);
+    expect(json.check.unreviewedApplies?.applies).toMatchObject([
+      { workflow: "infra", projects: ["garden-notes"], outcome: "applied" },
+    ]);
+    expect(json.text).toContain(
+      "Applied without approval (D-378): the Infra apply workflow's add-only apply for garden-notes",
+    );
+    expect(html).toContain("Applied without approval (D-378)");
+    f.addOnlyApplies.fail = true;
+    const [, { json: unread }] = (await dailyCheck(f.deps)).render_all;
+    expect(unread.check.unreviewedApplies).toEqual({ applies: [], unreadable: true });
+  });
+
   it("calls nothing that writes, sends or opens a request", () => {
     const source = readFileSync("flows/daily-check.ts", "utf8");
     expect(source).not.toMatch(

@@ -85,11 +85,24 @@
 // store; a project whose runs cannot be read is named as such. With no `bootstrapRuns` port given
 // it is not read (`projectSetup` null).
 //
+// Applies made without approval (D-378, D-444, O-158), before the projects: each add-only apply of
+// the Platform or Infra workflow that ended in the window, or still runs, with when, which
+// workflow, which projects and how it ended (./add-only-applies.ts), so nothing applies unseen.
+// GitHub keeps the runs, so this is read from GitHub with the runner App's `actions: read` token,
+// as project setup is; when the runs cannot be read the check says so. With no `addOnlyApplies`
+// port given it is not read (`unreviewedApplies` null).
+//
 // Text recorded by agents (titles, reasons, questions) and Didi's own words are returned
 // verbatim as data; the renderings (./daily-check-render.ts) quote each one, and the page also
 // escapes it as HTML text, so nothing in them reads as part of the check. No approval link,
 // topic key, decision, run or evidence id is shown: only item ids and gate request ids, which the
-// attention list already shows.
+// attention list already shows, and an admin workflow's GitHub run number (O-158), which its public
+// run list shows.
+import {
+  unreviewedApplies,
+  type AddOnlyApplies,
+  type UnreviewedApplies,
+} from "./add-only-applies.ts";
 import {
   failedSetups,
   type BootstrapRuns,
@@ -194,6 +207,8 @@ export interface DailyCheckDeps extends StalledItemsDeps {
   clock: Clock;
   /** Bootstrap's newest restarted run per project (O-114). Without it, setup is not read. */
   bootstrapRuns?: Pick<BootstrapRuns, "latestRestart">;
+  /** The add-only apply jobs on GitHub (O-158). Without it, they are not read. */
+  addOnlyApplies?: AddOnlyApplies;
 }
 
 export interface DailyCheckOptions {
@@ -413,6 +428,8 @@ export interface DailyCheck {
   stalledNote: string | null;
   /** Projects whose setup failed, read from GitHub (O-114); null when not read. */
   projectSetup: SetupReport | null;
+  /** The applies made without approval in the window, read from GitHub (O-158); null when not read. */
+  unreviewedApplies: UnreviewedApplies | null;
   /** The weekly model test's latest week (D-430, O-156). */
   modelTest: ModelEvalSummary;
 }
@@ -929,6 +946,9 @@ export async function generateDailyCheck(
           { bootstrapRuns: deps.bootstrapRuns },
           await store.listProjects(),
         )
+      : null,
+    unreviewedApplies: deps.addOnlyApplies
+      ? await unreviewedApplies({ addOnlyApplies: deps.addOnlyApplies }, { from, to })
       : null,
     modelTest: await modelTestSection(store, to),
   };

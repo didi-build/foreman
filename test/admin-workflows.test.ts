@@ -1,5 +1,6 @@
 // Unit: repo guard on the admin workflows (D-336, D-339, D-340, O-105, D-362, O-115, D-371,
-// O-123): the Images, Infra apply, Platform, Database migrations and Windmill deploy workflows,
+// O-123, D-378, D-444, O-158): the Images, Infra apply, Platform, Database migrations and Windmill
+// deploy workflows, with the add-only applies,
 // the scripts they run, the cluster's settings file and the factory stack's reviewed variables. Read as text and YAML (and the scripts' modes from git's index); nothing runs. The scripts' behaviour is in
 // test/admin-workflow-scripts.test.ts.
 import { execFileSync } from "node:child_process";
@@ -9,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
 import { PLATFORM_SECRETS } from "../infra/kubernetes/platform.ts";
+import { ADD_ONLY_WORKFLOWS } from "../src/core/add-only-applies.ts";
 import { MIGRATIONS_DIR } from "../src/adapters/store-postgres/migrate.ts";
 import { SUPABASE_CA_PATH } from "../src/adapters/store-postgres/tls.ts";
 import { clusterObjects } from "../infra/kubernetes/render.ts";
@@ -87,6 +89,8 @@ const JOB_LEVEL_IDENTIFIERS = [
 /** The environments: two plan environments with no reviewer (D-339), four Didi approves (D-339, D-362, D-371). */
 const PLAN_ENVIRONMENTS = ["infra-plan", "platform-plan"];
 const APPROVED_ENVIRONMENTS = ["infra", "platform", "database", "windmill"];
+/** Two with no reviewer for the add-only applies, guarded by the add-only check (D-378, D-444). */
+const ADD_ONLY_ENVIRONMENTS = ["infra-add-project", "platform-add-project"];
 
 describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
   it("run only from main, on a push there or by hand, never on a pull request", () => {
@@ -156,7 +160,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     for (const [key, refs] of pins) expect([...refs], key).toHaveLength(1);
   });
 
-  it("read secrets only in jobs of the six environments, only in a step's env, never in a script", () => {
+  it("read secrets only in jobs of the eight environments, only in a step's env, never in a script", () => {
     for (const { path, wf } of all) {
       const raw = text(path);
       expect(raw, path).not.toMatch(/toJSON\(secrets\)|secrets:\s*inherit|secrets\[/);
@@ -164,9 +168,10 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
         const label = `${path} ${id}`;
         const usesSecrets = SECRET_REFERENCE.test(JSON.stringify(job));
         if (usesSecrets) {
-          expect([...PLAN_ENVIRONMENTS, ...APPROVED_ENVIRONMENTS], label).toContain(
-            job.environment,
-          );
+          expect(
+            [...PLAN_ENVIRONMENTS, ...APPROVED_ENVIRONMENTS, ...ADD_ONLY_ENVIRONMENTS],
+            label,
+          ).toContain(job.environment);
         }
         // Only the identifiers of D-361 may sit in a job's env: they are not keys, and every
         // step that redacts or runs `tofu init` needs them. A key stays in a step's env.
@@ -191,7 +196,7 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
     }
   });
 
-  it("plan in the plan environments, and apply and set Secrets only in the ones Didi approves", () => {
+  it("plan in the plan environments, and apply and set Secrets only in the ones Didi approves, but for the add-only applies", () => {
     const environments = Object.fromEntries(
       all.flatMap(({ path, wf }) =>
         Object.entries(wf.jobs).map(([id, job]) => [
@@ -204,9 +209,11 @@ describe("the admin workflows (unit: repo guard, D-339, D-340, O-105)", () => {
       [`${WORKFLOWS.images}#build`]: null,
       [`${WORKFLOWS.infra}#plan`]: "infra-plan",
       [`${WORKFLOWS.infra}#apply`]: "infra",
+      [`${WORKFLOWS.infra}#add-only-apply`]: "infra-add-project",
       [`${WORKFLOWS.platform}#render`]: null,
       [`${WORKFLOWS.platform}#plan`]: "platform-plan",
       [`${WORKFLOWS.platform}#apply`]: "platform",
+      [`${WORKFLOWS.platform}#add-only-apply`]: "platform-add-project",
       [`${WORKFLOWS.platform}#cluster-secrets`]: "platform",
       [`${WORKFLOWS.platform}#runner-token`]: "platform",
       [`${WORKFLOWS.database}#migrate`]: "database",
@@ -386,6 +393,7 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
     expect(credentialJobs.map(([id]) => id)).toEqual([
       "plan",
       "apply",
+      "add-only-apply",
       "cluster-secrets",
       "runner-token",
     ]);
@@ -460,19 +468,31 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
       "render",
       "plan",
       "apply",
+      "add-only-apply",
       "cluster-secrets",
       "runner-token",
     ]);
-    // The one job output is whether the plan found a change.
+    // The job outputs: the project list's commit, whether the plan found a change, and the
+    // add-only check's answer and projects (D-378). None is read from the cluster.
     const outputs = Object.fromEntries(
       Object.entries(wf.jobs)
         .filter(([, job]) => job.outputs !== undefined)
         .map(([id, job]) => [id, job.outputs]),
     );
-    expect(outputs).toEqual({ plan: { changed: "${{ steps.diff.outputs.changed }}" } });
+    expect(outputs).toEqual({
+      render: { projects_commit: "${{ steps.projects.outputs.commit }}" },
+      plan: {
+        changed: "${{ steps.diff.outputs.changed }}",
+        add_only: "${{ steps.add-only.outputs.add_only }}",
+        add_only_projects: "${{ steps.add-only.outputs.projects }}",
+      },
+    });
     expect(wf.jobs.render?.needs).toBeUndefined();
     expect(wf.jobs.plan?.needs).toBe("render");
     expect(wf.jobs.apply?.needs).toBe("plan");
+    expect(wf.jobs["add-only-apply"]?.needs).toEqual(["render", "plan"]);
+    // What the add-only check writes: the projects, never an address.
+    expect(script("platform-add-only.sh")).not.toMatch(/GITHUB_ENV|kubernetesApi/);
     // The swap writes no output, environment or summary, so the address stays in its own step.
     expect(script("api-server-address.sh")).not.toMatch(
       /GITHUB_OUTPUT|GITHUB_ENV|GITHUB_STEP_SUMMARY/,
@@ -505,7 +525,7 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
 
   it("puts the address in right after the credential in each job that diffs or applies, in that job's own copy only", () => {
     const manifests = '"$RUNNER_TEMP/render/manifests.json"';
-    for (const id of ["plan", "apply"]) {
+    for (const id of ["plan", "apply", "add-only-apply"]) {
       const steps = (wf.jobs[id] as Job).steps;
       const credential = steps.findIndex((s) =>
         s.run?.includes("cluster-credential.sh"),
@@ -537,7 +557,11 @@ describe("the platform workflow (unit: D-339, D-340)", () => {
     const job = wf.jobs["cluster-secrets"] as Job;
     expect(job.if).toContain("github.event_name == 'workflow_dispatch'");
     expect(job.if).toContain("inputs.cluster_secrets");
-    expect(job.needs).toEqual(["plan", "apply"]);
+    // After whichever apply ran, the reviewed one or the add-only one (D-378).
+    expect(job.needs).toEqual(["plan", "apply", "add-only-apply"]);
+    expect(job.if).toContain(
+      "(needs.add-only-apply.result == 'success' || needs.add-only-apply.result == 'skipped')",
+    );
   });
 
   it("names the factory stack's cluster", () => {
@@ -649,6 +673,8 @@ describe("the project list at one commit per run (unit: D-377, D-442, ADR 0118 a
     expect(plan.outputs).toEqual({
       changes: "${{ steps.plan.outputs.changes }}",
       projects_commit: "${{ steps.projects.outputs.commit }}",
+      add_only: "${{ steps.add-only.outputs.add_only }}",
+      add_only_projects: "${{ steps.add-only.outputs.projects }}",
     });
     const apply = infra.jobs.apply as Job;
     const { step, before } = settingsCheckout(apply);
@@ -674,6 +700,232 @@ describe("the project list at one commit per run (unit: D-377, D-442, ADR 0118 a
     expect(resolve).toContain('echo "commit=$head" >>"$GITHUB_OUTPUT"');
     expect(resolve).toContain("GITHUB_STEP_SUMMARY");
     expect(resolve).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|secrets\.|curl|gh /);
+  });
+});
+
+describe("the add-only applies (unit: D-378, D-444, ADR 0118 appendix B, O-158)", () => {
+  const platform = workflow(WORKFLOWS.platform);
+  const infra = workflow(WORKFLOWS.infra);
+  const cases = [
+    { key: "platform", wf: platform, changed: "changed", reviewed: "platform" },
+    { key: "infra", wf: infra, changed: "changes", reviewed: "infra" },
+  ] as const;
+  /** The org and repository secrets of D-361: identifiers every environment reads the same way. */
+  const IDENTIFIERS = new Set(JOB_LEVEL_IDENTIFIERS);
+  const secretsOf = (job: Job) =>
+    [
+      ...new Set(
+        [...JSON.stringify(job).matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]),
+      ),
+    ]
+      .filter((name) => !IDENTIFIERS.has(name as string))
+      .sort();
+  /** A step as it runs, without its name: the add-only job may name a shared step its own way. */
+  const unnamed = (step: Step): Step => ({ ...step, name: undefined });
+
+  it("names each add-only job, its environment and its workflow file as the daily check reads them", () => {
+    for (const { key, wf } of cases) {
+      const job = wf.jobs["add-only-apply"] as Job;
+      const spec = ADD_ONLY_WORKFLOWS[key];
+      expect(job.name, key).toBe(
+        `${spec.job} (\${{ needs.plan.outputs.add_only_projects }})`,
+      );
+      expect(job.environment, key).toBe(spec.environment);
+      expect(join(".github/workflows", spec.file), key).toBe(WORKFLOWS[key]);
+    }
+  });
+
+  it("runs the reviewed apply only when the plan is not add-only, and the add-only apply only when it is, from main, when the plan has changes", () => {
+    for (const { key, wf, changed, reviewed } of cases) {
+      const apply = wf.jobs.apply as Job;
+      const addOnly = wf.jobs["add-only-apply"] as Job;
+      expect(apply.environment, key).toBe(reviewed);
+      expect(apply.if, key).toBe(
+        `github.ref == 'refs/heads/main' && needs.plan.outputs.${changed} == 'true' && needs.plan.outputs.add_only != 'true'`,
+      );
+      expect(addOnly.if, key).toBe(
+        `github.ref == 'refs/heads/main' && needs.plan.outputs.${changed} == 'true' && needs.plan.outputs.add_only == 'true'`,
+      );
+      // An empty or missing answer is not 'true': it goes to the reviewed apply (fail closed).
+      expect(addOnly.if, key).not.toMatch(/always\(\)|!cancelled\(\)|failure\(\)/);
+    }
+    expect(platform.jobs["add-only-apply"]?.needs).toEqual(["render", "plan"]);
+    expect(infra.jobs["add-only-apply"]?.needs).toBe("plan");
+  });
+
+  it("sets add_only true only when the plan job's check exits 0, and false on a refusal or an error", () => {
+    for (const { key, wf } of cases) {
+      const plan = wf.jobs.plan as Job;
+      const check = plan.steps.find((s) => s.id === "add-only") as Step;
+      const script = key === "platform" ? "platform-add-only.sh" : "infra-add-only.sh";
+      expect(check.if, key).toBe(
+        key === "platform"
+          ? "steps.diff.outputs.changed == 'true'"
+          : "steps.plan.outputs.changes == 'true'",
+      );
+      const run = check.run ?? "";
+      expect(run, key).toContain(`.github/scripts/${script}`);
+      expect(run, key).toContain("|| status=$?");
+      expect(run, key).toMatch(
+        /if \[ "\$status" -eq 0 \]; then\n\s+echo "add_only=true" >>"\$GITHUB_OUTPUT"/,
+      );
+      expect(run.match(/add_only=true/g), key).toHaveLength(1);
+      expect(run, key).toContain('echo "add_only=false" >>"$GITHUB_OUTPUT"');
+      // The check comes after the plan it reads.
+      const steps = plan.steps.map((s) => s.id);
+      expect(steps.indexOf("add-only"), key).toBe(
+        steps.indexOf(key === "platform" ? "diff" : "plan") + 1,
+      );
+    }
+  });
+
+  it("lists the candidates in the render job, with Node's built-ins only, and keeps them with the rendered objects", () => {
+    const render = platform.jobs.render as Job;
+    const list = render.steps.find((s) => s.run?.includes("add-only.mjs candidates"));
+    expect(list?.run).toContain(
+      'node .github/scripts/add-only.mjs candidates "$SETTINGS_FILE" "$PROJECTS_DIR" >"$RUNNER_TEMP/render/candidates.json"',
+    );
+    const upload = render.steps.find((s) =>
+      s.uses?.startsWith("actions/upload-artifact@"),
+    );
+    expect(upload?.with?.path).toBe(
+      "${{ runner.temp }}/render/manifests.json\n${{ runner.temp }}/render/candidates.json\n",
+    );
+    const imports = [
+      ...script("add-only.mjs").matchAll(/^import .* from "([^"]+)";$/gm),
+    ].map((m) => m[1]);
+    expect(imports).toEqual(["node:fs", "node:path", "node:url"]);
+    expect(script("add-only.mjs")).not.toMatch(
+      /\bimport\(|require\(|child_process|fetch\(/,
+    );
+  });
+
+  it("applies exactly what the check read, after checking again: the rendered objects, or the saved plan, never a new plan", () => {
+    const platformJob = platform.jobs["add-only-apply"] as Job;
+    const infraJob = infra.jobs["add-only-apply"] as Job;
+    const recheck = (job: Job) =>
+      job.steps.findIndex((s) => s.run?.includes("add-only.sh") === true);
+    const applyAt = (job: Job, text: string) =>
+      job.steps.findIndex((s) => s.run?.includes(text) === true);
+    // Platform: the render's artifact, checked again with this job's own credential.
+    expect(
+      platformJob.steps.find((s) => s.uses?.startsWith("actions/download-artifact@"))
+        ?.with,
+    ).toEqual({ name: "platform-manifests", path: "${{ runner.temp }}/render" });
+    expect(recheck(platformJob)).toBeGreaterThan(
+      platformJob.steps.findIndex((s) => s.run?.includes("api-server-address.sh")),
+    );
+    expect(recheck(platformJob)).toBe(
+      applyAt(platformJob, "kubectl apply --server-side") - 1,
+    );
+    // Infra: the saved plan, checked again, then applied as it is.
+    expect(
+      infraJob.steps.find((s) => s.uses?.startsWith("actions/download-artifact@"))
+        ?.with,
+    ).toEqual({ name: "infra-plan", path: "infra/stacks/factory" });
+    expect(recheck(infraJob)).toBe(applyAt(infraJob, "apply -input=false") - 1);
+    for (const job of [platformJob, infraJob]) {
+      const step = job.steps[recheck(job)] as Step;
+      expect(step.env?.EXPECTED_PROJECTS).toBe(
+        "${{ needs.plan.outputs.add_only_projects }}",
+      );
+      // A refusal fails the step, so nothing after it runs.
+      expect(step.run).toMatch(
+        /^set -euo pipefail\n\.github\/scripts\/(platform|infra)-add-only\.sh/,
+      );
+      expect(step.if).toBeUndefined();
+      const runs = job.steps.map((s) => s.run ?? "").join("\n");
+      expect(runs).not.toMatch(/tofu[^\n]* plan |render\.ts|-auto-approve/);
+    }
+  });
+
+  it("shares every step of the reviewed apply, adding only the second check, Node for it and the summary line", () => {
+    for (const { key, wf } of cases) {
+      const reviewed = (wf.jobs.apply as Job).steps.map(unnamed);
+      const addOnly = (wf.jobs["add-only-apply"] as Job).steps;
+      const added = addOnly.filter(
+        (s) =>
+          s.run?.includes("add-only.sh") === true ||
+          s.run?.includes("Add-only: applied without approval (D-378)") === true ||
+          (key === "platform" && s.uses?.startsWith("actions/setup-node@") === true),
+      );
+      expect(added, key).toHaveLength(key === "platform" ? 3 : 2);
+      expect(addOnly.filter((s) => !added.includes(s)).map(unnamed), key).toEqual(
+        reviewed,
+      );
+      const job = wf.jobs["add-only-apply"] as Job;
+      const apply = wf.jobs.apply as Job;
+      expect(job["timeout-minutes"], key).toBe(apply["timeout-minutes"]);
+      expect(job.env, key).toEqual(apply.env);
+      expect(job.permissions, key).toEqual({ contents: "read" });
+    }
+  });
+
+  it("reads the same secrets as the reviewed apply, by the same names (D-444), and the runbook lists them for each environment", () => {
+    expect(secretsOf(platform.jobs["add-only-apply"] as Job)).toEqual([
+      "DIGITALOCEAN_TOKEN",
+    ]);
+    expect(secretsOf(infra.jobs["add-only-apply"] as Job)).toEqual([
+      "CLOUDFLARE_API_TOKEN",
+      "DIGITALOCEAN_TOKEN",
+      "R2_STATE_ACCESS_KEY_ID",
+      "R2_STATE_SECRET_ACCESS_KEY",
+      "STATE_ENCRYPTION_PASSPHRASE",
+    ]);
+    for (const { key, wf } of cases) {
+      expect(secretsOf(wf.jobs["add-only-apply"] as Job), key).toEqual(
+        secretsOf(wf.jobs.apply as Job),
+      );
+    }
+    const runbook = text("docs/runbooks/first-hosting.md");
+    const step = runbook.slice(runbook.indexOf("## 19. The add-only environments"));
+    const rows = [
+      ...step.matchAll(
+        /^ *\| `((?:platform|infra)-add-project)` +\| `([A-Z0-9_]+)` +\|/gm,
+      ),
+    ];
+    const listed = (environment: string) =>
+      rows
+        .filter((m) => m[1] === environment)
+        .map((m) => m[2])
+        .sort();
+    expect(listed("platform-add-project")).toEqual(
+      secretsOf(platform.jobs["add-only-apply"] as Job),
+    );
+    expect(listed("infra-add-project")).toEqual(
+      secretsOf(infra.jobs["add-only-apply"] as Job),
+    );
+    expect(step).toContain("`RECEIVER_HOSTNAME`");
+  });
+
+  it("starts the infra plan when its add-only scripts change, and keeps them privileged and executable", () => {
+    expect(infra.on.push?.paths).toEqual(
+      expect.arrayContaining([
+        ".github/scripts/infra-add-only.sh",
+        ".github/scripts/add-only.mjs",
+      ]),
+    );
+    expect(platform.on.push?.paths).toContain(".github/scripts/**");
+    const patterns = DEFAULT_PRIVILEGED_PATHS.map(globToRegExp);
+    for (const path of [
+      ".github/scripts/add-only.mjs",
+      ".github/scripts/platform-add-only.sh",
+      ".github/scripts/infra-add-only.sh",
+    ]) {
+      expect(
+        patterns.some((re) => re.test(path)),
+        path,
+      ).toBe(true);
+    }
+    // The scripts call Node only on the rule's own file, next to them.
+    for (const name of ["platform-add-only.sh", "infra-add-only.sh"]) {
+      const nodeLines = script(name)
+        .split("\n")
+        .filter((l) => /\bnode\b/.test(l) && !l.trim().startsWith("#"));
+      expect(nodeLines.length, name).toBeGreaterThan(0);
+      for (const line of nodeLines)
+        expect(line, name).toContain('node "$here/add-only.mjs"');
+    }
   });
 });
 
@@ -879,7 +1131,7 @@ describe("the runner token job (unit: D-352, O-110, runbook step 8)", () => {
 
   it("runs only when started by hand on main with runner_token, after the plan and the apply, in the environment Didi approves", () => {
     expect(job.environment).toBe("platform");
-    expect(job.needs).toEqual(["plan", "apply"]);
+    expect(job.needs).toEqual(["plan", "apply", "add-only-apply"]);
     // The same conditions as the cluster Secrets job, with its own box.
     expect(job.if).toBe(
       (wf.jobs["cluster-secrets"] as Job).if?.replace(

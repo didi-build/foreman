@@ -161,6 +161,8 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
       stalledNote: null,
       // No Bootstrap port given: project setup is not read (O-114).
       projectSetup: null,
+      // No add-only applies port given: they are not read (O-158).
+      unreviewedApplies: null,
       // No weekly model test Job yet (O-156).
       modelTest: {
         latest: null,

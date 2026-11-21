@@ -14,10 +14,19 @@ name: Infra apply
 #   summary with ids and the receiver's host name replaced by placeholders (the repository is
 #   public), and saves the encrypted plan file as an artifact kept for one day. The summary names
 #   each project's DNS record and Workers route that changes; a project's host name is public.
+#   When the plan has changes, it also runs the add-only check on the saved plan
+#   (.github/scripts/infra-add-only.sh, D-378, ADR 0118 appendix B) and sets `add_only`: true
+#   only when the plan only creates the DNS record and the Workers route of one to three new
+#   standard-size projects, false on anything else, an error or any doubt.
 # - `apply` runs in the environment `infra` (main only, Didi the required reviewer), only when the
-#   plan has changes, checks the settings repository out at the plan's commit, since OpenTofu reads
-#   the stack's files again when it applies, and applies the saved plan file. OpenTofu refuses it
-#   if the state moved on.
+#   plan has changes that are not add-only, checks the settings repository out at the plan's
+#   commit, since OpenTofu reads the stack's files again when it applies, and applies the saved
+#   plan file. OpenTofu refuses it if the state moved on.
+# - `add-only-apply` runs in the environment `infra-add-project` (main only, no reviewer, D-444),
+#   only when the plan has changes and is add-only: the reviewed `apply` job's steps, with the
+#   add-only check run again on the same saved plan just before it applies that exact plan, and a
+#   summary line. Its name carries the projects, which the daily check reads from GitHub to list
+#   each apply made without approval.
 #
 # The stack reads its project list from the settings repository's checkout (D-357, O-112). A
 # change there starts no run in this repository: after adding a project's file, start this
@@ -40,6 +49,8 @@ on:
       - ".github/scripts/redact.sh"
       - ".github/scripts/infra-plan-summary.sh"
       - ".github/scripts/projects-commit.sh"
+      - ".github/scripts/infra-add-only.sh"
+      - ".github/scripts/add-only.mjs"
   workflow_dispatch:
     inputs:
       projects_commit:
@@ -75,6 +86,8 @@ jobs:
     outputs:
       changes: ${{ steps.plan.outputs.changes }}
       projects_commit: ${{ steps.projects.outputs.commit }}
+      add_only: ${{ steps.add-only.outputs.add_only }}
+      add_only_projects: ${{ steps.add-only.outputs.projects }}
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
@@ -174,6 +187,29 @@ jobs:
             echo "changes=false" >>"$GITHUB_OUTPUT"
             rm -f "$STACK/plan.out"
           fi
+      - name: Check whether the plan only adds projects (D-378)
+        id: add-only
+        if: steps.plan.outputs.changes == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # Fails closed (ADR 0118 appendix B): only the check's exit 0 makes the run add-only. A
+          # refusal, an error or any doubt sends the apply to `tofu-apply`, which waits for Didi.
+          status=0
+          .github/scripts/infra-add-only.sh >"$RUNNER_TEMP/add-only.md" || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "add_only=true" >>"$GITHUB_OUTPUT"
+            echo "So \`tofu-apply-add-only\` applies this saved plan without approval, in the environment \`infra-add-project\`, after checking it again." >>"$RUNNER_TEMP/add-only.md"
+          else
+            echo "add_only=false" >>"$GITHUB_OUTPUT"
+            if [ ! -s "$RUNNER_TEMP/add-only.md" ]; then
+              printf '%s\n\n%s\n' "## Add-only check (D-378)" "**Not add-only:** the check stopped with an error. The reviewed apply waits for Didi's approval, as for any other change." >"$RUNNER_TEMP/add-only.md"
+            fi
+          fi
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/add-only.md"
       - name: Save the encrypted plan for the apply
         if: steps.plan.outputs.changes == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -186,7 +222,7 @@ jobs:
   apply:
     name: tofu-apply
     needs: plan
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changes == 'true'
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changes == 'true' && needs.plan.outputs.add_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: infra
@@ -270,6 +306,124 @@ jobs:
                 node scripts/find-secret-values.mjs /dev/stdin
           fi
           exit "$code"
+      - name: Remove the plan file
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$STACK/plan.out"
+
+  # The add-only apply (D-378, D-444): the reviewed `apply` job's steps, with the add-only check
+  # run again on the same saved plan just before the apply, and a summary line. A test keeps the
+  # shared steps equal.
+  add-only-apply:
+    name: tofu-apply-add-only (${{ needs.plan.outputs.add_only_projects }})
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.changes == 'true' && needs.plan.outputs.add_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: infra-add-project
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      RECEIVER_HOSTNAME: ${{ vars.RECEIVER_HOSTNAME }}
+      STATE_BUCKET: ${{ secrets.STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The same commit the plan read: OpenTofu evaluates the stack's files again at the apply.
+      - name: Check out the project list at the plan's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.PROJECTS_REPOSITORY }}
+          ref: ${{ needs.plan.outputs.projects_commit }}
+          path: ${{ env.PROJECTS_DIR }}
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.2
+          tofu_wrapper: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: tofu init against the R2 state
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          .github/scripts/tofu-init.sh
+      - name: Fetch the plan the add-only check read
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: infra-plan
+          path: infra/stacks/factory
+      # The same saved plan, checked again: this job applies it only if it is still add-only.
+      - name: Check the saved plan again, that it only adds the projects
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+          EXPECTED_PROJECTS: ${{ needs.plan.outputs.add_only_projects }}
+        run: |
+          set -euo pipefail
+          .github/scripts/infra-add-only.sh | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: tofu apply the saved plan
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_STATE_SECRET_ACCESS_KEY }}
+          TF_VAR_state_encryption_passphrase: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/apply"
+          mkdir -p "$work"
+          set +e
+          tofu -chdir="$STACK" apply -input=false -no-color -lock-timeout=5m plan.out >"$work/apply.log" 2>&1
+          code=$?
+          set -e
+          names="DIGITALOCEAN_TOKEN,CLOUDFLARE_API_TOKEN,AWS_SECRET_ACCESS_KEY,TF_VAR_state_encryption_passphrase"
+          if RECEIVER_TUNNEL_TOKEN="$(tofu -chdir="$STACK" output -raw receiver_tunnel_token 2>/dev/null)" &&
+            [ -n "$RECEIVER_TUNNEL_TOKEN" ]; then
+            echo "::add-mask::$RECEIVER_TUNNEL_TOKEN"
+            export RECEIVER_TUNNEL_TOKEN
+            names="$names,RECEIVER_TUNNEL_TOKEN"
+          fi
+          # Nothing of the apply is published until its output passes the scan.
+          SECRET_ENV_NAMES="$names" node scripts/find-secret-values.mjs "$work/apply.log"
+          .github/scripts/redact.sh <"$work/apply.log" >"$work/apply-redacted.log"
+          cat "$work/apply-redacted.log"
+          {
+            echo "## Infrastructure apply"
+            echo
+            echo '````text'
+            cat "$work/apply-redacted.log"
+            echo '````'
+          } >>"$GITHUB_STEP_SUMMARY"
+          # The state holds the tunnel token and the provider's admin credential by design (ADR
+          # 0110 rule 3); scan it for every other secret value, through a pipe, never a file.
+          if [ "$code" -eq 0 ]; then
+            tofu -chdir="$STACK" state pull |
+              SECRET_ENV_NAMES="DIGITALOCEAN_TOKEN,CLOUDFLARE_API_TOKEN,AWS_SECRET_ACCESS_KEY,TF_VAR_state_encryption_passphrase" \
+                node scripts/find-secret-values.mjs /dev/stdin
+          fi
+          exit "$code"
+      - name: Say in the summary that this applied without approval
+        env:
+          PROJECT_LIST_COMMIT: ${{ needs.plan.outputs.projects_commit }}
+          ADD_ONLY_PROJECTS: ${{ needs.plan.outputs.add_only_projects }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Add-only: applied without approval (D-378)"
+            echo
+            echo "The plan only created new standard-size projects' DNS records and Workers routes, so this job applied it in the environment \`infra-add-project\`, which has no reviewer. Project list \`didi-build/foreman-projects\` at \`${PROJECT_LIST_COMMIT}\`; new projects \`${ADD_ONLY_PROJECTS}\`. The next daily check lists this apply."
+            echo
+          } >>"$GITHUB_STEP_SUMMARY"
       - name: Remove the plan file
         if: always()
         run: |

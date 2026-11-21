@@ -1,0 +1,193 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.2",
+  "resource_changes": [
+    {
+      "address": "module.cluster.digitalocean_kubernetes_cluster.this",
+      "module_address": "module.cluster",
+      "mode": "managed",
+      "type": "digitalocean_kubernetes_cluster",
+      "name": "this",
+      "provider_name": "registry.opentofu.org/digitalocean/digitalocean",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "name": "foreman"
+        },
+        "after": {
+          "name": "foreman"
+        }
+      }
+    },
+    {
+      "address": "module.cluster.digitalocean_kubernetes_node_pool.agents",
+      "module_address": "module.cluster",
+      "mode": "managed",
+      "type": "digitalocean_kubernetes_node_pool",
+      "name": "agents",
+      "provider_name": "registry.opentofu.org/digitalocean/digitalocean",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "name": "agents"
+        },
+        "after": {
+          "name": "agents"
+        }
+      }
+    },
+    {
+      "address": "module.cluster.digitalocean_firewall.workers",
+      "module_address": "module.cluster",
+      "mode": "managed",
+      "type": "digitalocean_firewall",
+      "name": "workers",
+      "provider_name": "registry.opentofu.org/digitalocean/digitalocean",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "name": "foreman-workers"
+        },
+        "after": {
+          "name": "foreman-workers"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_zero_trust_tunnel_cloudflared.receiver[0]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_zero_trust_tunnel_cloudflared",
+      "name": "receiver",
+      "index": 0,
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "name": "foreman-receiver"
+        },
+        "after": {
+          "name": "foreman-receiver"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_dns_record.project[\"rehearsal.didi.build\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_dns_record",
+      "name": "project",
+      "index": "rehearsal.didi.build",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "comment": "A project's staging name, served by its Worker route (D-357)",
+          "content": "100::",
+          "name": "rehearsal.didi.build",
+          "proxied": true,
+          "ttl": 1,
+          "type": "AAAA",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        },
+        "after": {
+          "comment": "A project's staging name, served by its Worker route (D-357)",
+          "content": "100::",
+          "name": "rehearsal.didi.build",
+          "proxied": true,
+          "ttl": 1,
+          "type": "AAAA",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_workers_route.project[\"rehearsal.didi.build\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_workers_route",
+      "name": "project",
+      "index": "rehearsal.didi.build",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["no-op"],
+        "before": {
+          "pattern": "rehearsal.didi.build/*",
+          "script": "rehearsal-staging",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        },
+        "after": {
+          "pattern": "rehearsal.didi.build/*",
+          "script": "rehearsal-staging",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_dns_record.project[\"garden-notes.didi.build\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_dns_record",
+      "name": "project",
+      "index": "garden-notes.didi.build",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "comment": "A project's staging name, served by its Worker route (D-357)",
+          "content": "100::",
+          "name": "garden-notes.didi.build",
+          "proxied": true,
+          "ttl": 1,
+          "type": "AAAA",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    },
+    {
+      "address": "module.edge.cloudflare_workers_route.project[\"garden-notes.didi.build\"]",
+      "module_address": "module.edge",
+      "mode": "managed",
+      "type": "cloudflare_workers_route",
+      "name": "project",
+      "index": "garden-notes.didi.build",
+      "provider_name": "registry.opentofu.org/cloudflare/cloudflare",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "pattern": "garden-notes.didi.build/*",
+          "script": "garden-notes-staging",
+          "zone_id": "fedcba9876543210fedcba9876543210"
+        }
+      }
+    }
+  ],
+  "output_changes": {
+    "cluster_id": {
+      "actions": ["no-op"],
+      "before": "made-up-cluster-id",
+      "after": "made-up-cluster-id",
+      "after_unknown": false,
+      "before_sensitive": false,
+      "after_sensitive": false
+    },
+    "cluster_endpoint": {
+      "actions": ["no-op"],
+      "before": "https://192.0.2.10",
+      "after": "https://192.0.2.10",
+      "after_unknown": false,
+      "before_sensitive": true,
+      "after_sensitive": true
+    },
+    "receiver_tunnel_token": {
+      "actions": ["no-op"],
+      "before": "made-up-not-a-token",
+      "after": "made-up-not-a-token",
+      "after_unknown": false,
+      "before_sensitive": true,
+      "after_sensitive": true
+    }
+  }
+}
