@@ -27,6 +27,7 @@ import {
 import {
   compose,
   unbuiltStagingDeployCredentials,
+  windmillD1Credentials,
   windmillGitHubAppTokens,
   windmillStagingDeployCredentials,
   type RunToStart,
@@ -393,6 +394,65 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     } finally {
       await deps.close();
     }
+  });
+
+  it("sets a project up only with the D1 token stored, refusing before anything is sent until then (D-445, O-160)", async () => {
+    const { env, secretsRead } = fakeEnvironment(
+      {},
+      {
+        [SECRET_PATHS.cloudflareAccountId]: "0".repeat(32),
+        [SECRET_PATHS.stagingDeployToken]: "fake-token-for-tests-only-0123456789",
+        [SECRET_PATHS.d1Token]: null,
+      },
+    );
+    const deps = await compose(env);
+    try {
+      expect(
+        await deps.stagingTarget.setUp({
+          slug: "demo",
+          displayName: "Demo",
+          purpose: "A made-up project.",
+        }),
+      ).toEqual({
+        outcome: "refused",
+        step: "database",
+        reason: "database_credential_unavailable",
+        text: "the D1 credential is not available",
+      });
+      // The setup read the D1 pair from Windmill, and reached no network.
+      expect(secretsRead).toEqual([
+        SECRET_PATHS.database,
+        SECRET_PATHS.cloudflareAccountId,
+        SECRET_PATHS.d1Token,
+      ]);
+      expect(fetched).toEqual([]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("reads the D1 token and the account id by path, each time, trimmed (D-445, O-160)", async () => {
+    const read: string[] = [];
+    const credentials = windmillD1Credentials({
+      async secret(path) {
+        read.push(path);
+        return path === SECRET_PATHS.cloudflareAccountId
+          ? `${"0".repeat(32)}\n`
+          : " fake-d1-token-for-tests-only-0123456789\n";
+      },
+    });
+    expect(await credentials.read()).toEqual({
+      accountId: "0".repeat(32),
+      token: "fake-d1-token-for-tests-only-0123456789",
+    });
+    await credentials.read();
+    expect(read).toEqual([
+      SECRET_PATHS.cloudflareAccountId,
+      SECRET_PATHS.d1Token,
+      SECRET_PATHS.cloudflareAccountId,
+      SECRET_PATHS.d1Token,
+    ]);
+    expect(SECRET_PATHS.d1Token).toBe("platform/cloudflare/d1-token");
   });
 
   it("reads the staging deploy token and account id by path once Didi stores them (O-116)", async () => {

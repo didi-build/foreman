@@ -1,9 +1,10 @@
 // A fake staging target and a fake of CI's builds for tests (O-116): the deploy port of the core
 // (`DeployTarget` over `StagingTarget`, named `cloudflare`, O-159) and the GitHub reads it deploys
 // from (`StagingBuilds`), in memory. The target records each deploy it is asked for and answers
-// what the test sets (a deploy by default); the builds hold runs and their `staging-site`
-// archives. No network, no Cloudflare and no GitHub.
-import type { DeployTarget } from "../../core/deploy-target.ts";
+// what the test sets (a deploy by default); it sets a project up once, as the real target finds
+// before it creates, and keeps the names of the secrets put, never a value (O-160). The builds
+// hold runs and their `staging-site` archives. No network, no Cloudflare and no GitHub.
+import type { DeployTarget, ProjectSetUpRequest } from "../../core/deploy-target.ts";
 import type {
   BuildRun,
   StagingBuilds,
@@ -20,20 +21,55 @@ export interface FakeStagingTarget extends DeployTarget {
   readonly deploys: { slug: string; commitSha: string; archiveBytes: number }[];
   /** What the next deploys answer, in order; a deploy of one file once it is empty. */
   readonly answers: (StagingUpload | "throw")[];
+  /** Each setup asked for, in order. */
+  readonly setUps: ProjectSetUpRequest[];
+  /** The secret names put on each project's staging product, by slug. Never a value. */
+  readonly secretNames: Map<string, Set<string>>;
 }
 
 export function createFakeStagingTarget(): FakeStagingTarget {
   const deploys: FakeStagingTarget["deploys"] = [];
   const answers: FakeStagingTarget["answers"] = [];
+  const setUps: ProjectSetUpRequest[] = [];
+  const secretNames = new Map<string, Set<string>>();
+  const setUpSlugs = new Set<string>();
   return {
     name: "cloudflare",
     deploys,
     answers,
+    setUps,
+    secretNames,
     async deploy({ project, commitSha, archive }) {
       deploys.push({ slug: project.slug, commitSha, archiveBytes: archive.length });
       const next = answers.shift();
       if (next === "throw") throw new Error("the fake staging target broke");
       return next ?? { outcome: "deployed", files: 1 };
+    },
+    async setUp(request) {
+      setUps.push({ ...request });
+      if (setUpSlugs.has(request.slug)) {
+        return {
+          outcome: request.dryRun ? "dry_run" : "set_up",
+          database: "found",
+          placeholder: "kept",
+        };
+      }
+      if (request.dryRun) {
+        return {
+          outcome: "dry_run",
+          database: "would_create",
+          placeholder: "would_upload",
+        };
+      }
+      setUpSlugs.add(request.slug);
+      return { outcome: "set_up", database: "created", placeholder: "uploaded" };
+    },
+    async putSecret(slug, name) {
+      secretNames.set(slug, (secretNames.get(slug) ?? new Set()).add(name));
+      return { outcome: "put", name };
+    },
+    async listSecretNames(slug) {
+      return { outcome: "listed", names: [...(secretNames.get(slug) ?? [])].sort() };
     },
   };
 }

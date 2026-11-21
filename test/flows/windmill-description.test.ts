@@ -205,7 +205,7 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     }
   });
 
-  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes, the three Didi stores for the database login and the staging deploy, and the GitHub Apps' keys and ids (D-352, D-368, D-370, O-110, O-116, O-125)", () => {
+  it("gives a Windmill path, in the flows' folder, only to the three values the runner-token job writes, the three Didi stores for the database login and the staging deploy, the D1 token, and the GitHub Apps' keys and ids (D-352, D-368, D-370, D-445, O-110, O-116, O-125, O-160)", () => {
     const withPath = [
       ...description.resources.secrets.map((s) => [s.path, s.windmill_path]),
       ...description.resources.values.map((v) => [v.name, v.windmill_path]),
@@ -217,6 +217,7 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
       [VALUE_NAMES.clusterCaCertificate]: `f/foreman/${VALUE_NAMES.clusterCaCertificate}`,
       [SECRET_PATHS.stagingDeployToken]: `f/foreman/${SECRET_PATHS.stagingDeployToken}`,
       [SECRET_PATHS.cloudflareAccountId]: `f/foreman/${SECRET_PATHS.cloudflareAccountId}`,
+      [SECRET_PATHS.d1Token]: `f/foreman/${SECRET_PATHS.d1Token}`,
       ...Object.fromEntries(
         [
           SECRET_PATHS.runnerAppPrivateKey,
@@ -233,6 +234,18 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
         ].map((path) => [path, `f/foreman/${path}`]),
       ),
     });
+  });
+
+  it("names the D1 token's one permission, that only a project's setup reads it, and its Windmill path (D-445, O-160)", () => {
+    const token = description.resources.secrets.find(
+      (s) => s.path === SECRET_PATHS.d1Token,
+    ) as { holds?: string; written_by?: string; windmill_path?: string } | undefined;
+    expect(SECRET_PATHS.d1Token).toBe("platform/cloudflare/d1-token");
+    expect(token?.windmill_path).toBe("f/foreman/platform/cloudflare/d1-token");
+    expect(token?.holds).toMatch(
+      /D1 Edit only, read only to set a project's staging database up/,
+    );
+    expect(token?.written_by).toMatch(/Didi, by hand \(2026-11-20, D-445\)/);
   });
 
   it("names the staging deploy token's one permission and where Didi puts it (D-353, O-116)", () => {

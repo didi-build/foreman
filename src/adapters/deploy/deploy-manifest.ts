@@ -47,6 +47,12 @@ export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 /** The bindings Foreman sets, which no secret may shadow. */
 export const RESERVED_BINDING_NAMES: readonly string[] = ["DB", "ASSETS"];
 
+/** A product secret's name: the rule above, and not a binding Foreman sets (also O-160's calls). */
+export const isProductSecretName = (name: unknown): name is string =>
+  typeof name === "string" &&
+  SECRET_NAME.test(name) &&
+  !RESERVED_BINDING_NAMES.includes(name);
+
 const FIELDS = ["schema", "compatibilityDate", "compatibilityFlags", "requiredSecrets"];
 
 /** The fixed text of each refusal. None quotes the file. */
@@ -120,9 +126,7 @@ export function parseDeployManifest(bytes: Uint8Array): DeployManifestResult {
     !isStringList(requiredSecrets) ||
     requiredSecrets.length > MAX_REQUIRED_SECRETS ||
     new Set(requiredSecrets).size !== requiredSecrets.length ||
-    !requiredSecrets.every(
-      (name) => SECRET_NAME.test(name) && !RESERVED_BINDING_NAMES.includes(name),
-    )
+    !requiredSecrets.every(isProductSecretName)
   ) {
     return { ok: false, reason: "manifest_secrets" };
   }
