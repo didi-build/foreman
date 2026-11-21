@@ -5,21 +5,24 @@
 // Worker gets only its metadata (the completion token and the asset config) and no module, byte
 // for byte as before slice 3; for a build in the new layout it also gets the module, with
 // `main_module`, the manifest's date and flags, `keep_bindings` for secrets and
-// `run_worker_first` for `/api`. Every refusal is fixed text and sends nothing more, a refused
-// file set sends nothing at all, and no request ever names a route, a custom domain, a zone, DNS,
-// D1 or a secret. Fake credentials only; no network.
+// `run_worker_first` for `/api`, and the project's `DB` inherited strictly (O-160). Every refusal
+// is fixed text and sends nothing more, a refused file set sends nothing at all, and no deploy
+// request ever names a route, a custom domain, a zone, DNS, D1 or a secret. The setup, the
+// placeholder and the secret calls (O-160) are in cloudflare-setup.test.ts. Fake credentials
+// only; no network.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { storedZip, type ZipFixtureEntry } from "../../../test/zip-fixture.ts";
+import { readDeployRefusal } from "../../core/guards/evidence.ts";
 import type { Project } from "../../core/store.ts";
 import {
-  ALLOWED_CALLS,
   assertAllowedCall,
   assetHash,
   CLOUDFLARE_REFUSALS,
+  D1_ALLOWED_CALLS,
   contentTypeOf,
   createCloudflareStagingTarget,
   STAGING_ASSET_CONFIG,
@@ -110,8 +113,17 @@ const credentials = (accountId = ACCOUNT, token = TOKEN) => ({
   read: async () => ({ accountId, token }),
 });
 
-/** Every request any test sent, to check none ever leaves the three upload calls. */
+/** Every request any test sent, to check none ever leaves the upload calls. */
 const everySent: CloudflareRequest[] = [];
+
+/** The D1 token's port: a deploy never reads it (O-160). */
+let d1Reads = 0;
+const d1Credentials = {
+  read: async () => {
+    d1Reads++;
+    return { accountId: ACCOUNT, token: "fake-d1-token-for-tests-0123456789" };
+  },
+};
 
 async function deploy(
   answers: (CloudflareAnswer | "throw")[],
@@ -120,6 +132,7 @@ async function deploy(
   const cloudflare = fakeCloudflare(answers);
   const target = createCloudflareStagingTarget({
     credentials: options.creds ?? credentials(),
+    d1Credentials,
     http: cloudflare.http,
   });
   const result = await target.deploy({
@@ -134,6 +147,8 @@ async function deploy(
 const SESSION_PATH = `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/assets-upload-session`;
 const UPLOAD_PATH = `/accounts/${ACCOUNT}/workers/assets/upload?base64=true`;
 const WORKER_PATH = `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging`;
+/** The upload of a build with a Worker, whose `DB` must be carried over (O-160). */
+const STRICT_WORKER_PATH = `${WORKER_PATH}?bindings_inherit=strict`;
 
 describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116)", () => {
   it("sends the session, each bucket and the Worker, exactly as Cloudflare's docs give them", async () => {
@@ -438,7 +453,7 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
     expect(sent.map((r) => [r.method, r.path, r.bearer])).toEqual([
       ["POST", SESSION_PATH, TOKEN],
       ["POST", UPLOAD_PATH, SESSION_JWT],
-      ["PUT", WORKER_PATH, TOKEN],
+      ["PUT", STRICT_WORKER_PATH, TOKEN],
     ]);
     // The site is assets/ only: the manifest, the module and the migrations are no assets.
     expect(sent[0]?.json).toEqual({
@@ -447,13 +462,14 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
         "/index.html": { hash: HASHES.index, size: Buffer.byteLength(INDEX) },
       },
     });
-    // The Worker: the metadata, then the module as an ES module part.
+    // The Worker: the metadata, then the module as an ES module part, with `DB` carried over
+    // from the Worker's latest version and never bound by id (O-160).
     expect(sent[2]?.form).toEqual([
       {
         name: "metadata",
         value: JSON.stringify({
           main_module: "index.js",
-          bindings: [],
+          bindings: [{ type: "inherit", name: "DB" }],
           compatibility_date: "2026-11-02",
           compatibility_flags: ["nodejs_compat"],
           keep_bindings: ["secret_text", "secret_key"],
@@ -479,11 +495,67 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
     expect(STAGING_KEEP_BINDINGS).toEqual(["secret_text", "secret_key"]);
     expect(STAGING_RUN_WORKER_FIRST).toEqual(["/api/*"]);
     // Nothing of the build reaches Cloudflare but its assets and its module: no secret value, no
-    // migration and no binding.
+    // migration and no binding from the build; the only binding is Foreman's inherited `DB`.
     const everything = JSON.stringify(sent);
     expect(everything).not.toContain("CREATE TABLE");
     expect(everything).not.toContain("foreman-deploy");
-    expect(metadata.bindings).toEqual([]);
+    expect(metadata.bindings).toEqual([{ type: "inherit", name: "DB" }]);
+    expect(d1Reads).toBe(0);
+  });
+
+  it("fails loudly when the Worker has no DB to carry over, and refuses other codes as before (O-160)", async () => {
+    // "the upload will fail with error 10057 if any inherit type bindings cannot be resolved"
+    // (Upload Worker): a project the New project form did not set up.
+    const missing = await deploy(
+      [
+        ok({ jwt: SESSION_JWT, buckets: [] }),
+        { status: 400, body: { success: false, errors: [{ code: 10057 }] } },
+      ],
+      { archive: WORKER_ARCHIVE },
+    );
+    expect(missing.result).toEqual({
+      outcome: "refused",
+      cause: "infrastructure",
+      reason: "database_binding_missing",
+      text: CLOUDFLARE_REFUSALS.database_binding_missing,
+      detail: { call: "worker_upload", status: 400, codes: [10057] },
+    });
+    expect(missing.sent.map((r) => r.path)).toEqual([SESSION_PATH, STRICT_WORKER_PATH]);
+    // The core records and shows it as any refused deploy: a short code and plain text.
+    expect(
+      readDeployRefusal({
+        reason: "database_binding_missing",
+        text: CLOUDFLARE_REFUSALS.database_binding_missing,
+      }),
+    ).not.toBeNull();
+    // Without the strict query nothing is inherited, so the old layout never reads 10057 so.
+    const old = await deploy([
+      ok({ jwt: SESSION_JWT, buckets: [] }),
+      { status: 400, body: { success: false, errors: [{ code: 10057 }] } },
+    ]);
+    expect(old.result).toMatchObject({ reason: "cloudflare_refused" });
+    expect(old.sent.map((r) => r.path)).toEqual([SESSION_PATH, WORKER_PATH]);
+    expect(d1Reads).toBe(0);
+  });
+
+  it("sends the build's metadata with only the bindings it is given (O-160)", () => {
+    const code = {
+      module: MODULE,
+      manifest: {
+        compatibilityDate: "2026-11-02",
+        compatibilityFlags: [],
+        requiredSecrets: [],
+      },
+      migrations: [],
+    };
+    expect(workerMetadata("jwt", code)).toMatchObject({ bindings: [] });
+    expect(
+      workerMetadata("jwt", code, [{ type: "inherit", name: "DB" }]),
+    ).toMatchObject({ bindings: [{ type: "inherit", name: "DB" }] });
+    // Without a module, no binding is ever sent.
+    expect(workerMetadata("jwt", undefined, [{ type: "inherit", name: "DB" }])).toEqual(
+      workerMetadata("jwt"),
+    );
   });
 
   it("keeps today's metadata for a build without a module, and sets the module's only with one", () => {
@@ -537,10 +609,10 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
       text: CLOUDFLARE_REFUSALS.cloudflare_refused,
       detail: { call: "worker_upload", status: 400, codes: [10021] },
     });
-    expect(sent.map((r) => r.path)).toEqual([SESSION_PATH, WORKER_PATH]);
+    expect(sent.map((r) => r.path)).toEqual([SESSION_PATH, STRICT_WORKER_PATH]);
   });
 
-  it("never sends a request outside the three upload calls: no route, custom domain, zone, DNS, D1 or secret", () => {
+  it("never sends a deploy request outside the upload calls: no route, custom domain, zone, DNS, D1 or secret", () => {
     expect(everySent.length).toBeGreaterThan(10);
     // Uploads with a module were among them.
     expect(
@@ -548,10 +620,19 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
     ).toBe(true);
     for (const request of everySent) {
       expect(() => assertAllowedCall(request), request.path).not.toThrow();
-      expect(request.path).not.toMatch(
-        /routes|domains|zones|dns|subdomain|d1|secrets|\?bindings/,
+      // The D1 token's allow-list admits none of them.
+      expect(() => assertAllowedCall(request, D1_ALLOWED_CALLS), request.path).toThrow(
+        /may not send/,
       );
+      expect(request.method, request.path).not.toBe("GET");
+      expect(request.path).not.toMatch(/routes|domains|zones|dns|subdomain|d1|secrets/);
+      // The only query a deploy adds is the strict inherit, and only with a module.
+      if (request.path.includes("?bindings")) {
+        expect(request.path).toBe(STRICT_WORKER_PATH);
+        expect(request.form?.map((part) => part.name)).toContain(WORKER_MODULE_PART);
+      }
     }
+    expect(d1Reads).toBe(0);
     const base = { bearer: TOKEN, json: {} };
     for (const [method, path] of [
       ["PUT", `/accounts/${ACCOUNT}/workers/domains`],
@@ -564,13 +645,13 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
       ["PUT", SESSION_PATH],
       ["POST", WORKER_PATH],
       ["POST", `/accounts/${ACCOUNT}/workers/assets/upload`],
-      // Slice 4 and later (ADR 0118 appendix F): none of these is allowed in slice 3.
-      ["PUT", `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/secrets`],
-      ["GET", `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/secrets`],
+      // A script read, other queries and the D1 calls: none with this token (O-160).
       ["GET", WORKER_PATH],
-      ["PUT", `${WORKER_PATH}?bindings_inherit=strict`],
+      ["GET", `${WORKER_PATH}/settings`],
+      ["PUT", `${WORKER_PATH}?bindings_inherit=strict&excludeScript=true`],
+      ["PUT", `${WORKER_PATH}?bindings_inherit=lax`],
       ["POST", `/accounts/${ACCOUNT}/d1/database`],
-      ["GET", `/accounts/${ACCOUNT}/d1/database?name=rehearsal-staging`],
+      ["GET", `/accounts/${ACCOUNT}/d1/database?name=rehearsal-staging&per_page=100`],
       ["PUT", `/accounts/${ACCOUNT}/workers/scripts/rehearsal-staging/content`],
       [
         "PATCH",
@@ -583,7 +664,6 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
         `${method} ${path}`,
       ).toThrow(/may not send/);
     }
-    expect(ALLOWED_CALLS).toHaveLength(3);
   });
 });
 
@@ -605,6 +685,7 @@ describe("the staging Worker's name (unit: repo guard, O-112, O-116)", () => {
     const cloudflare = fakeCloudflare([]);
     const target = createCloudflareStagingTarget({
       credentials: credentials(),
+      d1Credentials,
       http: cloudflare.http,
     });
     expect(

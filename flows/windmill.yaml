@@ -448,7 +448,9 @@ resources:
   # The runner's database login (step 15), and the staging deploy token and the Cloudflare account
   # id (D-353, O-116, step 16), are stored by Didi by hand at first hosting, as secret variables at
   # their `windmill_path`. Until the staging pair is stored, the composition's read of it fails
-  # and each deploy is refused as `credential_unavailable` (O-138), so nothing is uploaded.
+  # and each deploy is refused as `credential_unavailable` (O-138), so nothing is uploaded. The D1
+  # token (D-445) was stored by Didi by hand on 2026-11-20 the same way; only a project's setup
+  # reads it (O-160).
   #
   # The four GitHub Apps' private keys are secret variables too, and their ids plain variables
   # beside them (D-368, D-370). Didi stores them by hand at first hosting (runbook step 15), with a
@@ -471,6 +473,10 @@ resources:
       holds: The Cloudflare account id of the staging Workers, 32 hex characters, kept as a secret as D-361 keeps it (O-116)
       windmill_path: f/foreman/platform/cloudflare/account-id
       written_by: Didi, by hand (first-hosting runbook step 16)
+    - path: platform/cloudflare/d1-token
+      holds: The D1 token, one account-owned Cloudflare API token with D1 Edit only, read only to set a project's staging database up and later to apply its migrations (D-445, O-160)
+      windmill_path: f/foreman/platform/cloudflare/d1-token
+      written_by: Didi, by hand (2026-11-20, D-445)
     - path: platform/github/runner-app-private-key
       holds: The runner App's private key, in PEM (D-368)
       windmill_path: f/foreman/platform/github/runner-app-private-key

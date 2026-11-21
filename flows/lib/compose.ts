@@ -36,6 +36,7 @@ import {
   createCloudflareHttp,
   createCloudflareStagingTarget,
   type CloudflareCredentials,
+  type D1Credentials,
   type StagingDeployCredentials,
 } from "../../src/adapters/deploy/cloudflare-staging.ts";
 import { createMarkerStagingChecker } from "../../src/adapters/deploy/staging-checker.ts";
@@ -177,8 +178,10 @@ export interface FlowDeps extends ReconcileDeps {
   /**
    * The deploy adapter's staging target (ADR 0111), the `cloudflare` deploy target (O-159): the
    * file set's check and Cloudflare's direct upload to `<slug>-staging` (O-116), with the build's
-   * Worker module when it has one. Refuses on its credential until Didi creates the staging
-   * deploy token (D-353, runbook step 16), so nothing is uploaded.
+   * Worker module and its inherited `DB` when it has one. Refuses on its credential until Didi
+   * creates the staging deploy token (D-353, runbook step 16), so nothing is uploaded. It also
+   * sets a new project up with the D1 token and puts product secrets (O-160); no flow calls
+   * those yet (ADR 0118 slices 6 and 7).
    */
   stagingTarget: DeployTarget;
   tasks: TaskSource;
@@ -284,11 +287,35 @@ export function windmillStagingDeployCredentials(
   };
 }
 
-/** The deploy adapter's Cloudflare target (O-116, O-159), with the credential port it reads. */
+/**
+ * The D1 token and the account id (D-445, O-160), read by path each time a project is set up and
+ * never kept or logged. Until the token is stored the read throws and the setup is refused as
+ * `database_credential_unavailable` before anything is sent.
+ */
+export function windmillD1Credentials(
+  env: Pick<FlowEnvironment, "secret">,
+): D1Credentials {
+  return {
+    read: async (): Promise<CloudflareCredentials> => ({
+      accountId: (await env.secret(SECRET_PATHS.cloudflareAccountId)).trim(),
+      token: (await env.secret(SECRET_PATHS.d1Token)).trim(),
+    }),
+  };
+}
+
+/**
+ * The deploy adapter's Cloudflare target (O-116, O-159, O-160), with the two credential ports it
+ * reads: the staging deploy token for every Worker call, and the D1 token for the databases only.
+ */
 export function runnerStagingTarget(
   credentials: StagingDeployCredentials,
+  d1Credentials: D1Credentials,
 ): DeployTarget {
-  return createCloudflareStagingTarget({ credentials, http: createCloudflareHttp() });
+  return createCloudflareStagingTarget({
+    credentials,
+    d1Credentials,
+    http: createCloudflareHttp(),
+  });
 }
 
 /** The GitHub Apps' token ports (D-365, D-368, O-125). */
@@ -643,7 +670,10 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),
     stagingChecker: createMarkerStagingChecker(),
     stagingBuilds: runnerStagingBuilds(apps.runner),
-    stagingTarget: runnerStagingTarget(windmillStagingDeployCredentials(env)),
+    stagingTarget: runnerStagingTarget(
+      windmillStagingDeployCredentials(env),
+      windmillD1Credentials(env),
+    ),
     screenshots: runnerScreenshotBundles(apps.runner),
     repoFolders: runnerRepoFolders(apps.runner),
     repoMaps: runnerRepoMaps(clusterParts, apps.runner),

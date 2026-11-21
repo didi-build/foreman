@@ -1,7 +1,8 @@
 // Seam: the staging deploy in the flows (flow, D-353, D-356, O-116) on the memory store, through the
 // flow layer's deps (`flowDepsFor`): the called flow `f/foreman/deploy_staging` with the real
-// deploy adapter (the file-set check and Cloudflare's three upload calls, with a Worker module for
-// a build in the new layout, O-159) behind a fake HTTP port and fake credentials, on a real zip;
+// deploy adapter (the file-set check and Cloudflare's three upload calls, with a Worker module and
+// its inherited `DB` for a build in the new layout, O-159, O-160) behind a fake HTTP port and
+// fake credentials, on a real zip;
 // the same with the composition's credential port, which refuses until Didi creates the token,
 // so nothing is sent, nothing counts and the daily check shows the deploy that did not go through; and with the runner's own GitHub reads and no runner
 // App key stored, so the token is refused before anything is sent. Synthetic data only; nothing
@@ -13,6 +14,7 @@ import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import {
   runnerStagingBuilds,
   unbuiltStagingDeployCredentials,
+  windmillD1Credentials,
 } from "../../flows/lib/compose.ts";
 import {
   createCloudflareStagingTarget,
@@ -26,6 +28,13 @@ import { storedZip } from "../zip-fixture.ts";
 import { appTokensWithoutKeys, flowDepsFor } from "./flow-fixture.ts";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
+
+/** The D1 token's port with nothing stored: a deploy never reads it (O-160). */
+const noD1Credentials = windmillD1Credentials({
+  secret: async (path) => {
+    throw new Error(`a deploy read ${path}`);
+  },
+});
 
 /** A fake Cloudflare that holds no file yet and accepts every upload. */
 function fakeCloudflare() {
@@ -78,6 +87,7 @@ async function flow() {
         token: "fake-token-for-tests-0123456789",
       }),
     },
+    d1Credentials: noD1Credentials,
     http: cloudflare.http,
   });
   const parts = flowDepsFor(t.deps, t.checker, { builds: t.builds });
@@ -110,7 +120,7 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     expect(await t.state()).toBe("done");
   });
 
-  it("uploads a build with a Worker module in the same three calls, and the check then probes the Worker (O-159)", async () => {
+  it("uploads a build with a Worker module in the same three calls, inheriting DB strictly, and the check then probes the Worker (O-159, O-160)", async () => {
     const { t, deps, cloudflare } = await flow();
     const archive = storedZip([
       {
@@ -142,7 +152,7 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     ).toEqual([
       "POST workers/scripts/rehearsal-staging/assets-upload-session",
       "POST workers/assets/upload?base64=true",
-      "PUT workers/scripts/rehearsal-staging",
+      "PUT workers/scripts/rehearsal-staging?bindings_inherit=strict",
     ]);
     expect(cloudflare.sent[2]?.form?.map((part) => part.name)).toEqual([
       "metadata",
@@ -180,6 +190,7 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
       ...parts.deps,
       stagingTarget: createCloudflareStagingTarget({
         credentials: unbuiltStagingDeployCredentials(),
+        d1Credentials: noD1Credentials,
         http: cloudflare.http,
       }),
     };

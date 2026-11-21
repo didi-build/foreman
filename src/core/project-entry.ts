@@ -188,6 +188,12 @@ const isDeployTarget = (value: unknown): value is DeployTargetName =>
 export const isProjectEntrySlug = (slug: unknown): slug is string =>
   typeof slug === "string" && PROJECT_ENTRY_SLUG.test(slug);
 
+/** Whether a display name and a purpose follow the entry's rules (the placeholder's, O-160). */
+export const isProjectDisplayName = (value: unknown): value is string =>
+  isOneLine(value, DISPLAY_NAME_MAX_CHARS);
+export const isProjectPurpose = (value: unknown): value is string =>
+  isOneLine(value, DESCRIPTION_MAX_CHARS);
+
 /** `projects/<slug>.json`'s file name for a slug. */
 export const projectFileName = (slug: string): string => `${slug}.json`;
 
@@ -207,9 +213,8 @@ export function parseProjectEntry(fileName: string, text: string): ProjectEntryR
   if (value.schema !== PROJECTS_SCHEMA) return refused("schema");
   if (!isProjectEntrySlug(value.slug)) return refused("slug");
   if (fileName !== projectFileName(value.slug)) return refused("file_name");
-  if (!isOneLine(value.displayName, DISPLAY_NAME_MAX_CHARS))
-    return refused("display_name");
-  if (!isOneLine(value.purpose, DESCRIPTION_MAX_CHARS)) return refused("purpose");
+  if (!isProjectDisplayName(value.displayName)) return refused("display_name");
+  if (!isProjectPurpose(value.purpose)) return refused("purpose");
   if (typeof value.collectsPersonalData !== "boolean") return refused("personal_data");
   const quota = parseProjectQuota(value.quota);
   if (quota === null) return refused("quota");
