@@ -39,14 +39,19 @@ export const RUNNER_READ_PERMISSIONS: readonly RunnerReadPermission[] = [
 
 /** A request the runner App's read tokens refuse, or a refused mint. Never names a token. */
 export class RunnerAppTokenError extends Error {
-  constructor(message: string) {
+  /** GitHub's status when GitHub refused the mint; absent when nothing was sent or the answer was bad. */
+  readonly status: number | undefined;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = "RunnerAppTokenError";
+    this.status = status;
   }
 }
 
 export function createRunnerAppTokens(options: NarrowTokenOptions): RunnerAppTokens {
-  const fail = (message: string) => new RunnerAppTokenError(message);
+  const fail = (message: string, status?: number) =>
+    new RunnerAppTokenError(message, status);
   return {
     async mint({ repository, permission }: RunnerAppTokenRequest) {
       const name = organizationRepositoryName(repository);

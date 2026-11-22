@@ -12,7 +12,11 @@
 //
 // `read` reads `GET /repos/didi-build/<name>` with the runner App's read-only `contents` token for
 // that one repository (D-267), the token the visibility check already uses: the creation token is
-// never used for anything but the create.
+// never used for anything but the create. GitHub cannot mint a token for a repository it does not
+// have: it refuses the mint with 422 ("does not exist or is not accessible to the parent
+// installation"). The runner App is installed on every repository of didi-build (D-347), so for one
+// named repository that refusal means there is none, and `read` answers null, as it does for a
+// 404. Any other refused mint still throws (O-164).
 //
 // The runner mints both tokens with its App's key (flows/lib/compose.ts, O-125). Tests pass
 // fakes. Nothing here logs.
@@ -27,6 +31,7 @@ import {
 } from "../../core/project-repository.ts";
 import type { GitHubPostHttp } from "./post-http.ts";
 import type { RepositoryCreationTokens } from "./repository-creation-tokens.ts";
+import { RunnerAppTokenError } from "./runner-read-tokens.ts";
 import {
   GitHubReadError,
   type GitHubHttp,
@@ -113,7 +118,13 @@ export function createGitHubProjectRepositories({
     async read(name) {
       if (!PROJECT_SLUG.test(name)) throw new GitHubReadError("not a project slug");
       const repository = projectRepository(name);
-      const token = await readTokens.mint({ repository, permission: "contents" });
+      let token: string;
+      try {
+        token = await readTokens.mint({ repository, permission: "contents" });
+      } catch (error) {
+        if (error instanceof RunnerAppTokenError && error.status === 422) return null;
+        throw error;
+      }
       const answer = await http.get({
         path: `/repos/${repository}`,
         token,
