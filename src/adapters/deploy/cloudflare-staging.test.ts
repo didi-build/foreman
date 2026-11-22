@@ -7,11 +7,13 @@
 // `main_module`, the manifest's date and flags, `keep_bindings` for secrets and
 // `run_worker_first` for `/api`, and the project's `DB` inherited strictly (O-160). Every refusal
 // is fixed text and sends nothing more, a refused file set sends nothing at all, and no deploy
-// request ever names a route, a custom domain, a zone, DNS, D1 or a secret. For a build with a
+// request here ever names a route, a custom domain, a zone, DNS, D1 or a secret. For a build with a
 // Worker, the core's `beforeWorkerUpload` is asked first, with the manifest's required names, and
-// a refusal it gives is the answer, with no credential read and nothing sent (D-448, O-163). The
-// setup, the placeholder and the secret calls (O-160) are in cloudflare-setup.test.ts. Fake
-// credentials only; no network.
+// a refusal it gives is the answer, with no credential read and nothing sent (D-448, O-163). A
+// build with a Worker and no migration file sends exactly what it sent before slice 8, pinned by
+// a SHA-256, and reads no D1 credential (O-165). The setup, the placeholder and the secret calls
+// (O-160) are in cloudflare-setup.test.ts, and the migrations' D1 calls (O-165) in
+// cloudflare-migrations.test.ts. Fake credentials only; no network.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
@@ -71,7 +73,11 @@ const HASHES = {
   script: guideHash("assets/index-1.js", SCRIPT),
 };
 
-/** A build in the new layout (O-159): the same site under assets/, a module and a migration. */
+/**
+ * A build in the new layout (O-159): the same site under assets/ and a module, with no migration
+ * file, as the template builds it at first (form-trial's builds). The migrations are O-165's, in
+ * cloudflare-migrations.test.ts.
+ */
 const MODULE =
   "export default { fetch() { return Response.json({ status: 'ok' }); } };";
 const WORKER_MODULE_PART = "index.js";
@@ -81,13 +87,16 @@ const WORKER_MANIFEST = {
   compatibilityFlags: ["nodejs_compat"],
   requiredSecrets: ["MODEL_API_KEY"],
 };
-const workerArchive = (manifest = JSON.stringify(WORKER_MANIFEST)) =>
+const workerArchive = (
+  manifest = JSON.stringify(WORKER_MANIFEST),
+  extra: ZipFixtureEntry[] = [],
+) =>
   storedZip([
     { name: "foreman-deploy.json", data: manifest },
     { name: "assets/foreman-commit.txt", data: `${COMMIT}\n` },
     { name: "assets/index.html", data: INDEX, deflate: true },
     { name: "worker/index.js", data: MODULE, deflate: true },
-    { name: "migrations/0001_init.sql", data: "CREATE TABLE t (id INTEGER);" },
+    ...extra,
   ]);
 const WORKER_ARCHIVE = workerArchive();
 
@@ -119,7 +128,7 @@ const credentials = (accountId = ACCOUNT, token = TOKEN) => ({
 /** Every request any test sent, to check none ever leaves the upload calls. */
 const everySent: CloudflareRequest[] = [];
 
-/** The D1 token's port: a deploy never reads it (O-160). */
+/** The D1 token's port: a deploy of a build without migrations never reads it (O-160, O-165). */
 let d1Reads = 0;
 const d1Credentials = {
   read: async () => {
@@ -504,13 +513,42 @@ describe("Cloudflare's direct upload of the staging site (unit, fake HTTP, O-116
     expect(metadata.assets.config.run_worker_first).toEqual(["/api/*"]);
     expect(STAGING_KEEP_BINDINGS).toEqual(["secret_text", "secret_key"]);
     expect(STAGING_RUN_WORKER_FIRST).toEqual(["/api/*"]);
-    // Nothing of the build reaches Cloudflare but its assets and its module: no secret value, no
-    // migration and no binding from the build; the only binding is Foreman's inherited `DB`.
+    // Nothing of the build reaches Cloudflare but its assets and its module: no secret value and
+    // no binding from the build; the only binding is Foreman's inherited `DB`.
     const everything = JSON.stringify(sent);
-    expect(everything).not.toContain("CREATE TABLE");
     expect(everything).not.toContain("foreman-deploy");
     expect(metadata.bindings).toEqual([{ type: "inherit", name: "DB" }]);
     expect(d1Reads).toBe(0);
+  });
+
+  it("sends a build with a Worker and no migration file byte for byte as before slice 8, with no D1 credential read (pinned before O-165)", async () => {
+    // Form-trial's builds carry a Worker and no migration, so they must deploy exactly as before
+    // ADR 0118 slice 8: every request, its order, its fields and their values, serialized. An
+    // empty migrations folder holds no migration.
+    for (const archive of [
+      WORKER_ARCHIVE,
+      workerArchive(undefined, [{ name: "migrations/", data: "" }]),
+    ]) {
+      const reads = d1Reads;
+      const { result, sent } = await deploy(
+        [
+          ok({ jwt: SESSION_JWT, buckets: [[HASHES.index, HASHES.marker]] }),
+          ok({ jwt: DONE_JWT }, 201),
+          ok({ id: "rehearsal-staging" }),
+        ],
+        { archive, beforeWorkerUpload: async () => null },
+      );
+      expect(result).toEqual({
+        outcome: "deployed",
+        files: 2,
+        worker: { requiredSecrets: ["MODEL_API_KEY"] },
+      });
+      expect(createHash("sha256").update(JSON.stringify(sent)).digest("hex")).toBe(
+        "dd8817b21160de078d6b81d614e66df2e59d9a9c41c032c839e521a65a6c4cf5",
+      );
+      expect(sent.some((r) => r.path.includes("/d1/"))).toBe(false);
+      expect(d1Reads).toBe(reads);
+    }
   });
 
   it("asks the core's check once, with the manifest's names, before any credential is read or anything is sent (D-448, O-163)", async () => {

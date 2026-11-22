@@ -528,7 +528,7 @@ resources:
       windmill_path: f/foreman/platform/cloudflare/account-id
       written_by: Didi, by hand (first-hosting runbook step 16)
     - path: platform/cloudflare/d1-token
-      holds: The D1 token, one account-owned Cloudflare API token with D1 Edit only, read only to set a project's staging database up and later to apply its migrations (D-445, O-160)
+      holds: The D1 token, one account-owned Cloudflare API token with D1 Edit only, read only to set a project's staging database up and to apply its migrations at a staging deploy (D-445, O-160, O-165)
       windmill_path: f/foreman/platform/cloudflare/d1-token
       written_by: Didi, by hand (2026-11-20, D-445)
     - path: platform/github/runner-app-private-key

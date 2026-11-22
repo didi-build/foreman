@@ -11,7 +11,9 @@
 // (O-159). A build whose manifest requires a secret the staging Worker does not have is held as an
 // infrastructure refusal that names the missing secrets and the Set project secret form, counts
 // no failure, shows in the daily check and deploys on the backstop's next pass once the secret is
-// set (D-448, O-163). Fake data only.
+// set (D-448, O-163). The names of the D1 migrations a deploy applied reach its result only, and
+// a migration the database refused as SQL counts as a refused file set does (O-165). Fake data
+// only.
 import { describe, expect, it } from "vitest";
 
 import { mainBuild } from "../src/adapters/deploy/fake.ts";
@@ -310,6 +312,104 @@ describe("a staging deploy with a Worker module (unit: ADR 0118 slice 3, O-159)"
       containment: "identical",
     });
     expect(await t.counter("failure")).toBe(1);
+  });
+});
+
+describe("a staging deploy with D1 migrations (unit: ADR 0118 slice 8, O-165)", () => {
+  it("carries the names the target applied in its result only, and records the deploy as before", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.answers.push({
+      outcome: "deployed",
+      files: 2,
+      worker: { requiredSecrets: [] },
+      migrationsApplied: ["0001_init.sql"],
+    });
+    const result = await t.deploys().deployRun(REPO, runId);
+    expect(result).toMatchObject({
+      step: "deployed",
+      migrationsApplied: ["0001_init.sql"],
+      verified: [{ move: { toState: "done", outcome: "applied" } }],
+    });
+    const [deploy] = await t.kind("staging_deploy");
+    expect(deploy?.payload).toMatchObject({ files: 2, worker: true });
+    expect(JSON.stringify(deploy?.payload)).not.toContain("0001_init.sql");
+    // A deploy that applied none says so; one of a build without migrations says nothing.
+    const again = await setup();
+    again.target.answers.push({
+      outcome: "deployed",
+      files: 2,
+      worker: { requiredSecrets: [] },
+      migrationsApplied: [],
+    });
+    expect(await again.deploys().deployRun(REPO, again.built())).toMatchObject({
+      step: "deployed",
+      migrationsApplied: [],
+    });
+    const none = await setup();
+    expect(await none.deploys().deployRun(REPO, none.built())).not.toHaveProperty(
+      "migrationsApplied",
+    );
+  });
+
+  it("records a migration the database refused as SQL like a refused file set: one failure, the item sent back, the text naming the file", async () => {
+    const t = await setup();
+    const runId = t.built();
+    const text =
+      "the migration 0002_more.sql failed on the staging database; nothing after it was applied or uploaded";
+    t.target.answers.push({
+      outcome: "refused",
+      cause: "file_set",
+      reason: "migration_failed",
+      text,
+      detail: { call: "migration_apply", status: 400, codes: [7500] },
+    });
+    const result = await t.deploys().deployRun(REPO, runId);
+    expect(result).toMatchObject({
+      step: "refused_file_set",
+      reason: "migration_failed",
+      text,
+      detail: { call: "migration_apply", status: 400, codes: [7500] },
+      covers: [t.node.id],
+      verified: [{ step: "deploy_failed", move: { toState: "in_development" } }],
+    });
+    const [failed] = await t.kind("staging_deploy_failed");
+    expect(failed).toMatchObject({
+      ref: stagingDeployRefusedKey(REPO, runId, "file_set", t.mergeSha),
+      payload: {
+        cause: "file_set",
+        state: "failure",
+        reason: "migration_failed",
+        text,
+      },
+    });
+    // The detail stays on the result, as O-139 keeps it; the evidence has the fixed text only.
+    expect(failed?.payload).not.toHaveProperty("detail");
+    expect(readDeployRefusal(failed!.payload)).toEqual({
+      reason: "migration_failed",
+      text,
+    });
+    expect(await t.counter("failure")).toBe(1);
+    expect(t.checker.calls).toEqual([]);
+  });
+
+  it("holds a deploy whose staging database is missing as infrastructure, counting no failure", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.answers.push({
+      outcome: "refused",
+      cause: "infrastructure",
+      reason: "database_missing",
+      text: "Cloudflare lists no staging D1 database for the project; the New project form sets the project's database up",
+      detail: { call: "database_list" },
+    });
+    expect(await t.deploys().deployRun(REPO, runId)).toMatchObject({
+      step: "refused_infrastructure",
+      reason: "database_missing",
+      verified: [],
+    });
+    expect(await t.counter("failure")).toBe(0);
+    expect(await t.state()).toBe("verifying_on_staging");
   });
 });
 

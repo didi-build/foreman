@@ -35,8 +35,16 @@
 //   (`layout_unexpected`). The rules above apply to `assets/`, and the Cloudflare limits count its
 //   files. The module must be UTF-8 text (`worker_not_text`), within the same 25 MiB per file,
 //   under Cloudflare's 64 MiB Worker size ("Workers platform limits", read 2026-11-21). The
-//   migrations are plain `.sql` names directly in their folder, at most 1,000, sorted by name and
-//   carried for slice 8, which applies them; nothing reads them yet.
+//   migrations are plain `.sql` names directly in their folder, at most 1,000, sorted by name, and
+//   the deploy applies the new ones to the project's staging database before it uploads
+//   (./cloudflare-staging.ts, ADR 0118 slice 8, O-165). Each is UTF-8 text
+//   (`migration_not_text`) of at most 100,000 bytes, D1's maximum SQL statement length ("D1
+//   Limits", developers.cloudflare.com/d1/platform/limits/, last updated 2026-11-20, read
+//   2026-11-22), so a whole file fits what D1 takes for one statement (`migration_too_large`);
+//   all of them together are at most 10,000,000 bytes, the runner's own bound on what one deploy
+//   sends, since D1 documents none across queries (`migrations_too_large`).
+import { isUtf8 } from "node:buffer";
+
 import { COMMIT_MARKER_FILE } from "../../core/preview-check.ts";
 import type { DeployRefusalCause } from "../../core/staging-deploy.ts";
 import {
@@ -80,7 +88,14 @@ export const WORKER_MODULE_FILE = "index.js";
 /** The most migration files a build may carry. */
 export const MAX_MIGRATIONS = 1000;
 
-const MIGRATION_NAME = /^[A-Za-z0-9_-]{1,96}\.sql$/;
+/** The largest migration file: D1's maximum SQL statement length ("D1 Limits", see above). */
+export const MIGRATION_MAX_BYTES = 100_000;
+
+/** The build's migrations in all: the runner's own bound on what one deploy sends (see above). */
+export const MIGRATIONS_TOTAL_MAX_BYTES = 10_000_000;
+
+/** A migration's name: a plain `.sql` file name, with no quote, slash or space. */
+export const MIGRATION_NAME = /^[A-Za-z0-9_-]{1,96}\.sql$/;
 
 /** The fixed text of each refusal. None names a path or a value from the build. */
 export const SITE_REFUSALS = {
@@ -101,6 +116,12 @@ export const SITE_REFUSALS = {
   worker_extra: `the staging-site build's ${WORKER_FOLDER} folder holds a file other than ${WORKER_MODULE_FILE}`,
   worker_not_text: `the staging-site build's ${WORKER_FOLDER}/${WORKER_MODULE_FILE} is not UTF-8 text`,
   migrations_not_plain: `the staging-site build's ${MIGRATIONS_FOLDER} folder holds more than ${MAX_MIGRATIONS} files, or something other than .sql files directly in it`,
+  migration_too_large:
+    "the staging-site build has a migration file larger than 100,000 bytes, D1's maximum SQL statement length",
+  migrations_too_large:
+    "the staging-site build's migrations are larger than 10,000,000 bytes in all, the runner's bound",
+  migration_not_text:
+    "the staging-site build has a migration file that is not UTF-8 text",
   ...MANIFEST_REFUSALS,
 } as const;
 
@@ -117,7 +138,10 @@ export interface SiteWorker {
   /** The bundled ES module, `worker/index.js`, as UTF-8 text. */
   module: string;
   manifest: DeployManifest;
-  /** `migrations/*.sql`, named without the folder and sorted by name; applied from slice 8. */
+  /**
+   * `migrations/*.sql`, named without the folder and sorted by name, each UTF-8 text within the
+   * bounds above; the deploy applies the new ones before it uploads (O-165).
+   */
   migrations: SiteFile[];
 }
 
@@ -238,6 +262,16 @@ function readWorkerBuild(entries: readonly ZipEntry[], commitSha: string): SiteF
   ) {
     return refuse("migrations_not_plain");
   }
+  if (migrations.some((e) => e.bytes.length > MIGRATION_MAX_BYTES)) {
+    return refuse("migration_too_large");
+  }
+  if (
+    migrations.reduce((total, e) => total + e.bytes.length, 0) >
+    MIGRATIONS_TOTAL_MAX_BYTES
+  ) {
+    return refuse("migrations_too_large");
+  }
+  if (!migrations.every((e) => isUtf8(e.bytes))) return refuse("migration_not_text");
   return {
     ok: true,
     files: site.files,

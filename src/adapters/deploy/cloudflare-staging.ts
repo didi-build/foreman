@@ -85,6 +85,46 @@
 // which the reference does not list and this adapter does not send). A build in the old layout
 // sends no binding and no query, exactly as before.
 //
+// The project's D1 migrations (ADR 0118 slice 8, D-445, O-165). For a build with a Worker that
+// carries `migrations/*.sql` files (./site-files.ts), once the core's required-secret check
+// (below) has passed and before the three upload calls, the deploy applies the files its staging
+// database has not recorded, with the D1 token. A build without one reads no D1 credential and
+// makes no D1 call, so its requests are exactly those above. The database is found by the setup's
+// exact-name lookup (step 1 below, `database_list`); none of the name is `database_missing`, an
+// infrastructure refusal, since only the New project form makes it. Then each call is
+// `POST /accounts/{account_id}/d1/database/{database_id}/query` with the JSON body `{"sql": ...}`:
+// 1. `migrations_table`: Wrangler's own table, `CREATE TABLE IF NOT EXISTS "d1_migrations"(id
+//    INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT
+//    CURRENT_TIMESTAMP NOT NULL);` with Wrangler's spacing, so `wrangler d1 migrations list` and
+//    this deploy agree on what is applied;
+// 2. `migrations_list`: `SELECT name FROM "d1_migrations" ORDER BY id`, reading only the names;
+// 3. `migration_apply`, for each file not listed, in name order, one at a time, stopping at the
+//    first that fails: the file's text, a newline, `INSERT INTO "d1_migrations" (name)`, a
+//    newline and `values ('<name>');`, the query Wrangler's `d1 migrations apply` builds
+//    (`buildMigrationQuery`). The name is written into the text as Wrangler writes it, not sent
+//    in `params`: the reference does not say how `params` bind across several statements. It
+//    passed the build's name rule (letters, digits, `_`, `-`, then `.sql`), so it holds no quote.
+// Read 2026-11-22: the API reference "Query D1 Database" (`sql` "Supports multiple statements,
+// joined by semicolons, which will be executed as a batch"; `params` a list of strings; `result` a
+// list of `{meta, results, success}`; D1 Write among the accepted permissions); "D1 Database", the
+// Worker API (last updated 2026-06-22: "Batched statements are SQL transactions. If a statement
+// in the sequence fails ... it aborts or rolls back the entire sequence"); Wrangler's commands
+// page for `d1 migrations apply` ("If applying a migration results in an error, this migration
+// will be rolled back"); "Debug D1" (2026-11-20: code 7500 for an error SQLite reports, or a
+// platform failure; 7403 and 10000 for the token's rights, 7404 a database not found, 7406 a
+// limit, 7429 an overloaded database); and Wrangler 4.160.1's source (the table, the list and the
+// apply query, as above). So a migration and its record commit together or not at all. The record
+// is the last statement, so even if they did not, a migration that stopped half way is never
+// recorded, and the next deploy runs it again and fails in sight rather than skipping it. A file
+// changed after it was applied is not applied again, as with Wrangler: the table keeps names only.
+// A `migration_apply` that D1 answers with 400 and code 7500, and none of the codes above that
+// name the token, the database, a limit or load, is the migration's own SQL error. The names are
+// read again first: a file listed by then was applied by another deploy at the same moment, and
+// this one goes on. Otherwise the deploy is refused as `migration_failed`, a `file_set` refusal
+// like a refused file set, the change's own failure, its text naming the file, with the call, the
+// status and the codes; never the SQL, a row or D1's message. Every other refusal of these calls
+// is infrastructure, as below.
+//
 // A new project's setup (`setUp`, ADR 0118 appendix C steps 1 and 2, D-438, D-447, O-160), each
 // step found before it is made, so running the New project form again makes nothing twice:
 // 1. The database, with the D1 token: `GET /accounts/{account_id}/d1/database?name=<slug>-staging&
@@ -115,17 +155,19 @@
 // The required-secret check (D-448, O-163) is the core's (src/core/staging-deploy.ts): for a build
 // with a Worker module, `deploy` calls the request's `beforeWorkerUpload` with the manifest's
 // required names once the file set has passed and before any credential is read or anything is
-// sent. A refusal it returns is the deploy's answer, and nothing is uploaded.
+// sent. A refusal it returns is the deploy's answer, and no migration is applied and nothing is
+// uploaded. So a deploy goes: the file set, the required secrets, the migrations, the upload.
 //
-// Every refusal is infrastructure, with fixed text: the credential missing or malformed, Cloudflare
-// refusing the token (401 or 403), refusing the request (another 4xx), failing (429 or 5xx), not
-// answering, or answering in a shape the docs do not give. A refusal by Cloudflare also names the
-// call it came from (`upload_session`, `asset_upload`, `worker_upload`, and from O-160
-// `worker_list`, `secret_put`, `secret_list`, `database_list` and `database_create`), the HTTP
-// status and Cloudflare's numeric error codes (`errors[].code`), so a refusal can be told apart
-// without guessing (O-139). Cloudflare's own error messages are never kept, logged or returned,
-// since they can name ids. The tokens, the JWTs, the database id and a secret's value are never
-// logged or returned.
+// Every refusal but a failed migration's is infrastructure, with fixed text: a credential missing
+// or malformed, Cloudflare refusing the token (401 or 403), refusing the request (another 4xx),
+// failing (429 or 5xx), not answering, or answering in a shape the docs do not give. A refusal by
+// Cloudflare also names the call it came from (`upload_session`, `asset_upload`, `worker_upload`,
+// from O-160 `worker_list`, `secret_put`, `secret_list`, `database_list` and `database_create`,
+// and from O-165 `migrations_table`, `migrations_list` and `migration_apply`), the HTTP status and
+// Cloudflare's numeric error codes (`errors[].code`), so a refusal can be told apart without
+// guessing (O-139). Cloudflare's own error messages are never kept, logged or returned, since they
+// can name ids, SQL or rows. The tokens, the JWTs, the database id, a secret's value, a
+// migration's SQL and what a query answers are never logged or returned.
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
@@ -159,7 +201,12 @@ import {
   PLACEHOLDER_PAGE_FILE,
   placeholderPage,
 } from "./placeholder-site.ts";
-import { readSiteFiles, type SiteFile, type SiteWorker } from "./site-files.ts";
+import {
+  MIGRATION_NAME,
+  readSiteFiles,
+  type SiteFile,
+  type SiteWorker,
+} from "./site-files.ts";
 
 /** Cloudflare's API, under which every path below is sent. */
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -204,6 +251,47 @@ export const STAGING_DATABASE_LOCATION = "enam";
 
 /** The size of the one page of databases read by name; a full page without the name refuses. */
 export const DATABASE_LIST_PAGE = 100;
+
+/** The table applied D1 migrations are recorded in: Wrangler's default (O-165). */
+export const MIGRATIONS_TABLE = "d1_migrations";
+
+/** Wrangler 4.160.1's `getCreateMigrationsTableQuery` for that table, byte for byte (O-165). */
+export const CREATE_MIGRATIONS_TABLE = [
+  `CREATE TABLE IF NOT EXISTS "${MIGRATIONS_TABLE}"(`,
+  "\t\tid         INTEGER PRIMARY KEY AUTOINCREMENT,",
+  "\t\tname       TEXT UNIQUE,",
+  "\t\tapplied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL",
+  ");",
+].join("\n");
+
+/** The names of the applied migrations, and nothing else of the table (O-165). */
+export const LIST_MIGRATIONS = `SELECT name FROM "${MIGRATIONS_TABLE}" ORDER BY id`;
+
+/**
+ * The query that applies one migration with its record, as Wrangler's `buildMigrationQuery`
+ * builds it: the file's text, then the record's insert with the name written in (see the header).
+ */
+export function migrationQuery(migration: SiteFile): string {
+  if (!MIGRATION_NAME.test(migration.path)) {
+    throw new Error("a migration's name must follow the build's name rule");
+  }
+  const sql = Buffer.from(migration.bytes).toString("utf8");
+  return `${sql}\nINSERT INTO "${MIGRATIONS_TABLE}" (name)\nvalues ('${migration.path}');`;
+}
+
+/** D1's code for an error SQLite reported, or a platform failure ("Debug D1"). */
+export const D1_SQL_ERROR_CODE = 7500;
+
+/** D1's codes that name the token, the database, a limit or load, never the SQL ("Debug D1"). */
+export const D1_NOT_SQL_CODES: readonly number[] = [7403, 7404, 7406, 7429, 10000];
+
+/**
+ * The text of a migration the staging database refused as SQL (O-165): the file's name, which
+ * passed the build's name rule, and never its SQL or D1's message.
+ */
+export function migrationFailedText(name: string): string {
+  return `the migration ${name} failed on the staging database; nothing after it was applied or uploaded`;
+}
 
 /** The largest product secret value, in UTF-8 bytes ("Workers platform limits": 5 KB; the core's). */
 export const SECRET_VALUE_MAX_BYTES = PRODUCT_SECRET_VALUE_MAX_BYTES;
@@ -251,8 +339,9 @@ export interface StagingDeployCredentials {
 }
 
 /**
- * The D1 credential (D-445): one account-owned token with D1 Edit only, for the databases (this
- * slice) and their migrations (slice 8). Read only by `setUp`, each time.
+ * The D1 credential (D-445): one account-owned token with D1 Edit only, for the databases (O-160)
+ * and their migrations (O-165). Read each time by `setUp`, and by a deploy only for a build that
+ * carries migrations.
  */
 export interface D1Credentials {
   read(): Promise<CloudflareCredentials>;
@@ -327,9 +416,9 @@ export const ALLOWED_CALLS: readonly AllowedCall[] = [
 ];
 
 /**
- * The only requests this adapter can send with the D1 token (D-445, O-160): a staging database
- * looked up by name, and a database made. No query, export, delete or other D1 call (slice 8 adds
- * the migrations' query).
+ * The only requests this adapter can send with the D1 token (D-445, O-160, O-165): a staging
+ * database looked up by name, a database made, and a query on one database by its id, which only a
+ * deploy's migrations send. No raw query, export, import, delete or other D1 call.
  */
 export const D1_ALLOWED_CALLS: readonly AllowedCall[] = [
   {
@@ -337,6 +426,11 @@ export const D1_ALLOWED_CALLS: readonly AllowedCall[] = [
     path: /^\/accounts\/[0-9a-f]{32}\/d1\/database\?name=[a-z0-9][a-z0-9-]{0,54}-staging&per_page=100$/,
   },
   { method: "POST", path: /^\/accounts\/[0-9a-f]{32}\/d1\/database$/ },
+  // A staging database's migrations at a deploy (O-165).
+  {
+    method: "POST",
+    path: /^\/accounts\/[0-9a-f]{32}\/d1\/database\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/query$/,
+  },
 ];
 
 /**
@@ -367,6 +461,14 @@ export const CLOUDFLARE_REFUSALS = {
     "Cloudflare answered the staging upload in a shape its docs do not give",
   database_binding_missing:
     "the staging Worker has no DB binding to carry over; the New project form sets the project's database up",
+  // The migrations (O-165), with the D1 token.
+  database_credential_unavailable: "the D1 credential is not available",
+  database_credential_malformed: "the D1 credential is not in the expected shape",
+  database_credential_refused: "Cloudflare refused the D1 credential",
+  database_missing:
+    "Cloudflare lists no staging D1 database for the project; the New project form sets the project's database up",
+  database_ambiguous:
+    "Cloudflare lists more than one D1 database of the project's name, or too many like it to tell",
 } as const;
 
 export type CloudflareRefusal = keyof typeof CLOUDFLARE_REFUSALS;
@@ -379,11 +481,10 @@ export const SETUP_REFUSALS = {
   credential_unavailable: CLOUDFLARE_REFUSALS.credential_unavailable,
   credential_malformed: CLOUDFLARE_REFUSALS.credential_malformed,
   credential_refused: CLOUDFLARE_REFUSALS.credential_refused,
-  database_credential_unavailable: "the D1 credential is not available",
-  database_credential_malformed: "the D1 credential is not in the expected shape",
-  database_credential_refused: "Cloudflare refused the D1 credential",
-  database_ambiguous:
-    "Cloudflare lists more than one D1 database of the project's name, or too many like it to tell",
+  database_credential_unavailable: CLOUDFLARE_REFUSALS.database_credential_unavailable,
+  database_credential_malformed: CLOUDFLARE_REFUSALS.database_credential_malformed,
+  database_credential_refused: CLOUDFLARE_REFUSALS.database_credential_refused,
+  database_ambiguous: CLOUDFLARE_REFUSALS.database_ambiguous,
   cloudflare_refused: "Cloudflare refused a step of the project's setup",
   cloudflare_unavailable:
     "Cloudflare failed or limited a step of the project's setup; running it again tries again",
@@ -411,7 +512,11 @@ export const SECRET_REFUSALS = {
 } as const;
 
 type Reason =
-  CloudflareRefusal | keyof typeof SETUP_REFUSALS | keyof typeof SECRET_REFUSALS;
+  | CloudflareRefusal
+  | keyof typeof SETUP_REFUSALS
+  | keyof typeof SECRET_REFUSALS
+  /** A migration the staging database refused as SQL: the build's, its text made from its name. */
+  | "migration_failed";
 
 /** The calls, by the fixed names a refusal reports (O-139). */
 export type CloudflareCall =
@@ -422,7 +527,10 @@ export type CloudflareCall =
   | "secret_put"
   | "secret_list"
   | "database_list"
-  | "database_create";
+  | "database_create"
+  | "migrations_table"
+  | "migrations_list"
+  | "migration_apply";
 
 /** The most of Cloudflare's numeric error codes a refusal keeps. */
 const MAX_ERROR_CODES = 5;
@@ -430,11 +538,14 @@ const MAX_ERROR_CODES = 5;
 class Refused extends Error {
   readonly reason: Reason;
   readonly detail: DeployRefusalDetail | undefined;
-  constructor(reason: Reason, detail?: DeployRefusalDetail) {
+  /** For `migration_failed`: the file's name, which passed the build's name rule. */
+  readonly migration: string | undefined;
+  constructor(reason: Reason, detail?: DeployRefusalDetail, migration?: string) {
     super(reason);
     this.name = "Refused";
     this.reason = reason;
     this.detail = detail;
+    this.migration = migration;
   }
 }
 
@@ -525,7 +636,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** The calls made with the D1 token, whose 401 or 403 is that token's refusal. */
-const DATABASE_CALLS: readonly CloudflareCall[] = ["database_list", "database_create"];
+const DATABASE_CALLS: readonly CloudflareCall[] = [
+  "database_list",
+  "database_create",
+  "migrations_table",
+  "migrations_list",
+  "migration_apply",
+];
 
 /** The answer's `result`, when Cloudflare says it succeeded; a refusal naming the call otherwise. */
 function resultOf(
@@ -561,6 +678,41 @@ function resultOf(
     throw new Refused("unexpected_answer", detail);
   }
   return body.result;
+}
+
+/**
+ * A D1 query's `result`: one entry per statement, none failed ("Query D1 Database"). Nothing in it
+ * is kept but what the caller reads, and nothing of it is ever logged or returned.
+ */
+function queryResults(
+  call: CloudflareCall,
+  answer: CloudflareAnswer,
+): Record<string, unknown>[] {
+  const result = resultOf(call, answer, [200]);
+  if (
+    !Array.isArray(result) ||
+    result.length === 0 ||
+    !result.every((r) => isRecord(r) && r.success !== false)
+  ) {
+    throw new Refused("unexpected_answer", { call, status: answer.status });
+  }
+  return result as Record<string, unknown>[];
+}
+
+/**
+ * Whether D1 refused a migration's own SQL: 400 with code 7500 and none of the codes that name
+ * the token, the database, a limit or load (see the header).
+ */
+function isMigrationSqlError(error: unknown): error is Refused {
+  if (!(error instanceof Refused) || error.reason !== "cloudflare_refused")
+    return false;
+  const codes = error.detail?.codes ?? [];
+  return (
+    error.detail?.call === "migration_apply" &&
+    error.detail.status === 400 &&
+    codes.includes(D1_SQL_ERROR_CODE) &&
+    !codes.some((code) => D1_NOT_SQL_CODES.includes(code))
+  );
 }
 
 const jwtOf = (result: unknown): string | null =>
@@ -786,14 +938,13 @@ export function createCloudflareStagingTarget({
   }
 
   /**
-   * Step 1 of the setup: the database by its exact name, made with the location hint only when
-   * Cloudflare lists none (see the header). The id is only for the placeholder's binding.
+   * The database's id by its exact name, with the D1 token, or null when Cloudflare lists none of
+   * that name (see the header, step 1 of the setup). The id is never logged or returned.
    */
-  async function findOrCreateDatabase(
+  async function findDatabase(
+    { accountId, token }: CloudflareCredentials,
     name: string,
-    dryRun: boolean,
-  ): Promise<{ step: DatabaseStep; id: string | null }> {
-    const { accountId, token } = await readCredentials(d1Credentials, "database");
+  ): Promise<string | null> {
     const account = `/accounts/${accountId}`;
     const listAnswer = await sendD1("database_list", {
       method: "GET",
@@ -824,17 +975,31 @@ export function createCloudflareStagingTarget({
       });
     }
     const [found] = matches;
-    if (found) {
-      if (typeof found.uuid !== "string" || !DATABASE_ID.test(found.uuid)) {
-        throw new Refused("unexpected_answer", {
-          call: "database_list",
-          status: listAnswer.status,
-        });
-      }
-      return { step: "found", id: found.uuid };
+    if (!found) return null;
+    if (typeof found.uuid !== "string" || !DATABASE_ID.test(found.uuid)) {
+      throw new Refused("unexpected_answer", {
+        call: "database_list",
+        status: listAnswer.status,
+      });
     }
+    return found.uuid;
+  }
+
+  /**
+   * Step 1 of the setup: the database by its exact name, made with the location hint only when
+   * Cloudflare lists none (see the header). The id is only for the placeholder's binding.
+   */
+  async function findOrCreateDatabase(
+    name: string,
+    dryRun: boolean,
+  ): Promise<{ step: DatabaseStep; id: string | null }> {
+    const d1 = await readCredentials(d1Credentials, "database");
+    const found = await findDatabase(d1, name);
+    if (found !== null) return { step: "found", id: found };
     if (dryRun) return { step: "would_create", id: null };
 
+    const { accountId, token } = d1;
+    const account = `/accounts/${accountId}`;
     const createAnswer = await sendD1("database_create", {
       method: "POST",
       path: `${account}/d1/database`,
@@ -854,6 +1019,88 @@ export function createCloudflareStagingTarget({
       });
     }
     return { step: "created", id: created.uuid };
+  }
+
+  /**
+   * The build's migrations on the project's staging database, before the upload (see the header):
+   * the files the database has not recorded, in name order, each with its record, stopping at the
+   * first that fails. Answers the names applied, in order.
+   */
+  async function applyMigrations(
+    slug: string,
+    migrations: readonly SiteFile[],
+  ): Promise<string[]> {
+    const name = stagingDatabaseName(slug);
+    if (name === null) throw new Refused("database_missing");
+    const d1 = await readCredentials(d1Credentials, "database");
+    const id = await findDatabase(d1, name);
+    if (id === null) throw new Refused("database_missing", { call: "database_list" });
+    const path = `/accounts/${d1.accountId}/d1/database/${id}/query`;
+    const query = async (call: CloudflareCall, sql: string) =>
+      queryResults(
+        call,
+        await sendD1(call, { method: "POST", path, bearer: d1.token, json: { sql } }),
+      );
+    /** The names the table records; every other column and value is left unread. */
+    const recorded = async (): Promise<Set<string>> => {
+      const [listed] = await query("migrations_list", LIST_MIGRATIONS);
+      const rows = listed?.results;
+      if (!Array.isArray(rows) || !rows.every(isRecord)) {
+        throw new Refused("unexpected_answer", { call: "migrations_list" });
+      }
+      return new Set(
+        (rows as Record<string, unknown>[]).flatMap((row) =>
+          typeof row.name === "string" ? [row.name] : [],
+        ),
+      );
+    };
+
+    await query("migrations_table", CREATE_MIGRATIONS_TABLE);
+    let applied = await recorded();
+    const done: string[] = [];
+    for (const migration of migrations) {
+      if (applied.has(migration.path)) continue;
+      try {
+        await query("migration_apply", migrationQuery(migration));
+      } catch (error) {
+        if (!isMigrationSqlError(error)) throw error;
+        // Another deploy may have applied it at the same moment: its record is then there.
+        applied = await recorded();
+        if (applied.has(migration.path)) continue;
+        throw new Refused("migration_failed", error.detail, migration.path);
+      }
+      done.push(migration.path);
+    }
+    return done;
+  }
+
+  /**
+   * A deploy's refusal for a thrown `Refused`: a failed migration is the build's own (`file_set`),
+   * every other one infrastructure. Anything but a refusal is a fault of this code: thrown again,
+   * so the core records it as the target's error (`target_error`) instead of as Cloudflare's answer.
+   */
+  function deployRefusal(error: unknown): StagingRefusal {
+    if (
+      error instanceof Refused &&
+      error.reason === "migration_failed" &&
+      error.migration !== undefined
+    ) {
+      return {
+        outcome: "refused",
+        cause: "file_set",
+        reason: error.reason,
+        text: migrationFailedText(error.migration),
+        ...(error.detail ? { detail: error.detail } : {}),
+      };
+    }
+    const { reason, text, detail } = refusalOf(CLOUDFLARE_REFUSALS, error);
+    return {
+      outcome: "refused",
+      cause: "infrastructure",
+      reason,
+      text,
+      ...(detail ? { detail } : {}),
+    };
   }
 
   /** Whether Cloudflare lists the Worker, read before the placeholder (see the header). */
@@ -933,10 +1180,23 @@ export function createCloudflareStagingTarget({
         ? { requiredSecrets: [...set.worker.manifest.requiredSecrets] }
         : undefined;
       // The core's check before a Worker is uploaded (D-448, O-163): a refusal it returns is the
-      // answer, before any credential is read or anything is sent for the upload.
+      // answer, before any credential is read, any migration applied or anything sent.
       if (code && beforeWorkerUpload) {
         const held = await beforeWorkerUpload(code);
         if (held) return held;
+      }
+      // The build's new migrations, before the upload (O-165). A build without one sends nothing
+      // to D1 and reads no D1 credential.
+      let migrationsApplied: string[] | undefined;
+      if (set.worker && set.worker.migrations.length > 0) {
+        try {
+          migrationsApplied = await applyMigrations(
+            project.slug,
+            set.worker.migrations,
+          );
+        } catch (error) {
+          return deployRefusal(error);
+        }
       }
       try {
         // A build with a Worker carries the project's database over (O-160); one without, none.
@@ -948,21 +1208,13 @@ export function createCloudflareStagingTarget({
           set.worker ? [INHERITED_DATABASE_BINDING] : [],
         );
       } catch (error) {
-        // Anything but a refusal is a fault of this code: thrown, so the core records it as the
-        // target's error (`target_error`) instead of as Cloudflare's answer.
-        const { reason, text, detail } = refusalOf(CLOUDFLARE_REFUSALS, error);
-        return {
-          outcome: "refused",
-          cause: "infrastructure",
-          reason,
-          text,
-          ...(detail ? { detail } : {}),
-        };
+        return deployRefusal(error);
       }
       return {
         outcome: "deployed",
         files: set.files.length,
         ...(code ? { worker: code } : {}),
+        ...(migrationsApplied ? { migrationsApplied } : {}),
       };
     },
 

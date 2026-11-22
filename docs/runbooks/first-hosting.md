@@ -579,6 +579,27 @@ The Set project secret form, `f/foreman/set_project_secret` (ADR 0118 appendix D
 - The record: `factory.project_secret_names` holds one row per set, with the name, the time and the run's id, and no value.
 - Nothing shows the value: the run's logs and result hold no value, and Windmill's own masking shows `***` for it in any log line (it masks secrets of 8 characters or more).
 
+### D1 migrations' first real run
+
+A project's staging deploy applies the new `migrations/*.sql` files of its build to its staging database `<slug>-staging` with the D1 token before it uploads, and records each one in the database's `d1_migrations` table, the table Wrangler uses (ADR 0118 slice 8, O-165). A file is new when the table does not hold its name. It is built and tested with a fake Cloudflare. A build with no migration file makes no D1 call, so the rehearsal's and form-trial's deploys do not change.
+
+**Before it can run.** Approve the Windmill deploy of this change. The D1 token is already stored ("Adding a project", step 2); nothing else is new.
+
+**The first run,** on the throwaway project of "Adding a project" (`form-trial`), with a made-up table and no real data:
+
+1. Open a pull request on `didi-build/form-trial` that adds one file, `migrations/0001_trial_notes.sql`, holding `CREATE TABLE trial_notes (id INTEGER PRIMARY KEY, body TEXT);`. Its CI keeps the file in the `staging-site` build's `migrations/` folder. `**/migrations/**` is a privileged path, so the pull request waits for you: merge it.
+2. The push to main starts CI, and CI's build starts the staging deploy. In Windmill, the run of `f/foreman/deploy_staging` ends `deployed`, with `deploy.migrationsApplied` `["0001_trial_notes.sql"]`.
+3. In the Cloudflare dashboard, open D1, then `form-trial-staging`, then its console, and run `SELECT name, applied_at FROM d1_migrations;`: one row, with that name. `trial_notes` is among the tables.
+4. Merge the project's next change to main, or wait for the next one. Its deploy ends `deployed` with `deploy.migrationsApplied` `[]`, and the console still shows one row.
+
+**To verify, and record each result with the date in O-165** (never a token, an id or a row):
+
+- The D1 token's query: the deploy's four D1 calls (the database by name, the table, the names, the migration) answered, and the run's result names no refusal.
+- The table is Wrangler's: `PRAGMA table_info(d1_migrations);` in the console lists `id`, `name` and `applied_at`.
+- Applied once and recorded once, then nothing on the next deploy (steps 2 to 4).
+- Optional, on the throwaway project only, to see a failure: a pull request that adds `migrations/0002_half.sql` holding `CREATE TABLE trial_half (id INTEGER); CREATE TABL trial_broken (id INTEGER);`. Its deploy ends `refused_file_set` with `migration_failed`, text naming `0002_half.sql`, and `detail` with `migration_apply`, the status and the codes: record them (400 and 7500 expected; any other answer holds as infrastructure instead, which O-165 then needs to change). The console shows no `trial_half` table and no row for the file, so the migration rolled back as a whole. Remove or fix the file with a second pull request; its deploy applies it.
+- Nothing shows SQL: the run's result and logs in Windmill hold no SQL text, no row and no D1 message.
+
 ### Submitting a plan by hand (D-383)
 
 Until the planning chat has a front end of its own, Didi submits each plan with the form `f/foreman/submit_plan` instead of the chat's connector (D-383, O-129). The form checks and records the plan exactly as `POST /api/plans` would, by the planning chat's identity, and then takes the plan approval step in the same run, as the flow the state API starts would.

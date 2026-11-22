@@ -239,14 +239,14 @@ describe("flows/windmill.yaml (unit: repo guard, build plan M3.1)", () => {
     });
   });
 
-  it("names the D1 token's one permission, that only a project's setup reads it, and its Windmill path (D-445, O-160)", () => {
+  it("names the D1 token's one permission, that only a project's setup and a deploy's migrations read it, and its Windmill path (D-445, O-160, O-165)", () => {
     const token = description.resources.secrets.find(
       (s) => s.path === SECRET_PATHS.d1Token,
     ) as { holds?: string; written_by?: string; windmill_path?: string } | undefined;
     expect(SECRET_PATHS.d1Token).toBe("platform/cloudflare/d1-token");
     expect(token?.windmill_path).toBe("f/foreman/platform/cloudflare/d1-token");
     expect(token?.holds).toMatch(
-      /D1 Edit only, read only to set a project's staging database up/,
+      /D1 Edit only, read only to set a project's staging database up and to apply its migrations at a staging deploy/,
     );
     expect(token?.written_by).toMatch(/Didi, by hand \(2026-11-20, D-445\)/);
   });

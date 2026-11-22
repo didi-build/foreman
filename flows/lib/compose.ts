@@ -319,9 +319,10 @@ export function windmillStagingDeployCredentials(
 }
 
 /**
- * The D1 token and the account id (D-445, O-160), read by path each time a project is set up and
- * never kept or logged. Until the token is stored the read throws and the setup is refused as
- * `database_credential_unavailable` before anything is sent.
+ * The D1 token and the account id (D-445, O-160, O-165), read by path each time a project is set
+ * up or a staging deploy's build carries migrations, and never kept or logged. Until the token is
+ * stored the read throws, and the setup or the deploy is refused as
+ * `database_credential_unavailable` before anything is sent with it.
  */
 export function windmillD1Credentials(
   env: Pick<FlowEnvironment, "secret">,

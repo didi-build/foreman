@@ -33,8 +33,9 @@ export const SECRET_PATHS = {
   cloudflareAccountId: "platform/cloudflare/account-id",
   /**
    * The D1 token: one account-owned Cloudflare API token with D1 Edit only (D-445), for the
-   * projects' staging databases (O-160) and later their migrations (ADR 0118 slice 8). Stored by
-   * Didi on 2026-11-20; read only when a project is set up, with the account id above.
+   * projects' staging databases (O-160) and their migrations (ADR 0118 slice 8, O-165). Stored by
+   * Didi on 2026-11-20; read with the account id above when a project is set up, and when a
+   * staging deploy's build carries migrations.
    */
   d1Token: "platform/cloudflare/d1-token",
   /**
