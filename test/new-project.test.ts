@@ -8,7 +8,10 @@
 // sees. Synthetic data only; no real repository, token, database or GitHub call.
 import { describe, expect, it } from "vitest";
 
-import { createFakeStagingTarget } from "../src/adapters/deploy/fake.ts";
+import {
+  createFakeClusterTarget,
+  createFakeStagingTarget,
+} from "../src/adapters/deploy/fake.ts";
 import { createFakePublicNames } from "../src/adapters/dns/fake.ts";
 import { createFakeBootstrap } from "../src/adapters/github/bootstrap-fake.ts";
 import {
@@ -94,14 +97,17 @@ async function setup(options: { live?: boolean } = {}) {
     },
     clock: { now: () => new Date(T0) },
     ids,
-    stagingTarget: {
-      async setUp(request: Parameters<typeof target.setUp>[0]) {
-        order.push(request.dryRun ? "setUp dry run" : "setUp");
-        await next.beforeSetUp?.();
-        const answer = next.setUp;
-        next.setUp = null;
-        return answer ?? target.setUp(request);
+    targets: {
+      cloudflare: {
+        async setUp(request: Parameters<typeof target.setUp>[0]) {
+          order.push(request.dryRun ? "setUp dry run" : "setUp");
+          await next.beforeSetUp?.();
+          const answer = next.setUp;
+          next.setUp = null;
+          return answer ?? target.setUp(request);
+        },
       },
+      cluster: createFakeClusterTarget(),
     },
     projectSettings: {
       standardQuota: () => settings.standardQuota(),

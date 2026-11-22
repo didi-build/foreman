@@ -8,7 +8,10 @@
 // result, refusal, record or log. No network.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createFakeStagingTarget } from "../src/adapters/deploy/fake.ts";
+import {
+  createFakeClusterTarget,
+  createFakeStagingTarget,
+} from "../src/adapters/deploy/fake.ts";
 import {
   createFakeShortLivedVariables,
   FAKE_SECRET_ARG_PATH,
@@ -71,6 +74,7 @@ async function setup(options: { live?: boolean; project?: Project | null } = {})
   const registered = options.project === undefined ? project() : options.project;
   if (registered) await store.insertProject(registered);
   const target = createFakeStagingTarget();
+  const cluster = createFakeClusterTarget();
   const variables = createFakeShortLivedVariables();
   // Every effect, in the order the form makes it, and every put's arguments.
   const order: string[] = [];
@@ -88,15 +92,18 @@ async function setup(options: { live?: boolean; project?: Project | null } = {})
     },
     clock: { now: () => new Date(T0) },
     ids,
-    stagingTarget: {
-      putSecret: async (slug: string, name: string, value: string) => {
-        order.push(`put ${slug} ${name}`);
-        puts.push([slug, name, value]);
-        const answer = next.put;
-        next.put = null;
-        if (answer === "throw") throw new Error("the fake target broke");
-        return answer ?? target.putSecret(slug, name, value);
+    targets: {
+      cloudflare: {
+        putSecret: async (slug: string, name: string, value: string) => {
+          order.push(`put ${slug} ${name}`);
+          puts.push([slug, name, value]);
+          const answer = next.put;
+          next.put = null;
+          if (answer === "throw") throw new Error("the fake target broke");
+          return answer ?? target.putSecret(slug, name, value);
+        },
       },
+      cluster,
     },
     shortLivedVariables: {
       find: async (argument: string) => {
@@ -114,6 +121,7 @@ async function setup(options: { live?: boolean; project?: Project | null } = {})
     store,
     setting,
     target,
+    cluster,
     variables,
     order,
     puts,
@@ -382,6 +390,8 @@ describe("the Set project secret form (unit: ADR 0118 appendix D, D-440, O-163)"
         shortLivedVariable: { step: "deleted" },
       });
       expect(t.puts).toEqual([]);
+      // Routed by the row, the cluster target would refuse too; the form never asks it (O-166).
+      expect(t.cluster.refusedCalls).toEqual([]);
       await expectValueNowhere(t, result);
     }
   });

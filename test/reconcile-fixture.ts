@@ -10,6 +10,7 @@ import {
 import { validateContracts, type Contracts } from "../src/core/contracts.ts";
 import { GUARD_NAMES, GUARDS } from "../src/core/guards/index.ts";
 import { createMemoryStore } from "../src/core/memory-store.ts";
+import type { DeployTargetName } from "../src/core/project-entry.ts";
 import {
   reconcile,
   type BotProfile,
@@ -83,6 +84,8 @@ export async function createReconcileFixture(
     slug?: string;
     /** The project check's answer for `prod_env_protected` (false unless given). */
     prodRequiresApproval?: boolean;
+    /** Where the project's product runs (D-441): Cloudflare unless given. */
+    deployTarget?: DeployTargetName;
   } = {},
 ) {
   const store = options.store ?? createMemoryStore();
@@ -121,7 +124,7 @@ export async function createReconcileFixture(
     privilegedPathsExtra: [],
     prodRequiresApproval: options.prodRequiresApproval ?? false,
     stagingUrl: null,
-    deployTarget: "cloudflare",
+    deployTarget: options.deployTarget ?? "cloudflare",
     createdAt: clock.now(),
   });
 

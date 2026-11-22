@@ -159,3 +159,31 @@ export async function stagingCheckFailed(ctx: GuardContext): Promise<GuardCheck>
         `staging check failed for merge ${found.sha}${onServed(found)}`,
       );
 }
+
+/**
+ * Done at merge (D-449, O-166): the node's project deploys to Foreman's own cluster target
+ * (D-441), which has no staging, and the node's merge commit is recorded. A release of Foreman is
+ * production (D-007), so it waits for Didi's Platform apply after the item is Done.
+ */
+export async function mergedOnClusterTarget(ctx: GuardContext): Promise<GuardCheck> {
+  const name = "merged_on_cluster_target";
+  const project = await ctx.store.getProject(ctx.node.projectId);
+  if (project?.deployTarget !== "cluster") {
+    return result(
+      name,
+      false,
+      [],
+      "the project does not deploy to Foreman's own cluster, so its staging check decides",
+    );
+  }
+  const merge = latest(
+    await ctx.store.listEvidence({ nodeId: ctx.node.id, kind: "merge_commit" }),
+  );
+  if (!merge?.commitSha) return result(name, false, [], "no merge commit recorded");
+  return result(
+    name,
+    true,
+    [merge.id],
+    `merged as ${merge.commitSha} on Foreman's own cluster target: Done at merge (D-449)`,
+  );
+}

@@ -142,6 +142,7 @@ import { createPullRequestCloses, type CloseStatus } from "../../src/core/pr-clo
 import { isCloseTaskType } from "../../src/core/task-types.ts";
 import { cancelRun } from "./cancel-runs.ts";
 import {
+  firstRunsAfterStaging,
   startFreedSlots,
   startQaRuns,
   startReadyRuns,
@@ -480,7 +481,11 @@ export type AfterRunEnd = AfterReport &
     triageAnswer?: TriageRecord;
     /** After a Triage run: the idea's re-run, or its escalation to the Council (D-262). */
     triage?: TriagePassStep[];
-    /** After a Triage run's handoff: the first runs of the items it created ready (D-329). */
+    /**
+     * After a Triage run's handoff: the first runs of the items it created ready (D-329). After a
+     * QA run whose report merged a cluster-target item and moved it to Done at merge: the first
+     * runs of the items that Done freed (D-449, O-166).
+     */
     firstRuns?: ReadyRunStart[];
     /** After a run on an item a cancel waits on: the cancel's next step (D-308). */
     cancels?: CancelStep[];
@@ -701,6 +706,9 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       if (done) opened.push(done);
     }
     const asked = opened.filter((o) => o.opened);
+    // A cluster-target item the merge moved to Done at merge frees its items now (D-449).
+    const doneAtMerge = after.move.requested ? after.move.doneAtMerge : undefined;
+    const freed = doneAtMerge ? await firstRunsAfterStaging(deps, [doneAtMerge]) : [];
     const stillNeededSteps =
       asked.length > 0
         ? {
@@ -719,6 +727,7 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       ...(stillNeededSteps ? { stillNeeded: stillNeededSteps } : {}),
       ...(rerun ? { visualRerun: rerun } : {}),
       ...(qaRuns.length > 0 ? { qaRuns } : {}),
+      ...(freed.length > 0 ? { firstRuns: freed } : {}),
       ...(cancels ? { cancels } : {}),
     };
   }

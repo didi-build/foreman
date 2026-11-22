@@ -27,7 +27,10 @@ These three are proposals that need Didi's confirmation with the rest of the sch
 | privileged_paths_extra | jsonb       | Additions to the Launchpad default list                      |
 | prod_requires_approval | boolean     | Confirmed by a check, not assumed. Used by the merge guard   |
 | staging_url            | text null   |                                                              |
+| deploy_target          | text        | `cloudflare` or `cluster`, `cloudflare` by default (0028)    |
 | created_at             | timestamptz |                                                              |
+
+Where each project's product runs, `deploy_target` (migration 0028, D-441, O-161), is the target the runner routes the project's deploy, setup and secrets to (ADR 0118 slice 9, O-166). The New project form records `cloudflare` for every project. Foreman's own row, on the `cluster` target, comes from migration 0031 (O-166): slug `foreman`, name `Foreman`, repo `didi-build/foreman`, no Linear project or gallery override, no extra privileged paths, `prod_requires_approval` true, no `staging_url` (Foreman has no staging, D-449), and a random id. The migration inserts it only while no row has the slug `foreman` and no other row names `didi-build/foreman`, and never changes a row it finds: one that differs gets a NOTICE naming what differs. No runner code updates a project row.
 
 ## nodes
 

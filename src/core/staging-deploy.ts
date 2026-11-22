@@ -46,6 +46,19 @@
 // those items. So a missed event, an infrastructure refusal and an item that reached Verifying on
 // staging after its deploy are each retried once per pass.
 //
+// Routing by target (ADR 0118 slice 9, D-441, O-166): the deploy goes to the target the project's
+// store row names (`deployTarget`, migration 0028), each given by name (`targets`). Everything
+// above is the `cloudflare` target's path, unchanged. A `cluster` project (Foreman itself, appendix
+// G) has no staging: its items are Done at merge (D-449, ./staging.ts), so its deploy fetches no
+// `staging-site` build, calls no Cloudflare, records nothing on an item and runs no check. After
+// steps 1 and 2's checks of the CI run, the cluster target reads the Images workflow's run for the
+// commit and answers `awaiting_apply` (its images were built and wait for Didi's Platform apply of
+// the new pins) or refuses with fixed text. Every such refusal is infrastructure: the item is Done
+// already, so nothing counts and nothing moves. The answer is the flow's result only, as for any
+// deploy that covers no item (N-104), and the daily check reads the waiting upgrade from GitHub
+// itself (./cluster-release.ts). The backstop leaves cluster projects out: none of their items
+// waits for a deploy.
+//
 // Plain logic over injected ports (D-162): no Cloudflare, HTTP or GitHub code here (essential 9).
 import {
   DEPLOY_REFUSAL_TEXT_MAX_CHARS,
@@ -58,7 +71,12 @@ import {
   PREVIEW_CHECK_WORKFLOW,
   PREVIEW_CHECK_WORKFLOW_FILE,
 } from "./preview-check.ts";
-import type { DeployTarget, SecretNames } from "./deploy-target.ts";
+import type {
+  ClusterDeploy,
+  ClusterDeployTarget,
+  DeployTarget,
+  SecretNames,
+} from "./deploy-target.ts";
 import {
   createCoverReader,
   createStaging,
@@ -277,6 +295,11 @@ export type StagingDeployStep =
   /** Dry run: what would be deployed. Nothing was fetched, uploaded or recorded. */
   | "would_deploy"
   | "deployed"
+  /**
+   * A cluster-target project (D-449): the commit's images were built and wait for Didi's
+   * Platform apply of the new pins. Nothing was deployed or recorded.
+   */
+  | "awaiting_apply"
   | "refused_file_set"
   | "refused_infrastructure";
 
@@ -292,6 +315,8 @@ export interface StagingDeployResult {
   detail?: DeployRefusalDetail;
   /** For a deploy: how many files the site has. */
   files?: number;
+  /** For `awaiting_apply`: the Images workflow's run that built the commit's images. */
+  images?: { runId: number };
   /** For a deploy with a Worker module: the secret names it requires (O-159). */
   worker?: WorkerDeploy;
   /** For a deploy of a build with D1 migrations: the names it applied, in order (O-165). */
@@ -322,10 +347,20 @@ export interface StagingBackstopStep {
   deploy?: StagingDeployResult;
 }
 
+/**
+ * The deploy targets by name (D-441, O-166), as the composition gives them; a project's
+ * `deployTarget` picks one.
+ */
+export interface StagingDeployTargets {
+  /** The deploy, and the secret names the required-secret check compares with (D-448). */
+  readonly cloudflare: StagingTarget & Pick<DeployTarget, "listSecretNames">;
+  /** The release record of a project on Foreman's own cluster (appendix G). */
+  readonly cluster: Pick<ClusterDeployTarget, "deploy">;
+}
+
 export interface StagingDeployDeps extends StagingDeps {
   builds: StagingBuilds;
-  /** The deploy, and the secret names the required-secret check compares with (D-448). */
-  target: StagingTarget & Pick<DeployTarget, "listSecretNames">;
+  targets: StagingDeployTargets;
 }
 
 /**
@@ -367,7 +402,7 @@ export async function pendingDeployError(
 }
 
 export function createStagingDeploys(deps: StagingDeployDeps) {
-  const { store, clock, ids, github, builds, target } = deps;
+  const { store, clock, ids, github, builds, targets } = deps;
   const staging = createStaging(deps);
 
   const killSwitchOn = async () =>
@@ -489,7 +524,7 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     if (worker.requiredSecrets.length === 0) return null;
     let listed: SecretNames | null;
     try {
-      listed = await target.listSecretNames(project.slug);
+      listed = await targets.cloudflare.listSecretNames(project.slug);
     } catch {
       listed = null;
     }
@@ -513,6 +548,23 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     };
   }
 
+  /**
+   * The cluster target's answer for the run's commit (O-166): no build is fetched. Every error
+   * becomes an infrastructure refusal, and so does any refusal it gives (see the header).
+   */
+  async function release(project: Project, run: BuildRun): Promise<ClusterDeploy> {
+    let answer: ClusterDeploy;
+    try {
+      answer = await targets.cluster.deploy({ project, commitSha: run.headSha });
+    } catch {
+      return infrastructure("target_error");
+    }
+    if (answer.outcome === "awaiting_apply") {
+      return { outcome: "awaiting_apply", images: { runId: answer.images.runId } };
+    }
+    return { ...answer, cause: INFRASTRUCTURE_CAUSE };
+  }
+
   /** The upload, from the run's artifact. Every error becomes an infrastructure refusal. */
   async function upload(project: Project, run: BuildRun): Promise<StagingUpload> {
     let archive: Uint8Array | null;
@@ -523,7 +575,7 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
     }
     if (archive === null) return infrastructure("artifact_missing");
     try {
-      return await target.deploy({
+      return await targets.cloudflare.deploy({
         project,
         commitSha: run.headSha,
         archive,
@@ -568,6 +620,22 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
       } catch {
         return { ...base, step: "would_deploy", commitSha, problem: COVER_UNREADABLE };
       }
+    }
+
+    // A cluster-target project: its images' release, recorded nowhere (see the header).
+    if (project.deployTarget === "cluster") {
+      const answer = await release(project, run);
+      if (answer.outcome === "awaiting_apply") {
+        return { ...base, step: "awaiting_apply", commitSha, images: answer.images };
+      }
+      return {
+        ...base,
+        step: "refused_infrastructure",
+        commitSha,
+        reason: answer.reason,
+        text: answer.text,
+        ...(answer.detail ? { detail: answer.detail } : {}),
+      };
     }
 
     // Deploy, then record, then check (D-356).
@@ -656,6 +724,8 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
       if (await killSwitchOn()) return [];
       const steps: StagingBackstopStep[] = [];
       for (const project of await store.listProjects()) {
+        // A cluster-target item is Done at merge (D-449): none waits for a deploy.
+        if (project.deployTarget === "cluster") continue;
         const waiting = await waitingMerges(project);
         if (waiting.length === 0) continue;
         const repo = project.repo;

@@ -3,6 +3,7 @@
 // everything QA's pass needs on a head commit. Fake data only.
 import type { GitHub } from "../src/core/github.ts";
 import { createMerges } from "../src/core/merge.ts";
+import type { DeployTargetName } from "../src/core/project-entry.ts";
 import type { Node, Store, Track } from "../src/core/store.ts";
 import {
   createReconcileFixture,
@@ -28,10 +29,13 @@ export async function setupMerge(
     pr?: number;
     /** The project's `prodRequiresApproval`; true unless a test turns it off. */
     prodRequiresApproval?: boolean;
+    /** Where the project's product runs (D-441): Cloudflare unless given. */
+    deployTarget?: DeployTargetName;
   } = {},
 ) {
   const f = await createReconcileFixture({
     prodRequiresApproval: options.prodRequiresApproval ?? true,
+    ...(options.deployTarget ? { deployTarget: options.deployTarget } : {}),
     ...(options.store ? { store: options.store } : {}),
     ...(options.idPrefix ? { idPrefix: options.idPrefix } : {}),
     ...(options.slug ? { slug: options.slug } : {}),

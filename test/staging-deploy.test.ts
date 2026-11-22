@@ -61,15 +61,18 @@ function logged(t: T) {
       },
     },
     builds: t.builds,
-    target: {
-      deploy: async (request) => {
-        log.push("upload");
-        return t.target.deploy(request);
+    targets: {
+      cloudflare: {
+        deploy: async (request) => {
+          log.push("upload");
+          return t.target.deploy(request);
+        },
+        listSecretNames: async (slug) => {
+          log.push("list secret names");
+          return t.target.listSecretNames(slug);
+        },
       },
-      listSecretNames: async (slug) => {
-        log.push("list secret names");
-        return t.target.listSecretNames(slug);
-      },
+      cluster: t.cluster,
     },
   });
   return { deploys, log };
@@ -212,7 +215,7 @@ describe("the runner's staging deploy (unit: D-353, D-356, O-116)", () => {
       ...t.deps,
       checker: t.checker,
       builds,
-      target: t.target,
+      targets: { cloudflare: t.target, cluster: t.cluster },
     });
     expect((await deploys.deployRun(REPO, 701)).step).toBe("not_a_main_build");
     expect(t.target.deploys).toEqual([]);
@@ -530,7 +533,7 @@ describe("a refused staging deploy (unit: D-225 rule 2, O-116, N-103)", () => {
       },
       checker: t.checker,
       builds: t.builds,
-      target: t.target,
+      targets: { cloudflare: t.target, cluster: t.cluster },
     });
     expect(await deploys.deployRun(REPO, runId)).toMatchObject({
       step: "deployed",
@@ -647,7 +650,7 @@ describe("the reconcile backstop (unit: O-116)", () => {
       },
       checker: t.checker,
       builds: t.builds,
-      target: t.target,
+      targets: { cloudflare: t.target, cluster: t.cluster },
     });
     t.github.putCommit(REPO, LATER, [t.mergeSha]);
     t.github.setBranchHead(REPO, "main", LATER);
@@ -782,7 +785,10 @@ describe("the required-secret check before a Worker is uploaded (unit: D-448, O-
         ...t.deps,
         checker: t.checker,
         builds: t.builds,
-        target: { deploy: t.target.deploy, listSecretNames },
+        targets: {
+          cloudflare: { deploy: t.target.deploy, listSecretNames },
+          cluster: t.cluster,
+        },
       });
       const result = await deploys.deployRun(REPO, runId);
       expect(result).toMatchObject({

@@ -32,10 +32,12 @@
 import {
   isProductSecretName,
   isProductSecretValue,
-  type DeployTarget,
+  projectTargetOf,
+  type ProjectTarget,
   type SecretPut,
 } from "./deploy-target.ts";
 import type { Clock, IdSource } from "./library.ts";
+import type { DeployTargetName } from "./project-entry.ts";
 import { PROJECT_SLUG } from "./project-repository.ts";
 import { DEPLOY_REFUSALS, type DeployRefusalDetail } from "./staging-deploy.ts";
 import type { Store } from "./store.ts";
@@ -75,8 +77,12 @@ export interface SetProjectSecretDeps {
   store: Pick<Store, "getSetting" | "getProjectBySlug" | "insertProjectSecretName">;
   clock: Clock;
   ids: IdSource;
-  /** The Cloudflare deploy target's secret put, on `<slug>-staging` only (O-160). */
-  stagingTarget: Pick<DeployTarget, "putSecret">;
+  /**
+   * The deploy targets by name (O-166): the project's row picks one. The form takes only a
+   * Cloudflare-target project (`not_cloudflare`), whose secret put is on `<slug>-staging` only
+   * (O-160); the cluster target refuses a put anyway.
+   */
+  targets: { readonly [name in DeployTargetName]: Pick<ProjectTarget, "putSecret"> };
   shortLivedVariables: ShortLivedVariables;
 }
 
@@ -272,7 +278,7 @@ export function createSetProjectSecretForm(deps: SetProjectSecretDeps) {
       // 5. The switches again, then the value on the staging Worker.
       if ((await killSwitchOn()) || (await dryRunOn()))
         return refuse("switch_turned_on");
-      const put: SecretPut = await deps.stagingTarget
+      const put: SecretPut = await projectTargetOf(deps.targets, project)
         .putSecret(slug, name, value)
         .catch((): SecretPut => ({
           outcome: "refused",

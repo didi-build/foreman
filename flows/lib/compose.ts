@@ -41,8 +41,10 @@ import {
   type D1Credentials,
   type StagingDeployCredentials,
 } from "../../src/adapters/deploy/cloudflare-staging.ts";
+import { createClusterTarget } from "../../src/adapters/deploy/cluster-target.ts";
 import { createMarkerStagingChecker } from "../../src/adapters/deploy/staging-checker.ts";
 import { createGitHubAddOnlyApplies } from "../../src/adapters/github/add-only-applies.ts";
+import { createGitHubClusterReleases } from "../../src/adapters/github/cluster-releases.ts";
 import {
   createGitHubAppJwt,
   parseGitHubId,
@@ -91,6 +93,7 @@ import {
   type SettingsWriteTokens,
 } from "../../src/adapters/github/settings-write-tokens.ts";
 import { createGitHubStagingBuilds } from "../../src/adapters/github/staging-builds.ts";
+import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
 import {
   createWorkflowStartTokens,
   type WorkflowStartTokens,
@@ -122,7 +125,12 @@ import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { ShortLivedVariables } from "../../src/core/set-project-secret.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
-import type { DeployTarget } from "../../src/core/deploy-target.ts";
+import type {
+  ClusterDeployTarget,
+  DeployTarget,
+  DeployTargets,
+} from "../../src/core/deploy-target.ts";
+import type { ClusterReleases } from "../../src/core/cluster-release.ts";
 import type { StagingBuilds } from "../../src/core/staging-deploy.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
@@ -192,15 +200,28 @@ export interface FlowDeps extends ReconcileDeps {
    */
   stagingBuilds: StagingBuilds;
   /**
-   * The deploy adapter's staging target (ADR 0111), the `cloudflare` deploy target (O-159): the
-   * file set's check and Cloudflare's direct upload to `<slug>-staging` (O-116), with the build's
-   * Worker module and its inherited `DB` when it has one. Refuses on its credential until Didi
-   * creates the staging deploy token (D-353, runbook step 16), so nothing is uploaded. It also
-   * sets a new project up with the D1 token for the New project form (O-160, O-161), puts the Set
-   * project secret form's product secrets and lists their names for the deploy's required-secret
-   * check (D-440, D-448, O-163).
+   * The deploy targets by name (ADR 0118 appendix G, D-441, O-166); a project's store row picks
+   * one for its deploy, setup and secrets.
+   *
+   * `cloudflare`, the deploy adapter's staging target (ADR 0111, O-159): the file set's check and
+   * Cloudflare's direct upload to `<slug>-staging` (O-116), with the build's Worker module and its
+   * inherited `DB` when it has one. Refuses on its credential until Didi creates the staging
+   * deploy token (D-353, runbook step 16), so nothing is uploaded. It also sets a new project up
+   * with the D1 token for the New project form (O-160, O-161), puts the Set project secret form's
+   * product secrets and lists their names for the deploy's required-secret check (D-440, D-448,
+   * O-163).
+   *
+   * `cluster`, Foreman's own: it reads the Images workflow's run for the merged commit with the
+   * runner App's `actions: read` token, applies nothing anywhere and calls no Cloudflare, and
+   * refuses setup and secrets (O-166).
    */
-  stagingTarget: DeployTarget;
+  deployTargets: DeployTargets;
+  /**
+   * Foreman's newest Images build and Platform apply, for the daily check's "Foreman upgrade
+   * waiting for your Platform apply" (D-449, O-166), read with the runner App's `actions: read`
+   * and `contents: read` tokens for Foreman's repository (D-267, O-125).
+   */
+  clusterReleases: ClusterReleases;
   /**
    * The Set project secret form's short-lived secret variable (ADR 0118 appendix D, O-163): its
    * path from the job's own record, and its deletion, with the job's own token.
@@ -348,6 +369,25 @@ export function runnerStagingTarget(
     d1Credentials,
     http: createCloudflareHttp(),
   });
+}
+
+/**
+ * Foreman's own cluster target (ADR 0118 appendix G, O-166): reads the Images workflow's run for a
+ * commit with the runner App's `actions: read` token for that one repository (D-267), through the
+ * same two reads GitHub ingestion makes. It never reaches the cluster or Cloudflare.
+ */
+export function runnerClusterTarget(readTokens: RunnerAppTokens): ClusterDeployTarget {
+  return createClusterTarget({
+    workflows: createGitHubWorkflowReads({
+      tokens: readTokens,
+      http: createGitHubHttp(),
+    }),
+  });
+}
+
+/** Foreman's newest build and apply on GitHub, with read tokens only (D-449, O-166). */
+export function runnerClusterReleases(readTokens: RunnerAppTokens): ClusterReleases {
+  return createGitHubClusterReleases({ tokens: readTokens, http: createGitHubHttp() });
 }
 
 /** The GitHub Apps' token ports (D-365, D-368, O-125). */
@@ -728,10 +768,14 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     runtime: lazyRuntime(async () => createKubernetesRuntime(await clusterParts())),
     stagingChecker: createMarkerStagingChecker(),
     stagingBuilds: runnerStagingBuilds(apps.runner),
-    stagingTarget: runnerStagingTarget(
-      windmillStagingDeployCredentials(env),
-      windmillD1Credentials(env),
-    ),
+    deployTargets: {
+      cloudflare: runnerStagingTarget(
+        windmillStagingDeployCredentials(env),
+        windmillD1Credentials(env),
+      ),
+      cluster: runnerClusterTarget(apps.runner),
+    },
+    clusterReleases: runnerClusterReleases(apps.runner),
     shortLivedVariables: windmillShortLivedVariables(),
     screenshots: runnerScreenshotBundles(apps.runner),
     repoFolders: runnerRepoFolders(apps.runner),

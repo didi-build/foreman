@@ -404,6 +404,8 @@ That is what "Foreman upgrades Foreman" means at first: Foreman's agents do the 
 
 A cluster-target item is Done at merge (D-449).
 
+Slice 9 built this (O-166). The composition gives each target to the core by name, and the project's store row picks it for the deploy, the setup and the secrets. The cluster adapter (`src/adapters/deploy/cluster-target.ts`) reads the Images run for the merged commit with the runner App's `actions: read` token and answers `awaiting_apply` or a fixed infrastructure refusal; it has no port to Cloudflare or the cluster. Done at merge is a second runner-only way from Verifying on staging into Done, guarded by `merged_on_cluster_target`, beside the staging check's, which became runner-only with it (D-307's two ways in). The daily check reads the release from GitHub: the newest successful Images run's platform images, against the pins in `production.json` at the newest Platform run that left the cluster matching its commit. Foreman's row comes from migration 0031; the stack and the add-only rule already handled a cluster-target file (slices 1 and 2).
+
 ### H. Costs in detail
 
 All prices and limits were read on Cloudflare's pages on 2026-11-20 (section I).

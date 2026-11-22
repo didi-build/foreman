@@ -77,7 +77,9 @@ type LibraryOf = Awaited<ReturnType<typeof setup>>["library"];
 /**
  * Walks the node through `states`. The way back out of an escalation is a runner-only move
  * (O-54), so a step from an escalated state to a working one is asked for as the escalation's
- * runner step asks for it. `from` is the node's state before the first step.
+ * runner step asks for it, and the way into Done as the staging step asks for it, naming the
+ * staging check's of its two runner-only ways (D-307, D-449, O-166). `from` is the node's state
+ * before the first step.
  */
 async function walk(
   library: LibraryOf,
@@ -96,6 +98,12 @@ async function walk(
       actor: RUNNER,
       blockedReason: toState.startsWith("escalated") ? "stuck" : undefined,
       ...(back ? { runnerOnly: true as const } : {}),
+      ...(toState === "done"
+        ? {
+            runnerOnly: true as const,
+            guardedBy: "staging_check_on_merge_commit",
+          }
+        : {}),
     });
     expect(result.outcome, `move to ${toState}: ${result.reason ?? ""}`).toBe(
       "applied",

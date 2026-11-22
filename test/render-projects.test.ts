@@ -30,6 +30,7 @@ import {
 import {
   PROJECT_ENTRY_REFUSALS,
   isProjectEntrySlug,
+  parseProjectEntry,
   parseProjectQuota,
 } from "../src/core/project-entry.ts";
 import { PROJECT_SLUG } from "../src/core/project-repository.ts";
@@ -331,6 +332,59 @@ describe("the starting files Didi commits (unit: repo guard, first-hosting runbo
     ]);
     expect(step).toContain("`foreman-projects.json`");
     expect(step).toContain("`projects/rehearsal.json`");
+  });
+});
+
+describe("Foreman's own project file Didi commits (unit: repo guard, runbook step 20, ADR 0118 slice 9, O-166)", () => {
+  const foremanFile = (): string => {
+    const runbook = readFileSync("docs/runbooks/first-hosting.md", "utf8");
+    const start = runbook.indexOf("## 20. Foreman as its own project");
+    expect(start).toBeGreaterThan(0);
+    const step = runbook.slice(start, runbook.indexOf("\n## ", start + 1));
+    const blocks = [...step.matchAll(/^ {3}```json\n([\s\S]*?)^ {3}```$/gm)].map((m) =>
+      (m[1] ?? "").replace(/^ {3}/gm, ""),
+    );
+    expect(blocks).toHaveLength(1);
+    return blocks[0] ?? "";
+  };
+
+  it("is a valid project file on the cluster target with the standard size, as written", () => {
+    const parsed = parseProjectEntry("foreman.json", foremanFile());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.entry).toMatchObject({
+      slug: "foreman",
+      displayName: "Foreman",
+      collectsPersonalData: true,
+      deployTarget: "cluster",
+      createdOn: "2026-10-28",
+    });
+    expect(parsed.entry.quota).toEqual(settingsFile().projectStandardQuota);
+  });
+
+  it("renders agents-foreman like any project's, and the run watcher watches it", () => {
+    const dir = checkout({
+      "rehearsal.json": fixtureFile("rehearsal.json"),
+      "foreman.json": foremanFile(),
+    });
+    const list = render(dir);
+    expect(watcherNamespaces(list)).toBe("agents-foreman,agents-rehearsal");
+    const ofForeman = list.items.filter(
+      (o) =>
+        o.metadata.namespace === "agents-foreman" ||
+        o.metadata.name === "agents-foreman",
+    );
+    expect(ofForeman.map((o) => o.kind).sort()).toEqual(
+      list.items
+        .filter(
+          (o) =>
+            o.metadata.namespace === "agents-rehearsal" ||
+            o.metadata.name === "agents-rehearsal",
+        )
+        .map((o) => o.kind)
+        .sort(),
+    );
+    expect(ofForeman).toHaveLength(7);
   });
 });
 

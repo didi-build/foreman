@@ -16,8 +16,10 @@ import {
 } from "../../flows/lib/compose.ts";
 import {
   createFakeStagingBuilds,
+  createFakeClusterTarget,
   createFakeStagingTarget,
   type FakeStagingBuilds,
+  type FakeClusterTarget,
   type FakeStagingTarget,
 } from "../../src/adapters/deploy/fake.ts";
 import { createFakePublicNames } from "../../src/adapters/dns/fake.ts";
@@ -40,6 +42,11 @@ import type {
   AddOnlyApplies,
   AddOnlyApplyJob,
 } from "../../src/core/add-only-applies.ts";
+import type {
+  ClusterReleases,
+  ImagesBuild,
+  PlatformApplied,
+} from "../../src/core/cluster-release.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
@@ -121,6 +128,36 @@ function createFakeAddOnlyApplies(): FakeAddOnlyApplies {
   return fake;
 }
 
+/** Foreman's newest build and apply the daily check reads from GitHub (O-166), as the test sets them. */
+export interface FakeClusterReleases extends ClusterReleases {
+  build: ImagesBuild | null;
+  applied: PlatformApplied | null;
+  /** Makes each read throw, as a refused token or a failed call would. */
+  fail: boolean;
+  /** The repositories each read was asked for. */
+  reads: string[];
+}
+
+function createFakeClusterReleases(): FakeClusterReleases {
+  const fake: FakeClusterReleases = {
+    build: null,
+    applied: null,
+    fail: false,
+    reads: [],
+    async latestBuild(repo) {
+      fake.reads.push(repo);
+      if (fake.fail) throw new Error("the fake GitHub refused the read");
+      return fake.build;
+    },
+    async latestApplied(repo) {
+      fake.reads.push(repo);
+      if (fake.fail) throw new Error("the fake GitHub refused the read");
+      return fake.applied;
+    },
+  };
+  return fake;
+}
+
 /**
  * The composition's real GitHub App token ports (O-125) with no App key stored: each App's first
  * token fails on reading its key, so nothing is signed or sent. Its HTTP ports refuse and record,
@@ -161,11 +198,17 @@ export function appTokensWithoutKeys() {
 export function flowDepsFor(
   base: ReconcileDeps,
   stagingChecker: StagingChecker = createFakeStagingChecker(),
-  staging: { builds?: FakeStagingBuilds; target?: FakeStagingTarget } = {},
+  staging: {
+    builds?: FakeStagingBuilds;
+    target?: FakeStagingTarget;
+    cluster?: FakeClusterTarget;
+  } = {},
 ) {
   const runtime = createFakeRuntime();
   const stagingBuilds = staging.builds ?? createFakeStagingBuilds();
   const stagingTarget = staging.target ?? createFakeStagingTarget();
+  const clusterTarget = staging.cluster ?? createFakeClusterTarget();
+  const clusterReleases = createFakeClusterReleases();
   const shortLivedVariables = createFakeShortLivedVariables();
   const screenshots = createFakeScreenshotBundles();
   const repoFolders = createFakeRepoFolders();
@@ -187,7 +230,8 @@ export function flowDepsFor(
     runtime,
     stagingChecker,
     stagingBuilds,
-    stagingTarget,
+    deployTargets: { cloudflare: stagingTarget, cluster: clusterTarget },
+    clusterReleases,
     shortLivedVariables,
     screenshots,
     repoFolders,
@@ -230,6 +274,8 @@ export function flowDepsFor(
     runtime,
     stagingBuilds,
     stagingTarget,
+    clusterTarget,
+    clusterReleases,
     shortLivedVariables,
     screenshots,
     repoFolders,
@@ -258,6 +304,8 @@ export async function createFlowFixture() {
     runtime,
     stagingBuilds,
     stagingTarget,
+    clusterTarget,
+    clusterReleases,
     shortLivedVariables,
     screenshots,
     repoFolders,
@@ -295,6 +343,8 @@ export async function createFlowFixture() {
     stagingChecker,
     stagingBuilds,
     stagingTarget,
+    clusterTarget,
+    clusterReleases,
     shortLivedVariables,
     screenshots,
     repoFolders,

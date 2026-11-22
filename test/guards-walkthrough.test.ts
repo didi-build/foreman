@@ -159,10 +159,35 @@ describe("code track with the real guards (integration: contracts, library and g
     const pass = await move("verifying_on_staging");
     expect(pass.outcome, JSON.stringify(pass.guardReport)).toBe("applied");
 
-    expect((await move("done")).reason).toBe("guard_failed");
+    // Into Done only the staging step asks, naming the staging check's of the two runner-only
+    // ways (D-307, D-449, O-166); any other request is refused before any guard is read.
+    expect((await move("done")).reason).toBe("runner_only_move");
+    const intoDone = () =>
+      library.requestTransition({
+        nodeId: node.id,
+        toState: "done",
+        trigger: EVENT,
+        actor: RUNNER,
+        runnerOnly: true,
+        guardedBy: "staging_check_on_merge_commit",
+      });
+    expect((await intoDone()).reason).toBe("guard_failed");
     await record("merge_commit", MERGE, { pr: 12 });
     await record("staging_check", MERGE, { pass: true });
-    expect((await move("done")).outcome).toBe("applied");
+    // A Cloudflare-target item never takes the way into Done at merge (D-449).
+    const atMerge = await library.requestTransition({
+      nodeId: node.id,
+      toState: "done",
+      trigger: EVENT,
+      actor: RUNNER,
+      runnerOnly: true,
+      guardedBy: "merged_on_cluster_target",
+    });
+    expect(atMerge.reason).toBe("guard_failed");
+    expect(atMerge.guardReport.map((c) => [c.name, c.pass])).toEqual([
+      ["merged_on_cluster_target", false],
+    ]);
+    expect((await intoDone()).outcome).toBe("applied");
     expect((await store.getNode(node.id))?.state).toBe("done");
   });
 });

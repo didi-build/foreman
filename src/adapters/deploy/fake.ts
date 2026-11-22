@@ -5,8 +5,16 @@
 // with a Worker module, so the deploy first asks the request's `beforeWorkerUpload` (D-448, O-163)
 // and answers its refusal instead when it gives one. It sets a project up once, as the real target
 // finds before it creates, and keeps the names of the secrets put, never a value (O-160). The
-// builds hold runs and their `staging-site` archives. No network, no Cloudflare and no GitHub.
-import type { DeployTarget, ProjectSetUpRequest } from "../../core/deploy-target.ts";
+// builds hold runs and their `staging-site` archives. The fake cluster target (O-166) records each
+// deploy it is asked for and answers what the test sets (the release waiting by default), and
+// refuses setup and secrets as the real one does. No network, no Cloudflare and no GitHub.
+import type {
+  ClusterDeploy,
+  ClusterDeployTarget,
+  DeployTarget,
+  ProjectSetUpRequest,
+} from "../../core/deploy-target.ts";
+import { CLUSTER_TARGET_REFUSALS } from "./cluster-target.ts";
 import type {
   BuildRun,
   StagingBuilds,
@@ -152,6 +160,59 @@ export function createFakeStagingBuilds(): FakeStagingBuilds {
       reads.push(`siteArchive ${repo}#${runId}`);
       fail("siteArchive");
       return archives.get(`${repo}#${runId}`) ?? null;
+    },
+  };
+}
+
+export interface FakeClusterTarget extends ClusterDeployTarget {
+  /** Each deploy asked for, in order: the project's slug and the commit. */
+  readonly deploys: { slug: string; commitSha: string }[];
+  /** What the next deploys answer, in order; the release waiting on run 1 once it is empty. */
+  readonly answers: (ClusterDeploy | "throw")[];
+  /** How many setup and secret calls were made: each is refused. */
+  readonly refusedCalls: string[];
+}
+
+/** A fake of Foreman's own cluster target (ADR 0118 appendix G): nothing is applied anywhere. */
+export function createFakeClusterTarget(): FakeClusterTarget {
+  const deploys: FakeClusterTarget["deploys"] = [];
+  const answers: FakeClusterTarget["answers"] = [];
+  const refusedCalls: string[] = [];
+  return {
+    name: "cluster",
+    deploys,
+    answers,
+    refusedCalls,
+    async deploy({ project, commitSha }) {
+      deploys.push({ slug: project.slug, commitSha });
+      const next = answers.shift();
+      if (next === "throw") throw new Error("the fake cluster target broke");
+      return next ?? { outcome: "awaiting_apply", images: { runId: 1 } };
+    },
+    async setUp() {
+      refusedCalls.push("setUp");
+      return {
+        outcome: "refused",
+        step: "check",
+        reason: "no_setup",
+        text: CLUSTER_TARGET_REFUSALS.no_setup,
+      };
+    },
+    async putSecret() {
+      refusedCalls.push("putSecret");
+      return {
+        outcome: "refused",
+        reason: "no_secrets",
+        text: CLUSTER_TARGET_REFUSALS.no_secrets,
+      };
+    },
+    async listSecretNames() {
+      refusedCalls.push("listSecretNames");
+      return {
+        outcome: "refused",
+        reason: "no_secrets",
+        text: CLUSTER_TARGET_REFUSALS.no_secrets,
+      };
     },
   };
 }

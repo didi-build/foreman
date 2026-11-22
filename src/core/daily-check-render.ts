@@ -34,6 +34,7 @@ import {
   type StalledSection,
 } from "./daily-check.ts";
 import type { CancelHow } from "./cancel.ts";
+import { clusterReleaseLine } from "./cluster-release.ts";
 import { JOB_FAILURE_TEXT } from "./model-eval.ts";
 import type { ModelEvalChange, ModelEvalSummary } from "./model-eval-summary.ts";
 import type { CloseStatus } from "./pr-close.ts";
@@ -56,6 +57,8 @@ interface Section {
 
 interface CheckDocument {
   intro: Line[];
+  /** Foreman's release waiting for Didi's Platform apply, or that it could not be read (D-449). */
+  releases: Line[];
   /** The applies made without approval (D-378, O-158), or that they could not be read. */
   applies: Line[];
   /** Projects whose setup failed, and those whose setup could not be read (O-114). */
@@ -475,6 +478,10 @@ function documentOf(check: DailyCheck): CheckDocument {
       `Bootstrap's runs could not be read for: ${check.projectSetup.unreadable.join(", ")}. Whether their setup finished is not shown.`,
     ]);
   }
+  const releases: Line[] = (check.clusterReleases ?? []).flatMap((r) => {
+    const text = clusterReleaseLine(r);
+    return text === null ? [] : [[text]];
+  });
   const applies: Line[] = (check.unreviewedApplies?.applies ?? []).map(applyLine);
   if (check.unreviewedApplies?.unreadable) applies.push([ADD_ONLY_APPLIES_UNREADABLE]);
   return {
@@ -487,6 +494,7 @@ function documentOf(check: DailyCheck): CheckDocument {
       ],
       [check.dataNotice],
     ],
+    releases,
     applies,
     setup,
     nothing:
@@ -518,6 +526,7 @@ const lineText = (l: Line): string => l.map(pieceText).join("");
 export function renderDailyCheck(check: DailyCheck): string {
   const doc = documentOf(check);
   const lines = doc.intro.map(lineText);
+  if (doc.releases.length > 0) lines.push("", ...doc.releases.map(lineText));
   if (doc.applies.length > 0) lines.push("", ...doc.applies.map(lineText));
   if (doc.setup.length > 0) lines.push("", ...doc.setup.map(lineText));
   if (doc.nothing) lines.push("", lineText(doc.nothing));
@@ -632,7 +641,7 @@ export function renderDailyCheckHtml(
       el("p", i === rest.length - 1 ? STYLE.notice : STYLE.p, html(l)),
     ),
   ];
-  for (const part of [doc.applies, doc.setup]) {
+  for (const part of [doc.releases, doc.applies, doc.setup]) {
     if (part.length === 0) continue;
     out.push(
       el("section", STYLE.project, part.map((l) => el("p", STYLE.p, html(l))).join("")),

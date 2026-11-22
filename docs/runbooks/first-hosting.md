@@ -797,6 +797,43 @@ A Platform or Infra plan that only adds standard-size projects applies with no a
 
 3. **Check it at the first project added this way** (the New project form's throwaway project, "Adding a project", item 5): the Platform plan's summary says "**Add-only:**" and names the project, `kubectl-apply-add-only` runs with no approval and its summary says "Add-only: applied without approval (D-378)" with the project list's commit and the project, and the same for the Infra apply's `tofu-apply-add-only`. The next daily check says "Applied without approval (D-378)" for each, with the time, the workflow and the project. A plan that is not add-only names its reason in the plan's summary and waits for Didi. Record each result with the date in O-158.
 
+## 20. Foreman as its own project (ADR 0118 slice 9, D-441, D-449)
+
+Foreman is built through its own pipeline with the cluster target (D-441, ADR 0118 appendix G): its agents work on `didi-build/foreman` through the normal flow, and Didi approves each release. A Foreman item is Done when its pull request merges (D-449), because Foreman has no staging and a release is production. The runner never applies anything to the cluster (D-340): Didi's Platform apply of the new image pins is the release. Foreman's store row comes from migration 0031; its project file is Didi's to write, since a cluster-target file is never add-only (appendix B). Do the steps in this order, so the first scan of Foreman finds its agent space (O-166).
+
+1. **Merge slice 9's pull request.** It changes Foreman's code and adds migration 0031, so the merge starts the Windmill deploy and the database migrations job, each waiting for your approval. Approve the Windmill deploy now; keep the migrations job for step 4. The merge changes no `infra/` file, so no Infra plan comes from it, and the Platform plan from it shows no change.
+2. **Add Foreman's project file** to `didi-build/foreman-projects` on `main`, by the web editor or a push (you are on the ruleset's bypass list): `projects/foreman.json`, exactly:
+
+   ```json
+   {
+     "schema": 1,
+     "slug": "foreman",
+     "displayName": "Foreman",
+     "purpose": "Deterministic runner and state store for AI-driven software work. Ideas go in, and gated, verified work comes out. Windmill runs it, Postgres holds the truth, and agents do the work.",
+     "collectsPersonalData": true,
+     "quota": {
+       "pods": 12,
+       "cpu": "6",
+       "memory": "5Gi",
+       "ephemeralStorage": "11Gi",
+       "storage": "3Gi",
+       "persistentVolumeClaims": 3
+     },
+     "deployTarget": "cluster",
+     "createdOn": "2026-10-28"
+   }
+   ```
+
+   The standard size (`projectStandardQuota`), the cluster target, the purpose of `foreman`'s own description, `collectsPersonalData` true because `foreman` keeps nodrift's data map (`docs/privacy/data-map.yml`), and the date of the repository's first commit (2026-10-28, appendix A's rule). A test keeps this block a valid project file with the standard size.
+
+3. **Run and approve the Platform plan.** A commit in the settings repository starts nothing, so start the Platform workflow by hand on `main` (Actions, Platform, Run workflow), with `projects_commit` left empty or set to the commit of step 2. Its "Project list" names that commit. `kubectl-diff` lists the seven objects of `agents-foreman` (the Namespace, the default-deny NetworkPolicy, the ResourceQuota, and the runner's and the run watcher's Roles and RoleBindings) and one update, the run watcher's Deployment, whose namespace list gains `agents-foreman`. The summary says "**Not add-only:**" with a reason, since a cluster-target file is never a candidate, and `kubectl-apply` waits for you. Approve it; its checks then cover the new namespace. The Infra apply workflow need not run: a cluster-target file makes no name or route (the factory stack names only Cloudflare-target projects), so its plan shows no change if started.
+4. **Approve the migrations job** of step 1. Migration 0031 records Foreman's row: `foreman`, display name `Foreman`, `didi-build/foreman`, no staging address, production behind your approval, and the cluster target. Run again, it changes nothing; a row it finds that differs is left as it is, with a NOTICE in the job's log naming what differs.
+5. **Check the first Foreman deploy pass.** The next push to Foreman's `main` ends with CI, and the receiver starts the staging deploy flow as for any project. Its Windmill run answers `awaiting_apply` with the Images run's id once that run has built the commit, or a fixed reason (`images_building`, `images_cancelled`, `images_failed`, `images_missing`, `images_unreadable`); it uploads nothing, calls no Cloudflare and records nothing on an item. The daily check then shows "Foreman upgrade waiting for your Platform apply", naming the Images run and the commit its images were built from, until a Platform apply runs those images.
+6. **To release,** copy the four platform images from that Images run's artifact `foreman-images` (`settingsFile.platform.images`) into `infra/kubernetes/settings/production.json` in a pull request, merge it, and approve its Platform apply (step 7). The next daily check no longer shows the line. The agent images in `agent-runs.json` go through the Windmill deploy as before (step 15); the line reads the Platform side only.
+7. **Before the first Foreman item runs,** store the model keys its bots read for a project, at `f/foreman/projects/foreman/models/*`, as for any project (step 12). The planning chat, the Council, Triage, the builders, QA and the merge then work on Foreman like any project. Every privileged path still needs your approval: `.github/**`, `infra/**` with the image pins, migrations and files named for secrets.
+
+Record each result with the date in O-166.
+
 ## Verification
 
 Run the remaining checks in ADR 0106 "How success is judged" on the real cluster, and record their output and date in the M3.2 PR. Never paste a secret value, `plan.json` or `state.json`.

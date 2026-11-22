@@ -23,6 +23,10 @@
 // run-end flow again, or the reconcile flow's merge pass) finds the PR merged at the node's head
 // and does step 5 only: it never merges twice, and the key and the move's own trigger id
 // (`github:merge_commit:<repo>#<pr>`) keep the evidence and the move to one row each.
+// 6. For an item whose project deploys to Foreman's own cluster target, which has no staging: once
+//    the move to Verifying on staging applied, ask for its move to Done at merge (D-449, O-166,
+//    ./staging.ts `doneAtMerge`). Any other item reads only its node and project here and is left
+//    as before; if this step fails part way, the reconcile pass's staging pass takes the move.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import type { GitHub, MergeRefusal, PullRequest } from "./github.ts";
 import { mergeCommitKey } from "./github-ingest.ts";
@@ -43,6 +47,7 @@ import {
   type TransitionRequest,
   type Trigger,
 } from "./library.ts";
+import { createStaging, type StagingResult } from "./staging.ts";
 import type { Evidence, Json, Node, Store } from "./store.ts";
 
 /** The guard that marks the moves on which the runner merges: QA's independent pass (ADR 0112). */
@@ -89,6 +94,8 @@ export interface MergeResult {
   gateRequestId?: string;
   /** What carrying an earlier head's docs note over did, when the merge tried it (D-388). */
   docsNote?: DocsCarryOutcome;
+  /** A cluster-target item's move to Done at merge, with what it released (D-449, step 6). */
+  doneAtMerge?: StagingResult;
 }
 
 /** What the merge works on: the node's move, its PR and the head the guards read. */
@@ -300,7 +307,7 @@ export function createMerges(deps: MergeDeps) {
       evidenceIds: [evidenceId],
     });
     const failedGuards = failed(result);
-    return {
+    const merged: MergeResult = {
       outcome: result.outcome,
       ...(result.outcome === "rejected"
         ? { reason: "merged_move_rejected" }
@@ -311,6 +318,19 @@ export function createMerges(deps: MergeDeps) {
       ...(result.transitionId ? { transitionId: result.transitionId } : {}),
       mergeCommitSha,
     };
+    if (result.outcome !== "applied") return merged;
+    // Step 6: no checker is needed, since a cluster-target item is never checked on staging. The
+    // merge and its move are recorded already, so a failure here is left to the reconcile pass's
+    // staging pass, which takes the same move.
+    let done: StagingResult | null;
+    try {
+      done = await createStaging({ ...deps, checker: null }).doneAtMerge(
+        target.node.id,
+      );
+    } catch {
+      done = null;
+    }
+    return done ? { ...merged, doneAtMerge: done } : merged;
   }
 
   /**

@@ -92,6 +92,13 @@
 // as project setup is; when the runs cannot be read the check says so. With no `addOnlyApplies`
 // port given it is not read (`unreviewedApplies` null).
 //
+// Foreman's release (D-449, ADR 0118 appendix G, O-166), first: "Foreman upgrade waiting for your
+// Platform apply" while the newest Images build on main is not what the cluster runs, read from
+// GitHub for each project on the cluster target (./cluster-release.ts). A cluster-target item is
+// Done at merge, so this line is what keeps its release in sight until Didi applies it. When
+// GitHub cannot be read the check says so. With no `clusterReleases` port given it is not read
+// (`clusterReleases` null).
+//
 // Text recorded by agents (titles, reasons, questions) and Didi's own words are returned
 // verbatim as data; the renderings (./daily-check-render.ts) quote each one, and the page also
 // escapes it as HTML text, so nothing in them reads as part of the check. No approval link,
@@ -108,6 +115,11 @@ import {
   type BootstrapRuns,
   type SetupReport,
 } from "./bootstrap-access.ts";
+import {
+  clusterReleases,
+  type ClusterRelease,
+  type ClusterReleases,
+} from "./cluster-release.ts";
 import { isTerminalState, type Contracts } from "./contracts.ts";
 import {
   CANCEL_TRIGGER_PREFIX,
@@ -139,7 +151,7 @@ import {
   WITHDRAWN_STATE,
   type ScanNewIdea,
 } from "./scan-ideas.ts";
-import { STAGING_PASS_GUARD } from "./staging.ts";
+import { CLUSTER_DONE_TRIGGER_PREFIX, STAGING_PASS_GUARD } from "./staging.ts";
 import { pendingDeployError } from "./staging-deploy.ts";
 import {
   stalledItems,
@@ -209,6 +221,8 @@ export interface DailyCheckDeps extends StalledItemsDeps {
   bootstrapRuns?: Pick<BootstrapRuns, "latestRestart">;
   /** The add-only apply jobs on GitHub (O-158). Without it, they are not read. */
   addOnlyApplies?: AddOnlyApplies;
+  /** Foreman's newest build and apply on GitHub (D-449, O-166). Without it, not read. */
+  clusterReleases?: ClusterReleases;
 }
 
 export interface DailyCheckOptions {
@@ -430,6 +444,11 @@ export interface DailyCheck {
   projectSetup: SetupReport | null;
   /** The applies made without approval in the window, read from GitHub (O-158); null when not read. */
   unreviewedApplies: UnreviewedApplies | null;
+  /**
+   * Each cluster-target project's release (D-449, O-166): whether its newest build waits for
+   * Didi's Platform apply, read from GitHub; null when not read.
+   */
+  clusterReleases: ClusterRelease[] | null;
   /** The weekly model test's latest week (D-430, O-156). */
   modelTest: ModelEvalSummary;
 }
@@ -673,8 +692,10 @@ export async function generateDailyCheck(
     (m) => !m.escalation && !m.fallbackMove && m.guards.includes(STAGING_PASS_GUARD),
   );
   const stagingStates = new Set(stagingMoves.map((m) => m.from));
+  // A cluster-target item's Done at merge leads the same way but passed no check (D-449).
   const stagingPassed = (t: Transition): boolean =>
-    stagingMoves.some((m) => m.from === t.fromState && m.to === t.toState);
+    stagingMoves.some((m) => m.from === t.fromState && m.to === t.toState) &&
+    !t.triggerRef?.startsWith(CLUSTER_DONE_TRIGGER_PREFIX);
 
   const nodes = await store.listNodes({});
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -949,6 +970,12 @@ export async function generateDailyCheck(
       : null,
     unreviewedApplies: deps.addOnlyApplies
       ? await unreviewedApplies({ addOnlyApplies: deps.addOnlyApplies }, { from, to })
+      : null,
+    clusterReleases: deps.clusterReleases
+      ? await clusterReleases(
+          { clusterReleases: deps.clusterReleases },
+          await store.listProjects(),
+        )
       : null,
     modelTest: await modelTestSection(store, to),
   };

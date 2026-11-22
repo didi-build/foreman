@@ -317,8 +317,13 @@ export async function bootstrapAccessPass(deps: {
     pass.problem = ACCESS_LIST_UNREADABLE;
     return pass;
   }
+  // Only the projects the New project form sets up, which are all on Cloudflare (D-435). Foreman's
+  // own row (the cluster target, O-166) was never set up through Bootstrap's restart, so its
+  // repository is read as before it had a row.
   const projects = new Map<string, Project>(
-    (await deps.store.listProjects()).map((p) => [p.repo, p]),
+    (await deps.store.listProjects())
+      .filter((p) => p.deployTarget === "cloudflare")
+      .map((p) => [p.repo, p]),
   );
   const now = deps.clock.now().getTime();
 
@@ -377,7 +382,8 @@ export const failedSetupMessage = (slug: string): string =>
 
 /**
  * For the daily check: each registered project whose setup failed. Reads only. A project whose
- * repository is not `didi-build/<slug>` is not one the form set up, and is left out.
+ * repository is not `didi-build/<slug>`, or that is not on the Cloudflare target (Foreman's own
+ * row, O-166), is not one the form set up, and is left out.
  */
 export async function failedSetups(
   deps: { bootstrapRuns: Pick<BootstrapRuns, "latestRestart"> },
@@ -385,7 +391,11 @@ export async function failedSetups(
 ): Promise<SetupReport> {
   const report: SetupReport = { failed: [], unreadable: [] };
   const own = projects
-    .filter((p) => organizationRepositoryName(p.repo) === p.slug)
+    .filter(
+      (p) =>
+        organizationRepositoryName(p.repo) === p.slug &&
+        p.deployTarget === "cloudflare",
+    )
     .sort((a, b) => a.slug.localeCompare(b.slug));
   for (const project of own) {
     let state: SetupState;

@@ -20,7 +20,8 @@ export function stagingDeploysOf(deps: FlowDeps): StagingDeploys {
     ...deps,
     checker: deps.stagingChecker,
     builds: deps.stagingBuilds,
-    target: deps.stagingTarget,
+    // Each target by name; the project's row picks one (D-441, O-166).
+    targets: deps.deployTargets,
   });
 }
 

@@ -7,7 +7,10 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createFakeStagingTarget } from "../../src/adapters/deploy/fake.ts";
+import {
+  createFakeClusterTarget,
+  createFakeStagingTarget,
+} from "../../src/adapters/deploy/fake.ts";
 import { createFakeShortLivedVariables } from "../../src/adapters/windmill/fake-short-lived-variables.ts";
 import {
   applyMigrations,
@@ -40,7 +43,10 @@ describe.skipIf(!adminUrl)(
         store,
         clock: { now: () => new Date(T0.getTime() + n * 1000) },
         ids,
-        stagingTarget: createFakeStagingTarget(),
+        targets: {
+          cloudflare: createFakeStagingTarget(),
+          cluster: createFakeClusterTarget(),
+        },
         shortLivedVariables: createFakeShortLivedVariables(),
       });
     const dryRun = (value: boolean) =>

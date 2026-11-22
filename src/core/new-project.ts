@@ -55,7 +55,12 @@ import {
   type SetupRefusal,
   type SetupState,
 } from "./bootstrap-access.ts";
-import type { DeployTarget, ProjectSetUp } from "./deploy-target.ts";
+import {
+  projectTargetOf,
+  type ProjectSetUp,
+  type ProjectTarget,
+} from "./deploy-target.ts";
+import type { DeployTargetName } from "./project-entry.ts";
 import type { Clock, IdSource } from "./library.ts";
 import {
   DISPLAY_NAME_MAX_CHARS,
@@ -162,8 +167,11 @@ export interface NewProjectDeps {
   store: Store;
   clock: Clock;
   ids: IdSource;
-  /** The Cloudflare deploy target, for the database and the placeholder (O-160). */
-  stagingTarget: Pick<DeployTarget, "setUp">;
+  /**
+   * The deploy targets by name (O-166). The form's row names `cloudflare` (D-435, D-441), so its
+   * database and placeholder are set up there (O-160).
+   */
+  targets: { readonly [name in DeployTargetName]: Pick<ProjectTarget, "setUp"> };
   projectSettings: ProjectSettings;
   projectWorkflows: ProjectWorkflows;
   projectRepositories: ProjectRepositories;
@@ -398,6 +406,9 @@ export function projectFileText(entry: ProjectEntry): string {
   return `${JSON.stringify(entry, null, 2)}\n`;
 }
 
+/** Every project the form records deploys to Cloudflare (D-435, D-441). */
+export const NEW_PROJECT_TARGET = "cloudflare" satisfies DeployTargetName;
+
 /** The row the form records (D-345, D-441), apart from its id and time. */
 export function plannedProject(
   slug: string,
@@ -414,7 +425,7 @@ export function plannedProject(
     // A project starts with no production; production later needs Didi's approval (D-345, D-007).
     prodRequiresApproval: true,
     stagingUrl: projectStagingUrl(slug),
-    deployTarget: "cloudflare",
+    deployTarget: NEW_PROJECT_TARGET,
   };
 }
 
@@ -659,7 +670,7 @@ export function createNewProjectForm(deps: NewProjectDeps) {
         purpose,
         collectsPersonalData: personalData,
         quota,
-        deployTarget: "cloudflare",
+        deployTarget: NEW_PROJECT_TARGET,
         createdOn: clock.now().toISOString().slice(0, 10),
       });
       const found = await check(slug, displayName, planned);
@@ -728,6 +739,10 @@ export function createNewProjectForm(deps: NewProjectDeps) {
       const bootstrapLink = `${repositoryLink}/actions/workflows/${BOOTSTRAP_WORKFLOW_FILE}`;
       const commitLink = (commit: string) =>
         `https://github.com/${PROJECTS_REPOSITORY}/commit/${commit}`;
+      // The target the row this form records names: Cloudflare (D-441, O-166).
+      const setUpTarget = projectTargetOf(deps.targets, {
+        deployTarget: NEW_PROJECT_TARGET,
+      });
       const bootstrapState = async (): Promise<SetupState | null> => {
         try {
           return setupStateOf(await deps.bootstrapRuns.latestRestart(slug));
@@ -737,7 +752,7 @@ export function createNewProjectForm(deps: NewProjectDeps) {
       };
 
       if (dryRun) {
-        const setUp = await deps.stagingTarget.setUp({
+        const setUp = await setUpTarget.setUp({
           slug,
           displayName,
           purpose,
@@ -778,7 +793,7 @@ export function createNewProjectForm(deps: NewProjectDeps) {
       }
 
       // 1 and 2. The database, then the placeholder Worker (O-160).
-      const setUp = await deps.stagingTarget.setUp({ slug, displayName, purpose });
+      const setUp = await setUpTarget.setUp({ slug, displayName, purpose });
       const stopped = setUpLines(setUp);
       if (stopped) return stopped;
 
