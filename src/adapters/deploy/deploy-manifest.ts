@@ -19,9 +19,17 @@
 // - `requiredSecrets`: the names of the product secrets the Worker needs (D-440, D-448), never a
 //   value: at most 64 distinct names, each 1 to 64 uppercase letters, digits or underscores
 //   starting with a letter, and not a binding Foreman sets (`DB`, `ASSETS`), as the Set project
-//   secret form's names (appendix D). Carried in the deploy's result for slice 7, which holds a
-//   deploy while one is missing; nothing is enforced yet.
+//   secret form's names (appendix D; the rule is the core's, src/core/deploy-target.ts). Before
+//   the Worker is uploaded, the staging deploy holds a build that requires a secret the staging
+//   Worker does not have (src/core/staging-deploy.ts, D-448, O-163).
 // The file is at most 16 KiB. Every refusal is fixed text that quotes nothing from the file.
+import { isProductSecretName } from "../../core/deploy-target.ts";
+
+export {
+  PRODUCT_SECRET_NAME as SECRET_NAME,
+  RESERVED_BINDING_NAMES,
+  isProductSecretName,
+} from "../../core/deploy-target.ts";
 
 /** The manifest's name at the root of the `staging-site` build. */
 export const DEPLOY_MANIFEST_FILE = "foreman-deploy.json";
@@ -40,18 +48,6 @@ export const ALLOWED_COMPATIBILITY_FLAGS: readonly string[] = ["nodejs_compat"];
 
 /** The most secret names a build may require (Cloudflare allows 64 variables per Worker on Free). */
 export const MAX_REQUIRED_SECRETS = 64;
-
-/** A secret's name, as the Set project secret form takes it (ADR 0118 appendix D, step 2). */
-export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-
-/** The bindings Foreman sets, which no secret may shadow. */
-export const RESERVED_BINDING_NAMES: readonly string[] = ["DB", "ASSETS"];
-
-/** A product secret's name: the rule above, and not a binding Foreman sets (also O-160's calls). */
-export const isProductSecretName = (name: unknown): name is string =>
-  typeof name === "string" &&
-  SECRET_NAME.test(name) &&
-  !RESERVED_BINDING_NAMES.includes(name);
 
 const FIELDS = ["schema", "compatibilityDate", "compatibilityFlags", "requiredSecrets"];
 

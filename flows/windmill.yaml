@@ -2,8 +2,9 @@
 # Windmill deploy workflow (.github/workflows/windmill-deploy.yml, D-371, O-123, first-hosting
 # runbook step 15) reads this file: once Didi approves a run, it puts each entry into Windmill as
 # a script at its path with its `job_token_scopes`, its bundle holding its imports and the files
-# in `bundle_files` (scripts/windmill-bundle.ts), creates or updates each schedule, and writes the
-# plain values that no one else writes (those without `written_by` below). The approval flow is
+# in `bundle_files` (scripts/windmill-bundle.ts), and, for the one entry with a `form`, that form
+# as the script's schema (O-163), creates or updates each schedule, and writes the plain values
+# that no one else writes (those without `written_by` below). The approval flow is
 # not deployed until its `ask` step exists (M4.1). Each secret and value is a Windmill variable at
 # the path below (D-370); the deploy never writes a secret.
 # test/flows/windmill-description.test.ts keeps this file in step with the code.
@@ -36,7 +37,9 @@ bundle_files:
 # them a job runs with all the rights of whoever started it. Every flow reads only its secrets and
 # values, the variables under the folder (flows/lib/windmill.ts), and calls no other Windmill API;
 # the reconcile flow also reads the month's execution count, which needs `workspaces:read`
-# (Windmill cannot limit that scope to paths). The routes about a job's own run (its progress and
+# (Windmill cannot limit that scope to paths), and the Set project secret form also deletes the
+# short-lived secret variable its password field made, which needs write on the user's
+# `secret_arg` variables (O-163). The routes about a job's own run (its progress and
 # its flow's step results) stay open to it whatever the scopes (Windmill's source, version
 # 1.865.0, `is_own_job_runtime_route` in windmill-api-auth `scopes.rs`).
 flows:
@@ -307,7 +310,7 @@ flows:
   - name: new_project
     path: f/foreman/new_project
     entry: flows/new-project.ts
-    # Didi's New project form (ADR 0118 appendix C, D-434, D-435, O-161): running it is her one
+    # Didi's New project form (ADR 0118 appendix C, D-434, D-435, O-161): running it is the one
     # approval for a project. Its four boxes come from `main`'s parameters, as Windmill reads
     # them (the deploy sends no schema): slug, displayName, purpose, and collectsPersonalData, a
     # box ticked by default. Didi starts it from its page in the Windmill workspace, signed in,
@@ -335,6 +338,43 @@ flows:
     # record a project. It takes no box, reads nothing and changes nothing.
     trigger: called
     job_token_scopes: ["variables:read:f/foreman/*"]
+
+  - name: set_project_secret
+    path: f/foreman/set_project_secret
+    entry: flows/set-project-secret.ts
+    # Didi's Set project secret form (ADR 0118 appendix D, D-440, O-163): it puts one product
+    # secret on a project's staging Worker <slug>-staging and records only its name and the time
+    # (factory.project_secret_names, migration 0030). Didi starts it from its page in the Windmill
+    # workspace, signed in, as new_project (O-97, D-295). Never a public or signed-token link; no
+    # service's Windmill token, schedule, pass or other flow starts it. Its three boxes are
+    # `project`, `name` and `value`. The value box is a password field, which Windmill cannot read
+    # from `main` (its TypeScript parser has no password type), so this entry gives its form and
+    # the deploy sends it as the script's schema, the only one it sends: Windmill then saves what
+    # Didi types as a short-lived secret variable at u/<Didi's user>/secret_arg/<random>, set to
+    # expire 7 days later, and the run's arguments hold only a reference to it. The worker reads
+    # that variable with the job's token, and the form deletes it at once, once it has found its
+    # path in its own run's record, a route open to a job's own token whatever its scopes. So its
+    # job token gets one more scope than every other entry: write (which includes read) on
+    # u/<user>/secret_arg/*. The user is not committed: the deploy's protected script puts in the
+    # GitHub variable WINDMILL_FORM_USERNAME, Didi's Windmill username, and refuses the deploy
+    # while it is not a username (first-hosting runbook, "The Set project secret form's first real
+    # run"). The kill switch refuses; dry run deletes the variable and sets nothing. Its value goes
+    # only to Cloudflare with the staging deploy token (O-160), never into a result, a record or a
+    # log. No new Windmill secret or value.
+    trigger: called
+    job_token_scopes:
+      [
+        "variables:read:f/foreman/*",
+        "variables:write:u/{WINDMILL_FORM_USERNAME}/secret_arg/*",
+      ]
+    form:
+      - name: project
+        description: The project's short name, for example garden-notes.
+      - name: name
+        description: The secret's name as the Worker reads it, for example MODEL_API_KEY. Uppercase letters, digits and underscores, a letter first; not DB or ASSETS.
+      - name: value
+        description: The secret's value, at most 5 KiB. Windmill keeps only a reference to it in this run, and the form deletes what Windmill made for it.
+        password: true
 
   - name: submit_plan
     path: f/foreman/submit_plan

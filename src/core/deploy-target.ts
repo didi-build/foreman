@@ -16,10 +16,35 @@
 //   found before it is created (ADR 0118 appendix C, steps 1 and 2): its staging database, then a
 //   placeholder product that answers at `/` and `/api/health` (D-438). Slice 6's form calls it.
 // - `putSecret` and `listSecretNames`: a product secret on the project's staging product only
-//   (D-440), and the names of those set. Slice 7's form and deploy check call them.
+//   (D-440), and the names of those set. The Set project secret form (./set-project-secret.ts)
+//   and the staging deploy's required-secret check (./staging-deploy.ts, D-448) call them (O-163).
 // ADR 0111's `health`, `logs` and `teardown` stay unbuilt.
+//
+// The product secret rules live here, so the form, the build's manifest and the target read the
+// same ones (ADR 0118 appendix D, step 2).
 import type { DeployTargetName } from "./project-entry.ts";
 import type { DeployRefusalDetail, StagingTarget } from "./staging-deploy.ts";
+
+/** A product secret's name: 1 to 64 uppercase letters, digits or underscores, a letter first. */
+export const PRODUCT_SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** The bindings Foreman sets on a project's Worker, which no secret may shadow. */
+export const RESERVED_BINDING_NAMES: readonly string[] = ["DB", "ASSETS"];
+
+/** The largest product secret value, in UTF-8 bytes ("Workers platform limits": 5 KB a variable). */
+export const PRODUCT_SECRET_VALUE_MAX_BYTES = 5 * 1024;
+
+/** A product secret's name: the rule above, and not a binding Foreman sets. */
+export const isProductSecretName = (name: unknown): name is string =>
+  typeof name === "string" &&
+  PRODUCT_SECRET_NAME.test(name) &&
+  !RESERVED_BINDING_NAMES.includes(name);
+
+/** A product secret's value: not empty, and at most 5 KiB of UTF-8. Never logged or kept. */
+export const isProductSecretValue = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value !== "" &&
+  new TextEncoder().encode(value).byteLength <= PRODUCT_SECRET_VALUE_MAX_BYTES;
 
 /** A refusal: a short fixed code, fixed text, and where it came from (O-139). Never a value. */
 export interface TargetRefusal {

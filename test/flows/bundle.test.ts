@@ -2,7 +2,9 @@
 // Every entry in flows/windmill.yaml is bundled once, as Windmill's codebase mode runs it (CommonJS
 // on Node), and its input graph is checked: no TypeScript compiler (it runs only in the repo map
 // Job's image), no repository module but the bundle files reader touches the file system, and no
-// flow carries Windmill's run route, so none starts another Windmill job. Then a small probe that
+// flow carries Windmill's run route, so none starts another Windmill job: the one job route a flow
+// holds reads its own job's record, for the Set project secret form's short-lived variable
+// (O-163). Then a small probe that
 // imports the real loaders is bundled with the files embedded by `bundleFilesDefine` and run with
 // Node in an empty folder: it reads the same bytes as the files on disk, refuses what the map
 // lacks instead of reading the disk, and keeps the CA certificate's checks. Nothing is deployed
@@ -50,6 +52,7 @@ const BUNDLE_OPTIONS = {
 const TYPESCRIPT_PACKAGE = /(^|\/)node_modules\/typescript\//;
 const FILE_SYSTEM = /^(node:)?fs(\/promises)?$/;
 const READER = "src/adapters/bundle-files/files.ts";
+const SHORT_LIVED_VARIABLES = "src/adapters/windmill/short-lived-variables.ts";
 
 let metafile: Metafile;
 let outputs: Map<string, { inputs: string[]; text: string }>;
@@ -115,7 +118,18 @@ describe("each flow entry's bundle (integration: esbuild, O-121)", () => {
   });
 
   it.each(entries)("%s starts no Windmill job: it holds no run route", (entry) => {
-    expect(outputs.get(entry)?.text).not.toMatch(/jobs\/run|jobs_u\//);
+    // `jobs_u/get/<id>` reads a job's record and starts nothing (O-163).
+    expect(outputs.get(entry)?.text).not.toMatch(/jobs\/run|jobs_u\/(?!get\/)/);
+  });
+
+  it("reads a job's record only in the short-lived variable adapter, for the job's own id", () => {
+    const readers = Object.keys(metafile.inputs)
+      .filter((path) => !path.includes("node_modules/"))
+      .filter((path) => readFileSync(path, "utf8").includes("jobs_u/"));
+    expect(readers).toEqual([SHORT_LIVED_VARIABLES]);
+    expect(readFileSync(SHORT_LIVED_VARIABLES, "utf8")).toContain(
+      "`${job.api}/jobs_u/get/${job.jobId}`",
+    );
   });
 });
 

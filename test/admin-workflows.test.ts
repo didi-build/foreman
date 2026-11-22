@@ -1592,9 +1592,14 @@ describe("the Windmill deploy workflow (unit: D-371, O-123)", () => {
   });
 
   it("gives WINDMILL_DEPLOY_TOKEN only to the step that runs the protected script, and no other workflow names it", () => {
+    // Beside it, the variable naming Didi's Windmill username for the form's scope (O-163).
     expect(deploy.steps[2]?.env).toEqual({
       WINDMILL_DEPLOY_TOKEN: "${{ secrets.WINDMILL_DEPLOY_TOKEN }}",
+      WINDMILL_FORM_USERNAME: "${{ vars.WINDMILL_FORM_USERNAME }}",
     });
+    expect(raw.match(/\$\{\{[^}]*vars\.[^}]*\}\}/g)).toEqual([
+      "${{ vars.WINDMILL_FORM_USERNAME }}",
+    ]);
     expect(raw.match(/\$\{\{[^}]*secrets\.[^}]*\}\}/g)).toEqual([
       "${{ secrets.WINDMILL_DEPLOY_TOKEN }}",
     ]);
@@ -1619,6 +1624,7 @@ describe("the Windmill deploy workflow (unit: D-371, O-123)", () => {
       "RUNNER_TEMP",
       "SETTINGS_FILE",
       "WINDMILL_DEPLOY_TOKEN",
+      "WINDMILL_FORM_USERNAME",
     ]);
   });
 
@@ -1678,15 +1684,23 @@ describe("the Windmill deploy workflow (unit: D-371, O-123)", () => {
     ]);
   });
 
-  it("allows each script only the job token scopes flows/windmill.yaml gives it (D-371, O-121)", () => {
+  it("allows each script only the job token scopes flows/windmill.yaml gives it (D-371, O-121, O-163)", () => {
     const every = /^every_script_scope='([^']+)'$/m.exec(deploySh)?.[1];
     const reconcileOnly = /^reconcile_only_scope='([^']+)'$/m.exec(deploySh)?.[1];
+    const formOnly = /^form_only_scope='([^']+)'$/m.exec(deploySh)?.[1];
     expect(/^reconcile_path='([^']+)'$/m.exec(deploySh)?.[1]).toBe(
       "f/foreman/reconcile",
     );
+    expect(/^form_path='([^']+)'$/m.exec(deploySh)?.[1]).toBe(
+      "f/foreman/set_project_secret",
+    );
     for (const flow of description.flows) {
       const allowed =
-        flow.path === "f/foreman/reconcile" ? [every, reconcileOnly] : [every];
+        flow.path === "f/foreman/reconcile"
+          ? [every, reconcileOnly]
+          : flow.path === "f/foreman/set_project_secret"
+            ? [every, formOnly]
+            : [every];
       expect(flow.job_token_scopes, flow.name).toEqual(allowed);
     }
   });

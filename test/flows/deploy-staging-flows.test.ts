@@ -5,12 +5,16 @@
 // fake credentials, on a real zip;
 // the same with the composition's credential port, which refuses until Didi creates the token,
 // so nothing is sent, nothing counts and the daily check shows the deploy that did not go through; and with the runner's own GitHub reads and no runner
-// App key stored, so the token is refused before anything is sent. Synthetic data only; nothing
-// reaches GitHub, Cloudflare or Windmill.
+// App key stored, so the token is refused before anything is sent. A build that requires a secret
+// the staging Worker does not have is held after the secret list and before any upload, the daily
+// check names the secret and the Set project secret form, and the backstop deploys once the
+// secret is set (D-448, O-163). Synthetic data only; nothing reaches GitHub, Cloudflare or
+// Windmill.
 import { describe, expect, it } from "vitest";
 
 import { run as dailyCheck } from "../../flows/daily-check.ts";
 import { run as deployStaging } from "../../flows/deploy-staging.ts";
+import { stagingDeploysOf } from "../../flows/lib/staging-deploys.ts";
 import {
   runnerStagingBuilds,
   unbuiltStagingDeployCredentials,
@@ -36,11 +40,16 @@ const noD1Credentials = windmillD1Credentials({
   },
 });
 
-/** A fake Cloudflare that holds no file yet and accepts every upload. */
+/**
+ * A fake Cloudflare that holds no file yet and accepts every upload, and lists the staging
+ * Worker's secrets by name (names only, as "List secrets bound to a Worker script" gives them).
+ */
 function fakeCloudflare() {
   const sent: CloudflareRequest[] = [];
+  const secrets = new Set<string>();
   return {
     sent,
+    secrets,
     http: {
       async send(request: CloudflareRequest): Promise<CloudflareAnswer> {
         sent.push(request);
@@ -48,6 +57,9 @@ function fakeCloudflare() {
           status,
           body: { success: true, result },
         });
+        if (request.method === "GET" && request.path.endsWith("/secrets")) {
+          return ok([...secrets].map((name) => ({ name, type: "secret_text" })));
+        }
         if (request.path.endsWith("/assets-upload-session")) {
           const manifest = (
             request.json as { manifest: Record<string, { hash: string }> }
@@ -122,6 +134,7 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
 
   it("uploads a build with a Worker module in the same three calls, inheriting DB strictly, and the check then probes the Worker (O-159, O-160)", async () => {
     const { t, deps, cloudflare } = await flow();
+    cloudflare.secrets.add("MODEL_API_KEY");
     const archive = storedZip([
       {
         name: "foreman-deploy.json",
@@ -147,18 +160,71 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
         verified: [{ move: { toState: "done", outcome: "applied" } }],
       },
     });
+    // The secret list first (D-448), then the same three upload calls.
     expect(
       cloudflare.sent.map((r) => `${r.method} ${r.path.split("/").slice(3).join("/")}`),
     ).toEqual([
+      "GET workers/scripts/rehearsal-staging/secrets",
       "POST workers/scripts/rehearsal-staging/assets-upload-session",
       "POST workers/assets/upload?base64=true",
       "PUT workers/scripts/rehearsal-staging?bindings_inherit=strict",
     ]);
-    expect(cloudflare.sent[2]?.form?.map((part) => part.name)).toEqual([
+    expect(cloudflare.sent[3]?.form?.map((part) => part.name)).toEqual([
       "metadata",
       "index.js",
     ]);
     expect(t.checker.calls.map((c) => c.worker)).toEqual([true]);
+  });
+
+  it("holds a build whose required secret is not set, after the secret list and before any upload; the daily check names it and the form, and the next pass deploys once it is set (D-448, O-163)", async () => {
+    const { t, deps, cloudflare } = await flow();
+    const archive = storedZip([
+      {
+        name: "foreman-deploy.json",
+        data: JSON.stringify({
+          schema: 1,
+          compatibilityDate: "2026-10-26",
+          compatibilityFlags: [],
+          requiredSecrets: ["MODEL_API_KEY"],
+        }),
+      },
+      { name: "assets/foreman-commit.txt", data: `${t.mergeSha}\n` },
+      { name: "assets/index.html", data: "<!doctype html><title>Rehearsal</title>" },
+      { name: "worker/index.js", data: "export default { fetch() {} };" },
+    ]);
+    t.builds.putRun(REPO, mainBuild(REPO, 37, t.mergeSha), archive);
+    const held = await deployStaging(deps, { repo: REPO, runId: 37 });
+    expect(held).toMatchObject({
+      outcome: "done",
+      deploy: {
+        step: "refused_infrastructure",
+        reason: "secrets_missing",
+        missingSecrets: ["MODEL_API_KEY"],
+        covers: [t.node.id],
+        verified: [],
+      },
+      builderRuns: [],
+    });
+    expect(
+      cloudflare.sent.map((r) => `${r.method} ${r.path.split("/").at(-1)}`),
+    ).toEqual(["GET secrets"]);
+    expect(await t.state()).toBe("verifying_on_staging");
+    expect(await t.counter("failure")).toBe(0);
+    const { text } = (await dailyCheck(deps)).render_all[1].json;
+    expect(text).toContain(
+      ": the build needs product secrets not set on the staging Worker: MODEL_API_KEY. Set each with the Set project secret form. Counted as no failure; the reconcile pass tries again",
+    );
+    // Didi sets it with the form (on Cloudflare here); the reconcile pass's backstop deploys.
+    cloudflare.secrets.add("MODEL_API_KEY");
+    const [step] = await stagingDeploysOf(deps).backstop();
+    expect(step).toMatchObject({
+      step: "deploy",
+      deploy: { step: "deployed", verified: [{ move: { toState: "done" } }] },
+    });
+    expect(cloudflare.sent.at(-1)?.path).toMatch(
+      /\/workers\/scripts\/rehearsal-staging\?bindings_inherit=strict$/,
+    );
+    expect(await t.counter("failure")).toBe(0);
   });
 
   it("refuses a build with _worker.js before anything is sent, and sends the item back with one failure", async () => {

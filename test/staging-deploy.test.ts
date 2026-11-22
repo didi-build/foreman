@@ -8,15 +8,24 @@
 // dry run says what it would deploy. The reconcile backstop deploys main's newest build for a
 // project whose item waits with no deploy recorded. A deploy with a Worker module is recorded as
 // such, carries its required secret names in its result only, and has the check probe the Worker
-// (O-159). Fake data only.
+// (O-159). A build whose manifest requires a secret the staging Worker does not have is held as an
+// infrastructure refusal that names the missing secrets and the Set project secret form, counts
+// no failure, shows in the daily check and deploys on the backstop's next pass once the secret is
+// set (D-448, O-163). Fake data only.
 import { describe, expect, it } from "vitest";
 
 import { mainBuild } from "../src/adapters/deploy/fake.ts";
+import {
+  DEPLOY_REFUSAL_TEXT_MAX_CHARS,
+  readDeployRefusal,
+} from "../src/core/guards/evidence.ts";
 import {
   COVER_UNREADABLE,
   DEPLOY_REFUSALS,
   createStagingDeploys,
   isMainBuild,
+  missingSecretsText,
+  pendingDeployError,
   stagingDeployRecordKey,
   stagingDeployRefusedKey,
   type BuildRun,
@@ -54,6 +63,10 @@ function logged(t: T) {
       deploy: async (request) => {
         log.push("upload");
         return t.target.deploy(request);
+      },
+      listSecretNames: async (slug) => {
+        log.push("list secret names");
+        return t.target.listSecretNames(slug);
       },
     },
   });
@@ -232,6 +245,8 @@ describe("a staging deploy with a Worker module (unit: ADR 0118 slice 3, O-159)"
   it("records the Worker on the deploy, carries the required secret names, and has the check probe it", async () => {
     const t = await setup();
     const runId = t.built();
+    // The secret the build requires is on the staging Worker (D-448).
+    t.target.secretNames.set("rehearsal", new Set(["MODEL_API_KEY"]));
     t.target.answers.push({
       outcome: "deployed",
       files: 2,
@@ -567,5 +582,156 @@ describe("the reconcile backstop (unit: O-116)", () => {
     ]);
     expect(t.target.deploys).toEqual([]);
     expect(await t.kind("staging_deploy")).toEqual([]);
+  });
+});
+
+describe("the required-secret check before a Worker is uploaded (unit: D-448, O-163)", () => {
+  const WORKER_BUILD = {
+    outcome: "deployed" as const,
+    files: 2,
+    worker: { requiredSecrets: ["MODEL_API_KEY", "MAIL_API_KEY"] },
+  };
+
+  it("holds a build that requires a secret the staging Worker does not have, as an infrastructure refusal naming it and the form, counting no failure", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.secretNames.set("rehearsal", new Set(["MAIL_API_KEY", "OTHER_KEY"]));
+    t.target.answers.push(WORKER_BUILD);
+    const { deploys, log } = logged(t);
+    const result = await deploys.deployRun(REPO, runId);
+    const text =
+      "the build needs product secrets not set on the staging Worker: MODEL_API_KEY. Set each with the Set project secret form";
+    expect(result).toMatchObject({
+      step: "refused_infrastructure",
+      commitSha: t.mergeSha,
+      reason: "secrets_missing",
+      text,
+      missingSecrets: ["MODEL_API_KEY"],
+      covers: [t.node.id],
+      verified: [],
+    });
+    // Listed before the upload, and nothing was uploaded: no check, no move.
+    expect(log).toEqual([
+      "upload",
+      "list secret names",
+      "record staging_deploy_failed",
+    ]);
+    expect(t.target.held).toEqual([t.mergeSha]);
+    expect(await t.kind("staging_deploy")).toEqual([]);
+    const [held] = await t.kind("staging_deploy_failed");
+    expect(held?.payload).toMatchObject({
+      state: "error",
+      cause: "infrastructure",
+      reason: "secrets_missing",
+      text,
+    });
+    expect(await t.counter("failure")).toBe(0);
+    expect(await t.state()).toBe("verifying_on_staging");
+    // The daily check shows it as a deploy that did not go through (N-103).
+    const node = await t.store.getNode(t.node.id);
+    expect(node && (await pendingDeployError(t.store, node))).toMatchObject({
+      reason: "secrets_missing",
+      text,
+    });
+  });
+
+  it("deploys on the backstop's next pass once the secret is set", async () => {
+    const t = await setup();
+    const runId = t.built();
+    t.target.answers.push(WORKER_BUILD);
+    expect(await t.deploys().deployRun(REPO, runId)).toMatchObject({
+      reason: "secrets_missing",
+      missingSecrets: ["MAIL_API_KEY", "MODEL_API_KEY"],
+    });
+    // Didi sets both with the form; the next pass deploys and the check moves the item.
+    await t.target.putSecret("rehearsal", "MODEL_API_KEY", "test-only-value-1");
+    await t.target.putSecret("rehearsal", "MAIL_API_KEY", "test-only-value-2");
+    t.target.answers.push(WORKER_BUILD);
+    const steps = await t.deploys().backstop();
+    expect(steps).toMatchObject([
+      {
+        repo: REPO,
+        step: "deploy",
+        deploy: {
+          step: "deployed",
+          worker: { requiredSecrets: ["MODEL_API_KEY", "MAIL_API_KEY"] },
+          verified: [{ move: { toState: "done", outcome: "applied" } }],
+        },
+      },
+    ]);
+    expect(await t.counter("failure")).toBe(0);
+    expect(await t.state()).toBe("done");
+  });
+
+  it("holds the deploy when the staging Worker's secret names cannot be read, with the target's call and status", async () => {
+    for (const listSecretNames of [
+      async () => ({
+        outcome: "refused" as const,
+        reason: "credential_refused",
+        text: "Cloudflare refused the staging deploy credential",
+        detail: { call: "secret_list", status: 403 },
+      }),
+      async (): Promise<never> => {
+        throw new Error("the fake target broke");
+      },
+    ]) {
+      const t = await setup();
+      const runId = t.built();
+      t.target.answers.push(WORKER_BUILD);
+      const deploys = createStagingDeploys({
+        ...t.deps,
+        checker: t.checker,
+        builds: t.builds,
+        target: { deploy: t.target.deploy, listSecretNames },
+      });
+      const result = await deploys.deployRun(REPO, runId);
+      expect(result).toMatchObject({
+        step: "refused_infrastructure",
+        reason: "secrets_unreadable",
+        text: DEPLOY_REFUSALS.secrets_unreadable,
+        verified: [],
+      });
+      expect(result.detail).toEqual(
+        result.detail ? { call: "secret_list", status: 403 } : undefined,
+      );
+      expect(await t.counter("failure")).toBe(0);
+      expect(await t.kind("staging_deploy")).toEqual([]);
+    }
+  });
+
+  it("asks nothing for a build that requires no secret, nor for one without a Worker", async () => {
+    const t = await setup();
+    t.target.answers.push({ ...WORKER_BUILD, worker: { requiredSecrets: [] } });
+    const { deploys, log } = logged(t);
+    expect((await deploys.deployRun(REPO, t.built())).step).toBe("deployed");
+    expect(log).not.toContain("list secret names");
+    expect(t.target.held).toEqual([]);
+  });
+
+  it("keeps the text within what the daily check shows, naming as many as fit and how many more", () => {
+    expect(missingSecretsText(["MODEL_API_KEY"])).toBe(
+      "the build needs product secrets not set on the staging Worker: MODEL_API_KEY. Set each with the Set project secret form",
+    );
+    const long = (c: string) => `${c}${"_".repeat(62)}${c}`;
+    const many = Array.from({ length: 64 }, (_, i) =>
+      long(String.fromCharCode(65 + (i % 26))),
+    );
+    for (const missing of [
+      many,
+      many.slice(0, 2),
+      ["A", "B", "C"],
+      Array.from({ length: 64 }, (_, i) => `KEY_${i}`),
+    ]) {
+      const text = missingSecretsText(missing);
+      expect(text.length, text).toBeLessThanOrEqual(DEPLOY_REFUSAL_TEXT_MAX_CHARS);
+      expect(readDeployRefusal({ reason: "secrets_missing", text })).toEqual({
+        reason: "secrets_missing",
+        text,
+      });
+      expect(text).toContain(missing[0]);
+      expect(text).toMatch(/Set each with the Set project secret form$/);
+    }
+    expect(missingSecretsText(many)).toContain(`${many[0]} and 63 more`);
+    expect(missingSecretsText(["A", "B", "C"])).toContain(": A, B, C.");
   });
 });

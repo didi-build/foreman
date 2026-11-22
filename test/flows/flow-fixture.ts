@@ -21,6 +21,7 @@ import {
   type FakeStagingTarget,
 } from "../../src/adapters/deploy/fake.ts";
 import { createFakePublicNames } from "../../src/adapters/dns/fake.ts";
+import { createFakeShortLivedVariables } from "../../src/adapters/windmill/fake-short-lived-variables.ts";
 import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import {
   createFakeProjectRepositories,
@@ -165,6 +166,7 @@ export function flowDepsFor(
   const runtime = createFakeRuntime();
   const stagingBuilds = staging.builds ?? createFakeStagingBuilds();
   const stagingTarget = staging.target ?? createFakeStagingTarget();
+  const shortLivedVariables = createFakeShortLivedVariables();
   const screenshots = createFakeScreenshotBundles();
   const repoFolders = createFakeRepoFolders();
   const repoMaps = createFakeRepoMaps();
@@ -186,6 +188,7 @@ export function flowDepsFor(
     stagingChecker,
     stagingBuilds,
     stagingTarget,
+    shortLivedVariables,
     screenshots,
     repoFolders,
     repoMaps,
@@ -227,6 +230,7 @@ export function flowDepsFor(
     runtime,
     stagingBuilds,
     stagingTarget,
+    shortLivedVariables,
     screenshots,
     repoFolders,
     repoMaps,
@@ -254,6 +258,7 @@ export async function createFlowFixture() {
     runtime,
     stagingBuilds,
     stagingTarget,
+    shortLivedVariables,
     screenshots,
     repoFolders,
     repoMaps,
@@ -290,6 +295,7 @@ export async function createFlowFixture() {
     stagingChecker,
     stagingBuilds,
     stagingTarget,
+    shortLivedVariables,
     screenshots,
     repoFolders,
     repoMaps,

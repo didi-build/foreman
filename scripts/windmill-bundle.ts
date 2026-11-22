@@ -9,7 +9,8 @@
 // file the deploy job's protected script reads (.github/scripts/windmill-deploy.sh):
 //
 //   - `scripts`: each entry's Windmill path, its TypeScript source (Windmill reads `main`'s
-//     arguments from it), its `job_token_scopes`, and its bundle's sha256 and size;
+//     arguments from it), its `job_token_scopes`, and its bundle's sha256 and size; and for an
+//     entry with a `form`, its `schema` (below);
 //   - `schedules`: each scheduled entry's cron, time zone and script, as the yaml gives them;
 //   - `values`: the plain values the deploy writes, by name (D-371: exact names, never a secret).
 //
@@ -29,7 +30,16 @@
 // half made reaches Windmill; anything else that is wrong stops the job, naming the setting. The
 // weekly model test's image (`evalImage`, O-156) is the one exception: while it is empty, it is
 // left out of `agent_run_settings` and the rest is written, since agent runs do not need it; the
-// weekly flow then starts no Job and says so. The
+// weekly flow then starts no Job and says so.
+//
+// A form's schema (ADR 0118 appendix D, O-163). Windmill reads each script's form from `main`,
+// but its TypeScript parser has no password type, so an entry whose form needs a password field
+// gives its fields in `form`: each field's name (one of `main`'s parameters, in order), a one-line
+// description of printable ASCII, and `password: true` on a password field. The manifest then
+// carries the JSON Schema Windmill stores for a script: every field a required string, in the
+// form's order (`order`), with `password: true` where given. A `form` with no password field is
+// refused, since Windmill reads such a form from `main` itself. The deploy's protected script
+// takes a schema only on the Set project secret form and only in exactly this shape. The
 // approval flow (`trigger: approval_resume`) is not deployed: its `ask` step is not built (M4.1)
 // and the deploy token has no flows scope (D-371). The summary, printed on stdout in Markdown,
 // lists each script with its bundle's sha256 and size, each schedule, and each value by name with
@@ -86,6 +96,14 @@ export const DEPLOYED_VALUES = [
 type ValueName = (typeof DEPLOYED_VALUES)[number];
 
 const TRIGGERS = ["schedule", "called", "approval_resume"] as const;
+/** Where a scope names the Windmill user, which the deploy job puts in (O-163). */
+export const FORM_USERNAME_PLACEHOLDER = "{WINDMILL_FORM_USERNAME}";
+/** The JSON Schema draft Windmill's script schemas name. */
+export const FORM_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema";
+/** The most fields a form may have. */
+export const MAX_FORM_FIELDS = 8;
+const FIELD_NAME = /^[a-z][A-Za-z0-9]{0,31}$/;
+const FIELD_DESCRIPTION = /^[ -~]{1,200}$/;
 const NAME = /^[a-z_]+$/;
 const ENTRY = /^flows\/[a-z-]+\.ts$/;
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -95,10 +113,26 @@ const APP_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const QUANTITY = /^[0-9]+(m|Ki|Mi|Gi)?$/;
 const TYPESCRIPT_PACKAGE = /(^|\/)node_modules\/typescript\//;
 
+/** One field of a form's schema: a required string, a password field where marked. */
+export interface FormSchemaField {
+  type: "string";
+  description: string;
+  password?: true;
+}
+/** The schema Windmill stores for a script whose form `main` cannot give (O-163). */
+export interface FormSchema {
+  $schema: typeof FORM_SCHEMA_DRAFT;
+  type: "object";
+  properties: Record<string, FormSchemaField>;
+  required: string[];
+  order: string[];
+}
 export interface ManifestScript {
   path: string;
   content: string;
   job_token_scopes: string[];
+  /** Only for an entry with a `form`. */
+  schema?: FormSchema;
   sha256: string;
   size: number;
 }
@@ -136,6 +170,58 @@ interface FlowEntry {
   trigger: (typeof TRIGGERS)[number];
   job_token_scopes: string[];
   schedule?: { cron: string; timezone: string };
+  schema?: FormSchema;
+}
+
+/** An entry's `form` as its schema, or an error naming the entry. */
+function formSchema(name: string, form: unknown): FormSchema {
+  const at = `${name}'s form`;
+  if (!Array.isArray(form) || form.length === 0 || form.length > MAX_FORM_FIELDS) {
+    throw new Error(`${at} is not a list of 1 to ${MAX_FORM_FIELDS} fields`);
+  }
+  const properties: Record<string, FormSchemaField> = {};
+  const order: string[] = [];
+  for (const [i, field] of form.entries()) {
+    const fieldAt = `${at}: field ${i + 1}`;
+    if (!isObject(field)) throw new Error(`${fieldAt} is not a mapping`);
+    const keys = Object.keys(field).sort().join(",");
+    if (keys !== "description,name" && keys !== "description,name,password") {
+      throw new Error(
+        `${fieldAt} must hold exactly name and description, and password`,
+      );
+    }
+    if (typeof field.name !== "string" || !FIELD_NAME.test(field.name)) {
+      throw new Error(`${fieldAt} has no name of a letter then letters and digits`);
+    }
+    if (order.includes(field.name)) throw new Error(`${at} names ${field.name} twice`);
+    if (
+      typeof field.description !== "string" ||
+      !FIELD_DESCRIPTION.test(field.description)
+    ) {
+      throw new Error(`${fieldAt} has no one-line description of printable ASCII`);
+    }
+    if (field.password !== undefined && field.password !== true) {
+      throw new Error(`${fieldAt}'s password is not true`);
+    }
+    properties[field.name] = {
+      type: "string",
+      description: field.description,
+      ...(field.password === true ? { password: true as const } : {}),
+    };
+    order.push(field.name);
+  }
+  if (!Object.values(properties).some((p) => p.password === true)) {
+    throw new Error(
+      `${at} has no password field, so Windmill reads it from main and it needs no form`,
+    );
+  }
+  return {
+    $schema: FORM_SCHEMA_DRAFT,
+    type: "object",
+    properties,
+    required: [...order],
+    order,
+  };
 }
 
 const sha256 = (bytes: Uint8Array | string) =>
@@ -175,7 +261,7 @@ function readEntries(description: unknown): {
   const entries = flows.map((flow: unknown, i): FlowEntry => {
     const at = `flows[${i}] in ${DESCRIPTION_FILE}`;
     if (!isObject(flow)) throw new Error(`${at} is not a mapping`);
-    const { name, path, entry, trigger, job_token_scopes, schedule } = flow;
+    const { name, path, entry, trigger, job_token_scopes, schedule, form } = flow;
     if (typeof name !== "string" || !NAME.test(name)) {
       throw new Error(`${at} has no name of lowercase letters and underscores`);
     }
@@ -208,6 +294,9 @@ function readEntries(description: unknown): {
     } else if (schedule !== undefined) {
       throw new Error(`${name} has a schedule but its trigger is ${String(trigger)}`);
     }
+    if (form !== undefined && trigger !== "called") {
+      throw new Error(`${name} has a form but its trigger is ${String(trigger)}`);
+    }
     return {
       name,
       path,
@@ -215,6 +304,7 @@ function readEntries(description: unknown): {
       trigger: trigger as FlowEntry["trigger"],
       job_token_scopes: job_token_scopes as string[],
       ...(checked ? { schedule: checked } : {}),
+      ...(form === undefined ? {} : { schema: formSchema(name, form) }),
     };
   });
   const names = entries.map((e) => e.name);
@@ -532,6 +622,7 @@ export async function bundleForWindmill(options: BundleOptions): Promise<BundleR
         path: e.path,
         content: readFileSync(join(root, e.entry), "utf8"),
         job_token_scopes: e.job_token_scopes,
+        ...(e.schema ? { schema: e.schema } : {}),
         sha256: sha256(bundle),
         size: bundle.byteLength,
       };
@@ -567,6 +658,31 @@ export function summary(result: BundleResult): string {
     ),
     "",
     ...result.notDeployed.map((n) => `Not deployed: \`${n.path}\`, ${n.reason}.`),
+    "",
+    ...(manifest.scripts.some((s) =>
+      s.job_token_scopes.some((x) => x.includes(FORM_USERNAME_PLACEHOLDER)),
+    )
+      ? [
+          `The deploy job puts the GitHub variable WINDMILL_FORM_USERNAME in place of \`${FORM_USERNAME_PLACEHOLDER}\` in a scope, and refuses to deploy while it is not a Windmill username (O-163).`,
+        ]
+      : []),
+    "",
+    "### Form schemas",
+    "",
+    "Sent only for a form with a password field, which Windmill cannot read from `main` (O-163). Every other script's form is read from `main`.",
+    "",
+    "| Path | Fields, in order | Password fields | sha256 of the schema |",
+    "| --- | --- | --- | --- |",
+    ...manifest.scripts.flatMap((s) =>
+      s.schema
+        ? [
+            `| \`${s.path}\` | ${s.schema.order.map((f) => `\`${f}\``).join(", ")} | ${s.schema.order
+              .filter((f) => s.schema?.properties[f]?.password === true)
+              .map((f) => `\`${f}\``)
+              .join(", ")} | \`${sha256(JSON.stringify(s.schema))}\` |`,
+          ]
+        : [],
+    ),
     "",
     "### Schedules",
     "",

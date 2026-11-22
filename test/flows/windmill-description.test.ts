@@ -21,11 +21,13 @@ import { parse } from "yaml";
 
 import { SECRET_PATHS, VALUE_NAMES } from "../../flows/lib/environment.ts";
 import {
+  FORM_SECRET_ARGS_SCOPE,
   READ_USAGE_SCOPE,
   READ_VARIABLES_SCOPE,
   WINDMILL_FOLDER,
   windmillVariablePath,
 } from "../../flows/lib/windmill.ts";
+import { VALUE_ARGUMENT } from "../../src/core/set-project-secret.ts";
 import { PLATFORM_SECRETS } from "../../infra/kubernetes/platform.ts";
 import { HOLD_RELEASE_REQUEST_FLOW_PATH } from "../../flows/lib/held-items.ts";
 import { SCAN_FLOW_PATH } from "../../flows/lib/scan.ts";
@@ -69,6 +71,7 @@ interface Description {
     trigger: string;
     job_token_scopes: string[];
     schedule?: { every_minutes: number; cron: string; timezone: string };
+    form?: { name: string; description: string; password?: boolean }[];
     suspend?: {
       hide_cancel?: boolean;
       resume_form: Record<
@@ -368,6 +371,12 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
         ["reason", "string", false],
         ["askCouncil", "boolean", true],
       ],
+      // O-163: the deploy sends this form's schema, which marks `value` a password field.
+      "f/foreman/set_project_secret": [
+        ["project", "string", false],
+        ["name", "string", false],
+        ["value", "string", false],
+      ],
       [HOLD_RELEASE_REQUEST_FLOW_PATH]: [["nodeId", "string", false]],
       // D-383: the answers' item type written out in the entry, so Windmill can read it (O-121).
       "f/foreman/submit_plan": [
@@ -435,7 +444,7 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
     },
   );
 
-  it("names Didi's four forms, each a called entry no service or schedule starts (D-376, D-383)", () => {
+  it("names Didi's five forms, each a called entry no service or schedule starts (D-376, D-383, O-163)", () => {
     const started: string[] = [
       PLAN_APPROVAL_FLOW_PATH,
       ...RECEIVER_FLOW_PATHS,
@@ -476,13 +485,15 @@ describe("each entry's main, as Windmill reads it (unit: repo guard, O-121)", ()
 });
 
 describe("each entry's job token scopes (unit: repo guard, D-371, O-121)", () => {
-  it("caps every entry to reading the folder's variables, and adds the usage read on the reconcile flow only", () => {
+  it("caps every entry to reading the folder's variables, and adds the usage read on the reconcile flow only and the password field's variables on the Set project secret form only", () => {
     expect(description.workspace_folder).toBe(WINDMILL_FOLDER);
     for (const flow of description.flows) {
       expect(flow.job_token_scopes, flow.name).toEqual(
         flow.name === "reconcile"
           ? [READ_VARIABLES_SCOPE, READ_USAGE_SCOPE]
-          : [READ_VARIABLES_SCOPE],
+          : flow.name === "set_project_secret"
+            ? [READ_VARIABLES_SCOPE, FORM_SECRET_ARGS_SCOPE]
+            : [READ_VARIABLES_SCOPE],
       );
     }
   });
@@ -730,6 +741,43 @@ describe("Didi's New project form (unit: repo guard, D-434, O-161)", () => {
     // The deploy never deletes a script, which is why the entry stays.
     expect(readFileSync(".github/scripts/windmill-deploy.sh", "utf8")).toMatch(
       /Nothing is ever deleted\./,
+    );
+  });
+});
+
+describe("Didi's Set project secret form (unit: repo guard, D-440, O-163)", () => {
+  const flow = description.flows.find((f) => f.name === "set_project_secret");
+
+  it("is a called flow, never on a schedule, that no service's Windmill token can start, with the one extra scope on the user's short-lived variables", () => {
+    expect(flow?.path).toBe("f/foreman/set_project_secret");
+    expect(flow?.trigger).toBe("called");
+    expect(flow?.entry).toBe("flows/set-project-secret.ts");
+    expect(flow?.schedule).toBeUndefined();
+    expect(flow?.job_token_scopes).toEqual([
+      READ_VARIABLES_SCOPE,
+      FORM_SECRET_ARGS_SCOPE,
+    ]);
+    // The user is left for the deploy to put in: no username is committed.
+    expect(FORM_SECRET_ARGS_SCOPE).toBe(
+      "variables:write:u/{WINDMILL_FORM_USERNAME}/secret_arg/*",
+    );
+    expect([
+      PLAN_APPROVAL_FLOW_PATH,
+      ...RECEIVER_FLOW_PATHS,
+      ...RUN_WATCHER_FLOW_PATHS,
+    ]).not.toContain(flow?.path);
+  });
+
+  it("gives its form as `main`'s three fields in order, the value the one password field, and no other entry gives a form", () => {
+    expect(flow?.form?.map((f) => f.name)).toEqual(["project", "name", VALUE_ARGUMENT]);
+    expect(flow?.form?.filter((f) => f.password === true).map((f) => f.name)).toEqual([
+      VALUE_ARGUMENT,
+    ]);
+    expect(
+      description.flows.filter((f) => f.form !== undefined).map((f) => f.name),
+    ).toEqual(["set_project_secret"]);
+    expect(readFileSync("flows/set-project-secret.ts", "utf8")).toMatch(
+      /export async function main\(\n {2}project: string,\n {2}name: string,\n {2}value: string,\n\): Promise<SetProjectSecretResult>/,
     );
   });
 });

@@ -383,6 +383,21 @@ One row per run of a Job's result (D-430): a case on a model, as the Job reporte
 
 Roles: only the runner inserts and reads them. `factory_api` and `factory_ingest` have no access. No personal data.
 
+## project_secret_names (append-only, migration 0030)
+
+One row each time the Set project secret form puts a product secret on a project's staging Worker (ADR 0118 appendix D, D-440, O-163). The value goes only to Cloudflare: the table has no column for it. Setting the same name again adds a row, since Cloudflare replaces the value and the record keeps when each set was made.
+
+| Column          | Type        | Notes                                                                                                                 |
+| --------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| id              | uuid pk     |                                                                                                                       |
+| project_id      | uuid fk     | `projects`                                                                                                            |
+| name            | text        | The secret's name: 1 to 64 uppercase letters, digits or underscores, a letter first, never `DB` or `ASSETS` (a check) |
+| set_at          | timestamptz | When the form put it on the Worker                                                                                    |
+| windmill_run_id | uuid null   | The form's Windmill run, when its id is a UUID; its arguments hold only a reference to the short-lived variable       |
+| recorded_by     | text        | `runner:set-project-secret`                                                                                           |
+
+Roles: only the runner (`factory_runner`) inserts and reads rows; no role updates or deletes one. `factory_api` and `factory_ingest` have no access. No personal data and no secret value.
+
 ## spec_versions
 
 | Column       | Type        | Notes                                    |

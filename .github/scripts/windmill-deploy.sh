@@ -9,10 +9,14 @@
 # job runs nothing of the repository's but `.github/`. The manifest comes from a job that runs
 # the repository's TypeScript, which a bot can change, so it is checked strictly before any call
 # and only fixed fields of it reach Windmill: each script path is `f/foreman/<name>`; each
-# script's job token scopes are on this script's own list; each schedule runs a script of the
+# script's job token scopes are on this script's own list; only the Set project secret form may
+# carry a schema, in exactly the bundle job's shape (O-163); each schedule runs a script of the
 # manifest at its own path; each value is one of the exact names below, always written as a plain
 # variable, never a secret one; the keys are fixed and the sizes bounded; each bundle's sha256 and
 # size are what the manifest says. Anything else stops the run with fixed text, before any call.
+# The form's one extra scope names the Windmill user who runs it, which is not committed: the
+# manifest leaves it as `{WINDMILL_FORM_USERNAME}`, and this script puts in the username from the
+# variable of that name, refusing the run while it is not a Windmill username. It never prints it.
 #
 # Then, in this order, with the token in WINDMILL_DEPLOY_TOKEN (scopes `scripts:write:f/foreman/*`,
 # `schedules:write:f/foreman/*` and `variables:write` on the exact value paths, first-hosting
@@ -50,6 +54,13 @@ value_names=(
 every_script_scope='variables:read:f/foreman/*'
 reconcile_only_scope='workspaces:read'
 reconcile_path='f/foreman/reconcile'
+# On the Set project secret form only (ADR 0118 appendix D, O-163): write, which includes read, on
+# the short-lived secret variables its password field makes under the user who runs it. The same
+# form is the only script that may carry a schema, which marks that field a password field.
+form_only_scope='variables:write:u/{WINDMILL_FORM_USERNAME}/secret_arg/*'
+form_path='f/foreman/set_project_secret'
+form_schema_draft='https://json-schema.org/draft/2020-12/schema'
+max_form_fields=8
 description="Written by the Windmill deploy workflow (D-371). Change flows/windmill.yaml and its settings in a pull request rather than editing this by hand."
 # Bounds: a bundle is about 1 MB (O-121), a value at most what a Windmill variable holds.
 max_scripts=32
@@ -120,6 +131,24 @@ checks='
   def text($max): type == "string" and length > 0 and bytes <= $max;
   def keys_are($k): type == "object" and (keys == ($k | sort));
   def unique_by_field($f): (map(.[$f]) | length) == (map(.[$f]) | unique | length);
+  def field_name: type == "string" and test("^[a-z][A-Za-z0-9]{0,31}$");
+  def form_field:
+    (keys_are(["description", "type"]) or keys_are(["description", "password", "type"]))
+    and .type == "string"
+    and (.description | type == "string" and test("^[ -~]{1,200}$"))
+    and ((has("password") | not) or .password == true);
+  def form_schema:
+    . as $f
+    | keys_are(["$schema", "order", "properties", "required", "type"])
+      and ($f | .["$schema"]) == $form_schema_draft
+      and $f.type == "object"
+      and ($f.order | type == "array" and length > 0 and length <= $max_form_fields and all(.[]; field_name))
+      and (($f.order | unique | length) == ($f.order | length))
+      and $f.required == $f.order
+      and ($f.properties | type == "object")
+      and (($f.properties | keys) == ($f.order | sort))
+      and ($f.properties | all(.[]; form_field))
+      and ($f.properties | any(.[]; .password == true));
   . as $m
   | [
       (if ($m | keys_are(["commit", "schedules", "scripts", "values", "version"])) then empty
@@ -139,7 +168,9 @@ checks='
       ($m.scripts | map(.path)) as $script_paths
       | [
           ($m.scripts | to_entries[] | .key as $i | .value as $s
-            | if ($s | keys_are(["content", "job_token_scopes", "path", "sha256", "size"]) | not) then
+            | if ($s | type == "object" and has("schema")) and $s.path != $form_path then
+                "scripts[\($i)] carries a schema, which only the Set project secret form may"
+              elif ($s | keys_are(["content", "job_token_scopes", "path", "sha256", "size"]) or ($s.path == $form_path and keys_are(["content", "job_token_scopes", "path", "schema", "sha256", "size"])) | not) then
                 "scripts[\($i)] does not hold exactly content, job_token_scopes, path, sha256 and size"
               elif ($s.path | type == "string" and test("^f/foreman/[a-z_]{1,64}$") | not) then
                 "scripts[\($i)].path is not f/foreman/ followed by lowercase letters and underscores"
@@ -155,8 +186,10 @@ checks='
                 "scripts[\($i)].job_token_scopes names a scope twice"
               elif ($s.job_token_scopes | index([$every_scope]) == null) then
                 "scripts[\($i)].job_token_scopes does not read the folder'"'"'s variables"
-              elif ($s.job_token_scopes | all(.[]; . == $every_scope or (. == $reconcile_scope and $s.path == $reconcile_path)) | not) then
+              elif ($s.job_token_scopes | all(.[]; . == $every_scope or (. == $reconcile_scope and $s.path == $reconcile_path) or (. == $form_scope and $s.path == $form_path)) | not) then
                 "scripts[\($i)].job_token_scopes holds a scope this script does not allow there"
+              elif ($s | has("schema")) and ($s.schema | form_schema | not) then
+                "scripts[\($i)].schema is not a form schema of the expected shape"
               else empty end),
           (if ($m.scripts | unique_by_field("path")) then empty else "the manifest names a script path twice" end),
           ($m.schedules | to_entries[] | .key as $i | .value as $s
@@ -191,7 +224,9 @@ if ! verdict="$(
     --argjson max_bundle_bytes "$max_bundle_bytes" --argjson max_content_bytes "$max_content_bytes" \
     --argjson max_value_bytes "$max_value_bytes" --argjson value_names "$value_list" \
     --arg every_scope "$every_script_scope" --arg reconcile_scope "$reconcile_only_scope" \
-    --arg reconcile_path "$reconcile_path" \
+    --arg reconcile_path "$reconcile_path" --arg form_scope "$form_only_scope" \
+    --arg form_path "$form_path" --arg form_schema_draft "$form_schema_draft" \
+    --argjson max_form_fields "$max_form_fields" \
     "$checks" "$manifest" 2>/dev/null
 )"; then
   refuse "The bundle job's manifest is not JSON of the expected shape."
@@ -200,6 +235,17 @@ if [ "$verdict" != "ok" ]; then
   # The verdict is one of the fixed texts above: it names a field and holds no manifest text.
   refuse "The bundle job's manifest is refused: $verdict."
 fi
+
+# The form's scope names the Windmill user who runs it (O-163). The username comes from the
+# variable, checked against Windmill's rule for one (a letter, then letters, digits or
+# underscores), and is never printed. A manifest without that scope needs none.
+form_user="${WINDMILL_FORM_USERNAME:-}"
+if jq -e --arg scope "$form_only_scope" 'any(.scripts[]; .job_token_scopes | index([$scope]) != null)' "$manifest" >/dev/null; then
+  if ! [[ "$form_user" =~ ^[A-Za-z][A-Za-z0-9_]{0,49}$ ]]; then
+    refuse "WINDMILL_FORM_USERNAME is not a Windmill username (a letter, then at most 49 letters, digits or underscores): set it to Didi's Windmill username as a variable of the windmill environment (first-hosting runbook, The Set project secret form's first real run)."
+  fi
+fi
+form_user_scope="variables:write:u/$form_user/secret_arg/*"
 
 # Each bundle: a plain file at bundles/<name>.js with the size and sha256 the manifest gives.
 script_count="$(jq '.scripts | length' "$manifest")"
@@ -276,12 +322,15 @@ post_json() {
 }
 
 # The scripts: each as a codebase script, its JSON first and then its bundle (the order
-# `create_snapshot` requires). Only fixed fields go into the JSON: no lock, schema, worker tag,
-# identity or any other setting, so Windmill infers the form from `main` and keeps nothing else.
+# `create_snapshot` requires). Only fixed fields go into the JSON: no lock, worker tag, identity
+# or any other setting, and a schema only for the Set project secret form, checked above, so
+# Windmill infers every other form from `main` and keeps nothing else. The form's scope gets the
+# username in place of the placeholder.
 for ((i = 0; i < script_count; i++)); do
   path="$(jq -r --argjson i "$i" '.scripts[$i].path' "$manifest")"
   name="${path#f/foreman/}"
-  jq -c --argjson i "$i" --arg description "$description" --arg commit "$commit" '
+  jq -c --argjson i "$i" --arg description "$description" --arg commit "$commit" \
+    --arg form_scope "$form_only_scope" --arg form_user_scope "$form_user_scope" '
     .scripts[$i] as $s
     | {
         path: $s.path,
@@ -291,9 +340,10 @@ for ((i = 0; i < script_count; i++)); do
         language: "bun",
         codebase: $s.sha256,
         auto_parent: true,
-        job_token_scopes: $s.job_token_scopes,
+        job_token_scopes: ($s.job_token_scopes | map(if . == $form_scope then $form_user_scope else . end)),
         deployment_message: "Windmill deploy workflow, commit \($commit)"
-      }' "$manifest" >"$work/script.json"
+      }
+      + (if $s | has("schema") then {schema: $s.schema} else {} end)' "$manifest" >"$work/script.json"
   if ! status="$(
     curl --silent --show-error --proto '=https' --max-time 120 \
       --request POST \

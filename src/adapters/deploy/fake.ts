@@ -1,9 +1,11 @@
 // A fake staging target and a fake of CI's builds for tests (O-116): the deploy port of the core
 // (`DeployTarget` over `StagingTarget`, named `cloudflare`, O-159) and the GitHub reads it deploys
 // from (`StagingBuilds`), in memory. The target records each deploy it is asked for and answers
-// what the test sets (a deploy by default); it sets a project up once, as the real target finds
-// before it creates, and keeps the names of the secrets put, never a value (O-160). The builds
-// hold runs and their `staging-site` archives. No network, no Cloudflare and no GitHub.
+// what the test sets (a deploy by default); an answer that deploys a Worker stands for a build
+// with a Worker module, so the deploy first asks the request's `beforeWorkerUpload` (D-448, O-163)
+// and answers its refusal instead when it gives one. It sets a project up once, as the real target
+// finds before it creates, and keeps the names of the secrets put, never a value (O-160). The
+// builds hold runs and their `staging-site` archives. No network, no Cloudflare and no GitHub.
 import type { DeployTarget, ProjectSetUpRequest } from "../../core/deploy-target.ts";
 import type {
   BuildRun,
@@ -19,6 +21,8 @@ import { STAGING_MAIN_BRANCH } from "../../core/staging.ts";
 export interface FakeStagingTarget extends DeployTarget {
   /** Each deploy asked for, in order: the project's slug, the commit and the archive's size. */
   readonly deploys: { slug: string; commitSha: string; archiveBytes: number }[];
+  /** The deploys the request's `beforeWorkerUpload` held, in order, by commit: nothing uploaded. */
+  readonly held: string[];
   /** What the next deploys answer, in order; a deploy of one file once it is empty. */
   readonly answers: (StagingUpload | "throw")[];
   /** Each setup asked for, in order. */
@@ -29,6 +33,7 @@ export interface FakeStagingTarget extends DeployTarget {
 
 export function createFakeStagingTarget(): FakeStagingTarget {
   const deploys: FakeStagingTarget["deploys"] = [];
+  const held: string[] = [];
   const answers: FakeStagingTarget["answers"] = [];
   const setUps: ProjectSetUpRequest[] = [];
   const secretNames = new Map<string, Set<string>>();
@@ -36,14 +41,23 @@ export function createFakeStagingTarget(): FakeStagingTarget {
   return {
     name: "cloudflare",
     deploys,
+    held,
     answers,
     setUps,
     secretNames,
-    async deploy({ project, commitSha, archive }) {
+    async deploy({ project, commitSha, archive, beforeWorkerUpload }) {
       deploys.push({ slug: project.slug, commitSha, archiveBytes: archive.length });
       const next = answers.shift();
       if (next === "throw") throw new Error("the fake staging target broke");
-      return next ?? { outcome: "deployed", files: 1 };
+      const answer = next ?? { outcome: "deployed", files: 1 };
+      if (answer.outcome === "deployed" && answer.worker && beforeWorkerUpload) {
+        const hold = await beforeWorkerUpload(answer.worker);
+        if (hold) {
+          held.push(commitSha);
+          return hold;
+        }
+      }
+      return answer;
     },
     async setUp(request) {
       setUps.push({ ...request });

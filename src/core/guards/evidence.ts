@@ -214,6 +214,13 @@ export function countsAsFailedDeploy(payload: Json): boolean {
   return !isRecord(payload) || payload.cause !== INFRASTRUCTURE_CAUSE;
 }
 
+/** The longest refused deploy's text that is ever shown (the daily check reads it). */
+export const DEPLOY_REFUSAL_TEXT_MAX_CHARS = 200;
+
+const DEPLOY_REFUSAL_TEXT = new RegExp(
+  `^[A-Za-z0-9 ,.;:'()_/-]{1,${DEPLOY_REFUSAL_TEXT_MAX_CHARS}}$`,
+);
+
 /**
  * The fixed reason and text the runner recorded with a refused staging deploy (O-116), or null.
  * Only a short code and a short plain text count, so nothing else recorded there is ever shown.
@@ -224,8 +231,7 @@ export function readDeployRefusal(
   if (!isRecord(payload)) return null;
   const { reason, text } = payload;
   if (typeof reason !== "string" || !/^[a-z_]{1,40}$/.test(reason)) return null;
-  if (typeof text !== "string" || !/^[A-Za-z0-9 ,.;:'()_/-]{1,200}$/.test(text))
-    return null;
+  if (typeof text !== "string" || !DEPLOY_REFUSAL_TEXT.test(text)) return null;
   return { reason, text };
 }
 
