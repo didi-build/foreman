@@ -2,12 +2,14 @@
 // ports and fake HTTP ports stand in for the runner App and GitHub; the answers are synthetic JSON
 // made here. The exact create request from the template, its answers (created, not created on a
 // 422, refused), the fail-closed creation token, and the read of an existing repository with the
-// read-only `contents` token. No network, no real repository or token.
+// read-only `contents` token, including a name GitHub has no repository for, whose read token
+// GitHub refuses with 422 (O-164). No network, no real repository or token.
 import { describe, expect, it } from "vitest";
 
 import type { GitHubPostHttp, GitHubPostRequest } from "./post-http.ts";
 import { createGitHubProjectRepositories } from "./project-repositories.ts";
 import type { RepositoryCreationTokens } from "./repository-creation-tokens.ts";
+import { RunnerAppTokenError } from "./runner-read-tokens.ts";
 import type {
   GitHubGetRequest,
   GitHubHttp,
@@ -35,6 +37,8 @@ function fakes(
     postBody?: unknown;
     postThrows?: boolean;
     mintThrows?: boolean;
+    /** The error the read token's mint throws, as the real mint builds it. */
+    readMintError?: Error;
     getStatus?: number;
     getBody?: unknown;
   } = {},
@@ -56,6 +60,7 @@ function fakes(
   const readTokens: RunnerAppTokens = {
     async mint(request) {
       readMints.push(request);
+      if (options.readMintError) throw options.readMintError;
       return READ_TOKEN;
     },
   };
@@ -240,5 +245,39 @@ describe("reading an existing project repository (unit with fakes, D-345, O-109)
       );
     }
     await expect(fakes().repositories.read("../foreman")).rejects.toThrow(/slug/);
+  });
+
+  it("answers null, reading nothing, when GitHub refuses the read token with 422: no such repository (O-164)", async () => {
+    const f = fakes({
+      readMintError: new RunnerAppTokenError(
+        "GitHub refused the runner App's contents read token with 422",
+        422,
+      ),
+    });
+    expect(await f.repositories.read(SLUG)).toBeNull();
+    expect(f.readMints).toEqual([
+      { repository: `didi-build/${SLUG}`, permission: "contents" },
+    ]);
+    expect(f.gets).toEqual([]);
+    expect(f.creationMints()).toBe(0);
+  });
+
+  it("still throws on any other refused read token, or a refusal before GitHub answered", async () => {
+    for (const error of [
+      new RunnerAppTokenError(
+        "GitHub refused the runner App's contents read token with 403",
+        403,
+      ),
+      new RunnerAppTokenError(
+        "GitHub refused the runner App's contents read token with 404",
+        404,
+      ),
+      new RunnerAppTokenError("the token answer is not JSON"),
+      new Error("the connection dropped"),
+    ]) {
+      const f = fakes({ readMintError: error });
+      await expect(f.repositories.read(SLUG), error.message).rejects.toBe(error);
+      expect(f.gets).toEqual([]);
+    }
   });
 });

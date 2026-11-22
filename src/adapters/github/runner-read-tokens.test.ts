@@ -141,6 +141,8 @@ describe("the runner App's read-only tokens (unit with fakes, D-267, O-125)", ()
       expect(error.message).toBe(
         `GitHub refused the runner App's actions read token with ${status}`,
       );
+      // GitHub's status, so a caller can tell a repository GitHub has not got (O-164).
+      expect((error as RunnerAppTokenError).status).toBe(status);
       expect(f.requests).toHaveLength(1);
       expect(f.signed()).toBe(1);
     }
@@ -161,6 +163,7 @@ describe("the runner App's read-only tokens (unit with fakes, D-267, O-125)", ()
         .mint({ repository: "didi-build/garden-notes", permission: "contents" })
         .catch((e: unknown) => e)) as Error;
       expect(error, JSON.stringify(change)).toBeInstanceOf(RunnerAppTokenError);
+      expect((error as RunnerAppTokenError).status).toBeUndefined();
       expect(error.message).toBe(
         "GitHub granted the runner App's contents read token more than was asked, so it is not used",
       );

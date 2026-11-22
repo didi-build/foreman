@@ -9,7 +9,8 @@
 // (another permission or level, besides the `metadata: read` every token gets, a
 // `repository_selection` other than `selected`, or another repository) throws, and the token is
 // not used. Nothing tries again, with the same request or a wider one. The token and the signed
-// value are never kept, logged or named in an error.
+// value are never kept, logged or named in an error. A refused mint passes GitHub's status to
+// `fail`, so a caller can tell a refusal it expects (O-164) from any other.
 import type { GitHubPostHttp } from "./post-http.ts";
 
 /** An App's own short-lived signed token (a JWT made with its private key). Never logged. */
@@ -64,13 +65,14 @@ function grantedAsAsked(
 
 /**
  * Mints one token for `request`. `label` names the token in errors ("the repository creation
- * token"); `fail` builds the error, so each token keeps its own error type.
+ * token"); `fail` builds the error, so each token keeps its own error type. `status` is GitHub's
+ * status when GitHub refused the mint, and absent for every other refusal.
  */
 export async function mintNarrowToken(
   { appJwt, installationId, http }: NarrowTokenOptions,
   request: NarrowTokenRequest,
   label: string,
-  fail: (message: string) => Error,
+  fail: (message: string, status?: number) => Error,
 ): Promise<string> {
   if (!Number.isSafeInteger(installationId) || installationId <= 0) {
     throw fail("the installation id is not a positive number");
@@ -85,7 +87,7 @@ export async function mintNarrowToken(
     maxBytes: MAX_TOKEN_ANSWER_BYTES,
   });
   if (answer.status !== 201) {
-    throw fail(`GitHub refused ${label} with ${answer.status}`);
+    throw fail(`GitHub refused ${label} with ${answer.status}`, answer.status);
   }
   let body: unknown;
   try {
