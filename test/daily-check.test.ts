@@ -164,6 +164,8 @@ describe("the daily check's generator (unit: memory store, M4.4)", () => {
       projectSetup: null,
       // No add-only applies port given: they are not read (O-158).
       unreviewedApplies: null,
+      // No release port given: Foreman's release is not read (O-166).
+      clusterReleases: null,
       // No weekly model test Job yet (O-156).
       modelTest: {
         latest: null,

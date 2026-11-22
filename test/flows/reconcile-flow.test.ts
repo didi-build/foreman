@@ -10,6 +10,7 @@ import { run as deployStaging } from "../../flows/deploy-staging.ts";
 import type { FlowDeps } from "../../flows/lib/compose.ts";
 import {
   createFakeStagingBuilds,
+  createFakeClusterTarget,
   createFakeStagingTarget,
 } from "../../src/adapters/deploy/fake.ts";
 import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
@@ -92,7 +93,11 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
       runtime: { start: notUsed, poll: notUsed, cancel: notUsed },
       stagingChecker: createFakeStagingChecker(),
       stagingBuilds: createFakeStagingBuilds(),
-      stagingTarget: createFakeStagingTarget(),
+      deployTargets: {
+        cloudflare: createFakeStagingTarget(),
+        cluster: createFakeClusterTarget(),
+      },
+      clusterReleases: { latestBuild: notUsed, latestApplied: notUsed },
       shortLivedVariables: { find: notUsed, remove: notUsed },
       screenshots: { read: notUsed },
       repoFolders: { folderId: notUsed },
@@ -141,7 +146,8 @@ function stagingFlowDeps(t: Awaited<ReturnType<typeof setupStaging>>): FlowDeps 
     runtime: { start: notUsed, poll: notUsed, cancel: notUsed },
     stagingChecker: t.checker,
     stagingBuilds: t.builds,
-    stagingTarget: t.target,
+    deployTargets: { cloudflare: t.target, cluster: createFakeClusterTarget() },
+    clusterReleases: { latestBuild: notUsed, latestApplied: notUsed },
     shortLivedVariables: { find: notUsed, remove: notUsed },
     screenshots: { read: notUsed },
     repoFolders: { folderId: notUsed },

@@ -263,6 +263,29 @@ describe("the reconcile pass's backstop (unit, D-358, O-114)", () => {
     ]);
   });
 
+  it("reads Foreman's own row on the cluster target as no project the form set up: foreman on the list is removed as before, its runs unread (O-166)", async () => {
+    const f = await setup();
+    await f.store.insertProject({
+      ...plannedProject("foreman", "Foreman"),
+      stagingUrl: null,
+      deployTarget: "cluster",
+      id: "75000000-0000-4000-8000-000000000097",
+      createdAt: T0,
+    });
+    await f.bootstrap.restart("foreman", INPUTS);
+    f.bootstrap.selected.add("foreman");
+    f.bootstrap.calls = [];
+    expect(await f.pass()).toEqual({
+      mode: "live",
+      kept: [],
+      removals: [
+        { repository: "didi-build/foreman", cause: "not_a_project", result: "removed" },
+      ],
+      problem: null,
+    });
+    expect(f.bootstrap.calls.filter((c) => c.startsWith("latestRestart"))).toEqual([]);
+  });
+
   it("removes a kept repository once its hour has passed", async () => {
     const f = await setup();
     await f.project("garden-notes");
@@ -413,6 +436,25 @@ describe("the daily check's failed setups (unit, O-114)", () => {
       failed: [],
       unreadable: ["garden-notes", "not-started", "seed-swap", "tool-library"],
     });
+  });
+
+  it("leaves Foreman's own row on the cluster target out, whatever its Bootstrap runs say (O-166)", async () => {
+    const f = await setup();
+    await f.store.insertProject({
+      ...plannedProject("foreman", "Foreman"),
+      stagingUrl: null,
+      deployTarget: "cluster",
+      id: "75000000-0000-4000-8000-000000000097",
+      createdAt: T0,
+    });
+    await f.bootstrap.restart("foreman", INPUTS);
+    f.bootstrap.finish("foreman", "failure");
+    f.bootstrap.calls = [];
+    expect(await failedSetups(f.deps, await f.store.listProjects())).toEqual({
+      failed: [],
+      unreadable: [],
+    });
+    expect(f.bootstrap.calls).toEqual([]);
   });
 
   it("drops a failure once the form's next restart succeeds", async () => {

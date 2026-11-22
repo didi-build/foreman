@@ -231,7 +231,15 @@ export async function runLivePasses(
   const staging = createStaging({ ...deps, checker: deps.stagingChecker });
   const verified = await staging.verifyReady();
   const { waits, problem } = await staging.deployWaits(verified);
-  const firstRuns = await firstRunsAfterStaging(deps, [...deployChecks, ...verified]);
+  // A cluster-target item the merge pass moved to Done at merge frees its items too (D-449).
+  const doneAtMerge = merged.flatMap((m) =>
+    m.result.doneAtMerge ? [m.result.doneAtMerge] : [],
+  );
+  const firstRuns = await firstRunsAfterStaging(deps, [
+    ...deployChecks,
+    ...verified,
+    ...doneAtMerge,
+  ]);
   const escalations = await createEscalations(deps).resolveAll();
   firstRuns.push(
     ...(await startReadyRuns(

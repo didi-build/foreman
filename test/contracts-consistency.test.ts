@@ -99,7 +99,7 @@ const tableCells = (heading: string): string[] =>
 
 /** "Blocked to Ready for dev" into from and to ids. Labels may themselves contain " to ". */
 function parseCell(cell: string, labels: Map<string, string>): string {
-  const plain = cell.replace(/\s*\((pass|fail|redo|cancel)\)\s*$/, "");
+  const plain = cell.replace(/\s*\((pass|fail|redo|cancel|at merge)\)\s*$/, "");
   const known = [...labels.keys()].sort((a, b) => b.length - a.length);
   for (const from of known) {
     if (!plain.startsWith(`${from} to `)) continue;
@@ -253,13 +253,17 @@ describe("every track's dispatch out of its start state waits for blockers (cont
 
 describe("runner-only moves are the ones a runner step owns (contract consistency, O-54)", () => {
   // The guards of the moves whose writes only their runner step makes: the Council's redo
-  // (cancel, flag, counters, D-231), the escalation's way back (counters, O-46, D-227) and the
-  // cancel (its open requests cancelled, D-308).
+  // (cancel, flag, counters, D-231), the escalation's way back (counters, O-46, D-227), the
+  // cancel (its open requests cancelled, D-308), and the two ways from Verifying on staging into
+  // Done, the staging check's and a cluster-target item's at merge (counters reset, D-307's
+  // pattern, D-449, O-166).
   const RUNNER_GUARDS = [
     "council_redo_recorded",
     "council_decision_recorded",
     "didi_answer_recorded",
     "cancel_recorded",
+    "staging_check_on_merge_commit",
+    "merged_on_cluster_target",
   ];
 
   it("marks a move runner_only exactly when one of those guards guards it", () => {
@@ -470,5 +474,32 @@ describe("every work item state before its merge has one cancel move into Cancel
     expect(moves.filter((m) => m.from === "cancelled")).toEqual([]);
     expect(cancels.some((m) => m.from === "verifying_on_staging")).toBe(false);
     expect(cancels.some((m) => m.from === "escalated_to_didi")).toBe(true);
+  });
+});
+
+describe("a cluster-target item is Done at merge (contract consistency, D-449, O-166)", () => {
+  it.each(PAIRS.slice(0, 2))(
+    "$file has the spec's at-merge row as a runner-only move beside the staging check's",
+    ({ file, heading }) => {
+      const row = tableRows(heading).find(
+        (r) => r[0] === "Verifying on staging to Done (at merge)",
+      );
+      expect(row?.[1], heading).toMatch(/Foreman's own cluster/);
+      expect(row?.[3], heading).toMatch(/Platform apply/);
+      const intoDone = fileTransitions(file).filter(
+        (t) => t.from === "verifying_on_staging" && t.to === "done",
+      );
+      expect(intoDone.map((t) => [t.runner_only, (t.guards ?? [])[0]])).toEqual([
+        [true, "staging_check_on_merge_commit"],
+        [true, "merged_on_cluster_target"],
+      ]);
+      expect(intoDone[1]?.evidence).toEqual(["merge_commit"]);
+    },
+  );
+
+  it("the spec says why, and the daily check's line, word for word", () => {
+    const spec = readFileSync("docs/spec.md", "utf8");
+    expect(spec).toContain("**Foreman's own items are Done at merge (D-449");
+    expect(spec).toContain('"Foreman upgrade waiting for your Platform apply"');
   });
 });

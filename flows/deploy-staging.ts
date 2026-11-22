@@ -6,7 +6,9 @@
 // each item in Verifying on staging whose merge commit it covers, and runs their staging check
 // (src/core/staging-deploy.ts). A fail move then starts the builder's fix round (O-41), and a move
 // to Done starts the first run of each item that Done frees (D-329, ./lib/ready-runs.ts). Under
-// the kill switch it refuses; in dry run it says what it would deploy and does nothing.
+// the kill switch it refuses; in dry run it says what it would deploy and does nothing. For a
+// project on the cluster target (Foreman, D-441, O-166) it fetches no build: the result says
+// whether the commit's images wait for Didi's Platform apply (D-449).
 import { REPOSITORY } from "../src/core/github.ts";
 import type { StagingDeployResult } from "../src/core/staging-deploy.ts";
 import type { BuilderRunStart } from "./lib/builder-runs.ts";

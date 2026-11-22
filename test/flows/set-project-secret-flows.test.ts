@@ -129,16 +129,19 @@ describe("Didi's Set project secret flow (flow, ADR 0118 appendix D, O-163)", ()
     const windmill: { url: string; method: string; authorization: string }[] = [];
     const deps = {
       ...f.deps,
-      stagingTarget: createCloudflareStagingTarget({
-        credentials: {
-          read: async () => ({
-            accountId: ACCOUNT,
-            token: "fake-token-for-tests-0123456789",
-          }),
-        },
-        d1Credentials: noD1Credentials,
-        http: cloudflare.http,
-      }),
+      deployTargets: {
+        ...f.deps.deployTargets,
+        cloudflare: createCloudflareStagingTarget({
+          credentials: {
+            read: async () => ({
+              accountId: ACCOUNT,
+              token: "fake-token-for-tests-0123456789",
+            }),
+          },
+          d1Credentials: noD1Credentials,
+          http: cloudflare.http,
+        }),
+      },
       shortLivedVariables: windmillShortLivedVariables({
         env: {
           WM_TOKEN: "fake-job-token-for-tests",
@@ -199,11 +202,14 @@ describe("Didi's Set project secret flow (flow, ADR 0118 appendix D, O-163)", ()
     const cloudflare = fakeCloudflare();
     const deps = {
       ...f.deps,
-      stagingTarget: createCloudflareStagingTarget({
-        credentials: unbuiltStagingDeployCredentials(),
-        d1Credentials: noD1Credentials,
-        http: cloudflare.http,
-      }),
+      deployTargets: {
+        ...f.deps.deployTargets,
+        cloudflare: createCloudflareStagingTarget({
+          credentials: unbuiltStagingDeployCredentials(),
+          d1Credentials: noD1Credentials,
+          http: cloudflare.http,
+        }),
+      },
     };
     const result = await setProjectSecret(deps, INPUT);
     expect(result).toMatchObject({

@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createFakeStagingBuilds,
+  createFakeClusterTarget,
   createFakeStagingTarget,
   mainBuild,
 } from "../src/adapters/deploy/fake.ts";
@@ -430,7 +431,7 @@ describe("walkthrough: QA pass, merge, staging deploy, check, Done (unit: M3.3 a
       ...t.deps,
       checker: createFakeStagingChecker(),
       builds,
-      target,
+      targets: { cloudflare: target, cluster: createFakeClusterTarget() },
     }).deployRun(REPO, 7);
     expect(deployed).toMatchObject({ step: "deployed", covers: [t.node.id] });
     expect(target.deploys).toMatchObject([{ slug: "rehearsal", commitSha: mergeSha }]);
@@ -602,7 +603,7 @@ describe("a deploy of a later commit that contains the merge commit (unit: D-225
         },
         checker: t.checker,
         builds: t.builds,
-        target: t.target,
+        targets: { cloudflare: t.target, cluster: t.cluster },
       });
       await expect(
         deploys.record(REPO, mainBuild(REPO, 9, LATER), outcomeOf("success")),

@@ -35,6 +35,16 @@
 // `staging_deploy_attention_after_minutes` is reported for the attention list (D-225, O-40).
 // The deploy flow (flows/deploy-staging.ts) asks for the check right after it records a deploy
 // (D-356); the reconcile flow's staging pass is the backstop.
+//
+// A project on Foreman's own cluster target (Foreman itself, ADR 0118 appendix G, D-441) has no
+// staging, and a release of Foreman is production (D-007). So its item is Done at merge (D-449):
+// once the merge commit is recorded, the runner takes the runner-only move Verifying on staging to
+// Done guarded by `merged_on_cluster_target` (`doneAtMerge`), with the counters reset and the
+// items it blocked released, as for a passed check. No deploy, check or staging fact is read or
+// written for it. The merge asks for it right after its own move (./merge.ts), so the item never
+// waits in Verifying on staging; `verify`, and so the reconcile pass, takes it for an item a
+// failure part way left there. The daily check shows "Foreman upgrade waiting for your Platform
+// apply" until Didi applies the release (./cluster-release.ts).
 // A failure part way is recovered by the next call: the facts are keyed, the moves are taken once
 // per trigger, and the live pass (`verifyReady`) asks again for an escalation or a release that a
 // failure left behind.
@@ -59,6 +69,8 @@ export { STAGING_CHECK_ATTEMPTS };
 export const STAGING_PASS_GUARD = "staging_check_on_merge_commit";
 /** The guard that marks the fallback move a failed staging check takes. */
 export const STAGING_FAIL_GUARD = "staging_check_failed";
+/** The guard of the move a cluster-target item takes to Done at merge (D-449). */
+export const CLUSTER_DONE_GUARD = "merged_on_cluster_target";
 /** The guard of the escalation into the Council (escalation.yaml). */
 export const ESCALATION_GUARD = "escalation_trigger_met";
 /** The setting: minutes in Verifying on staging with no deploy before the attention list (D-225). */
@@ -167,7 +179,12 @@ export type StagingStep =
   /** A recorded check led to the move (`move`), and possibly the escalation. */
   | "checked"
   /** Two checks ended without a result, and the item was sent to the Council. */
-  | "timed_out";
+  | "timed_out"
+  /**
+   * A cluster-target item (D-449): the move to Done at merge was asked for (`move`), with its
+   * releases. No deploy or check is read.
+   */
+  | "done_at_merge";
 
 export interface StagingResult {
   nodeId: string;
@@ -230,6 +247,15 @@ const FAIL_TRIGGER_PREFIXES = ["staging_check:", "staging_deploy_failed:"];
 export const stagingTimeoutTrigger = (noResultEvidenceId: string): Trigger => ({
   kind: "timeout",
   ref: `staging_no_result:${noResultEvidenceId}`,
+});
+
+/** The start of the trigger ref of a cluster-target item's move to Done at merge (D-449). */
+export const CLUSTER_DONE_TRIGGER_PREFIX = "cluster_done:";
+
+/** The trigger of a cluster-target item's move to Done: its recorded merge commit (D-449). */
+export const clusterDoneTrigger = (mergeCommitEvidenceId: string): Trigger => ({
+  kind: "event",
+  ref: `${CLUSTER_DONE_TRIGGER_PREFIX}${mergeCommitEvidenceId}`,
 });
 
 /** The trigger of the release of the items a Done node blocked. */
@@ -484,6 +510,8 @@ export function createStaging(deps: StagingDeps) {
           await tx.setCounter(node.id, "failure", next, at);
           return null;
         };
+    // The move to Done is one of two runner-only ways (D-307): this step names the staging
+    // check's; a cluster-target item's Done at merge is the other (D-449, O-166).
     const result = await library.requestTransitionOnce(
       {
         nodeId: node.id,
@@ -492,6 +520,8 @@ export function createStaging(deps: StagingDeps) {
         actor: ACTOR,
         evidenceIds: [outcome.evidence.id],
         reason: outcome.what,
+        runnerOnly: true,
+        guardedBy: passed ? STAGING_PASS_GUARD : STAGING_FAIL_GUARD,
       },
       dryRun ? undefined : counters,
     );
@@ -506,6 +536,75 @@ export function createStaging(deps: StagingDeps) {
       `${outcome.what}, and the failure counter reached its limit`,
     );
     return escalation ? { ...checked, escalation } : checked;
+  }
+
+  /**
+   * A cluster-target item's move to Done at merge (D-449): the runner-only move out of its state
+   * guarded by `merged_on_cluster_target`, with the counters reset as a passed check resets them
+   * (P-03), then the release of the items it blocked. The guard reads the project's target and
+   * the merge commit itself. Dry run writes a dry-run row and no counter.
+   */
+  async function finishAtMerge(
+    node: Node,
+    merge: Evidence,
+    base: StagingResult,
+  ): Promise<StagingResult> {
+    const move = contracts.transitions.find(
+      (m) =>
+        !m.escalation &&
+        !m.fallbackMove &&
+        m.from === node.state &&
+        trackMatches(m, node) &&
+        m.guards.includes(CLUSTER_DONE_GUARD),
+    );
+    if (!move) return { ...base, step: "not_verifying" };
+    const dryRun = await dryRunOn();
+    const at = clock.now();
+    const reset: AlsoWrite = async (tx) => {
+      await tx.setCounter(node.id, "failure", 0, at);
+      await tx.setCounter(node.id, "qa_round", 0, at);
+      return null;
+    };
+    const result = await library.requestTransitionOnce(
+      {
+        nodeId: node.id,
+        toState: move.to,
+        trigger: clusterDoneTrigger(merge.id),
+        actor: ACTOR,
+        evidenceIds: [merge.id],
+        reason: `merged as ${merge.commitSha} on Foreman's own cluster target: Done at merge, and the release waits for Didi's Platform apply (D-449)`,
+        runnerOnly: true,
+        guardedBy: CLUSTER_DONE_GUARD,
+      },
+      dryRun ? undefined : reset,
+    );
+    const done: StagingResult = {
+      ...base,
+      step: "done_at_merge",
+      move: asMove(move.to, result),
+    };
+    if (dryRun || result.outcome !== "applied") return done;
+    return { ...done, released: await releaseDependents(node.id) };
+  }
+
+  /**
+   * After the merge (./merge.ts): a cluster-target item goes to Done at once (D-449). Null for any
+   * other item, which reads nothing more than its node and project, so a Cloudflare-target merge
+   * is unchanged.
+   */
+  async function doneAtMerge(nodeId: string): Promise<StagingResult | null> {
+    if ((await store.getSetting("kill_switch"))?.value === true) return null;
+    const node = await store.getNode(nodeId);
+    if (!node || !stagingMovesFor(node)) return null;
+    const project = await store.getProject(node.projectId);
+    if (project?.deployTarget !== "cluster") return null;
+    const merge = latest(await store.listEvidence({ nodeId, kind: "merge_commit" }));
+    if (!merge?.commitSha) return null;
+    return finishAtMerge(node, merge, {
+      nodeId,
+      step: "done_at_merge",
+      mergeCommitSha: merge.commitSha,
+    });
   }
 
   /** Steps 1 to 4 for one node. `null` checker: no check is run, as in dry run. */
@@ -525,6 +624,11 @@ export function createStaging(deps: StagingDeps) {
     const sha = merge?.commitSha;
     if (!sha) return { nodeId, step: "no_merge_commit", ...waiting };
     const base: StagingResult = { nodeId, step: "checked", mergeCommitSha: sha };
+    // A cluster-target item has no staging: Done at merge (D-449).
+    const project = await store.getProject(node.projectId);
+    if (project?.deployTarget === "cluster" && merge) {
+      return finishAtMerge(node, merge, base);
+    }
 
     // A result already recorded: a failed deploy covering the merge commit, else a check. A
     // deploy infrastructure refused is not a failed deploy (O-116, N-103).
@@ -580,7 +684,6 @@ export function createStaging(deps: StagingDeps) {
     }
     if (await dryRunOn()) return { ...withDeploy, step: "would_check" };
     if (!checker) return { ...withDeploy, step: "no_checker" };
-    const project = await store.getProject(node.projectId);
     if (!project) return { ...withDeploy, step: "no_checker" };
 
     let outcome: StagingCheckResult;
@@ -672,6 +775,7 @@ export function createStaging(deps: StagingDeps) {
   return {
     stagingMovesFor,
     verify,
+    doneAtMerge,
     releaseDependents,
 
     /**

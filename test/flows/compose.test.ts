@@ -10,6 +10,10 @@ import { checkServerIdentity } from "node:tls";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  CLUSTER_REFUSALS,
+  CLUSTER_TARGET_REFUSALS,
+} from "../../src/adapters/deploy/cluster-target.ts";
 import { GitHubAppJwtError } from "../../src/adapters/github/app-jwt.ts";
 import { InstallationTokenError } from "../../src/adapters/github/installation-tokens.ts";
 import type { GitHubPostRequest } from "../../src/adapters/github/post-http.ts";
@@ -333,7 +337,7 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       const commit = "b".repeat(40);
       const archive = storedZip([{ name: "foreman-commit.txt", data: `${commit}\n` }]);
       expect(
-        await deps.stagingTarget.deploy({
+        await deps.deployTargets.cloudflare.deploy({
           project: { slug: "x", repo: "didi-build/x" } as never,
           commitSha: commit,
           archive,
@@ -372,7 +376,7 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
       const commit = "b".repeat(40);
       const archive = storedZip([{ name: "foreman-commit.txt", data: `${commit}\n` }]);
       const deploy = () =>
-        deps.stagingTarget.deploy({
+        deps.deployTargets.cloudflare.deploy({
           project: { slug: "x", repo: "didi-build/x" } as never,
           commitSha: commit,
           archive,
@@ -408,7 +412,7 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
     const deps = await compose(env);
     try {
       expect(
-        await deps.stagingTarget.setUp({
+        await deps.deployTargets.cloudflare.setUp({
           slug: "demo",
           displayName: "Demo",
           purpose: "A made-up project.",
@@ -425,6 +429,52 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         SECRET_PATHS.cloudflareAccountId,
         SECRET_PATHS.d1Token,
       ]);
+      expect(fetched).toEqual([]);
+    } finally {
+      await deps.close();
+    }
+  });
+
+  it("gives each deploy target by its name, and the cluster target reads only GitHub: with the runner App's key not a PEM it refuses before anything is sent, and it refuses setup and secrets (D-441, O-166)", async () => {
+    const { env, secretsRead } = fakeEnvironment();
+    const deps = await compose(env);
+    try {
+      expect(deps.deployTargets.cloudflare.name).toBe("cloudflare");
+      expect(deps.deployTargets.cluster.name).toBe("cluster");
+      const project = { slug: "foreman", repo: "didi-build/foreman" } as never;
+      expect(
+        await deps.deployTargets.cluster.deploy({ project, commitSha: "c".repeat(40) }),
+      ).toEqual({
+        outcome: "refused",
+        cause: "infrastructure",
+        reason: "images_unreadable",
+        text: CLUSTER_REFUSALS.images_unreadable,
+      });
+      expect(
+        await deps.deployTargets.cluster.setUp({
+          slug: "foreman",
+          displayName: "Foreman",
+          purpose: "A made-up purpose.",
+        }),
+      ).toMatchObject({ outcome: "refused", step: "check", reason: "no_setup" });
+      for (const answer of [
+        await deps.deployTargets.cluster.putSecret("foreman", "MADE_UP", "not-a-value"),
+        await deps.deployTargets.cluster.listSecretNames("foreman"),
+      ]) {
+        expect(answer).toEqual({
+          outcome: "refused",
+          reason: "no_secrets",
+          text: CLUSTER_TARGET_REFUSALS.no_secrets,
+        });
+      }
+      // No Cloudflare credential or cluster token was read for it, and nothing was fetched.
+      expect(
+        secretsRead.filter(
+          (path) =>
+            path.startsWith("platform/cloudflare") ||
+            path === SECRET_PATHS.clusterToken,
+        ),
+      ).toEqual([]);
       expect(fetched).toEqual([]);
     } finally {
       await deps.close();

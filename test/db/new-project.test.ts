@@ -9,7 +9,10 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { createFakeStagingTarget } from "../../src/adapters/deploy/fake.ts";
+import {
+  createFakeClusterTarget,
+  createFakeStagingTarget,
+} from "../../src/adapters/deploy/fake.ts";
 import { createFakePublicNames } from "../../src/adapters/dns/fake.ts";
 import { createFakeBootstrap } from "../../src/adapters/github/bootstrap-fake.ts";
 import {
@@ -76,7 +79,10 @@ describe.skipIf(!adminUrl)(
         store: on,
         clock: { now: () => new Date(T0) },
         ids,
-        stagingTarget: createFakeStagingTarget(),
+        targets: {
+          cloudflare: createFakeStagingTarget(),
+          cluster: createFakeClusterTarget(),
+        },
         projectSettings: createFakeProjectSettings(),
         projectWorkflows: createFakeProjectWorkflows(),
         projectRepositories: createFakeProjectRepositories(),

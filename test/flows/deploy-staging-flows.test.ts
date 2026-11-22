@@ -12,6 +12,8 @@
 // token before the upload, a second deploy applies none, and a migration the database refuses
 // as SQL sends the item back with one failure and uploads nothing (O-165). Synthetic data only;
 // nothing reaches GitHub, Cloudflare or Windmill.
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { run as dailyCheck } from "../../flows/daily-check.ts";
@@ -27,8 +29,16 @@ import {
   type CloudflareAnswer,
   type CloudflareRequest,
 } from "../../src/adapters/deploy/cloudflare-staging.ts";
-import { mainBuild } from "../../src/adapters/deploy/fake.ts";
-import { REPO } from "../reconcile-fixture.ts";
+import {
+  CLUSTER_REFUSALS,
+  IMAGES_JOB,
+  IMAGES_WORKFLOW,
+  createClusterTarget,
+} from "../../src/adapters/deploy/cluster-target.ts";
+import { createFakeStagingBuilds, mainBuild } from "../../src/adapters/deploy/fake.ts";
+import { FOREMAN_UPGRADE_WAITING } from "../../src/core/cluster-release.ts";
+import type { GitHubWorkflowReader } from "../../src/core/github.ts";
+import { createReconcileFixture, REPO } from "../reconcile-fixture.ts";
 import { setupStaging } from "../staging-fixture.ts";
 import { storedZip } from "../zip-fixture.ts";
 import { appTokensWithoutKeys, flowDepsFor } from "./flow-fixture.ts";
@@ -159,7 +169,10 @@ async function flow(d1Credentials = noD1Credentials) {
     http: cloudflare.http,
   });
   const parts = flowDepsFor(t.deps, t.checker, { builds: t.builds });
-  const deps = { ...parts.deps, stagingTarget: target };
+  const deps = {
+    ...parts.deps,
+    deployTargets: { ...parts.deps.deployTargets, cloudflare: target },
+  };
   return { t, deps, cloudflare };
 }
 
@@ -377,11 +390,14 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     const parts = flowDepsFor(t.deps, t.checker, { builds: t.builds });
     const deps = {
       ...parts.deps,
-      stagingTarget: createCloudflareStagingTarget({
-        credentials: unbuiltStagingDeployCredentials(),
-        d1Credentials: noD1Credentials,
-        http: cloudflare.http,
-      }),
+      deployTargets: {
+        ...parts.deps.deployTargets,
+        cloudflare: createCloudflareStagingTarget({
+          credentials: unbuiltStagingDeployCredentials(),
+          d1Credentials: noD1Credentials,
+          http: cloudflare.http,
+        }),
+      },
     };
     t.builds.putRun(REPO, mainBuild(REPO, 33, t.mergeSha), site(t.mergeSha));
     expect(await deployStaging(deps, { repo: REPO, runId: 33 })).toMatchObject({
@@ -434,5 +450,153 @@ describe("the staging deploy flow (flow: the real deploy adapter, fake HTTP, O-1
     });
     expect(cloudflare.sent).toEqual([]);
     expect(await t.kind("staging_deploy")).toEqual([]);
+  });
+
+  it("sends Cloudflare exactly what it sent before deploys were routed by target, for an old-layout site and a Worker build with a secret and a migration (pinned before ADR 0118 slice 9, O-166)", async () => {
+    const hash = (sent: CloudflareRequest[]) =>
+      createHash("sha256").update(JSON.stringify(sent)).digest("hex");
+    const old = await flow();
+    old.t.builds.putRun(
+      REPO,
+      mainBuild(REPO, 51, old.t.mergeSha),
+      site(old.t.mergeSha),
+    );
+    expect(await deployStaging(old.deps, { repo: REPO, runId: 51 })).toMatchObject({
+      deploy: { step: "deployed" },
+    });
+    const worker = await flow(d1Stored);
+    worker.cloudflare.secrets.add("MODEL_API_KEY");
+    const archive = storedZip([
+      {
+        name: "foreman-deploy.json",
+        data: JSON.stringify({
+          schema: 1,
+          compatibilityDate: "2026-10-26",
+          compatibilityFlags: [],
+          requiredSecrets: ["MODEL_API_KEY"],
+        }),
+      },
+      { name: "assets/foreman-commit.txt", data: `${worker.t.mergeSha}\n` },
+      { name: "assets/index.html", data: "<!doctype html><title>Rehearsal</title>" },
+      { name: "worker/index.js", data: "export default { fetch() {} };" },
+      { name: "migrations/0001_notes.sql", data: "CREATE TABLE notes (id INTEGER);" },
+    ]);
+    worker.t.builds.putRun(REPO, mainBuild(REPO, 52, worker.t.mergeSha), archive);
+    expect(await deployStaging(worker.deps, { repo: REPO, runId: 52 })).toMatchObject({
+      deploy: { step: "deployed", migrationsApplied: ["0001_notes.sql"] },
+    });
+    expect([hash(old.cloudflare.sent), hash(worker.cloudflare.sent)]).toEqual([
+      "57ce9e9be620cdf4ae29462f413d9d6e902316cd8c5ed4266be3d0fa2254d5dd",
+      "ebe6933cb02760f994c11748cfcf98263f8ee01540ab7a08c2b22b80c44605cf",
+    ]);
+  });
+});
+
+describe("the staging deploy flow for a project on Foreman's own cluster (flow: the real cluster target, fake GitHub reads, O-166)", () => {
+  /** A cluster-target project with CI's build of `commit` on main, and the Images run's state. */
+  async function clusterFlow(commit: string, conclusion: string | null) {
+    const f = await createReconcileFixture({ deployTarget: "cluster" });
+    await f.setting("dry_run", false);
+    const builds = createFakeStagingBuilds();
+    builds.putRun(REPO, mainBuild(REPO, 61, commit));
+    const reads: string[] = [];
+    const workflows: GitHubWorkflowReader = {
+      async listWorkflowRuns(repo, file, sha) {
+        reads.push(`runs ${file}`);
+        return [
+          {
+            id: 7001,
+            path: IMAGES_WORKFLOW,
+            event: "push",
+            headSha: sha,
+            headRepo: repo,
+          },
+        ];
+      },
+      async listWorkflowJobs(_repo, runId) {
+        reads.push(`jobs ${runId}`);
+        return [
+          {
+            id: 1,
+            runId,
+            name: IMAGES_JOB,
+            headSha: commit,
+            status: conclusion === null ? "in_progress" : "completed",
+            conclusion,
+          },
+        ];
+      },
+    };
+    const cloudflare = fakeCloudflare();
+    const parts = flowDepsFor(f.deps, undefined, { builds });
+    const deps = {
+      ...parts.deps,
+      deployTargets: {
+        cloudflare: createCloudflareStagingTarget({
+          credentials: {
+            read: async () => ({
+              accountId: ACCOUNT,
+              token: "fake-token-for-tests-0123456789",
+            }),
+          },
+          d1Credentials: noD1Credentials,
+          http: cloudflare.http,
+        }),
+        cluster: createClusterTarget({ workflows }),
+      },
+    };
+    return { f, parts, deps, cloudflare, reads };
+  }
+
+  it("answers that the commit's images wait for Didi's Platform apply, sending Cloudflare nothing and recording nothing", async () => {
+    const commit = "d".repeat(40);
+    const c = await clusterFlow(commit, "success");
+    expect(await deployStaging(c.deps, { repo: REPO, runId: 61 })).toEqual({
+      outcome: "done",
+      deploy: {
+        repo: REPO,
+        runId: 61,
+        step: "awaiting_apply",
+        commitSha: commit,
+        images: { runId: 7001 },
+      },
+      builderRuns: [],
+      firstRuns: [],
+    });
+    expect(c.reads).toEqual(["runs images.yml", "jobs 7001"]);
+    expect(c.cloudflare.sent).toEqual([]);
+  });
+
+  it("says with fixed text that the images are still building, and the daily check then shows the waiting upgrade from GitHub", async () => {
+    const c = await clusterFlow("d".repeat(40), null);
+    expect(await deployStaging(c.deps, { repo: REPO, runId: 61 })).toMatchObject({
+      deploy: {
+        step: "refused_infrastructure",
+        reason: "images_building",
+        text: CLUSTER_REFUSALS.images_building,
+      },
+    });
+    expect(c.cloudflare.sent).toEqual([]);
+    const pinned = (digit: string) => ({
+      stateApi: `ghcr.io/didi-build/foreman-state-api@sha256:${digit.repeat(64)}`,
+      receiver: `ghcr.io/didi-build/foreman-github-receiver@sha256:${digit.repeat(64)}`,
+      egressProxy: `ghcr.io/didi-build/foreman-egress-proxy@sha256:${digit.repeat(64)}`,
+      runWatcher: `ghcr.io/didi-build/foreman-run-watcher@sha256:${digit.repeat(64)}`,
+    });
+    c.parts.clusterReleases.build = {
+      runNumber: 90,
+      commitSha: "d".repeat(40),
+      images: pinned("3"),
+    };
+    c.parts.clusterReleases.applied = {
+      runNumber: 70,
+      commitSha: "e".repeat(40),
+      images: pinned("4"),
+    };
+    const { text } = (await dailyCheck(c.deps)).render_all[1].json;
+    expect(text).toContain(
+      `${FOREMAN_UPGRADE_WAITING}: the images built from commit ddddddd`,
+    );
+    expect(c.parts.clusterReleases.reads).toEqual([REPO, REPO]);
   });
 });

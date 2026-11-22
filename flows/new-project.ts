@@ -1,6 +1,6 @@
 // Didi's New project form, `f/foreman/new_project` (ADR 0118 appendix C, D-434, D-435, O-161).
 // Didi starts it from its page in the Windmill workspace, signed in (O-97, D-295), and running it
-// is her one approval for the project: no schedule, pass, service or other flow starts it, and it
+// is Didi's one approval for the project: no schedule, pass, service or other flow starts it, and it
 // is never a public or signed-token link.
 //
 // Its four boxes are the short name (slug), the display name, a one-line purpose, and whether the
@@ -21,7 +21,7 @@ import { windmillEnvironment, windmillJobId } from "./lib/windmill.ts";
 export type { NewProjectInput, NewProjectResult };
 
 export function run(deps: FlowDeps, input: NewProjectInput): Promise<NewProjectResult> {
-  return createNewProjectForm(deps).create(input);
+  return createNewProjectForm({ ...deps, targets: deps.deployTargets }).create(input);
 }
 
 /**

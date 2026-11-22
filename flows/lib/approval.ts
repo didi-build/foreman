@@ -56,7 +56,11 @@ import {
   followUpPass,
   type CouncilPassStep,
 } from "./council-runs.ts";
-import { startReadyRuns, type ReadyRunStart } from "./ready-runs.ts";
+import {
+  firstRunsAfterStaging,
+  startReadyRuns,
+  type ReadyRunStart,
+} from "./ready-runs.ts";
 import { heldBy } from "./switches.ts";
 import { triagePass, type TriagePassStep } from "./triage-runs.ts";
 
@@ -317,6 +321,10 @@ export async function afterAnswer(
     held === null ? await mergeOnPrivilegedApproval(deps, gate) : undefined;
   const firstRuns =
     gate.nodeId && held === null ? await startReadyRuns(deps, [gate.nodeId]) : [];
+  // A cluster-target item the merge moved to Done at merge frees its items now (D-449, O-166).
+  const doneAtMerge = privilegedMerge?.merge.doneAtMerge;
+  if (doneAtMerge)
+    firstRuns.push(...(await firstRunsAfterStaging(deps, [doneAtMerge])));
   return {
     heldBy: held,
     ...(escalation ? { escalation } : {}),

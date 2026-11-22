@@ -23,7 +23,9 @@ export function run(
   deps: FlowDeps,
   input: SetProjectSecretInput,
 ): Promise<SetProjectSecretResult> {
-  return createSetProjectSecretForm(deps).set(input);
+  return createSetProjectSecretForm({ ...deps, targets: deps.deployTargets }).set(
+    input,
+  );
 }
 
 /**

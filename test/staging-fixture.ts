@@ -5,6 +5,7 @@
 // commit (D-225). Fake data only; nothing reaches staging, Cloudflare or GitHub.
 import {
   createFakeStagingBuilds,
+  createFakeClusterTarget,
   createFakeStagingTarget,
   mainBuild,
 } from "../src/adapters/deploy/fake.ts";
@@ -85,11 +86,18 @@ export async function setupStaging(
   const checker = createFakeStagingChecker();
   const builds = createFakeStagingBuilds();
   const target = createFakeStagingTarget();
+  const cluster = createFakeClusterTarget();
   // GitHub's run ids are unique per repository; the PR number keeps them apart here.
   let runId = (options.pr ?? PR) * 100;
 
   const deploys = (store: Store = t.store) =>
-    createStagingDeploys({ ...t.deps, store, checker, builds, target });
+    createStagingDeploys({
+      ...t.deps,
+      store,
+      checker,
+      builds,
+      targets: { cloudflare: target, cluster },
+    });
 
   /**
    * The runner deployed CI's build of `sha` on main and recorded it, as the deploy flow does
@@ -158,6 +166,7 @@ export async function setupStaging(
     checker,
     builds,
     target,
+    cluster,
     deploys,
     deploy,
     built,

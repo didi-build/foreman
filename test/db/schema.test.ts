@@ -1249,13 +1249,14 @@ describe.skipIf(!adminUrl)(
         insert("00000000-0000-4000-8000-0000000000f4", "seed-swap", "null"),
         /null value in column "deploy_target"/,
       );
-      // The state API reads it with the rest of the row; nobody gains a delete.
+      // The state API reads it with the rest of the row; nobody gains a delete. Three rows: the
+      // fixture's, Foreman's own (migration 0031) and the one just inserted.
       expect(
         sql(
           "select count(*) from factory.projects where deploy_target in ('cloudflare', 'cluster');",
           "factory_api",
         ).out,
-      ).toBe("2");
+      ).toBe("3");
       const removed = sql(
         "delete from factory.projects where slug = 'garden-notes';",
         "factory_runner",
@@ -1264,6 +1265,98 @@ describe.skipIf(!adminUrl)(
       expect(sql("delete from factory.projects where slug = 'garden-notes';").ok).toBe(
         true,
       );
+    });
+
+    describe("Foreman's own project row (migration 0031, D-441, D-449, O-166)", () => {
+      const FOREMAN_ROW = "db/migrations/0031_foreman_project.sql";
+      /** Runs the migration again; returns what psql printed on stderr (the NOTICEs). */
+      const migrate = (): string => {
+        const again = sql(readFileSync(FOREMAN_ROW, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        return again.err;
+      };
+      const row = () =>
+        sql(
+          `select concat_ws(' ', slug, name, repo, coalesce(linear_project_id, '-'),
+             coalesce(gallery_path_override, '-'), privileged_paths_extra::text,
+             prod_requires_approval, coalesce(staging_url, '-'), deploy_target)
+           from factory.projects where slug = 'foreman';`,
+        ).out;
+      const ROW = "foreman Foreman didi-build/foreman - - [] t - cluster";
+
+      it("records Foreman's row on the cluster target with no staging, production behind Didi, and a random id", () => {
+        expect(row()).toBe(ROW);
+        expect(
+          sql(
+            "select id::text ~ '^[0-9a-f-]{36}$' and id <> '00000000-0000-0000-0000-000000000000' from factory.projects where slug = 'foreman';",
+          ).out,
+        ).toBe("t");
+        // The runner reads it like any project; the state API too.
+        expect(
+          sql(
+            "select deploy_target from factory.projects where slug = 'foreman';",
+            "factory_runner",
+          ).out,
+        ).toBe("cluster");
+        expect(
+          sql(
+            "select count(*) from factory.projects where repo = 'didi-build/foreman';",
+            "factory_api",
+          ).out,
+        ).toBe("1");
+      });
+
+      it("changes nothing when run again, with no NOTICE", () => {
+        const id = sql("select id from factory.projects where slug = 'foreman';").out;
+        expect(migrate()).not.toContain("NOTICE");
+        expect(row()).toBe(ROW);
+        expect(sql("select id from factory.projects where slug = 'foreman';").out).toBe(
+          id,
+        );
+        expect(
+          sql("select count(*) from factory.projects where slug = 'foreman';").out,
+        ).toBe("1");
+      });
+
+      it("never changes a row that differs, and names what differs in a NOTICE", () => {
+        const change = sql(
+          "update factory.projects set staging_url = 'https://foreman.example.test', deploy_target = 'cloudflare' where slug = 'foreman';",
+        );
+        expect(change.ok, change.err).toBe(true);
+        try {
+          const notices = migrate();
+          expect(notices).toContain("NOTICE");
+          expect(notices).toContain("staging_url, deploy_target");
+          expect(row()).toBe(
+            "foreman Foreman didi-build/foreman - - [] t https://foreman.example.test cloudflare",
+          );
+        } finally {
+          sql(
+            "update factory.projects set staging_url = null, deploy_target = 'cluster' where slug = 'foreman';",
+          );
+        }
+        expect(row()).toBe(ROW);
+      });
+
+      it("records nothing, with a NOTICE, when another project already names Foreman's repository", () => {
+        const kept = sql(
+          "update factory.projects set slug = 'foreman-old' where slug = 'foreman';",
+        );
+        expect(kept.ok, kept.err).toBe(true);
+        try {
+          const notices = migrate();
+          expect(notices).toContain("NOTICE");
+          expect(notices).toContain("foreman-old");
+          expect(
+            sql("select count(*) from factory.projects where slug = 'foreman';").out,
+          ).toBe("0");
+        } finally {
+          sql(
+            "update factory.projects set slug = 'foreman' where slug = 'foreman-old';",
+          );
+        }
+        expect(row()).toBe(ROW);
+      });
     });
 
     describe("the product secret names (migration 0030, D-440, O-163)", () => {
