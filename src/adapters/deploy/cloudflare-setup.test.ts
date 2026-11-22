@@ -770,7 +770,17 @@ describe("one allow-list per token (unit: no other call is possible, D-445, O-16
       }
     }
     expect(ALLOWED_CALLS).toHaveLength(7);
-    expect(D1_ALLOWED_CALLS).toHaveLength(2);
+    // The list, the create, and a deploy's migration query (O-165, cloudflare-migrations.test.ts).
+    expect(D1_ALLOWED_CALLS).toHaveLength(3);
+  });
+
+  it("admits a query on one database by its id with the D1 token only, the migrations' one call (O-165)", () => {
+    const query = {
+      method: "POST",
+      path: `/accounts/${ACCOUNT}/d1/database/${DB_ID}/query`,
+    } as CloudflareRequest;
+    expect(() => assertAllowedCall(query, D1_ALLOWED_CALLS)).not.toThrow();
+    expect(() => assertAllowedCall(query, ALLOWED_CALLS)).toThrow(/may not send/);
   });
 
   it("refuses every call outside the lists with either token: other Workers' secrets, D1 queries and reads, routes and DNS", () => {
@@ -786,8 +796,14 @@ describe("one allow-list per token (unit: no other call is possible, D-445, O-16
       ["DELETE", `${a}/workers/scripts/demo-staging/secrets/MODEL_API_KEY`],
       ["PATCH", `${a}/workers/scripts/demo-staging/secrets`],
       ["PUT", `${a}/workers/scripts/demo-staging/secrets?x=1`],
-      // D1: no query, export, import, delete, read by id, or list by another name or page.
-      ["POST", `${a}/d1/database/${DB_ID}/query`],
+      // D1: no query but a POST on a database id, no raw query, export, import, delete, read by
+      // id, or list by another name or page.
+      ["GET", `${a}/d1/database/${DB_ID}/query`],
+      ["PUT", `${a}/d1/database/${DB_ID}/query`],
+      ["POST", `${a}/d1/database/${DB_ID}/query?x=1`],
+      ["POST", `${a}/d1/database/${CREATED_ID.toUpperCase()}/query`],
+      ["POST", `${a}/d1/database/demo-staging/query`],
+      ["POST", `${a}/d1/database/${DB_ID}/query/`],
       ["POST", `${a}/d1/database/${DB_ID}/raw`],
       ["POST", `${a}/d1/database/${DB_ID}/export`],
       ["POST", `${a}/d1/database/${DB_ID}/import`],

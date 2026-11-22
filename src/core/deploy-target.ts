@@ -5,7 +5,8 @@
 //
 // - `cloudflare` (src/adapters/deploy/cloudflare-staging.ts): every project today, and every new
 //   project by default (D-441). Its `deploy` takes the build in the old layout (assets only, as the
-//   rehearsal builds it) exactly as before, or in the new one with a Worker module (O-159).
+//   rehearsal builds it) exactly as before, or in the new one with a Worker module (O-159), whose
+//   new D1 migrations it applies to the project's staging database before the upload (O-165).
 // - `cluster`: Foreman itself, from slice 9, which also routes each project to its target. Until
 //   then the store records no target (slice 6 adds the column), so every project's is `cloudflare`.
 //

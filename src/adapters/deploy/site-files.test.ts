@@ -3,7 +3,8 @@
 // value from the build, and a set that passes gives exactly its files. Both layouts: the old one
 // (the site at the root, as the rehearsal builds it) gives no Worker; the new one (the manifest,
 // `assets/`, `worker/index.js`, `migrations/`) gives the site from `assets/` and the Worker's
-// module, manifest and migrations. No network.
+// module, manifest and migrations, each migration UTF-8 text within D1's statement length and all
+// of them within the runner's bound (O-165). No network.
 import { describe, expect, it } from "vitest";
 
 import { storedZip, type ZipFixtureEntry } from "../../../test/zip-fixture.ts";
@@ -11,6 +12,8 @@ import { DEPLOY_MANIFEST_MAX_BYTES } from "./deploy-manifest.ts";
 import {
   CLOUDFLARE_STATIC_ASSET_LIMITS,
   MAX_MIGRATIONS,
+  MIGRATION_MAX_BYTES,
+  MIGRATIONS_TOTAL_MAX_BYTES,
   readSiteFiles,
   SITE_REFUSALS,
   SITE_TOTAL_BYTES,
@@ -386,5 +389,57 @@ describe("a build in the new layout, with a Worker (unit: ADR 0118 slice 3, O-15
       reason: "migrations_not_plain",
     });
     expect(workerBuild({ extra: many.slice(1) }).ok).toBe(true);
+  });
+
+  it("refuses a migration over D1's statement length, migrations over the runner's bound in all, and one not UTF-8 (O-165)", () => {
+    // "D1 Limits": a SQL statement of at most 100,000 bytes; the runner's own 10,000,000 in all.
+    expect(MIGRATION_MAX_BYTES).toBe(100_000);
+    expect(MIGRATIONS_TOTAL_MAX_BYTES).toBe(10_000_000);
+    const file = (name: string, bytes: number) => ({
+      name: `migrations/${name}`,
+      data: "x".repeat(bytes),
+    });
+    expect(workerBuild({ extra: [file("0001_at.sql", MIGRATION_MAX_BYTES)] }).ok).toBe(
+      true,
+    );
+    expect(
+      refusal(workerBuild({ extra: [file("0001_over.sql", MIGRATION_MAX_BYTES + 1)] })),
+    ).toEqual({
+      cause: "file_set",
+      reason: "migration_too_large",
+      text: SITE_REFUSALS.migration_too_large,
+    });
+    // A hundred files at the cap is the bound exactly; one byte more is refused.
+    const hundred = Array.from({ length: 100 }, (_, i) =>
+      file(`${String(i).padStart(4, "0")}_m.sql`, MIGRATION_MAX_BYTES),
+    );
+    expect(workerBuild({ extra: hundred }).ok).toBe(true);
+    expect(
+      refusal(workerBuild({ extra: [...hundred, file("0100_m.sql", 1)] })),
+    ).toEqual({
+      cause: "file_set",
+      reason: "migrations_too_large",
+      text: SITE_REFUSALS.migrations_too_large,
+    });
+    expect(
+      refusal(
+        workerBuild({
+          extra: [
+            { name: "migrations/0001_ok.sql", data: "SELECT 1;" },
+            { name: "migrations/0002_bytes.sql", data: new Uint8Array([0xc3, 0x28]) },
+          ],
+        }),
+      ),
+    ).toEqual({
+      cause: "file_set",
+      reason: "migration_not_text",
+      text: SITE_REFUSALS.migration_not_text,
+    });
+    // UTF-8 beyond ASCII is text.
+    expect(
+      workerBuild({
+        extra: [{ name: "migrations/0001_u.sql", data: "-- é ✓\nSELECT 1;" }],
+      }).ok,
+    ).toBe(true);
   });
 });

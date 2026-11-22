@@ -17,7 +17,12 @@
 //    an infrastructure refusal (`secrets_missing`) whose text names the missing secrets and the
 //    Set project secret form, and nothing is uploaded; names that cannot be read hold it too
 //    (`secrets_unreadable`). Like any infrastructure refusal it counts no failure, shows in the
-//    daily check, and the backstop deploys on its next pass once the secret is set.
+//    daily check, and the backstop deploys on its next pass once the secret is set. Then, for a
+//    build that carries D1 migrations, the target applies the new ones to the project's staging
+//    database before it uploads (ADR 0118 slice 8, O-165). A migration the database refuses as
+//    SQL is the change's own failure, like a refused file set (`file_set`, `migration_failed`,
+//    its text naming the file); a missing database, a refused D1 credential or a D1 call that
+//    fails is `infrastructure`. A held deploy applies no migration.
 // 4. Records the outcome on each item in Verifying on staging whose merge commit the deployed
 //    commit counts for, by GitHub's compare as O-38 does (D-225 rule 1): `staging_deploy` for a
 //    deploy (with `worker: true` when it carried a Worker module, O-159),
@@ -137,7 +142,9 @@ export interface StagingRefusal {
   reason: string;
   /**
    * Fixed text: never a path, a value or a word from the build or from Cloudflare, except the
-   * names of missing secrets (`secrets_missing`), which passed the manifest's name rule (D-448).
+   * names of missing secrets (`secrets_missing`), which passed the manifest's name rule (D-448),
+   * and the name of a failed migration file (`migration_failed`), which passed the build's name
+   * rule (O-165). Never SQL text or a row.
    */
   text: string;
   detail?: DeployRefusalDetail;
@@ -146,8 +153,18 @@ export interface StagingRefusal {
 }
 
 export type StagingUpload =
-  /** `worker` only when the build carried a Worker module, so `/api` runs code. */
-  { outcome: "deployed"; files: number; worker?: WorkerDeploy } | StagingRefusal;
+  | {
+      outcome: "deployed";
+      files: number;
+      /** Only when the build carried a Worker module, so `/api` runs code. */
+      worker?: WorkerDeploy;
+      /**
+       * Only when the build carried D1 migrations: the names of those this deploy applied, in
+       * order, none when every one was applied before (O-165). Names only, never SQL.
+       */
+      migrationsApplied?: string[];
+    }
+  | StagingRefusal;
 
 /**
  * The deploy adapter's staging target (ADR 0111 section 2, `deploy`): it checks the site and, only
@@ -160,9 +177,10 @@ export interface StagingTarget {
     commitSha: string;
     archive: Uint8Array;
     /**
-     * For a build with a Worker module: called once its file set has passed and before anything
-     * is uploaded, with the names its manifest requires. A refusal it returns is the deploy's
-     * answer, and nothing is uploaded (D-448, O-163).
+     * For a build with a Worker module: called once its file set has passed and before any
+     * migration is applied or anything is uploaded, with the names its manifest requires. A
+     * refusal it returns is the deploy's answer, and nothing is applied or uploaded (D-448,
+     * O-163, O-165).
      */
     beforeWorkerUpload?: (worker: WorkerDeploy) => Promise<StagingRefusal | null>;
   }): Promise<StagingUpload>;
@@ -276,6 +294,8 @@ export interface StagingDeployResult {
   files?: number;
   /** For a deploy with a Worker module: the secret names it requires (O-159). */
   worker?: WorkerDeploy;
+  /** For a deploy of a build with D1 migrations: the names it applied, in order (O-165). */
+  migrationsApplied?: string[];
   /** For a deploy held for missing secrets (D-448): each missing name, sorted. Never a value. */
   missingSecrets?: string[];
   /** The items in Verifying on staging whose merge commit the deployed commit counts for. */
@@ -560,6 +580,9 @@ export function createStagingDeploys(deps: StagingDeployDeps) {
             commitSha,
             files: outcome.files,
             ...(outcome.worker ? { worker: outcome.worker } : {}),
+            ...(outcome.migrationsApplied
+              ? { migrationsApplied: outcome.migrationsApplied }
+              : {}),
           }
         : {
             ...base,
