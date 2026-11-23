@@ -1,12 +1,17 @@
 // The personas (ADR 0119, D-455 to D-457): the lens an agent brings to any task and any
 // discussion. A persona is data in contracts/personas/<id>.yaml, beside the shared base every
 // persona carries, contracts/personas/shared.yaml, loaded at the spec version like the bot files
-// (ADR 0105). The contracts-file adapter parses the files; this module only checks the plain
-// objects. No run reads them yet: ADR 0119's slice 2 composes them into each run's instructions.
+// (ADR 0105). The contracts-file adapter parses the files; this module checks the plain objects
+// and composes a run's instructions from them.
 //
 // The check is strict and collects every problem at once: a missing or unknown persona, a missing
 // or unknown part, an empty list, and text that is empty, not a string or more than one line.
 // Problems name the file and the part, never a value from the files.
+//
+// The composition (ADR 0119 slice 2, D-458): a run's instructions are the shared base, then the
+// task's persona, then the task's own instructions from its bot file, in one fixed frame.
+// `composeInstructions` is the only place that frame is written. The runner and the weekly model
+// test both read its text through the bot file loader, so the test measures what runs get.
 
 /** The first four personas (D-456). Adding one is a change to this list and a new file. */
 export const PERSONAS = ["product", "developer", "designer", "quality"] as const;
@@ -191,4 +196,107 @@ export function validatePersonas(raw: RawPersonaFiles): PersonasResult {
   }
   if (problems.length > 0 || !shared) return { problems };
   return { personas: { shared, personas }, problems };
+}
+
+export const isPersonaId = (value: unknown): value is PersonaId =>
+  (PERSONAS as readonly unknown[]).includes(value);
+
+/** The persona a task type runs with (D-458), and another persona's craft standards it also holds. */
+export interface TaskPersona {
+  persona: PersonaId;
+  /** The Designer holds the Developer's standards for its code; `qa:visual` the Designer's. */
+  withCraftStandardsOf?: PersonaId;
+}
+
+export interface ComposeInput extends TaskPersona {
+  personas: Personas;
+  /** The task's own instructions, from its bot file. */
+  task: string;
+}
+
+/** Each persona's name as the composed text says it mid-sentence. */
+export const PERSONA_NAMES: Readonly<Record<PersonaId, string>> = {
+  product: "Product",
+  developer: "the Developer",
+  designer: "the Designer",
+  quality: "Quality",
+};
+
+/** The three sections of a composed text, in order. */
+export const COMPOSED_HEADINGS = {
+  shared: "## What every agent shares",
+  persona: "## Your persona",
+  task: "## Your task",
+} as const;
+
+/** The label before each list of the shared base, in the shared base's order (D-455). */
+const SHARED_LABELS: Readonly<Record<keyof SharedBase, string>> = {
+  userFlow: "The user's flow:",
+  intent: "Didi's intent:",
+  uncertainty: "Uncertainty:",
+  communication: "How you communicate:",
+  securityAndPrivacy: "Security and privacy:",
+};
+
+type PersonaList = Exclude<keyof Persona, "id" | "lens">;
+
+/** The label before each list of a persona, in the persona's order (D-455). */
+const PERSONA_LABELS: Readonly<Record<PersonaList, string>> = {
+  caresMostAbout: "What you care about most, most important first:",
+  craftStandards: "How you do good work:",
+  watchesFor: "What you watch for:",
+  never: "What you never do:",
+  needsToKnow: "What you need to know:",
+  notes: "Notes:",
+};
+
+/** The label before another persona's craft standards, which the task also holds. */
+const otherStandardsLabel = (id: PersonaId): string => {
+  const name = PERSONA_NAMES[id];
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)}'s craft standards, which you also hold the work to:`;
+};
+
+const BLOCK_SEPARATOR = "\n\n";
+
+const labelledList = (label: string, entries: readonly string[]): string =>
+  [label, ...entries.map((entry) => `- ${entry}`)].join("\n");
+
+/**
+ * A run's instructions (ADR 0119 slice 2): the shared base, then the persona, with another
+ * persona's craft standards when the task asks for them, then the task's own instructions, last
+ * and unchanged but for their trailing whitespace. Blocks are one blank line apart, and lists are
+ * `- ` lines. The text ends with the task's last character.
+ */
+export function composeInstructions({
+  personas,
+  persona: id,
+  withCraftStandardsOf,
+  task,
+}: ComposeInput): string {
+  const { shared } = personas;
+  const persona = personas.personas[id];
+  const sharedBlocks = (Object.keys(SHARED_LABELS) as (keyof SharedBase)[]).map(
+    (part) => labelledList(SHARED_LABELS[part], shared[part]),
+  );
+  const personaBlocks = (Object.keys(PERSONA_LABELS) as PersonaList[])
+    .filter((part) => persona[part].length > 0)
+    .map((part) => labelledList(PERSONA_LABELS[part], persona[part]));
+  const otherStandards = withCraftStandardsOf
+    ? [
+        labelledList(
+          otherStandardsLabel(withCraftStandardsOf),
+          personas.personas[withCraftStandardsOf].craftStandards,
+        ),
+      ]
+    : [];
+  return [
+    COMPOSED_HEADINGS.shared,
+    ...sharedBlocks,
+    COMPOSED_HEADINGS.persona,
+    persona.lens,
+    ...personaBlocks,
+    ...otherStandards,
+    COMPOSED_HEADINGS.task,
+    task.trimEnd(),
+  ].join(BLOCK_SEPARATOR);
 }

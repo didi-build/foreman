@@ -1,7 +1,8 @@
 // Seam: unit, repo guard (ADR 0119, D-455 to D-457, ADR 0105). The persona files in
 // contracts/personas/ load through the contracts-file adapter and pass the core's check: the
 // shared base and exactly the four first personas, each with its six parts. A YAML error names
-// the file. No run reads the personas yet (ADR 0119 slice 2).
+// the file. Each run's composed instructions are checked with the bot files
+// (src/adapters/contracts-file/bot-files.test.ts, ADR 0119 slice 2).
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

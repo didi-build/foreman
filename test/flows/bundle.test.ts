@@ -21,7 +21,7 @@ import { parse } from "yaml";
 
 import { bundleFilesDefine } from "../../src/adapters/bundle-files/embed.ts";
 import { BUNDLE_FILES_DEFINE } from "../../src/adapters/bundle-files/files.ts";
-import { loadBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
+import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
 import {
   loadAllContractFiles,
   loadTaskTypesFile,
@@ -136,7 +136,7 @@ describe("each flow entry's bundle (integration: esbuild, O-121)", () => {
 /** A probe of every loader the flows use, printed as JSON; a refusal prints its message. */
 const PROBE = `
 import { createHash } from "node:crypto";
-import { loadBotFiles } from "./src/adapters/contracts-file/bot-files.ts";
+import { readBotFiles } from "./src/adapters/contracts-file/bot-files.ts";
 import { loadAllContractFiles, loadTaskTypesFile } from "./src/adapters/contracts-file/load.ts";
 import { readDatabaseCa } from "./src/adapters/store-postgres/tls.ts";
 const attempt = (read: () => unknown) => {
@@ -150,7 +150,7 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 console.log(JSON.stringify({
   contracts: attempt(() => loadAllContractFiles("probe").contentHash),
   taskTypes: attempt(() => sha(JSON.stringify(loadTaskTypesFile()))),
-  bots: attempt(() => Object.fromEntries(Object.entries(loadBotFiles()).map(([r, f]) => [r, f.version]))),
+  bots: attempt(() => Object.fromEntries(Object.entries(readBotFiles()).map(([r, f]) => [r, f.version]))),
   ca: attempt(() => sha(readDatabaseCa())),
 }));
 `;
@@ -191,8 +191,10 @@ describe("the bundle files embedded by the deploy (integration: esbuild and Node
     const fromDisk = {
       contracts: loadAllContractFiles("probe").contentHash,
       taskTypes: sha(JSON.stringify(loadTaskTypesFile())),
+      // Each role's version covers its composed instructions, so the bundle's persona files
+      // (contracts/personas/) must be the disk's too (ADR 0119 slice 2).
       bots: Object.fromEntries(
-        Object.entries(loadBotFiles()).map(([role, file]) => [role, file.version]),
+        Object.entries(readBotFiles()).map(([role, file]) => [role, file.version]),
       ),
       ca: sha(readDatabaseCa()),
     };

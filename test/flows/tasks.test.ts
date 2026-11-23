@@ -2,9 +2,10 @@
 // D-187). A run's task is built from the role's real bot file, the run's route and its input, and
 // the Kubernetes runtime's own checks accept it. With a fake installation token port the
 // Developer, Designer and QA tasks build; with the composition's real port and no App key stored
-// they refuse, sending nothing (O-125). Council and Triage tasks need no token and build fully. No
-// secret value is in the task file or the run's spec: credentials are only in `credentials`, for
-// `start`.
+// they refuse, sending nothing (O-125). Council and Triage tasks need no token and build fully.
+// Each task carries its task type's composed instructions (ADR 0119 slice 2), and a task type the
+// role does not allow is refused. No secret value is in the task file or the run's spec:
+// credentials are only in `credentials`, for `start`.
 import { describe, expect, it } from "vitest";
 
 import type { RunToStart } from "../../flows/lib/compose.ts";
@@ -16,6 +17,7 @@ import {
 } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import type { KubernetesAgentTask } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
 import {
+  instructionsFor,
   readBotFiles,
   runLimits,
 } from "../../src/adapters/contracts-file/bot-files.ts";
@@ -58,6 +60,8 @@ function startFor(
     run: {
       id: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
       bot: role,
+      // The role's default task type, as admission records it on every run.
+      taskType: (BOTS[role].taskTypes as { default: string }).default,
       model: role === "qa" ? "claude-opus-5-5" : "claude-sonnet-5-5",
       provider: extra.provider ?? "anthropic",
       serviceTierRequested: "standard",
@@ -149,7 +153,7 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     ]);
     expect(file).toEqual({
       foremanTask: 1,
-      instructions: BOTS.qa.instructions,
+      instructions: instructionsFor(BOTS.qa, "qa:review"),
       input: "Fixture input.",
       nodeId: NODE_ID,
       evidenceIds: [EVIDENCE_ID],
@@ -186,8 +190,14 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(spec.fetchAllowedHosts).toBeUndefined();
     expect(credentials.githubToken).toBeUndefined();
     expect(minted).toEqual([]);
-    expect(file.instructions).toBe(BOTS.qa.taskInstructions?.["qa:visual"]);
-    expect(file.instructions).not.toBe(BOTS.qa.instructions);
+    // The visual comparison's own composed text, which ends with its own task instructions.
+    expect(file.instructions).toBe(instructionsFor(BOTS.qa, "qa:visual"));
+    expect(
+      file.instructions.endsWith(
+        (BOTS.qa.taskInstructions?.["qa:visual"] ?? "").trimEnd(),
+      ),
+    ).toBe(true);
+    expect(file.instructions).not.toBe(instructionsFor(BOTS.qa, "qa:review"));
     expect(file.outputSchema).toEqual(BOTS.qa.outputSchemas?.visual);
     expect(file.evidenceIds).toEqual([]);
     expect(file.images).toEqual([
@@ -250,7 +260,8 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(minted).toMatchObject([{ role: "qa", access: "read" }]);
     expect(task.task.images).toBeUndefined();
     expect(task.task.outputSchema).toBeUndefined();
-    expect(task.task.instructions).toBe(BOTS.qa.instructions);
+    expect(task.task.instructions).toBe(instructionsFor(BOTS.qa, "qa:review"));
+    expect(task.task.instructions.endsWith(BOTS.qa.instructions.trimEnd())).toBe(true);
   });
 
   it("builds the Council's task with its question's schema, and no GitHub token", async () => {
@@ -274,6 +285,27 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     const task = (await tasks.taskFor(startFor("triage"))) as KubernetesAgentTask;
     const { file } = acceptedByRuntime("triage", task);
     expect(file.outputSchema).toEqual(BOTS.triage.outputSchemas?.answer);
+    expect(file.instructions).toBe(instructionsFor(BOTS.triage, "triage"));
+    expect(minted).toEqual([]);
+  });
+
+  it("gives each task type its own composed instructions, and refuses one the role does not allow (ADR 0119 slice 2)", async () => {
+    const { tasks, secretsRead, minted } = source();
+    const infra = startFor("developer");
+    (infra.run as { taskType: string }).taskType = "developer:infra";
+    const task = (await tasks.taskFor(infra)) as KubernetesAgentTask;
+    const { file } = acceptedByRuntime("developer", task);
+    expect(file.instructions).toBe(instructionsFor(BOTS.developer, "developer:infra"));
+    const designer = (await tasks.taskFor(startFor("designer"))) as KubernetesAgentTask;
+    expect(designer.task.instructions).toBe(instructionsFor(BOTS.designer, "designer"));
+    const wrong = startFor("developer");
+    (wrong.run as { taskType: string }).taskType = "qa:review";
+    secretsRead.length = 0;
+    minted.length = 0;
+    await expect(tasks.taskFor(wrong)).rejects.toThrow(
+      "the developer bot file does not allow task type qa:review",
+    );
+    expect(secretsRead).toEqual([]);
     expect(minted).toEqual([]);
   });
 

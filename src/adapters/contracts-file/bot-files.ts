@@ -1,15 +1,23 @@
 // The bot files (docs/bot-files.md, ADR 0107, ADR 0106 sections 3, 5 and 6, ADR 0114 section 1):
 // one YAML file per agent role in contracts/bots/, loaded at the spec version like the contracts
-// (ADR 0105). Each run records its bot file's content hash as `runs.bot_version`.
+// (ADR 0105). Each run records its bot file's version as `runs.bot_version`.
 //
-// A bot file holds the role's instructions (the cached prefix of every run's task file), its agent
-// image, its tools, its hosts, its model providers with each key's secret path (D-142, D-143), its
-// per-run limits (D-185), its task types and, for the Council, Triage and QA's visual comparison,
-// its output schemas. A task type other than the role's default may have its own instructions
-// (`task_instructions`, QA's `qa:visual`, D-242, and the Council's `council:visual`, D-270), and
-// limits of its own (`task_limits`: only the Developer's and the Designer's close task type, the
-// close-only run of a cancelled item's pull request, D-318, which must have them). It never holds
-// a model (each run's route names it, ADR 0114) or a credential value.
+// A bot file holds the task's own instructions (the cached prefix of every run's task file), its
+// agent image, its tools, its hosts, its model providers with each key's secret path (D-142,
+// D-143), its per-run limits (D-185), its task types with each one's persona (`task_personas`,
+// D-458) and, for the Council, Triage and QA's visual comparison, its output schemas. A task type
+// other than the role's default may have its own instructions (`task_instructions`, QA's
+// `qa:visual`, D-242, and the Council's `council:visual`, D-270), and limits of its own
+// (`task_limits`: only the Developer's and the Designer's close task type, the close-only run of a
+// cancelled item's pull request, D-318, which must have them). It never holds a model (each run's
+// route names it, ADR 0114) or a credential value.
+//
+// A run's instructions (ADR 0119 slice 2) are the shared base, the task type's persona and the
+// task's own instructions, composed by the core's `composeInstructions` over the persona files
+// (./personas.ts). The Council has no persona until ADR 0119's slice 6, so its runs get the bot
+// file's text unchanged. `instructionsFor` gives a run's text; the runner and the weekly model
+// test both use it. The version is the file's content hash for the Council, and for a role with
+// personas one hash of the file and each composed text (ADR 0119: "one hash of the three").
 //
 // The check is strict and collects every problem: an unknown field is refused, and a problem names
 // the file and the field, never a value from the file, so a key pasted into the wrong place cannot
@@ -32,10 +40,21 @@ import {
   type ModelApi,
 } from "../../agent-images/shared/settings.ts";
 import { outputSchemaProblems, type OutputSchema } from "../../core/output-schema.ts";
+import {
+  PERSONAS,
+  composeInstructions,
+  isPersonaId,
+  type Personas,
+  type TaskPersona,
+} from "../../core/personas.ts";
 import type { BotProfile } from "../../core/reconcile.ts";
 import type { RoleRunLimits, RunLimits } from "../../core/runs.ts";
 import type { AgentRole } from "../../core/store.ts";
-import { CLOSE_TASK_TYPES } from "../../core/task-types.ts";
+import {
+  CLOSE_TASK_TYPES,
+  TASK_TYPE_ID,
+  isCloseTaskType,
+} from "../../core/task-types.ts";
 import { canonicalHost } from "../../egress-proxy/hosts.ts";
 import { CREDENTIAL_STYLES, parseProviders } from "../../egress-proxy/providers.ts";
 import {
@@ -45,6 +64,7 @@ import {
 } from "../agent-runtime/kubernetes/manifests.ts";
 import { TOOL } from "../agent-runtime/kubernetes/task.ts";
 import { listBundledFolder, readBundledFile } from "../bundle-files/files.ts";
+import { PERSONAS_DIR, readPersonas } from "./personas.ts";
 
 export const BOT_FILES_DIR = "contracts/bots";
 
@@ -95,15 +115,30 @@ const TASK_LIMITS: Partial<Record<AgentRole, readonly string[]>> = {
   developer: [CLOSE_TASK_TYPES.developer],
   designer: [CLOSE_TASK_TYPES.designer],
 };
+/**
+ * The roles whose task types have no persona yet, with the reason: every other role must map each
+ * task type that runs a model to its persona (`task_personas`, D-458).
+ */
+const NO_PERSONAS: Partial<Record<AgentRole, string>> = {
+  council: "the Council gets its personas in ADR 0119's slice 6",
+};
 /** ADR 0106 section 5: an installation token lasts at most an hour. */
 const GITHUB_TOKEN_MINUTES = 60;
+/** The most characters a bot file's text, or a run's composed instructions, may have. */
 const MAX_INSTRUCTION_CHARS = 32_000;
+/**
+ * The fixed line before each composed text in a version hash. It names the text's task type, so
+ * the hashed bytes say which text belongs to which task type.
+ */
+const versionSeparator = (taskType: string): string =>
+  `\n--- foreman composed instructions: ${taskType} ---\n`;
 
 const FIELDS = [
   "role",
   "image",
   "instructions",
   "task_types",
+  "task_personas",
   "limits",
   "providers",
   "allowed_hosts",
@@ -118,13 +153,25 @@ const FIELDS = [
 /** One role's bot file, checked. No credential value is in it. */
 export interface BotFile {
   role: AgentRole;
-  /** `sha256:` and the SHA-256 of the file's bytes. Recorded as `runs.bot_version`. */
+  /**
+   * Recorded as `runs.bot_version`. `sha256:` and a SHA-256: of the file's bytes for a role with
+   * no `task_personas` (the Council); for a role with personas, of the file's bytes followed by
+   * each persona task type's composed text, in task type order, each after a line naming it.
+   */
   version: string;
   image: ImageKind;
-  /** The role's instructions: the stable, cached part of each run's task file. */
+  /** The task's own instructions, as the file gives them. A run reads `runInstructions`. */
   instructions: string;
   /** `{allowed, default}`, checked by the core's validateTaskTypes. */
   taskTypes: unknown;
+  /** Each task type's persona (D-458). Absent for the Council until ADR 0119's slice 6. */
+  taskPersonas?: Record<string, TaskPersona>;
+  /**
+   * The instructions a run of each allowed task type gets, the stable, cached part of its task
+   * file: the shared base, the persona and the task's text, or, with no persona, the task's text
+   * unchanged. A close task type has the default task type's text. Read it with `instructionsFor`.
+   */
+  runInstructions: Record<string, string>;
   limits: RunLimits;
   /** Each provider the role may be routed to. `secretPath` may hold `{project}`. */
   providers: ModelProviderSetting[];
@@ -152,7 +199,10 @@ export type BotFiles = Record<AgentRole, BotFile>;
 /** A bot file as read from disk, before it is checked. */
 export interface RawBotFile {
   file: string;
+  /** `sha256:` and the SHA-256 of the file's bytes. */
   version: string;
+  /** The file's bytes, which a role's version hashes. */
+  bytes: Uint8Array;
   data: unknown;
 }
 
@@ -185,7 +235,7 @@ export function loadBotFiles(
       throw new Error(`${file} is not valid YAML${line}`);
     }
     const version = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    loaded[role] = { file, version, data };
+    loaded[role] = { file, version, bytes, data };
   }
   return loaded;
 }
@@ -546,10 +596,166 @@ function checkTaskLimits(
   return ok ? limits : undefined;
 }
 
+/**
+ * The role's allowed task types as its file lists them, keeping only well-formed ids, so a
+ * problem that names one never repeats another value. The core's validateTaskTypes checks the
+ * whole list.
+ */
+const allowedOf = (taskTypes: unknown): string[] =>
+  isRecord(taskTypes) && Array.isArray(taskTypes.allowed)
+    ? taskTypes.allowed.filter(
+        (id): id is string => typeof id === "string" && TASK_TYPE_ID.test(id),
+      )
+    : [];
+
+/**
+ * Each task type's persona (D-458): every allowed task type that runs a model has one, and a close
+ * task type, which starts no model (D-318), has none. A role in `NO_PERSONAS` has none yet.
+ */
+function checkTaskPersonas(
+  role: AgentRole,
+  raw: unknown,
+  taskTypes: unknown,
+  add: (p: string) => void,
+): Record<string, TaskPersona> | undefined {
+  const refused = NO_PERSONAS[role];
+  if (refused !== undefined) {
+    if (raw !== undefined) add(`task_personas: ${refused}`);
+    return undefined;
+  }
+  if (!isRecord(raw)) {
+    add(
+      "task_personas must map each task type that runs a model to its persona (D-458)",
+    );
+    return undefined;
+  }
+  const allowed = allowedOf(taskTypes);
+  const known = PERSONAS.join(", ");
+  const checked: Record<string, TaskPersona> = {};
+  let ok = true;
+  const fail = (problem: string) => {
+    add(problem);
+    ok = false;
+  };
+  for (const [taskType, entry] of Object.entries(raw)) {
+    const at = `task_personas.${taskType}`;
+    if (!TASK_TYPE_ID.test(taskType)) {
+      fail("task_personas: a key is not a task type id");
+      continue;
+    }
+    if (!allowed.includes(taskType)) {
+      fail(`${at} must be one of the role's allowed task types`);
+      continue;
+    }
+    if (isCloseTaskType(taskType)) {
+      fail(`${at}: a close run starts no model (D-318), so it has no persona`);
+      continue;
+    }
+    if (!isRecord(entry)) {
+      fail(
+        `${at} must be a mapping of persona and, optionally, with_craft_standards_of`,
+      );
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (key !== "persona" && key !== "with_craft_standards_of") {
+        fail(`${at}: unknown field ${key}`);
+      }
+    }
+    const { persona, with_craft_standards_of: other } = entry;
+    if (!isPersonaId(persona)) fail(`${at}.persona must be one of: ${known}`);
+    if (other !== undefined && (!isPersonaId(other) || other === persona)) {
+      fail(
+        `${at}.with_craft_standards_of must be one of: ${known}, other than its persona`,
+      );
+    }
+    if (isPersonaId(persona)) {
+      checked[taskType] = {
+        persona,
+        ...(isPersonaId(other) ? { withCraftStandardsOf: other } : {}),
+      };
+    }
+  }
+  for (const taskType of allowed) {
+    if (!isCloseTaskType(taskType) && !Object.hasOwn(raw, taskType)) {
+      fail(
+        `task_personas.${taskType} is missing: every task type that runs a model has one`,
+      );
+    }
+  }
+  return ok ? checked : undefined;
+}
+
+/**
+ * The instructions a run of each allowed task type gets (ADR 0119 slice 2): the task's text, with
+ * the shared base and its persona before it when it has one, each composed text within the same
+ * limit as the file's own. A close task type has the default task type's text: no model reads
+ * it, but its task file needs instructions (D-318).
+ */
+function runInstructionsOf(
+  data: Record<string, unknown>,
+  taskInstructions: Record<string, string> | undefined,
+  taskPersonas: Record<string, TaskPersona> | undefined,
+  personas: Personas,
+  add: (p: string) => void,
+): Record<string, string> {
+  const allowed = allowedOf(data.task_types);
+  const texts: Record<string, string> = {};
+  for (const taskType of allowed.filter((id) => !isCloseTaskType(id))) {
+    const task =
+      taskInstructions && Object.hasOwn(taskInstructions, taskType)
+        ? (taskInstructions[taskType] as string)
+        : (data.instructions as string);
+    const persona = taskPersonas?.[taskType];
+    if (!persona) {
+      texts[taskType] = task;
+      continue;
+    }
+    const composed = composeInstructions({ personas, ...persona, task });
+    if (composed.length > MAX_INSTRUCTION_CHARS) {
+      add(
+        `the composed instructions of ${taskType} must be at most ${MAX_INSTRUCTION_CHARS} characters`,
+      );
+    }
+    texts[taskType] = composed;
+  }
+  const defaultType = isRecord(data.task_types) ? data.task_types.default : undefined;
+  for (const taskType of allowed.filter(isCloseTaskType)) {
+    if (typeof defaultType === "string" && Object.hasOwn(texts, defaultType)) {
+      texts[taskType] = texts[defaultType] as string;
+    } else {
+      add(
+        `task_types.default must be an allowed task type that runs a model, whose instructions ${taskType} uses`,
+      );
+    }
+  }
+  return texts;
+}
+
+/**
+ * The role's `runs.bot_version`. With no persona, the file's content hash, as before ADR 0119.
+ * With personas, one hash of the file's bytes and each persona task type's composed text, so a
+ * change to the shared base or a persona that reaches a run's text is a new version, and a
+ * comment in a persona file is not.
+ */
+function versionOf(
+  raw: RawBotFile,
+  runInstructions: Record<string, string>,
+  taskPersonas: Record<string, TaskPersona> | undefined,
+): string {
+  if (!taskPersonas) return raw.version;
+  const hash = createHash("sha256").update(raw.bytes);
+  for (const taskType of Object.keys(taskPersonas).sort()) {
+    hash.update(versionSeparator(taskType)).update(runInstructions[taskType] as string);
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
 /** Checks one role's parsed bot file. Every problem names the file and the field. */
 function checkBotFile(
   role: AgentRole,
   raw: RawBotFile,
+  personas: Personas,
   problems: string[],
 ): BotFile | null {
   const before = problems.length;
@@ -625,14 +831,30 @@ function checkBotFile(
   if (taskInstructions) bot.taskInstructions = taskInstructions;
   const taskLimits = checkTaskLimits(role, data.task_limits, data.task_types, add);
   if (taskLimits) bot.taskLimits = taskLimits;
+  const taskPersonas = checkTaskPersonas(
+    role,
+    data.task_personas,
+    data.task_types,
+    add,
+  );
+  if (taskPersonas) bot.taskPersonas = taskPersonas;
 
+  if (problems.length > before) return null;
+  const runInstructions = runInstructionsOf(
+    data,
+    taskInstructions,
+    taskPersonas,
+    personas,
+    add,
+  );
   if (problems.length > before) return null;
   return {
     role,
-    version: raw.version,
+    version: versionOf(raw, runInstructions, taskPersonas),
     image,
     instructions: data.instructions as string,
     taskTypes: data.task_types,
+    runInstructions,
     limits: limits as RunLimits,
     providers: providers as ModelProviderSetting[],
     allowedHosts: allowedHosts as string[],
@@ -640,8 +862,14 @@ function checkBotFile(
   };
 }
 
-/** Checks every role's bot file, collecting every problem at once. */
-export function validateBotFiles(raw: Record<AgentRole, RawBotFile>): {
+/**
+ * Checks every role's bot file, collecting every problem at once, and composes each task type's
+ * instructions with the checked persona files.
+ */
+export function validateBotFiles(
+  raw: Record<AgentRole, RawBotFile>,
+  personas: Personas,
+): {
   bots?: BotFiles;
   problems: string[];
 } {
@@ -653,10 +881,21 @@ export function validateBotFiles(raw: Record<AgentRole, RawBotFile>): {
       problems.push(`${role}.yaml is missing`);
       continue;
     }
-    const bot = checkBotFile(role, entry, problems);
+    const bot = checkBotFile(role, entry, personas, problems);
     if (bot) bots[role] = bot;
   }
   return problems.length > 0 ? { problems } : { bots, problems };
+}
+
+/**
+ * The instructions a run of `taskType` gets (ADR 0119 slice 2), for the runner and the weekly
+ * model test alike. Throws for a task type the bot does not allow.
+ */
+export function instructionsFor(bot: BotFile, taskType: string): string {
+  if (!Object.hasOwn(bot.runInstructions, taskType)) {
+    throw new Error(`the ${bot.role} bot file does not allow task type ${taskType}`);
+  }
+  return bot.runInstructions[taskType] as string;
 }
 
 /** What the core records and reads for each role: runtime, version, Council and QA schemas. */
@@ -701,9 +940,18 @@ export function botTaskTypes(bots: BotFiles): Record<AgentRole, unknown> {
   return roles;
 }
 
-/** Loads and checks the bot files, or throws with every problem. */
-export function readBotFiles(dir: string = BOT_FILES_DIR): BotFiles {
-  const { bots, problems } = validateBotFiles(loadBotFiles(dir));
+/**
+ * Loads and checks the bot files, with the persona files their runs compose (./personas.ts), or
+ * throws with every problem.
+ */
+export function readBotFiles(
+  dir: string = BOT_FILES_DIR,
+  personasDir: string = PERSONAS_DIR,
+): BotFiles {
+  const { bots, problems } = validateBotFiles(
+    loadBotFiles(dir),
+    readPersonas(personasDir),
+  );
   if (!bots) throw new Error(`The bot files are invalid: ${problems.join("; ")}`);
   return bots;
 }

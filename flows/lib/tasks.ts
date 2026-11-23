@@ -1,7 +1,7 @@
 // How the runner builds a run's task (ADR 0102, ADR 0106 sections 3 and 5, ADR 0107, ADR 0114
 // sections 5 and 8). Everything comes from data: the role's bot file (contracts/bots/, checked at
-// the spec version) gives the instructions, the image kind, the tools, the hosts and the
-// provider's address and key path; the run's route, recorded on the run, gives the model, the
+// the spec version) gives the instructions, composed with the run's persona (ADR 0119 slice 2),
+// the image kind, the tools, the hosts and the provider's address and key path; the run's route, recorded on the run, gives the model, the
 // provider, the tier and the price; the run's input is the core's (D-213); the settings give the
 // image references and the project's package registries (D-187).
 //
@@ -21,6 +21,7 @@ import {
 import type { KubernetesAgentTask } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
 import {
   BOT_ROLES,
+  instructionsFor,
   secretPathFor,
   type BotFiles,
 } from "../../src/adapters/contracts-file/bot-files.ts";
@@ -124,9 +125,10 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
             ]),
           ]
         : [...bot.allowedHosts];
-      // A task type with instructions of its own uses them (QA's `qa:visual`, D-242, the
-      // Council's `council:visual`, D-270).
-      const instructions = bot.taskInstructions?.[run.taskType] ?? bot.instructions;
+      // The run's task type's instructions: the shared base, its persona and the task's own text
+      // (ADR 0119 slice 2), the task's text being its own where it has one (QA's `qa:visual`,
+      // D-242, the Council's `council:visual`, D-270). A task type the role does not allow throws.
+      const instructions = instructionsFor(bot, run.taskType);
       const botFile: KubernetesBotFile = {
         image,
         instructions,

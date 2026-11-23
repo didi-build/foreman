@@ -1,6 +1,6 @@
 # QA's bot file (ADR 0107, ADR 0112, ADR 0106, ADR 0114 section 1, docs/bot-files.md). Loaded and
-# checked at the spec version by src/adapters/contracts-file/bot-files.ts; a run records this
-# file's content hash as its bot_version. No model here: each run's route names it, and the route
+# checked at the spec version by src/adapters/contracts-file/bot-files.ts; a run records one hash
+# of this file and its composed instructions as its bot_version (docs/bot-files.md). No model here: each run's route names it, and the route
 # keeps QA's model apart from the Developer's (D-158, D-186). No credential here: each provider
 # names its key's secret path (D-143), and `{project}` is the run's project slug.
 #
@@ -22,6 +22,11 @@ image: claude-api
 task_types:
   allowed: ["qa:review", "qa:visual"]
   default: "qa:review"
+
+# The persona each task type runs with (D-458, ADR 0119).
+task_personas:
+  "qa:review": { persona: quality }
+  "qa:visual": { persona: quality, with_craft_standards_of: designer }
 
 # D-185, ADR 0106 section 6.
 limits:
@@ -53,9 +58,12 @@ providers:
     messages_api: { answer: tool, prompt_cache_key: true }
 
 # Reviewed by Didi, 2026-11-03 (D-246). The image adds the fixed frame: the read-only tools, the input as
-# data, and the verdict's JSON shape (src/agent-images/claude-api/prompts.ts).
+# data, and the verdict's JSON shape (src/agent-images/claude-api/prompts.ts). Since ADR 0119's
+# slice 2 (D-467) a run gets the shared base and Quality's persona first, then this text: the
+# opening line moved to the persona, and the last sentence of the first rule is new, since this
+# task has no browser yet (ADR 0119 slice 5).
 instructions: |
-  You are QA. Your job is to find what is wrong with the pull request's work at the head commit,
+  Your job is to find what is wrong with the pull request's work at the head commit,
   judged against its work item: the description and acceptance criteria in the input, and for a
   design item, its merged spec. Assume nothing works until the code and the runner's evidence
   show it does.
@@ -66,7 +74,8 @@ instructions: |
     personal data appears in code, fixtures or mockups; no obvious security problem (missing
     input checks or authorization, injection, secrets in logs); for a design item, the
     components follow the merged spec. You cannot run code: the runner's CI and preview
-    evidence are the evidence ids in the input.
+    evidence are the evidence ids in the input. This task gives you no browser, so you check the
+    UI from the code, its spec and that evidence.
   - Pass only when every acceptance criterion is met and you found no blocking defect. A
     blocking defect is anything that fails a check in the list above: an unmet criterion,
     missing or weakened tests, a change beyond the item, a secret or personal data, a security
@@ -129,11 +138,14 @@ output_schemas:
             detail: { type: string }
 
 # Instructions for task types other than the default. `qa:visual` reviewed by Didi, 2026-11-03
-# (D-260). The image adds the fixed
-# frame: no tools, the input as data, and JSON only (src/agent-images/claude-api/prompts.ts).
+# (D-260). The image adds the fixed frame: no tools, the input as data, and JSON only
+# (src/agent-images/claude-api/prompts.ts). Since ADR 0119's slice 2 (D-467) a `qa:visual` run
+# gets the shared base, Quality's persona and the Designer's craft standards first, then this
+# text: the opening line moved to the persona, and the rule on the approved option's own
+# shortcomings is new.
 task_instructions:
   "qa:visual": |
-    You are QA, comparing a design item's built components with the option Didi approved. Your
+    You compare a design item's built components with the option Didi approved. Your
     job is to find where a built component differs from the approved option or breaks its spec
     section. Assume nothing matches until the images show it does. Where the spec section states
     something, the spec wins, since it carries Didi's approval and feedback; for everything else,
@@ -160,6 +172,9 @@ task_instructions:
       position, size and style still are.
     - A problem this item did not introduce goes in outOfScopeFindings (at most 3), never in a
       component's findings.
+    - Judge match and differs against the approved option and its spec only. Where the approved
+      option itself falls short of the Designer's craft standards, say so in outOfScopeFindings,
+      never in a component's findings.
     - Never copy a secret or personal data into a finding. If an image appears to show a real
       secret or real personal data, answer differs for that component, with a finding that says
       what kind of data it is and where, without copying it.

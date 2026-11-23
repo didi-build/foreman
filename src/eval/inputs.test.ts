@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { taskFileJson } from "../adapters/agent-runtime/kubernetes/task.ts";
-import { readBotFiles } from "../adapters/contracts-file/bot-files.ts";
+import { instructionsFor, readBotFiles } from "../adapters/contracts-file/bot-files.ts";
 import { createWorkspace } from "../agent-images/claude-api/files.ts";
 import { fixture } from "../core/guards/testing.ts";
 import { quoted } from "../core/task-input.ts";
@@ -25,8 +25,18 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
       const run = buildCaseRun(c, bots, cases);
       expect(() => taskFileJson(c.role, run.task), c.id).not.toThrow();
       expect(run.taskType, c.id).toBe(c.taskType);
-      // The role's own instructions from its bot file, never a copy.
-      expect(run.task.instructions, c.id).toBe(bots[c.role].instructions);
+      // The instructions a real run of the case's task type gets, never a copy: QA's and
+      // Triage's composed with their persona, the Council's as its file gives them (ADR 0119).
+      expect(run.task.instructions, c.id).toBe(
+        instructionsFor(bots[c.role], c.taskType),
+      );
+      const own =
+        bots[c.role].taskInstructions?.[c.taskType] ?? bots[c.role].instructions;
+      if (c.role === "council") expect(run.task.instructions, c.id).toBe(own);
+      else {
+        expect(run.task.instructions, c.id).toMatch(/^## What every agent shares\n\n/);
+        expect(run.task.instructions.endsWith(own.trimEnd()), c.id).toBe(true);
+      }
     }
   });
 
