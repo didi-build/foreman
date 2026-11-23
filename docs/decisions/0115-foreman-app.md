@@ -23,7 +23,7 @@ Didi wants Foreman's own frontends, built by Foreman through its own flow, which
 9. **Topology: a live map built from data (D-398).** The server side assembles the map from Foreman's own sources each time: the settings files (projects and their namespaces), the bot files (roles), the flows, the image pins, and a read-only view of the cluster, whose agent pods carry their role and item as labels. The app lays it out automatically and draws a kind it does not know as a plain labelled box. Optional hints only tidy grouping and labels. A test in Foreman's CI builds the map from the repository's files, so a change that would break it fails before it merges.
 10. **Design review in the gallery; MagicPath out (D-399).** The Designer explores in two or three gallery option pages, which CI renders and Foreman captures, and Didi picks one on the approval form (D-242, D-254). MagicPath (D-128, D-190, D-198) leaves the plan, on Didi's condition that this review works; the first real design item confirms it.
 
-The order of the work: the tidy-up of the rehearsal; this planning; the one-approval project flow (D-377, D-378); role playbooks for the Designer, Developer and QA, worded with Didi's approval; then the chat, the views and the topology, each through the design track and then the developer track.
+The order of the work: the tidy-up of the rehearsal; this planning; the one-approval project flow (D-377, D-378); role playbooks for the Designer, Developer and QA, worded with Didi's approval (designed in sitting 5 as personas and tasks, [ADR 0119](./0119-personas-and-tasks.md)); then the chat, the views and the topology, each through the design track and then the developer track.
 
 ## Constraints
 

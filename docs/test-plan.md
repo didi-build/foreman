@@ -191,6 +191,11 @@ None of these uses a cluster, Windmill or the network: the API server is a local
 6. Unit, QA's visual parts (`bot-files.test.ts`, `test/flows/tasks.test.ts`): QA's bot file gives `output_schemas.visual` and `task_instructions."qa:visual"`, and no other role may give task instructions; a `qa:visual` task carries those instructions, the schema and the images and no evidence ids, and a QA review task is unchanged. The visual task has no fetch step, no fetch hosts and no GitHub token, and mints none, while the review task keeps its fetch hosts and read token (N-57, O-68). The Designer's instructions carry the option page markers and the spec step's deletion of the options Didi did not pick (D-255, D-253). Routing (`src/core/routing.test.ts`): a QA candidate on a Designer run's model id or family is refused and the next one taken, and the input hash covers Designer runs.
 7. Adapter contract, the visual run on Kubernetes (`src/adapters/agent-runtime/kubernetes/runtime.test.ts`): a run marked `visual` starts the QA pod at once with no fetch step, workspace claim, GitHub token Secret or workspace variable, and a GitHub token, fetch hosts, or images on a run of the wrong kind are refused before anything is created.
 
+### Persona files (ADR 0119, D-455 to D-457)
+
+1. Unit, the check (`src/core/personas.test.ts`, synthetic files): the shared base and the four personas pass, with notes optional and each list in the file's order; every problem is collected at once and named by file and part, never by value (a file for no persona, a missing file or part, an unknown part, a persona id that is not its file's name, an empty list, an entry that is not one line of text, a shared base with a part missing or unknown).
+2. Unit, repo guard (`test/contracts-personas.test.ts`): `contracts/personas/` holds the shared base and exactly the four first personas, and they pass the check; a YAML error names the file and line only. No run reads the files until ADR 0119's slice 2.
+
 ### Windmill flows (build plan M3.1)
 
 Tests are in `test/flows/`, with fake adapters on the memory store (`flow-fixture.ts`): the real machine-2 contracts and guards, a fake agent runtime that can be made to fail a start or a cancel, a fake task source, generated state API tokens and a Windmill execution count the test sets. Nothing reaches Windmill, a cluster, a model or GitHub.
