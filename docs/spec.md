@@ -36,19 +36,19 @@ Bots are shared across all projects (decided Oct 27, 2026). Each bot is defined 
 
 Each bot is defined by one plain file in the repo, so it can run on any runtime. A bot is persistent: it owns states and its context policy. The agents under it are temporary workers scoped to one task. The file can compile to a Claude Code subagent, a Windmill AI agent step, or another runtime.
 
-| Field                 | What it sets                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------- |
-| Role                  | The role it represents and the states it owns                                                           |
-| Instructions          | The bot's system prompt, plus a shorter template for its agents                                         |
-| Model                 | The bot's model and its agents' model. A reasoning model where judgment matters, a fast model elsewhere |
-| Tools and permissions | Allowed tools, explicitly denied tools, and permission mode                                             |
-| Context               | Which artifacts it receives in each state (section 9)                                                   |
-| Budget                | Max turns, minutes, dollars, agents, and recursion depth                                                |
-| Dispatch              | How many agents it may run, whether in parallel, and which model each uses                              |
-| Evidence              | The proof it must attach before work leaves its states                                                  |
-| Escalation            | When it hands off to the Council, then to Didi                                                          |
-| Memory                | What it keeps between runs                                                                              |
-| Version               | The prompt, model and schema version behind each result                                                 |
+| Field                 | What it sets                                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Role                  | The role it represents and the states it owns                                                                                                                                   |
+| Instructions          | The bot's system prompt, plus a shorter template for its agents. A run's instructions are the shared base, then its task's persona, then the task's own instructions (ADR 0119) |
+| Model                 | The bot's model and its agents' model. A reasoning model where judgment matters, a fast model elsewhere                                                                         |
+| Tools and permissions | Allowed tools, explicitly denied tools, and permission mode                                                                                                                     |
+| Context               | Which artifacts it receives in each state (section 9)                                                                                                                           |
+| Budget                | Max turns, minutes, dollars, agents, and recursion depth                                                                                                                        |
+| Dispatch              | How many agents it may run, whether in parallel, and which model each uses                                                                                                      |
+| Evidence              | The proof it must attach before work leaves its states                                                                                                                          |
+| Escalation            | When it hands off to the Council, then to Didi                                                                                                                                  |
+| Memory                | What it keeps between runs                                                                                                                                                      |
+| Version               | The prompt, model and schema version behind each result                                                                                                                         |
 
 Proposed defaults, to refine: agents may not spawn further agents unless the budget sets a depth limit. Reasoning models are slower and more expensive, so use them only in the Council, architecture decisions and adversarial QA, and use a fast model for routine development, docs and status work. The QA bot always runs a different model from the bot that built the work.
 

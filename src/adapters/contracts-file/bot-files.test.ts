@@ -2,20 +2,30 @@
 // in contracts/bots/ load and pass the check, with the values the decisions set; a malformed file
 // fails with every problem named by file and field and never by value; a key pasted where a
 // secret path belongs is refused; the Council's answers check against the schemas read from its
-// bot file.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// bot file. With the real persona files (ADR 0119 slice 2): each task type's persona is D-458's,
+// each run's instructions are composed from the shared base, the persona and the task's text, the
+// Council's stay as the file gives them, and a persona change reaches exactly the versions of the
+// roles whose composed text it changes.
+import { createHash } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 import { outputProblem } from "../../core/output-schema.ts";
+import {
+  COMPOSED_HEADINGS,
+  composeInstructions,
+  type Personas,
+} from "../../core/personas.ts";
 import { REHEARSAL_RUN_LIMITS } from "../../core/runs.ts";
 import { OPTION_MARKERS } from "../../core/visual-comparison.ts";
 import {
   BOT_FILES_DIR,
   BOT_ROLES,
   botProfiles,
+  instructionsFor,
   loadBotFiles,
   readBotFiles,
   runLimits,
@@ -24,12 +34,19 @@ import {
   validateBotFiles,
   type RawBotFile,
 } from "./bot-files.ts";
+import { PERSONAS_DIR, readPersonas } from "./personas.ts";
 
 const D196 = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(git *)", "Bash(npm *)"];
 /** A value shaped like a provider key. Not a real key. */
 const PASTED_KEY = "sk-ant-api03-not-a-real-key-0123456789abcdef";
 
 const real = () => loadBotFiles();
+const PERSONAS_READ = readPersonas();
+/** The bot file check, with the real persona files unless a test gives others. */
+const check = (
+  raw: Record<(typeof BOT_ROLES)[number], RawBotFile>,
+  personas: Personas = PERSONAS_READ,
+) => validateBotFiles(raw, personas);
 /** The real files with one role's parsed data changed. */
 function withData(
   role: (typeof BOT_ROLES)[number],
@@ -61,7 +78,7 @@ function folder(edit: (dir: string) => void): string {
 
 describe("the bot files in contracts/bots (unit: contracts-file adapter)", () => {
   it("load and pass the check, each at its own content hash", () => {
-    const { bots, problems } = validateBotFiles(real());
+    const { bots, problems } = check(real());
     expect(problems).toEqual([]);
     for (const role of BOT_ROLES) {
       expect(bots?.[role].role).toBe(role);
@@ -213,7 +230,7 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
 
 describe("a malformed bot file (unit: contracts-file adapter)", () => {
   it("fails with every problem, naming the file and the field, never the value", () => {
-    const { bots, problems } = validateBotFiles(
+    const { bots, problems } = check(
       withData("developer", (d) => {
         d.model = PASTED_KEY;
         d.extra = PASTED_KEY;
@@ -257,7 +274,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
 
   it("refuses a key pasted in place of a secret path, without repeating it", () => {
     for (const role of BOT_ROLES) {
-      const { problems } = validateBotFiles(
+      const { problems } = check(
         withData(role, (d) => {
           (d.providers as Record<string, unknown>[])[0].secret_path = PASTED_KEY;
         }),
@@ -272,7 +289,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "projects/../platform",
       "projects/{slug}/x",
     ]) {
-      const { problems } = validateBotFiles(
+      const { problems } = check(
         withData("qa", (d) => {
           (d.providers as Record<string, unknown>[])[0].secret_path = path;
         }),
@@ -282,7 +299,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
   });
 
   it("refuses a provider the run's image cannot use, and one the proxy would refuse", () => {
-    const { problems } = validateBotFiles(
+    const { problems } = check(
       withData("council", (d) => {
         d.providers = [
           {
@@ -298,7 +315,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(problems).toEqual([
       "council.yaml: providers[0].base_url_env must be ANTHROPIC_BASE_URL, with no api, for the Messages API image",
     ]);
-    const proxy = validateBotFiles(
+    const proxy = check(
       withData("developer", (d) => {
         (d.providers as Record<string, unknown>[])[1].upstream =
           "http://api.deepinfra.com";
@@ -307,7 +324,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(proxy.problems).toEqual([
       "developer.yaml: providers: entry 2 has an invalid upstream (an https URL with no credentials, query or fragment)",
     ]);
-    const openCode = validateBotFiles(
+    const openCode = check(
       withData("designer", (d) => {
         delete (d.providers as Record<string, unknown>[])[0].api;
       }),
@@ -319,7 +336,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
 
   it("takes messages_api with its defaults on a Messages API provider only, and refuses a bad one by field (O-152)", () => {
     const council = (messagesApi: unknown, at = 0) =>
-      validateBotFiles(
+      check(
         withData("council", (d) => {
           (d.providers as Record<string, unknown>[])[at].messages_api = messagesApi;
         }),
@@ -348,7 +365,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(council("tool").problems).toEqual([
       "council.yaml: providers[0].messages_api must be a mapping of answer and prompt_cache_key",
     ]);
-    const openCode = validateBotFiles(
+    const openCode = check(
       withData("developer", (d) => {
         (d.providers as Record<string, unknown>[])[1].messages_api = { answer: "tool" };
       }),
@@ -363,7 +380,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
 
   it("keeps MagicPath off, tools off the Messages API roles, and each role's hosts and schemas", () => {
     expect(
-      validateBotFiles(
+      check(
         withData("designer", (d) => {
           d.mcp = { magicpath: { enabled: true } };
         }),
@@ -372,7 +389,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "designer.yaml: mcp.magicpath stays off until its new-credentials gate (D-190)",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("qa", (d) => {
           d.allowed_tools = ["Read"];
           d.allowed_hosts = ["github.com"];
@@ -387,7 +404,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "qa.yaml: fetch_allowed_hosts must be a list of host names",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("council", (d) => {
           d.output_schemas = {
             escalation: (d.output_schemas as Record<string, unknown>).escalation,
@@ -408,7 +425,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "council.yaml: output_schemas.reversal.required must list distinct fields of its properties",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("triage", (d) => {
           delete d.output_schemas;
         }),
@@ -422,16 +439,17 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(bots.qa.taskInstructions?.["qa:visual"]).toContain("cannot_tell");
     expect(botProfiles(bots).qa.outputSchemas).toEqual(bots.qa.outputSchemas);
     expect(
-      validateBotFiles(
+      check(
         withData("qa", (d) => {
           d.task_types = { allowed: ["qa:review"], default: "qa:review" };
         }),
       ).problems,
     ).toEqual([
       "qa.yaml: task_instructions.qa:visual must be an allowed task type other than the default",
+      "qa.yaml: task_personas.qa:visual must be one of the role's allowed task types",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("qa", (d) => {
           delete d.task_instructions;
           delete d.output_schemas;
@@ -442,7 +460,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "qa.yaml: task_instructions must give exactly: qa:visual",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("developer", (d) => {
           d.task_instructions = { "developer:infra": "Infra work." };
         }),
@@ -471,7 +489,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       default: "designer",
     });
     expect(
-      validateBotFiles(
+      check(
         withData("developer", (d) => {
           d.task_types = {
             allowed: ["developer:code", "developer:infra"],
@@ -483,14 +501,14 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "developer.yaml: task_limits.developer:close must be an allowed task type other than the default",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("designer", (d) => {
           delete d.task_limits;
         }),
       ).problems,
     ).toEqual(["designer.yaml: task_limits must give exactly: designer:close"]);
     expect(
-      validateBotFiles(
+      check(
         withData("developer", (d) => {
           d.task_limits = {
             "developer:close": { max_turns: 1, max_minutes: 60, max_usd: 0, extra: 1 },
@@ -503,7 +521,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       "developer.yaml: task_limits.developer:close.max_usd must be an amount above 0",
     ]);
     expect(
-      validateBotFiles(
+      check(
         withData("qa", (d) => {
           d.task_limits = { "qa:visual": { max_turns: 1, max_minutes: 5, max_usd: 1 } };
         }),
@@ -531,7 +549,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     // The reviewed supervisor instructions (D-248) are not changed by it.
     expect(bots.council.instructions).not.toContain("visual");
     expect(
-      validateBotFiles(
+      check(
         withData("council", (d) => {
           delete d.task_instructions;
         }),
@@ -560,6 +578,313 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     // The YAML parses as the files on disk say: the loader reads exactly these bytes.
     expect(real().qa.data).toEqual(
       parse(readFileSync(join(BOT_FILES_DIR, "qa.yaml"), "utf8")),
+    );
+  });
+});
+
+/** The roles whose runs compose a persona (D-458). The Council has none until slice 6. */
+const PERSONA_ROLES = ["developer", "designer", "qa", "triage"] as const;
+
+/** `sha256:` and the SHA-256 of a bot file's bytes on disk. */
+const fileHash = (role: (typeof BOT_ROLES)[number]) =>
+  `sha256:${createHash("sha256")
+    .update(readFileSync(join(BOT_FILES_DIR, `${role}.yaml`)))
+    .digest("hex")}`;
+
+/** A folder with a copy of the real persona files, each with `edit` applied to its text. */
+function personasFolder(edit: (text: string) => string): string {
+  const dir = mkdtempSync(join(tmpdir(), "bot-files-personas-"));
+  dirs.push(dir);
+  for (const name of readdirSync(PERSONAS_DIR)) {
+    writeFileSync(
+      join(dir, name),
+      edit(readFileSync(join(PERSONAS_DIR, name), "utf8")),
+    );
+  }
+  return dir;
+}
+
+describe("each task type's persona and composed instructions (unit: contracts-file adapter, ADR 0119 slice 2)", () => {
+  it("map each task type that runs a model to D-458's persona, and give the Council none yet", () => {
+    const bots = readBotFiles();
+    expect(bots.triage.taskPersonas).toEqual({ triage: { persona: "product" } });
+    expect(bots.developer.taskPersonas).toEqual({
+      "developer:code": { persona: "developer" },
+      "developer:infra": { persona: "developer" },
+    });
+    expect(bots.designer.taskPersonas).toEqual({
+      designer: { persona: "designer", withCraftStandardsOf: "developer" },
+    });
+    expect(bots.qa.taskPersonas).toEqual({
+      "qa:review": { persona: "quality" },
+      "qa:visual": { persona: "quality", withCraftStandardsOf: "designer" },
+    });
+    expect(bots.council.taskPersonas).toBeUndefined();
+  });
+
+  it("give every allowed task type its text: the shared base, the persona, then the task's own text", () => {
+    const bots = readBotFiles();
+    for (const role of BOT_ROLES) {
+      const { allowed } = bots[role].taskTypes as { allowed: string[] };
+      expect(Object.keys(bots[role].runInstructions).sort(), role).toEqual(
+        [...allowed].sort(),
+      );
+    }
+    for (const role of PERSONA_ROLES) {
+      for (const [taskType, persona] of Object.entries(bots[role].taskPersonas ?? {})) {
+        const task = bots[role].taskInstructions?.[taskType] ?? bots[role].instructions;
+        const text = instructionsFor(bots[role], taskType);
+        expect(text, taskType).toBe(
+          composeInstructions({ personas: PERSONAS_READ, ...persona, task }),
+        );
+        expect(text.startsWith(`${COMPOSED_HEADINGS.shared}\n\n`), taskType).toBe(true);
+        expect(
+          text.endsWith(`${COMPOSED_HEADINGS.task}\n\n${task.trimEnd()}`),
+          taskType,
+        ).toBe(true);
+        expect(text.length, taskType).toBeLessThanOrEqual(32_000);
+      }
+    }
+    // The extra craft standards only where D-458 asks for them.
+    const also = "craft standards, which you also hold the work to:";
+    expect(instructionsFor(bots.designer, "designer")).toContain(
+      `The Developer's ${also}`,
+    );
+    expect(instructionsFor(bots.qa, "qa:visual")).toContain(`The Designer's ${also}`);
+    for (const taskType of ["qa:review"]) {
+      expect(instructionsFor(bots.qa, taskType)).not.toContain(also);
+    }
+    expect(instructionsFor(bots.triage, "triage")).not.toContain(also);
+    expect(instructionsFor(bots.developer, "developer:code")).not.toContain(also);
+  });
+
+  it("keep the Council's text exactly as its file gives it, and give a close run the default's text", () => {
+    const bots = readBotFiles();
+    expect(instructionsFor(bots.council, "council")).toBe(bots.council.instructions);
+    expect(instructionsFor(bots.council, "council:visual")).toBe(
+      bots.council.taskInstructions?.["council:visual"],
+    );
+    expect(instructionsFor(bots.council, "council")).not.toContain(
+      COMPOSED_HEADINGS.shared,
+    );
+    expect(instructionsFor(bots.developer, "developer:close")).toBe(
+      instructionsFor(bots.developer, "developer:code"),
+    );
+    expect(instructionsFor(bots.designer, "designer:close")).toBe(
+      instructionsFor(bots.designer, "designer"),
+    );
+    // The file's own text stays on the bot file, for the tests and images that read it.
+    expect(bots.qa.instructions).not.toContain(COMPOSED_HEADINGS.shared);
+  });
+
+  it("refuse a task type the bot does not allow", () => {
+    const bots = readBotFiles();
+    expect(() => instructionsFor(bots.qa, "developer:code")).toThrow(
+      "the qa bot file does not allow task type developer:code",
+    );
+    expect(() => instructionsFor(bots.triage, "constructor")).toThrow(
+      "the triage bot file does not allow task type constructor",
+    );
+  });
+
+  it("refuse a persona map that does not fit the role's task types, naming the file and the field, never a value", () => {
+    expect(
+      check(
+        withData("triage", (d) => {
+          delete d.task_personas;
+        }),
+      ).problems,
+    ).toEqual([
+      "triage.yaml: task_personas must map each task type that runs a model to its persona (D-458)",
+    ]);
+    expect(
+      check(
+        withData("council", (d) => {
+          d.task_personas = { council: { persona: "product" } };
+        }),
+      ).problems,
+    ).toEqual([
+      "council.yaml: task_personas: the Council gets its personas in ADR 0119's slice 6",
+    ]);
+    const developer = check(
+      withData("developer", (d) => {
+        d.task_personas = {
+          "developer:code": { persona: "developer" },
+          "developer:close": { persona: "developer" },
+          "qa:review": { persona: "quality" },
+          [PASTED_KEY]: { persona: "quality" },
+        };
+      }),
+    ).problems;
+    expect(developer).toEqual([
+      "developer.yaml: task_personas.developer:close: a close run starts no model (D-318), so it has no persona",
+      "developer.yaml: task_personas.qa:review must be one of the role's allowed task types",
+      "developer.yaml: task_personas: a key is not a task type id",
+      "developer.yaml: task_personas.developer:infra is missing: every task type that runs a model has one",
+    ]);
+    const qa = check(
+      withData("qa", (d) => {
+        d.task_personas = {
+          "qa:review": { persona: PASTED_KEY, extra: 1 },
+          "qa:visual": { persona: "quality", with_craft_standards_of: "quality" },
+        };
+      }),
+    ).problems;
+    expect(qa).toEqual([
+      "qa.yaml: task_personas.qa:review: unknown field extra",
+      "qa.yaml: task_personas.qa:review.persona must be one of: product, developer, designer, quality",
+      "qa.yaml: task_personas.qa:visual.with_craft_standards_of must be one of: product, developer, designer, quality, other than its persona",
+    ]);
+    const designer = check(
+      withData("designer", (d) => {
+        d.task_personas = { designer: "designer" };
+      }),
+    ).problems;
+    expect(designer).toEqual([
+      "designer.yaml: task_personas.designer must be a mapping of persona and, optionally, with_craft_standards_of",
+    ]);
+    const other = check(
+      withData("designer", (d) => {
+        d.task_personas = {
+          designer: { persona: "designer", with_craft_standards_of: PASTED_KEY },
+        };
+      }),
+    ).problems;
+    expect(other).toEqual([
+      "designer.yaml: task_personas.designer.with_craft_standards_of must be one of: product, developer, designer, quality, other than its persona",
+    ]);
+    for (const problems of [developer, qa, other]) {
+      expect(problems.join("\n")).not.toContain("sk-ant");
+    }
+  });
+
+  it("refuse a composed text over the 32,000 character limit, naming the file and the task type", () => {
+    // Each file's own text fits the limit; the shared base and the persona take it over.
+    const long = `Do the task.\n${"x".repeat(31_900)}\n`;
+    expect(
+      check(
+        withData("triage", (d) => {
+          d.instructions = long;
+        }),
+      ).problems,
+    ).toEqual([
+      "triage.yaml: the composed instructions of triage must be at most 32000 characters",
+    ]);
+    expect(
+      check(
+        withData("qa", (d) => {
+          (d.task_instructions as Record<string, unknown>)["qa:visual"] = long;
+        }),
+      ).problems,
+    ).toEqual([
+      "qa.yaml: the composed instructions of qa:visual must be at most 32000 characters",
+    ]);
+    // The Council's text is not composed, so only the file's own limit applies to it.
+    expect(
+      check(
+        withData("council", (d) => {
+          d.instructions = long;
+        }),
+      ).problems,
+    ).toEqual([]);
+  });
+
+  it("need a default task type that runs a model, whose text a close run carries", () => {
+    expect(
+      check(
+        withData("developer", (d) => {
+          d.task_types = {
+            allowed: ["developer:code", "developer:infra", "developer:close"],
+            default: "developer:review",
+          };
+        }),
+      ).problems,
+    ).toEqual([
+      "developer.yaml: task_types.default must be an allowed task type that runs a model, whose instructions developer:close uses",
+    ]);
+  });
+
+  it("version the Council by its file's hash, and a role with personas by its file and its composed texts", () => {
+    const bots = readBotFiles();
+    expect(bots.council.version).toBe(fileHash("council"));
+    expect(bots.council.version).toBe(real().council.version);
+    for (const role of PERSONA_ROLES) {
+      expect(bots[role].version, role).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(bots[role].version, role).not.toBe(fileHash(role));
+    }
+    // A byte in a bot file is still a new version, for that role only.
+    const dir = folder((d) =>
+      writeFileSync(
+        join(d, "qa.yaml"),
+        `${readFileSync(join(d, "qa.yaml"), "utf8")}\n# changed\n`,
+      ),
+    );
+    const changed = readBotFiles(dir);
+    expect(changed.qa.version).not.toBe(bots.qa.version);
+    for (const role of ["developer", "designer", "council", "triage"] as const) {
+      expect(changed[role].version, role).toBe(bots[role].version);
+    }
+  });
+
+  it("change the versions of exactly the roles whose composed text a persona change reaches", () => {
+    const versions = (personas: Personas) => {
+      const { bots, problems } = check(real(), personas);
+      expect(problems).toEqual([]);
+      return Object.fromEntries(BOT_ROLES.map((role) => [role, bots?.[role].version]));
+    };
+    const before = versions(PERSONAS_READ);
+    const changedBy = (edit: (personas: Personas) => void) => {
+      const personas = structuredClone(PERSONAS_READ);
+      edit(personas);
+      const after = versions(personas);
+      return BOT_ROLES.filter((role) => after[role] !== before[role]);
+    };
+    expect(
+      changedBy((p) => {
+        p.personas.quality.lens = "You are Quality, reworded.";
+      }),
+    ).toEqual(["qa"]);
+    expect(
+      changedBy((p) => {
+        p.personas.developer.craftStandards.push("A new standard.");
+      }),
+    ).toEqual(["developer", "designer"]);
+    expect(
+      changedBy((p) => {
+        p.personas.designer.craftStandards[0] = "A reworded standard.";
+      }),
+    ).toEqual(["designer", "qa"]);
+    // qa:visual holds the Designer's craft standards only, not what the Designer watches for.
+    expect(
+      changedBy((p) => {
+        p.personas.designer.watchesFor.push("A new risk.");
+      }),
+    ).toEqual(["designer"]);
+    expect(
+      changedBy((p) => {
+        p.personas.product.never.push("A new line.");
+      }),
+    ).toEqual(["triage"]);
+    expect(
+      changedBy((p) => {
+        p.shared.intent.push("A new shared rule.");
+      }),
+    ).toEqual(["developer", "designer", "qa", "triage"]);
+  });
+
+  it("keep every version when a persona file changes only in its comments, and refuse bad persona files", () => {
+    const bots = readBotFiles();
+    const commented = readBotFiles(
+      BOT_FILES_DIR,
+      personasFolder((text) => `# A comment.\n${text}\n# Another comment.\n`),
+    );
+    for (const role of BOT_ROLES) {
+      expect(commented[role].version, role).toBe(bots[role].version);
+    }
+    const empty = mkdtempSync(join(tmpdir(), "bot-files-personas-"));
+    dirs.push(empty);
+    expect(() => readBotFiles(BOT_FILES_DIR, empty)).toThrow(
+      /^The persona files are invalid: shared\.yaml is missing/,
     );
   });
 });

@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { parseAgentResult } from "../../adapters/agent-runtime/kubernetes/result.ts";
-import { readBotFiles } from "../../adapters/contracts-file/bot-files.ts";
+import {
+  instructionsFor,
+  readBotFiles,
+} from "../../adapters/contracts-file/bot-files.ts";
 import { firstRunPrice } from "../../core/routing-testing.ts";
 import { loadCases, type EvalCase } from "../../eval/cases.ts";
 import { buildCaseRun, type CaseRun } from "../../eval/inputs.ts";
@@ -386,7 +389,8 @@ describe("the weekly test job (integration: every case through the egress proxy,
     );
     const system = (qaRead?.body.system as { text: string }[])[0]?.text;
     expect(system).toContain("call the answer tool with your verdict");
-    expect(system).toContain(bots.qa.instructions);
+    // The composed text a real QA review run gets (ADR 0119 slice 2).
+    expect(system).toContain(instructionsFor(bots.qa, "qa:review"));
   });
 
   it("runs Claude's baseline entries on their roles only, with structured outputs and no cache key", async () => {
@@ -667,6 +671,12 @@ describe("the weekly test job (integration: every case through the egress proxy,
     ran = await run(envFor([entry(A)]), { botsDir: dir });
     expect(ran.code).toBe(1);
     expect(ran.result?.errorText).toMatch(/^the bot files cannot be read: /);
+    // The persona files the runs' instructions are composed with are read with them.
+    ran = await run(envFor([entry(A)]), { personasDir: dir });
+    expect(ran.code).toBe(1);
+    expect(ran.result?.errorText).toMatch(
+      /^the bot files cannot be read: The persona files are invalid: /,
+    );
     expect(proxy.modelRequests).toHaveLength(0);
   });
 

@@ -1,7 +1,9 @@
 // Builds each case's run exactly as the runner builds a real run's task (ADR 0117, D-427): the
 // input from the runner's own builders in src/core/, and the task file's other pieces from the
-// role's bot file (contracts/bots/), checked with the runner's own task file check. Nothing here
-// writes a rule or an instruction of its own.
+// role's bot file (contracts/bots/), checked with the runner's own task file check. The
+// instructions are the bot file loader's `instructionsFor`, which flows/lib/tasks.ts uses too: the
+// shared base, the task type's persona and the task's text (ADR 0119 slice 2), so the test
+// measures the text real runs get. Nothing here writes a rule or an instruction of its own.
 //
 // - QA (`qa:review`): `taskInput` over the work item, the repository, the pull request, the head
 //   commit and the pull request's change, as flows/lib/start-run.ts calls it, the change computed
@@ -21,7 +23,11 @@ import {
   taskFileJson,
   type AgentTaskFile,
 } from "../adapters/agent-runtime/kubernetes/task.ts";
-import type { BotFile, BotFiles } from "../adapters/contracts-file/bot-files.ts";
+import {
+  instructionsFor,
+  type BotFile,
+  type BotFiles,
+} from "../adapters/contracts-file/bot-files.ts";
 import { buildRepoMap, readCheckout } from "../adapters/repo-map/typescript.ts";
 import { escalationInput } from "../core/council-input.ts";
 import type { OutputSchema } from "../core/output-schema.ts";
@@ -70,18 +76,6 @@ export type RunFor<C extends EvalCase> = C extends QaCase
   : C extends TriageCase
     ? TriageRun
     : CouncilRun;
-
-/**
- * The instructions a run of this task type gets: the task type's own, else the role's. The same
- * choice flows/lib/tasks.ts makes, which the eval code may not import (flows sit around the code).
- */
-function instructionsFor(bot: BotFile, taskType: string): string {
-  const allowed = (bot.taskTypes as { allowed?: unknown }).allowed;
-  if (!Array.isArray(allowed) || !allowed.includes(taskType)) {
-    throw new Error(`the ${bot.role} bot file does not allow task type ${taskType}`);
-  }
-  return bot.taskInstructions?.[taskType] ?? bot.instructions;
-}
 
 function schemaOf(bot: BotFile, kind: string): OutputSchema {
   const schema = bot.outputSchemas?.[kind];

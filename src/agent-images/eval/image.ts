@@ -5,7 +5,8 @@
 // adds each provider's key, so this image holds none, and every model call keeps the proxy's
 // request ceiling, 429 count and served-tier reading (D-423). It touches no repository, writes
 // nothing anywhere but its log, and reads only the files its image holds: the cases
-// (eval/cases/) and the bot files (contracts/bots/).
+// (eval/cases/), the bot files (contracts/bots/) and the persona files each run's instructions are
+// composed with (contracts/personas/, ADR 0119 slice 2).
 //
 // Its inputs, all from the environment, each checked before any model call (a problem names the
 // setting, never its value):
@@ -102,9 +103,13 @@ export interface EvalImageDeps {
   client?: (baseUrl: string, deadline: AbortSignal) => MessagesClient;
   /** A run's deadline after `ms`. Tests may pass their own. */
   deadline?: (ms: number) => AbortSignal;
-  /** Where the cases and the bot files are. The image's own folders unless a test says. */
+  /**
+   * Where the cases, the bot files and the persona files are. The image's own folders unless a
+   * test says.
+   */
   casesDir?: string;
   botsDir?: string;
+  personasDir?: string;
 }
 
 /** The SDK client for one run: no retries, the placeholder key, aborted at the run's deadline. */
@@ -163,7 +168,7 @@ export async function runEvalImage(
   try {
     const settings = readConfig(SETTINGS, env);
     const bots = reading("the bot files cannot be read", () =>
-      readBotFiles(deps.botsDir),
+      readBotFiles(deps.botsDir, deps.personasDir),
     );
     const all = reading(
       "the test cases cannot be read",

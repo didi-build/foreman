@@ -5,7 +5,8 @@
 // files are read through ../bundle-files/files.ts: from disk, or from a flow's bundle (O-121),
 // which carries all of contracts/.
 //
-// No run reads the personas yet. ADR 0119's slice 2 composes them into each run's instructions.
+// The bot file loader (./bot-files.ts) reads them with the bot files and composes them into each
+// run's instructions with the core's `composeInstructions` (ADR 0119 slice 2).
 import { join } from "node:path";
 import { parse, YAMLParseError } from "yaml";
 

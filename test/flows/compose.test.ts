@@ -57,6 +57,7 @@ const COUNCIL_START = {
   run: {
     id: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
     bot: "council",
+    taskType: "council",
     model: "claude-sonnet-5-5",
     provider: "anthropic",
     serviceTierRequested: "standard",

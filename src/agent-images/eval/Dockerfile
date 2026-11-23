@@ -4,8 +4,8 @@
 # case of the weekly model test set on every planned model through its egress proxy, scores each
 # answer with the runner's own checks, prints one result line and exits.
 # No coding agent, no git and no shell tools: Node, the Anthropic SDK (the Messages API loop), the
-# TypeScript compiler (Triage's repo map, parsed, never run) and the YAML parser (the cases and
-# the bot files). It holds no credential: the proxy adds each provider's key.
+# TypeScript compiler (Triage's repo map, parsed, never run) and the YAML parser (the cases, the
+# bot files and the persona files). It holds no credential: the proxy adds each provider's key.
 # Base image pinned by digest. Dependabot keeps the version and digest current.
 FROM node:22.23.5-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
@@ -17,9 +17,11 @@ WORKDIR /app
 COPY src/agent-images/eval/deps/package.json src/agent-images/eval/deps/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
-# The data the job reads: the cases with their trees, and the bot files, as the runner reads them.
+# The data the job reads: the cases with their trees, and the bot files with the persona files
+# their runs' instructions are composed with (ADR 0119 slice 2), as the runner reads them.
 COPY eval/cases ./eval/cases
 COPY contracts/bots ./contracts/bots
+COPY contracts/personas ./contracts/personas
 
 # The core whole: the runner's builders and checks reach most of its files through each other.
 COPY src/core ./src/core
@@ -31,6 +33,7 @@ COPY src/adapters/agent-runtime/kubernetes/manifests.ts ./src/adapters/agent-run
 COPY src/adapters/agent-runtime/kubernetes/names.ts ./src/adapters/agent-runtime/kubernetes/names.ts
 COPY src/adapters/bundle-files/files.ts ./src/adapters/bundle-files/files.ts
 COPY src/adapters/contracts-file/bot-files.ts ./src/adapters/contracts-file/bot-files.ts
+COPY src/adapters/contracts-file/personas.ts ./src/adapters/contracts-file/personas.ts
 COPY src/adapters/repo-map/typescript.ts ./src/adapters/repo-map/typescript.ts
 COPY src/egress-proxy/hosts.ts ./src/egress-proxy/hosts.ts
 COPY src/egress-proxy/providers.ts ./src/egress-proxy/providers.ts
