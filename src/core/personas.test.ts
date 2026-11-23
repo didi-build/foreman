@@ -9,7 +9,7 @@ const shared = () => ({
   intent: ["Work toward the plan."],
   uncertainty: ["Say what you are unsure of."],
   communication: ["Write plainly."],
-  secrets_and_personal_data: ["Never write a secret."],
+  security_and_privacy: ["Never write a secret."],
 });
 
 const persona = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -62,7 +62,7 @@ describe("persona files (unit, ADR 0119)", () => {
       notes: [],
     });
     expect(personas?.personas.designer.notes).toEqual(["A note."]);
-    expect(personas?.shared.secretsAndPersonalData).toEqual(["Never write a secret."]);
+    expect(personas?.shared.securityAndPrivacy).toEqual(["Never write a secret."]);
   });
 
   it("collects every problem in the personas, naming the file and the part, never a value", () => {

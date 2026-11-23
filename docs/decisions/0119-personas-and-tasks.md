@@ -23,16 +23,16 @@ The bots now run on cheaper open models (D-421, D-425), and Didi's rule is to im
 1. **Two building blocks (D-454).** A **task** is the job: its inputs, steps, tools, answer and checks. Didi: "doing research, making a code change, running a scan, things that need to be done to make the system work." Each task type in `contracts/task-types.yaml` is a task. A **persona** is the lens: Didi: it "defines a agent priorities, values, lens into which will shape how they go about handling a task." A persona is the same in any task and in any discussion. The Council is neither a role nor a persona. Didi: "counsel should be the concept of like a group chat that will include multiple personas in the chat when they're each needed."
 2. **The structure of a persona (D-455).** Every persona carries a **shared base**, then six parts of its own, then optional notes:
 
-   | Part                        | What it holds                                                                                                                                                       |
-   | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-   | Shared base (`shared.yaml`) | The user's flow; Didi's intent and the approved plan; honest about uncertainty; plain, short communication, decision first; the rules for secrets and personal data |
-   | `lens`                      | One line: how the persona sees the work                                                                                                                             |
-   | `cares_most_about`          | What it values, most important first                                                                                                                                |
-   | `craft_standards`           | How it does good work                                                                                                                                               |
-   | `watches_for`               | What it notices in any work or discussion, and raises in the Council                                                                                                |
-   | `never`                     | The lines it does not cross                                                                                                                                         |
-   | `needs_to_know`             | The context and tools it relies on                                                                                                                                  |
-   | `notes`                     | Optional. Anything that fits no part                                                                                                                                |
+   | Part                        | What it holds                                                                                                                                                                                                                |
+   | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | Shared base (`shared.yaml`) | The user's flow; Didi's intent and the approved plan; honest about uncertainty; plain, short communication, decision first; security and privacy: flag any risk noticed, and the rules for secrets and personal data (D-465) |
+   | `lens`                      | One line: how the persona sees the work                                                                                                                                                                                      |
+   | `cares_most_about`          | What it values, most important first                                                                                                                                                                                         |
+   | `craft_standards`           | How it does good work                                                                                                                                                                                                        |
+   | `watches_for`               | What it notices in any work or discussion, and raises in the Council                                                                                                                                                         |
+   | `never`                     | The lines it does not cross                                                                                                                                                                                                  |
+   | `needs_to_know`             | The context and tools it relies on                                                                                                                                                                                           |
+   | `notes`                     | Optional. Anything that fits no part                                                                                                                                                                                         |
 
    Didi asked for a reference structure first, which the interviews would refine: "start with the structure as like a reference point, but by the end after interviewing me for each different persona ... you will see a more cleaner structure that they will all fit." This is that structure.
 
@@ -58,17 +58,17 @@ The bots now run on cheaper open models (D-421, D-425), and Didi's rule is to im
 7. **Web lookups on trusted documentation sites (D-460).** A read-only lookup tool reaches trusted documentation sites only, through the run's egress proxy. An agent that finds a useful site off the list asks Didi to approve it, and an approved site joins the list. Didi: "the list can grow dynamically, if an agent finds a documentation thats not in the approved list, they can send me a request to approve".
 8. **A real browser for Quality (D-461).** Quality's run image gets a real browser, so Quality can exercise the flows and find visual bugs, as Didi asked of Quality.
 9. **The Council as a discussion, version 1 (D-462 to D-464).**
-   - **Product chairs every discussion (D-462).** Each persona the question needs gives its view once. Product then decides and gives its reasons. Didi's calls still go to Didi (D-008). Didi weighed consensus too: "C, they must agree, would obviously be the best in terms of fidelity ... for like small changes, that would be like overkill. For something big and important, like a big feature or something that will truly shake up the code base, I think that fidelity might be worth the time and the cost ... version 1, it could just be A, but over time we will fine tune this."
+   - **Product chairs every discussion (D-462).** Each persona the question needs gives its view once. Product then decides and gives its reasons. Didi's calls still go to Didi (D-008). Until the Security and Privacy persona exists, so does any question with a security or privacy risk (D-465). Didi weighed consensus too: "C, they must agree, would obviously be the best in terms of fidelity ... for like small changes, that would be like overkill. For something big and important, like a big feature or something that will truly shake up the code base, I think that fidelity might be worth the time and the cost ... version 1, it could just be A, but over time we will fine tune this."
    - **A fixed base cast, plus pull-ins (D-463).** Each question kind (`src/core/council.ts`) starts with a fixed cast. Any participant, not only the chair, may pull in another persona when it finds a reason. Didi: "a base that is predictable, but they can call in as they see fit".
 
-     | Question kind  | When it is asked                                                          | Base cast, with Product as chair                                  |
-     | -------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-     | `escalation`   | A builder stopped for a decision                                          | The builder's persona (the Developer or the Designer) and Quality |
-     | `reversal`     | A past decision is reconsidered                                           | The persona that owns the decision's topic                        |
-     | `plan`         | The Council plans a Scanner idea, or an idea from a bot's finding (D-316) | The Developer, and the Designer when the work touches the UI      |
-     | `still_needed` | Is a work item still needed?                                              | The Developer                                                     |
-     | `visual_call`  | The Council's call on a visual approval (D-263)                           | The Designer and Quality                                          |
-     | `scanner_gone` | The Scanner no longer finds an idea's problem                             | Not set in the interview (open point 3)                           |
+     | Question kind  | When it is asked                                                                                    | Base cast, with Product as chair                                  |
+     | -------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+     | `escalation`   | A builder stopped for a decision, or an item escalated by its failure count or QA round cap (D-466) | The builder's persona (the Developer or the Designer) and Quality |
+     | `reversal`     | A past decision is reconsidered                                                                     | The persona that owns the decision's topic                        |
+     | `plan`         | The Council plans a Scanner idea, or an idea from a bot's finding (D-316)                           | The Developer, and the Designer when the work touches the UI      |
+     | `still_needed` | Is a work item still needed?                                                                        | The Developer                                                     |
+     | `visual_call`  | The Council's call on a visual approval (D-263)                                                     | The Designer and Quality                                          |
+     | `scanner_gone` | The Scanner no longer finds an idea's problem                                                       | The Developer, as for `still_needed` (D-466)                      |
 
    - **At most two extra personas, every pull-in traced (D-464).** A question may pull in at most two personas beyond its base cast, each with its reason. A question that needs more goes to Didi. Every pull-in is recorded: who was pulled in, by whom, and why, so the weekly persona review can spot the same pull-in repeating. Didi: "this should also be traceable because during the scans & self improvement, if we have the same repeated pull ins, we should probably fix something".
 
@@ -150,6 +150,7 @@ Proposed. The build plan below delivers it in six slices.
   | Question kind  | Calls, with no pull-in               |
   | -------------- | ------------------------------------ |
   | `still_needed` | 2                                    |
+  | `scanner_gone` | 2                                    |
   | `reversal`     | 2, or 1 when Product owns the topic  |
   | `plan`         | 2, or 3 when the work touches the UI |
   | `escalation`   | 3                                    |
@@ -170,17 +171,16 @@ A later sitting, with Didi:
 ## Open points
 
 1. **The analyst and the CTO.** D-247's panel has them, and the interview did not name them. This record reads the four personas as replacing that panel. Didi confirms.
-2. **The security floor until Security and Privacy exists.** D-247 puts the security lead in every question touching secrets, permissions, personal data or security. Version 1 has no such persona. Options: (a) such a question goes to Didi, as the Council's rule already sends a question when it is unsure whether it touches security or permissions; (b) the Developer and Quality cover it, from their secure-by-default and basic-security standards. Didi decides.
-3. **`scanner_gone` has no base cast.** Its sibling `still_needed` has the Developer. Proposed: the same, for Didi to confirm.
-4. **Escalations that are not a builder's stop.** The notes give the cast for a builder that stopped for a decision. An escalation also comes from the failure count or the QA round cap. Proposed: the same cast, since the item is the builder's and Quality's findings are often the cause. Didi confirms.
-5. **The owner of a reversal's topic.** How the runner finds the persona that owns a decision's topic. Proposed: from the kind of the reversed decision, with Product when no other persona fits.
-6. **Screens.** Where the Designer's screens live in a project, how the gallery shows them, and how they are checked. Until this is decided, the Designer builds components only, as today.
-7. **The roadmap Product needs.** Foreman keeps no roadmap of its own. Proposed: the accepted plans and the open items stand for it in Product's summary.
-8. **The trusted list.** Its first entries (proposed in slice 4's pull request for Didi's approval), which runs get the lookup first (the Developer, whose notes ask for it), and whether a site request is a new gate kind or the approve-once kind for wider permissions.
-9. **When the Council discussion is built.** D-261 put the panel in the next release, with the intake agent. This record proposes slice 6 for runtime questions sooner. Didi decides the timing.
-10. **How a discussion runs.** Proposed: one run, with each persona seeing the views before it, as in a group chat. The alternative is one run per persona, which adds a Windmill run and a Job for each call.
-11. **A question that needs a third pull-in.** Proposed: it goes to Didi through each kind's existing way (`cannot_resolve`, `cannot_decide`, `needsDidi: yes` or `needs_didi`).
-12. **Quality's browser.** What it tests against (proposed: the site CI built, served inside the run, as CI's `preview-check` serves it), whether Quality reads the page as text or as screenshots (screenshots need a model that reads images, D-249's vision test), which image holds the browser, and QA's new limits.
+2. **The owner of a reversal's topic.** How the runner finds the persona that owns a decision's topic. Proposed: from the kind of the reversed decision, with Product when no other persona fits.
+3. **Screens.** Where the Designer's screens live in a project, how the gallery shows them, and how they are checked. Until this is decided, the Designer builds components only, as today.
+4. **The roadmap Product needs.** Foreman keeps no roadmap of its own. Proposed: the accepted plans and the open items stand for it in Product's summary.
+5. **The trusted list.** Its first entries (proposed in slice 4's pull request for Didi's approval), which runs get the lookup first (the Developer, whose notes ask for it), and whether a site request is a new gate kind or the approve-once kind for wider permissions.
+6. **When the Council discussion is built.** D-261 put the panel in the next release, with the intake agent. This record proposes slice 6 for runtime questions sooner. Didi decides the timing.
+7. **How a discussion runs.** Proposed: one run, with each persona seeing the views before it, as in a group chat. The alternative is one run per persona, which adds a Windmill run and a Job for each call.
+8. **A question that needs a third pull-in.** Proposed: it goes to Didi through each kind's existing way (`cannot_resolve`, `cannot_decide`, `needsDidi: yes` or `needs_didi`).
+9. **Quality's browser.** Decided (D-461): the site under test runs inside QA's own sandboxed run, with no credential and no outside host, driven only through a browser tool, still with no shell and no editing. Open: what it tests against (proposed: the site CI built, served inside the run, as CI's `preview-check` serves it), whether Quality reads the page as text or as screenshots (screenshots need a model that reads images, D-249's vision test), which image holds the browser, and QA's new limits.
+
+Decided after the first draft, on 2026-11-23: the security floor until Security and Privacy exists (D-465), and the casts for `scanner_gone` and for escalations that are not a builder's stop (D-466).
 
 ## Build plan
 

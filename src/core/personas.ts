@@ -30,7 +30,7 @@ export const SHARED_PARTS = [
   "intent",
   "uncertainty",
   "communication",
-  "secrets_and_personal_data",
+  "security_and_privacy",
 ] as const;
 
 /** The shared base's file name, without `.yaml`. It is never a persona's id. */
@@ -56,7 +56,7 @@ export interface SharedBase {
   intent: string[];
   uncertainty: string[];
   communication: string[];
-  secretsAndPersonalData: string[];
+  securityAndPrivacy: string[];
 }
 
 export interface Personas {
@@ -141,7 +141,7 @@ function checkShared(raw: unknown, problems: string[]): SharedBase | undefined {
     intent: lists.intent,
     uncertainty: lists.uncertainty,
     communication: lists.communication,
-    secretsAndPersonalData: lists.secrets_and_personal_data,
+    securityAndPrivacy: lists.security_and_privacy,
   };
 }
 

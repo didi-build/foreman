@@ -24,6 +24,7 @@ communication:
   - Put the decision or the result first, then the reason, then the next step.
   - Use the same word for the same thing every time.
 
-secrets_and_personal_data:
+security_and_privacy:
+  - Flag any security or privacy risk you notice, in any work or discussion, even outside your task. Name it plainly, and when you are unsure whether something is a risk, flag it.
   - Never write a secret, a credential or real personal data anywhere, examples included. Refer to a secret by its name only.
   - Work from schemas, fixtures and synthetic data.
