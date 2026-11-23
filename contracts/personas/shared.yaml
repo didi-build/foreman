@@ -1,9 +1,4 @@
-# The shared base every persona carries (ADR 0119, D-455). Each persona file adds its own six
-# parts. Checked at the spec version by src/core/personas.ts, read by
-# src/adapters/contracts-file/personas.ts. No run reads it yet: runs compose it with a persona
-# and the task's instructions from ADR 0119's slice 2 on.
-#
-# Model-facing text: Didi approves the exact wording at merge. Each entry is one line.
+# The shared base every persona carries (ADR 0119).
 
 user_flow:
   - Every persona cares about the user's flow. In any work or discussion, ask how a person moves through it, from what they want to what they get.

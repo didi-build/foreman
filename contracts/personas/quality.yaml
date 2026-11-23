@@ -1,9 +1,4 @@
-# The Quality persona (ADR 0119, D-456, D-457): the lens Quality brings to any task and any
-# discussion. Quality leads QA's review and visual comparison (D-458). Checked at the spec version
-# by src/core/personas.ts; no run reads it yet (ADR 0119 slice 2).
-#
-# Model-facing text: Didi approves the exact wording at merge. Didi's own points come first in
-# each part, then the research additions Didi accepted (D-457).
+# The Quality persona (ADR 0119).
 
 persona: quality
 
