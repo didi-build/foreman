@@ -86,6 +86,7 @@ function source(
     tokens?: InstallationTokens;
     registries?: Json;
     bots?: typeof BOTS;
+    docsLookupHosts?: readonly string[];
   } = {},
 ) {
   const secretsRead: string[] = [];
@@ -97,6 +98,9 @@ function source(
       secretsRead.push(path);
       return MODEL_KEY;
     },
+    ...(options.docsLookupHosts
+      ? { docsLookupHosts: async () => options.docsLookupHosts ?? [] }
+      : {}),
     githubTokens: options.tokens ?? {
       mint: async (request) => {
         minted.push(request);
@@ -342,6 +346,63 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     const { file } = acceptedByRuntime("developer", closeTask);
     expect(file.mode).toBe("close_pull_request");
     expect(file).not.toHaveProperty("contextTools");
+  });
+
+  it("gives no task the documentation lookup today: no bot file declares it (ADR 0119 slice 4b)", async () => {
+    const { tasks } = source({ docsLookupHosts: ["vitest.dev"] });
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
+      expect(task.task, role).not.toHaveProperty("docsLookupHosts");
+    }
+  });
+
+  it("passes the given hosts to a bot file that declares the lookup, never to qa:visual or a close run (ADR 0119 slice 4b)", async () => {
+    const hosts = ["developer.mozilla.org", "vitest.dev"];
+    const declared = (role: "qa" | "triage" | "developer" | "designer") => ({
+      ...BOTS[role],
+      docsLookup: true as const,
+    });
+    const bots = {
+      ...BOTS,
+      qa: declared("qa"),
+      triage: declared("triage"),
+      developer: declared("developer"),
+      designer: declared("designer"),
+    };
+    const { tasks } = source({ bots, docsLookupHosts: hosts });
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
+      // The runtime's own task file check accepts it.
+      expect(acceptedByRuntime(role, task).file.docsLookupHosts, role).toEqual(hosts);
+    }
+    // No list given (slice 4b's composition gives none): no lookup, even when declared.
+    const none = source({ bots });
+    const task = (await none.tasks.taskFor(
+      startFor("developer"),
+    )) as KubernetesAgentTask;
+    expect(task.task).not.toHaveProperty("docsLookupHosts");
+    const empty = source({ bots, docsLookupHosts: [] });
+    const emptyTask = (await empty.tasks.taskFor(
+      startFor("triage"),
+    )) as KubernetesAgentTask;
+    expect(emptyTask.task).not.toHaveProperty("docsLookupHosts");
+    const visual = startFor("qa", { outputSchema: BOTS.qa.outputSchemas?.visual });
+    (visual.run as { taskType: string }).taskType = "qa:visual";
+    visual.evidenceIds = [];
+    visual.images = [
+      { label: "Image 1: the approved option", png: new Uint8Array([1]) },
+    ];
+    const visualTask = (await tasks.taskFor(visual)) as KubernetesAgentTask;
+    expect(acceptedByRuntime("qa", visualTask).file).not.toHaveProperty(
+      "docsLookupHosts",
+    );
+    const close = startFor("developer");
+    (close.run as { taskType: string; prNumber: number }).taskType = "developer:close";
+    (close.run as { prNumber: number }).prNumber = 7;
+    const closeTask = (await tasks.taskFor(close)) as KubernetesAgentTask;
+    const { file } = acceptedByRuntime("developer", closeTask);
+    expect(file.mode).toBe("close_pull_request");
+    expect(file).not.toHaveProperty("docsLookupHosts");
   });
 
   it("gives each task type its own composed instructions, and refuses one the role does not allow (ADR 0119 slice 2)", async () => {

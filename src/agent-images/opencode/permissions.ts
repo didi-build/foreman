@@ -7,12 +7,16 @@
 //
 // The read-only context tools the task lists (ADR 0119 slice 3c) come from the run's own MCP
 // server, `foreman` (./context-mcp.ts), so OpenCode names them `foreman_<tool>`: each listed one is
-// allowed by its exact name, after `"*": "deny"`, and no other tool of that server is.
+// allowed by its exact name, after `"*": "deny"`, and no other tool of that server is. The same
+// server serves the documentation lookup when the task lists hosts (ADR 0119 slice 4b), allowed
+// as `foreman_read_docs_page` only then. OpenCode's own `webfetch` and `websearch` are never
+// allowed: `"*": "deny"` covers them and no bot file tool maps to them.
 import {
   isContextToolName,
   type ContextToolName,
 } from "../../adapters/agent-runtime/kubernetes/task.ts";
 import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
+import { DOCS_LOOKUP_TOOL_NAME } from "../shared/docs-lookup.ts";
 
 export type PermissionAction = "allow" | "deny";
 /** OpenCode's `permission` block: a tool's action, or per-pattern actions (bash). */
@@ -40,11 +44,16 @@ export const CONTEXT_MCP_SERVER = "foreman";
 /** OpenCode's name, and permission key, for one context tool: `foreman_<tool>`. */
 export const contextToolPermission = (tool: ContextToolName): string =>
   `${CONTEXT_MCP_SERVER}_${tool}`;
+/** The server's argument before each documentation host it serves the lookup for. */
+export const DOCS_HOST_ARGUMENT = "--docs-host=";
+/** OpenCode's name, and permission key, for the documentation lookup. */
+export const DOCS_LOOKUP_PERMISSION = `${CONTEXT_MCP_SERVER}_${DOCS_LOOKUP_TOOL_NAME}`;
 
 export function openCodePermissions(
   role: AgentRole,
   allowedTools: readonly string[],
   contextTools: readonly ContextToolName[] = [],
+  docsLookup = false,
 ): Permissions {
   if (allowedTools.length === 0)
     throw new Error(`a ${role} task needs its allowed tools`);
@@ -89,5 +98,6 @@ export function openCodePermissions(
     ...(Object.keys(bash).length > 0 ? { bash: { "*": "deny", ...bash } } : {}),
     ...(magicPath ? { [MAGICPATH_PERMISSION]: "allow" } : {}),
     ...context,
+    ...(docsLookup ? { [DOCS_LOOKUP_PERMISSION]: "allow" } : {}),
   };
 }

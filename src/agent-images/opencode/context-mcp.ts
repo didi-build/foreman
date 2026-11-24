@@ -6,25 +6,42 @@
 // through the shared client (../shared/context-tools.ts), so its framing, refusals, call cap and
 // log are a Messages API run's.
 //
-// The state API's address and the run's token come from the environment OpenCode passes on to its
-// local servers (the wrapper's own, ../shared/environment.ts), never from the config file or the
-// arguments. A missing setting stops the server at start, naming the setting, and OpenCode then
-// runs without these tools. stdout carries only JSON-RPC messages; the call log goes to stderr,
-// which OpenCode reads, and holds only the tool, the status code and the answer's size.
+// When the task lists documentation hosts (ADR 0119 slice 4b), each comes as one argument
+// `--docs-host=<host>`, and the server also lists `read_docs_page` (../shared/docs-lookup.ts),
+// last, which OpenCode names `foreman_read_docs_page`. Its calls go through the shared lookup to
+// the egress proxy's lookup route, FOREMAN_LOOKUP_URL, with the same framing, URL rules, limits
+// and log as a Messages API run's.
+//
+// The state API's address, the run's token and the lookup route come from the environment OpenCode
+// passes on to its local servers (the wrapper's own, ../shared/environment.ts), never from the
+// config file or the arguments. A missing setting stops the server at start, naming the setting,
+// and OpenCode then runs without these tools. stdout carries only JSON-RPC messages; the call log
+// goes to stderr, which OpenCode reads, and holds only the tool or host, the status code and the
+// answer's size.
 import { pathToFileURL } from "node:url";
 
 import {
+  MAX_DOCS_LOOKUP_HOSTS,
   isContextToolName,
   type ContextToolName,
 } from "../../adapters/agent-runtime/kubernetes/task.ts";
-import { readConfig, text } from "../../service-kit/config.ts";
+import { isCanonicalHost } from "../../core/site-requests.ts";
+import { readConfig, text, type Setting } from "../../service-kit/config.ts";
 import { createLogger } from "../../service-kit/logger.ts";
 import {
+  CONTEXT_TOOL_ERRORS,
   contextToolDefinitions,
   createContextTools,
   type ContextTools,
 } from "../shared/context-tools.ts";
+import {
+  DOCS_LOOKUP_TOOL_NAME,
+  createDocsLookup,
+  docsLookupTool,
+  type DocsLookup,
+} from "../shared/docs-lookup.ts";
 import { baseUrl, secretValues } from "../shared/settings.ts";
+import { DOCS_HOST_ARGUMENT } from "./permissions.ts";
 
 /** The MCP versions this server answers with, newest first. */
 export const MCP_PROTOCOL_VERSIONS = [
@@ -69,15 +86,26 @@ const failure = (
   message: string,
 ): JsonRpcResponse => ({ jsonrpc: "2.0", id, error: { code, message } });
 
+/** The documentation lookup a server serves: its hosts, for the tool's description, and the client. */
+export interface ServedLookup {
+  hosts: readonly string[];
+  lookup: DocsLookup;
+}
+
 /**
  * Answers one message: a response for a request, or null for a notification or a client's
  * response, which need none. Errors are JSON-RPC's fixed texts, never a value from the message.
+ * The documentation lookup, when given, is listed after the context tools.
  */
 export function createMcpHandler(
   tools: ContextTools,
   listed: readonly ContextToolName[],
+  served?: ServedLookup,
 ): (line: string) => Promise<JsonRpcResponse | null> {
-  const definitions = contextToolDefinitions(listed).map((tool) => ({
+  const definitions = [
+    ...contextToolDefinitions(listed),
+    ...(served ? [docsLookupTool(served.hosts)] : []),
+  ].map((tool) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.input_schema,
@@ -130,7 +158,11 @@ export function createMcpHandler(
         if (!isRecord(params) || typeof params.name !== "string") {
           return failure(id, JSON_RPC_ERRORS.invalidParams, "Invalid params");
         }
-        const output = await tools.run(params.name, params.arguments ?? {});
+        const input = params.arguments ?? {};
+        const output =
+          served && params.name === DOCS_LOOKUP_TOOL_NAME
+            ? await served.lookup.run(input)
+            : await tools.run(params.name, input);
         return ok({
           content: [{ type: "text", text: output.content }],
           isError: output.isError,
@@ -216,10 +248,17 @@ export interface ContextMcpIo {
   log: (line: string) => void;
 }
 
+/** A server with no context tools listed: every such call is refused, as an unlisted one. */
+const NO_CONTEXT_TOOLS: ContextTools = {
+  run: () => Promise.resolve({ content: CONTEXT_TOOL_ERRORS.notListed, isError: true }),
+};
+
 /**
- * The server's run: its arguments are the listed tools, each known and once, and its settings the
- * state API's address and the run's token. Returns the exit code: 0 once stdin ends, 1 when it
- * cannot start. A refusal names the problem, never a value.
+ * The server's run: its arguments are the listed tools, each known and once, and a
+ * `--docs-host=<host>` for each documentation host, canonical and once. Its settings are the
+ * state API's address and the run's token when it serves context tools, and the lookup route when
+ * it serves the lookup. Returns the exit code: 0 once stdin ends, 1 when it cannot start. A
+ * refusal names the problem, never a value.
  */
 export async function runContextMcp(
   args: readonly string[],
@@ -227,24 +266,42 @@ export async function runContextMcp(
   io: ContextMcpIo,
 ): Promise<number> {
   const logger = createLogger("agent-context-tools", io.log);
+  const names = args.filter((arg) => !arg.startsWith(DOCS_HOST_ARGUMENT));
+  const hosts = args
+    .filter((arg) => arg.startsWith(DOCS_HOST_ARGUMENT))
+    .map((arg) => arg.slice(DOCS_HOST_ARGUMENT.length));
   if (
     args.length === 0 ||
-    !args.every(isContextToolName) ||
-    new Set(args).size !== args.length
+    !names.every(isContextToolName) ||
+    new Set(names).size !== names.length
   ) {
     logger.error("the context tools server needs known context tools, each once");
     return 1;
   }
-  const listed = args as readonly ContextToolName[];
-  let settings: { stateApiUrl: string; token: string };
+  if (
+    hosts.length > MAX_DOCS_LOOKUP_HOSTS ||
+    !hosts.every(isCanonicalHost) ||
+    new Set(hosts).size !== hosts.length
+  ) {
+    logger.error("the context tools server needs canonical docs hosts, each once");
+    return 1;
+  }
+  const listed = names as readonly ContextToolName[];
+  // Only the settings of what the server serves: every missing one is named at once.
+  const wanted: Partial<
+    Record<"stateApiUrl" | "token" | "lookupUrl", Setting<string>>
+  > = {
+    ...(listed.length > 0
+      ? {
+          stateApiUrl: baseUrl("FOREMAN_STATE_API_URL"),
+          token: text("FOREMAN_STATE_API_TOKEN"),
+        }
+      : {}),
+    ...(hosts.length > 0 ? { lookupUrl: baseUrl("FOREMAN_LOOKUP_URL") } : {}),
+  };
+  let settings: Partial<Record<keyof typeof wanted, string>>;
   try {
-    settings = readConfig(
-      {
-        stateApiUrl: baseUrl("FOREMAN_STATE_API_URL"),
-        token: text("FOREMAN_STATE_API_TOKEN"),
-      },
-      env,
-    );
+    settings = readConfig(wanted as Record<string, Setting<string>>, env);
   } catch (error) {
     logger.error(
       error instanceof Error
@@ -253,14 +310,34 @@ export async function runContextMcp(
     );
     return 1;
   }
-  const tools = createContextTools({
-    stateApiUrl: settings.stateApiUrl,
-    token: settings.token,
-    allowed: listed,
-    secrets: secretValues({ stateApiToken: settings.token }, env),
-    log: (entry) => logger.info("context tool call", { ...entry }),
-  });
-  await serveMcp(io.input, io.write, createMcpHandler(tools, listed));
+  // The run's token is removed from every result, also when only the lookup is served.
+  const secrets = secretValues(
+    { stateApiToken: settings.token ?? env.FOREMAN_STATE_API_TOKEN ?? "" },
+    env,
+  );
+  const tools =
+    listed.length > 0
+      ? createContextTools({
+          stateApiUrl: settings.stateApiUrl as string,
+          token: settings.token as string,
+          allowed: listed,
+          secrets,
+          log: (entry) => logger.info("context tool call", { ...entry }),
+        })
+      : NO_CONTEXT_TOOLS;
+  const served =
+    hosts.length > 0
+      ? {
+          hosts,
+          lookup: createDocsLookup({
+            lookupUrl: settings.lookupUrl as string,
+            hosts,
+            secrets,
+            log: (entry) => logger.info("docs lookup call", { ...entry }),
+          }),
+        }
+      : undefined;
+  await serveMcp(io.input, io.write, createMcpHandler(tools, listed, served));
   return 0;
 }
 

@@ -9,7 +9,9 @@
 // answer through an `answer` tool the model must call (FOREMAN_ANSWER_VIA=tool).
 // QA's review and Triage also get the read-only context tools their task file lists (ADR 0119
 // slice 3c, ../shared/context-tools.ts): after QA's file tools, and before the answer tool, which
-// stays last. QA's visual comparison and the Council never get them.
+// stays last. When their task lists documentation hosts (slice 4b), the documentation lookup
+// (../shared/docs-lookup.ts) comes after the context tools, through the proxy's lookup route
+// (FOREMAN_LOOKUP_URL). QA's visual comparison and the Council never get either.
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -31,6 +33,7 @@ import {
 import {
   ANSWER_VIA,
   PLACEHOLDER_CREDENTIAL,
+  baseUrl,
   readImageSettings,
   secretValues,
   type AnswerVia,
@@ -38,10 +41,17 @@ import {
 } from "../shared/settings.ts";
 import { readTask, type AgentTaskFile } from "../shared/task.ts";
 import {
+  CONTEXT_TOOL_ERRORS,
   contextToolDefinitions,
   createContextTools,
   type ContextTools,
 } from "../shared/context-tools.ts";
+import {
+  DOCS_LOOKUP_TOOL_NAME,
+  createDocsLookup,
+  docsLookupTool,
+  type DocsLookup,
+} from "../shared/docs-lookup.ts";
 import { isContextToolName } from "../../adapters/agent-runtime/kubernetes/task.ts";
 import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
 import { WORKSPACE_TOOLS, createWorkspace, type Workspace } from "./files.ts";
@@ -222,9 +232,32 @@ function listedContextTools(
 }
 
 /**
- * QA's review: the read-only tools over the tree, then the context tools the task lists, the head
- * commit and the evidence ids after the fenced input, and the verdict's schema. Exported for the
- * weekly test job (ADR 0117), so its QA runs get exactly a real run's frame.
+ * The documentation hosts a frame offers the lookup for (ADR 0119 slice 4b): the ones the task
+ * lists, which need their source, a real run's lookup or the weekly test's stand-in. The Council
+ * and a task with images get none, as the task file check also says.
+ */
+function listedDocsHosts(
+  role: AgentRole,
+  task: AgentTaskFile,
+  lookup: DocsLookup | undefined,
+): string[] {
+  const hosts =
+    role === "council" || task.images !== undefined ? [] : (task.docsLookupHosts ?? []);
+  if (hosts.length > 0 && lookup === undefined) {
+    throw new Error("a task with docs lookup hosts needs their source");
+  }
+  return hosts;
+}
+
+/** The lookup's definition after the other tools, when the task lists hosts. */
+const lookupTools = (hosts: readonly string[]) =>
+  hosts.length > 0 ? [docsLookupTool(hosts)] : [];
+
+/**
+ * QA's review: the read-only tools over the tree, then the context tools the task lists and the
+ * documentation lookup when it lists hosts, the head commit and the evidence ids after the fenced
+ * input, and the verdict's schema. Exported for the weekly test job (ADR 0117), so its QA runs
+ * get exactly a real run's frame.
  */
 export function qaReviewFrame(
   task: AgentTaskFile,
@@ -232,12 +265,25 @@ export function qaReviewFrame(
   answerVia: AnswerVia,
   workspace: Workspace,
   context?: ContextTools,
+  lookup?: DocsLookup,
 ): RunFrame {
   const evidenceIds = task.evidenceIds ?? [];
   const listed = listedContextTools("qa", task, context);
+  const hosts = listedDocsHosts("qa", task, lookup);
   return {
-    system: systemText("qa", task.instructions, false, answerVia, listed),
-    tools: [...WORKSPACE_TOOLS, ...contextToolDefinitions(listed)],
+    system: systemText(
+      "qa",
+      task.instructions,
+      false,
+      answerVia,
+      listed,
+      hosts.length > 0,
+    ),
+    tools: [
+      ...WORKSPACE_TOOLS,
+      ...contextToolDefinitions(listed),
+      ...lookupTools(hosts),
+    ],
     input: fencedInput(task.input, [
       `Head commit: ${headSha}`,
       `Evidence ids you may cite: ${evidenceIds.length > 0 ? evidenceIds.join(", ") : "none"}`,
@@ -245,24 +291,31 @@ export function qaReviewFrame(
     outputSchema: VERDICT_SCHEMA,
     // A context tool's name goes to their source, which refuses one the task does not list.
     runTool: (name, input) =>
-      context !== undefined && listed.length > 0 && isContextToolName(name)
-        ? context.run(name, input)
-        : workspace.run(name, input),
+      lookup !== undefined && hosts.length > 0 && name === DOCS_LOOKUP_TOOL_NAME
+        ? lookup.run(input)
+        : context !== undefined && listed.length > 0 && isContextToolName(name)
+          ? context.run(name, input)
+          : workspace.run(name, input),
   };
 }
 
 /**
- * A Council or Triage run, or the Council's visual call: no tools but Triage's context tools when
- * its task lists them (ADR 0107, ADR 0119 slice 3c), the images after the input when the task has
- * them, and the task's answer schema. Exported for the weekly test job, as `qaReviewFrame` is.
+ * A Council or Triage run, or the Council's visual call: no tools but Triage's context tools and
+ * documentation lookup when its task lists them (ADR 0107, ADR 0119 slices 3c and 4b), the images
+ * after the input when the task has them, and the task's answer schema. Exported for the weekly
+ * test job, as `qaReviewFrame` is.
  */
 export function structuredFrame(
   role: AgentRole,
   task: AgentTaskFile,
   answerVia: AnswerVia,
   context?: ContextTools,
+  lookup?: DocsLookup,
 ): RunFrame {
   const listed = listedContextTools(role, task, context);
+  const hosts = listedDocsHosts(role, task, lookup);
+  const withLookup = lookup !== undefined && hosts.length > 0;
+  const withContext = context !== undefined && listed.length > 0;
   return {
     system: systemText(
       role,
@@ -270,14 +323,26 @@ export function structuredFrame(
       task.images !== undefined,
       answerVia,
       listed,
+      hosts.length > 0,
     ),
-    tools: contextToolDefinitions(listed),
+    tools: [...contextToolDefinitions(listed), ...lookupTools(hosts)],
     input: fencedInput(task.input),
     // The Council's visual call (D-270): the option screenshots after the input.
     ...(task.images ? { images: task.images } : {}),
     ...(task.outputSchema ? { outputSchema: task.outputSchema } : {}),
-    ...(context !== undefined && listed.length > 0
-      ? { runTool: (name: string, input: unknown) => context.run(name, input) }
+    ...(withContext || withLookup
+      ? {
+          // The context tools' source refuses a name the task does not list.
+          runTool: (name: string, input: unknown) =>
+            withLookup && name === DOCS_LOOKUP_TOOL_NAME
+              ? lookup.run(input)
+              : withContext
+                ? context.run(name, input)
+                : Promise.resolve({
+                    content: CONTEXT_TOOL_ERRORS.notListed,
+                    isError: true,
+                  }),
+        }
       : {}),
   };
 }
@@ -291,6 +356,7 @@ async function qaRun(
   common: Common,
   secrets: readonly string[],
   context: ContextTools,
+  lookup: DocsLookup | undefined,
 ): Promise<AgentResult> {
   const qa = readConfig(qaSettings, env);
   const logger = createLogger("agent-qa", deps.write);
@@ -305,7 +371,7 @@ async function qaRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    ...qaReviewFrame(task, qa.headSha, common.answerVia, workspace, context),
+    ...qaReviewFrame(task, qa.headSha, common.answerVia, workspace, context, lookup),
   });
   if (result.status !== "success") return result;
   const parsed = parseVerdict(result.finalText, evidenceIds);
@@ -411,6 +477,7 @@ async function structuredRun(
   common: Common,
   deps: ApiImageDeps,
   context: ContextTools,
+  lookup: DocsLookup | undefined,
 ): Promise<AgentResult> {
   const { result } = await runLoop({
     client,
@@ -419,7 +486,7 @@ async function structuredRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    ...structuredFrame(settings.role, task, common.answerVia, context),
+    ...structuredFrame(settings.role, task, common.answerVia, context, lookup),
   });
   if (result.status !== "success") return result;
   try {
@@ -456,12 +523,36 @@ export async function runClaudeApiImage(
       log: (entry) => logger.info("context tool call", { ...entry }),
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     });
+    // The documentation lookup, only when the task lists hosts (ADR 0119 slice 4b): through the
+    // proxy's lookup route, which the runtime names only for such a run. Each request is logged
+    // by host, status and size only.
+    const hosts = task.docsLookupHosts ?? [];
+    const lookup =
+      hosts.length > 0
+        ? createDocsLookup({
+            lookupUrl: readConfig({ url: baseUrl("FOREMAN_LOOKUP_URL") }, env).url,
+            hosts,
+            secrets,
+            log: (entry) => logger.info("docs lookup call", { ...entry }),
+            ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+          })
+        : undefined;
     result =
       settings.role === "qa" && task.images !== undefined
         ? await visualRun(settings, task, client, common, deps, secrets)
         : settings.role === "qa"
-          ? await qaRun(settings, task, env, client, deps, common, secrets, context)
-          : await structuredRun(settings, task, client, common, deps, context);
+          ? await qaRun(
+              settings,
+              task,
+              env,
+              client,
+              deps,
+              common,
+              secrets,
+              context,
+              lookup,
+            )
+          : await structuredRun(settings, task, client, common, deps, context, lookup);
   } catch (error) {
     // Setting and task errors name the problem, never a value.
     result = errorResult(error instanceof Error ? error.message : "the run failed");

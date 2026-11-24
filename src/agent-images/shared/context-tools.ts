@@ -227,8 +227,11 @@ function requestPath(name: ContextToolName, input: unknown): string | null {
   return `/context/items/${itemId.toLowerCase()}/history`;
 }
 
-/** `text` cut to at most `maxBytes` bytes of UTF-8, never inside a character. */
-function cutUtf8(text: string, maxBytes: number): string {
+/**
+ * `text` cut to at most `maxBytes` bytes of UTF-8, never inside a character. The docs lookup's
+ * pages are cut the same way (./docs-lookup.ts).
+ */
+export function cutUtf8(text: string, maxBytes: number): string {
   const bytes = Buffer.from(text, "utf8");
   if (bytes.length <= maxBytes) return text;
   let end = Math.max(0, maxBytes);

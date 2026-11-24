@@ -31,6 +31,13 @@ export interface KubernetesBotFile {
    * Designer. A close run and a run with images never get them.
    */
   contextTools?: ContextToolName[];
+  /**
+   * The trusted documentation hosts, for a bot file that declares the documentation lookup (ADR
+   * 0119 slice 4b), as the task source gives them. A close run and a run with images never get
+   * them. Slice 4b passes them into the task file only: the proxy's lookup route and its hosts
+   * are set for a run once the runner reads the trusted list (slice 4c).
+   */
+  docsLookupHosts?: string[];
   /** CONNECT hosts for the agent's proxy. Empty for QA, Council and Triage. */
   allowedHosts: string[];
   /** QA's review only; the visual comparison has no fetch step. */
@@ -119,6 +126,15 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
     parts.images === undefined
   ) {
     task.contextTools = [...bot.contextTools];
+  }
+  // The same runs get no documentation lookup either.
+  if (
+    bot.docsLookupHosts !== undefined &&
+    bot.docsLookupHosts.length > 0 &&
+    !isCloseTaskType(run.taskType) &&
+    parts.images === undefined
+  ) {
+    task.docsLookupHosts = [...bot.docsLookupHosts];
   }
   if (bot.outputSchema !== undefined) task.outputSchema = bot.outputSchema;
   if (PUSHING_ROLES.includes(role)) {

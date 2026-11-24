@@ -4,11 +4,13 @@
 // Each frame's answer line has two forms (O-152): JSON as the final text (structured outputs, the
 // default), or a call to the answer tool, for a provider without structured outputs.
 //
-// QA's review and Triage may also have the read-only context tools (ADR 0119 slice 3c): only when
-// the task file lists them, the frame names them in one line and its data rule covers their
-// results. With none listed, every frame is today's text, byte for byte.
+// QA's review and Triage may also have the read-only context tools (ADR 0119 slice 3c) and the
+// documentation lookup (slice 4b): only when the task file lists them, the frame names each in one
+// line and its data rule covers their results. With none listed, every frame is today's text,
+// byte for byte.
 import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
 import type { ContextToolName } from "../shared/context-tools.ts";
+import { DOCS_LOOKUP_TOOL_NAME } from "../shared/docs-lookup.ts";
 import type { AnswerVia } from "../shared/settings.ts";
 
 const DATA_RULE =
@@ -32,8 +34,16 @@ function contextLines(tools: readonly ContextToolName[]): string[] {
   ];
 }
 
-const dataRule = (tools: readonly ContextToolName[]): string =>
-  tools.length === 0 ? DATA_RULE : DATA_RULE_WITH_TOOLS;
+/** The frame's line for the documentation lookup: none when the task lists no hosts. */
+const lookupLines = (docsLookup: boolean): string[] =>
+  docsLookup
+    ? [
+        `For the language, framework and tool docs this project uses, you can read a page from a trusted documentation site with the read-only tool ${DOCS_LOOKUP_TOOL_NAME}. Each page comes between <docs_page> and </docs_page>.`,
+      ]
+    : [];
+
+const dataRule = (tools: readonly ContextToolName[], docsLookup: boolean): string =>
+  tools.length === 0 && !docsLookup ? DATA_RULE : DATA_RULE_WITH_TOOLS;
 
 const QA_ANSWER: Record<AnswerVia, string> = {
   schema:
@@ -41,12 +51,17 @@ const QA_ANSWER: Record<AnswerVia, string> = {
   tool: "When you are done, call the answer tool with your verdict: verdict is pass or fail; findings lists each problem with its file path, startLine, endLine and a note; evidenceIds lists the ids of the runner's evidence you relied on, chosen only from the ids given in the input. A pass must cite at least one of them.",
 };
 
-const QA_FRAME = (via: AnswerVia, tools: readonly ContextToolName[]) =>
+const QA_FRAME = (
+  via: AnswerVia,
+  tools: readonly ContextToolName[],
+  docsLookup: boolean,
+) =>
   [
     "You are the QA reviewer for one pull request at one commit.",
     "You can read the repository at that commit with the list_files, read_file and search_files tools. They are read-only. You cannot run code.",
     ...contextLines(tools),
-    dataRule(tools),
+    ...lookupLines(docsLookup),
+    dataRule(tools, docsLookup),
     QA_ANSWER[via],
     "outOfScopeFindings is optional: at most 3 problems you noticed that this pull request did not introduce, each with a one-line title of at most 120 characters and a detail of at most 1000 characters saying what you saw, with no secrets or personal data. They never fail the pull request and are not findings; the runner gives each to the Council as a new idea.",
   ].join("\n");
@@ -73,8 +88,17 @@ const STRUCTURED_ANSWER: Record<AnswerVia, string> = {
   tool: "When you are done, call the answer tool with your answer, following its schema.",
 };
 
-const STRUCTURED_FRAME = (via: AnswerVia, tools: readonly ContextToolName[]) =>
-  [...contextLines(tools), dataRule(tools), STRUCTURED_ANSWER[via]].join("\n");
+const STRUCTURED_FRAME = (
+  via: AnswerVia,
+  tools: readonly ContextToolName[],
+  docsLookup: boolean,
+) =>
+  [
+    ...contextLines(tools),
+    ...lookupLines(docsLookup),
+    dataRule(tools, docsLookup),
+    STRUCTURED_ANSWER[via],
+  ].join("\n");
 
 /** A Council run with images, its call on a visual approval (D-270): no tools, images as data. */
 const STRUCTURED_IMAGES_FRAME = (via: AnswerVia) =>
@@ -89,8 +113,8 @@ const STRUCTURED_IMAGES_FRAME = (via: AnswerVia) =>
  * task and provider, so it stays the cached prefix for the whole run: QA's visual comparison has
  * a frame of its own, a Council or Triage run with images says the images are data, and a run
  * that answers through the answer tool is told to call it (O-152). QA's review and a structured
- * run with no images name the context tools the task lists (ADR 0119 slice 3c); a run with
- * images has none.
+ * run with no images name the context tools the task lists (ADR 0119 slice 3c), and the
+ * documentation lookup when it lists hosts (slice 4b); a run with images has neither.
  */
 export function systemText(
   role: AgentRole,
@@ -98,15 +122,16 @@ export function systemText(
   visual = false,
   answerVia: AnswerVia = "schema",
   contextTools: readonly ContextToolName[] = [],
+  docsLookup = false,
 ): string {
   const frame =
     role === "qa"
       ? visual
         ? VISUAL_FRAME(answerVia)
-        : QA_FRAME(answerVia, contextTools)
+        : QA_FRAME(answerVia, contextTools, docsLookup)
       : visual
         ? STRUCTURED_IMAGES_FRAME(answerVia)
-        : STRUCTURED_FRAME(answerVia, contextTools);
+        : STRUCTURED_FRAME(answerVia, contextTools, docsLookup);
   return `${frame}\n\n${instructions}`;
 }
 

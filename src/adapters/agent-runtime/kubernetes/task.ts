@@ -8,6 +8,7 @@
 // QA's input (the diff and its context) can be larger. A Secret, not a ConfigMap, because the
 // runner's Role can already create and delete Secrets by name (ADR 0106 section 1), so its rights
 // do not grow, and the input may hold private repository text.
+import { isCanonicalHost } from "../../../core/site-requests.ts";
 import type { AgentRole } from "../runtime.ts";
 
 /** Version 1 of the task file. */
@@ -25,6 +26,13 @@ export interface AgentTaskFile {
    * task, a QA task with images or a close run.
    */
   contextTools?: ContextToolName[];
+  /**
+   * The trusted documentation hosts the run's `read_docs_page` tool may read, each a canonical
+   * host name (ADR 0119 slice 4, D-460): only for a role whose bot file declares `docs_lookup`,
+   * from the one trusted list (D-474). Never on a Council task, a QA task with images or a close
+   * run. The image serves the tool only when this is given, through FOREMAN_LOOKUP_URL.
+   */
+  docsLookupHosts?: string[];
   /**
    * QA: the node the verdict is for. Developer and Designer: the node the run works on, which
    * the OpenCode image's wrapper names when it posts the run's docs note (N-44, D-235).
@@ -76,6 +84,9 @@ export type ContextToolName = (typeof CONTEXT_TOOL_NAMES)[number];
 
 export const isContextToolName = (value: unknown): value is ContextToolName =>
   (CONTEXT_TOOL_NAMES as readonly unknown[]).includes(value);
+
+/** The most hosts a task's docs lookup may list. */
+export const MAX_DOCS_LOOKUP_HOSTS = 50;
 
 /** The roles whose task may carry images: QA's visual comparison and the Council's visual call. */
 const IMAGE_ROLES: readonly AgentRole[] = ["qa", "council"];
@@ -199,6 +210,30 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     }
     if (new Set(tools).size !== tools.length) {
       throw new Error(`a ${role} task lists a context tool twice`);
+    }
+  }
+  if (task.docsLookupHosts !== undefined) {
+    // The Council, QA's visual comparison and a close run read no documentation (ADR 0119).
+    if (role === "council") throw new Error("a council run has no docs lookup");
+    if (visual) throw new Error(`a ${role} task with images has no docs lookup`);
+    if (task.mode === CLOSE_MODE) throw new Error("a close run has no docs lookup");
+    const hosts: unknown = task.docsLookupHosts;
+    if (
+      !Array.isArray(hosts) ||
+      hosts.length === 0 ||
+      hosts.length > MAX_DOCS_LOOKUP_HOSTS
+    ) {
+      throw new Error(
+        `a ${role} task's docs lookup hosts must be a list of 1 to ${MAX_DOCS_LOOKUP_HOSTS} hosts`,
+      );
+    }
+    if (!hosts.every(isCanonicalHost)) {
+      throw new Error(
+        `a ${role} task's docs lookup hosts must be canonical host names`,
+      );
+    }
+    if (new Set(hosts).size !== hosts.length) {
+      throw new Error(`a ${role} task lists a docs lookup host twice`);
     }
   }
   const structured = role === "council" || role === "triage" || visual;

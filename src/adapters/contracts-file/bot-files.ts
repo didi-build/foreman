@@ -4,7 +4,8 @@
 //
 // A bot file holds the task's own instructions (the cached prefix of every run's task file), its
 // agent image, its tools, its read-only context tools if any (`context_tools`, ADR 0119 slice 3c,
-// none declared before slice 3d), its hosts, its model providers with each key's secret path (D-142,
+// none declared before slice 3d), whether its runs get the documentation lookup (`docs_lookup`,
+// ADR 0119 slice 4b, declared by none yet), its hosts, its model providers with each key's secret path (D-142,
 // D-143), its per-run limits (D-185), its task types with each one's persona (`task_personas`,
 // D-458) and, for the Council, Triage and QA's visual comparison, its output schemas. A task type
 // other than the role's default may have its own instructions (`task_instructions`, QA's
@@ -135,6 +136,13 @@ const CONTEXT_TOOL_ROLES: readonly AgentRole[] = [
   "developer",
   "designer",
 ];
+/** The roles whose runs may get the documentation lookup (ADR 0119 slice 4b, D-460, D-471). */
+const DOCS_LOOKUP_ROLES: readonly AgentRole[] = [
+  "qa",
+  "triage",
+  "developer",
+  "designer",
+];
 /** ADR 0106 section 5: an installation token lasts at most an hour. */
 const GITHUB_TOKEN_MINUTES = 60;
 /** The most characters a bot file's text, or a run's composed instructions, may have. */
@@ -157,6 +165,7 @@ const FIELDS = [
   "allowed_hosts",
   "allowed_tools",
   "context_tools",
+  "docs_lookup",
   "mcp",
   "fetch_allowed_hosts",
   "output_schemas",
@@ -199,6 +208,12 @@ export interface BotFile {
    * approves (D-196); none is declared before slice 3d.
    */
   contextTools?: ContextToolName[];
+  /**
+   * Whether the role's runs get the documentation lookup over the trusted list (ADR 0119 slice
+   * 4b): QA (its review only), Triage, the Developer and the Designer (not their close runs). A
+   * bot file change Didi approves (D-196); none is declared in slice 4b.
+   */
+  docsLookup?: true;
   /** Designer: whether MagicPath is on. Always false until D-190's gate. */
   magicPath?: boolean;
   /** QA: the fetch step's GitHub hosts. */
@@ -539,6 +554,27 @@ function checkContextTools(
   return ok ? (raw as ContextToolName[]).slice() : undefined;
 }
 
+/**
+ * The role's documentation lookup (ADR 0119 slice 4b): optional, and when given exactly `true`,
+ * for a role whose runs may have it. Problems never repeat the value.
+ */
+function checkDocsLookup(
+  role: AgentRole,
+  raw: unknown,
+  add: (p: string) => void,
+): true | undefined {
+  if (raw === undefined) return undefined;
+  if (!DOCS_LOOKUP_ROLES.includes(role)) {
+    add(`docs_lookup: a ${role} run gets no documentation lookup`);
+    return undefined;
+  }
+  if (raw !== true) {
+    add("docs_lookup must be true when given");
+    return undefined;
+  }
+  return true;
+}
+
 function checkMagicPath(raw: unknown, add: (p: string) => void): boolean | undefined {
   const magicpath = isRecord(raw) ? raw.magicpath : undefined;
   if (
@@ -863,6 +899,7 @@ function checkBotFile(
   }
   const contextTools = checkContextTools(role, data.context_tools, add);
   if (contextTools) bot.contextTools = contextTools;
+  if (checkDocsLookup(role, data.docs_lookup, add)) bot.docsLookup = true;
   if (role === "qa") {
     const hosts = checkHosts("fetch_allowed_hosts", data.fetch_allowed_hosts, add);
     if (hosts && hosts.length === 0)

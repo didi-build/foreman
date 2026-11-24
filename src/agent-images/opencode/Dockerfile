@@ -46,6 +46,9 @@ COPY src/service-kit ./src/service-kit
 COPY src/adapters/agent-runtime/kubernetes/task.ts ./src/adapters/agent-runtime/kubernetes/task.ts
 # The check of the bugs a run reports outside its item (D-244): one file with no imports.
 COPY src/core/out-of-scope-findings.ts ./src/core/out-of-scope-findings.ts
+# The check of the documentation sites a run asks to add, and of the trusted hosts' names
+# (ADR 0119 slice 4): one file with no imports.
+COPY src/core/site-requests.ts ./src/core/site-requests.ts
 # The close-only run's input and result (D-318): one file with no imports.
 COPY src/core/pr-close-input.ts ./src/core/pr-close-input.ts
 COPY src/agent-images/shared ./src/agent-images/shared

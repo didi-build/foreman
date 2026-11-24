@@ -28,6 +28,9 @@ WORKDIR /app
 COPY package.json ./
 COPY src/service-kit ./src/service-kit
 COPY src/adapters/agent-runtime/kubernetes/task.ts ./src/adapters/agent-runtime/kubernetes/task.ts
+# The task file's check of the trusted documentation hosts' names (ADR 0119 slice 4): one file
+# with no imports.
+COPY src/core/site-requests.ts ./src/core/site-requests.ts
 COPY src/agent-images/shared ./src/agent-images/shared
 COPY src/agent-images/claude-code ./src/agent-images/claude-code
 

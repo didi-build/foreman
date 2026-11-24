@@ -13,8 +13,12 @@
 // as a new idea; the wrapper itself sends them nowhere. A new PR's description is the report's
 // summary followed by the branch's commits and changed files, or, when the final message has no
 // summary, those facts after a fixed line (./description.ts, O-148, D-426); credential values are
-// removed from all of it.
+// removed from all of it. It also carries the documentation sites the run asks to add (ADR 0119
+// slice 4): each host once, none already on the run's trusted list and none holding a credential
+// value, with credential values removed from each reason. The runner opens the requests; the
+// wrapper sends them nowhere.
 import { withinFindingBounds } from "../../core/out-of-scope-findings.ts";
+import { withinSiteRequestBounds, type SiteRequest } from "../../core/site-requests.ts";
 import type { AgentResult } from "../shared/result.ts";
 import { redact } from "../shared/result.ts";
 import { describeBranch } from "./description.ts";
@@ -31,6 +35,8 @@ export interface FinishContext {
   stateApiToken: string;
   /** Every credential value, removed from the PR's description before it is sent. */
   secrets: readonly string[];
+  /** The run's trusted documentation hosts: a site request for one of them is dropped. */
+  docsLookupHosts?: readonly string[];
   fetchImpl?: typeof fetch;
 }
 
@@ -40,6 +46,28 @@ export const FINISH_FAILURES = {
   pullRequest: "the run's pull request was not opened",
   docsNote: "the docs note was not recorded",
 } as const;
+
+/**
+ * The site requests the runner gets: the first of each host, none for a host already on the run's
+ * list, none whose host holds a credential value, and each reason with those values removed.
+ */
+function requestedSites(
+  requests: readonly SiteRequest[],
+  listed: readonly string[],
+  secrets: readonly string[],
+): SiteRequest[] {
+  const seen = new Set(listed);
+  const kept: SiteRequest[] = [];
+  for (const request of requests) {
+    if (seen.has(request.host)) continue;
+    if (redact(request.host, secrets) !== request.host) continue;
+    seen.add(request.host);
+    kept.push(
+      withinSiteRequestBounds({ ...request, reason: redact(request.reason, secrets) }),
+    );
+  }
+  return kept;
+}
 
 const failed = (result: AgentResult, errorText: string): AgentResult => ({
   ...result,
@@ -113,6 +141,11 @@ export async function finishRun(
       }`,
     );
   }
+  const siteRequests = requestedSites(
+    report.siteRequests,
+    context.docsLookupHosts ?? [],
+    context.secrets,
+  );
   return {
     ...result,
     structured: {
@@ -130,6 +163,7 @@ export async function finishRun(
               withinFindingBounds,
             ),
           }),
+      ...(siteRequests.length === 0 ? {} : { siteRequests }),
     },
   };
 }

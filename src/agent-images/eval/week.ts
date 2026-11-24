@@ -26,6 +26,11 @@
 //   gap), so the tools run against a stand-in for the state API that has none: each search finds
 //   nothing, under the notice "No records yet.", and no item has a history. Calls go through the
 //   real client, so the framing, the refusals and the call cap are a real run's.
+// - **Documentation lookup.** A case whose task lists documentation hosts (ADR 0119 slice 4b; no
+//   bot file declares the lookup yet) gets the real lookup over a stand-in for the proxy's lookup
+//   route that is never on the network: every page answers "This page is not available in the
+//   weekly model test." So the frame, the URL rules and the limits are a real run's, and no case
+//   depends on what a live site says that week.
 import type { BotFiles } from "../../adapters/contracts-file/bot-files.ts";
 import type { EvalCase } from "../../eval/cases.ts";
 import type { CaseRun } from "../../eval/inputs.ts";
@@ -33,6 +38,7 @@ import { scoreAnswer } from "../../eval/scoring.ts";
 import { qaReviewFrame, structuredFrame } from "../claude-api/image.ts";
 import { createWorkspace } from "../claude-api/files.ts";
 import { createContextTools, type ContextTools } from "../shared/context-tools.ts";
+import { createDocsLookup, type DocsLookup } from "../shared/docs-lookup.ts";
 import {
   LOOP_ERRORS,
   runLoop,
@@ -117,6 +123,30 @@ export function caseContextTools(run: CaseRun): ContextTools {
   });
 }
 
+/** The stand-in lookup route's one page, for every URL. */
+export const STAND_IN_PAGE = "This page is not available in the weekly model test.";
+const noPages: typeof fetch = async () =>
+  new Response(STAND_IN_PAGE, {
+    status: 200,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+
+/**
+ * A case's documentation lookup when its task lists hosts: the real client over the stand-in,
+ * which is never on the network. None when it lists none.
+ */
+export function caseDocsLookup(run: CaseRun): DocsLookup | undefined {
+  const hosts = run.task.docsLookupHosts ?? [];
+  if (hosts.length === 0) return undefined;
+  return createDocsLookup({
+    lookupUrl: "http://eval.invalid/lookup",
+    hosts,
+    secrets: [],
+    fetchImpl: noPages,
+    log: () => undefined,
+  });
+}
+
 /** The loop's fixed error texts, by reason. */
 const LOOP_REASONS: Record<string, EvalReason> = {
   [LOOP_ERRORS.unreachable]: "endpoint_unreachable",
@@ -176,6 +206,7 @@ async function runOne(
   const api = bot.providers.find((p) => p.name === entry.provider)?.messagesApi;
   const answerVia = api?.answer ?? "schema";
   const context = caseContextTools(run);
+  const lookup = caseDocsLookup(run);
   const frame =
     run.role === "qa"
       ? qaReviewFrame(
@@ -185,8 +216,9 @@ async function runOne(
           // The trees are fixed fixtures: their reads are not logged, unlike a real QA run's.
           createWorkspace(run.workspace, () => undefined),
           context,
+          lookup,
         )
-      : structuredFrame(run.role, run.task, answerVia, context);
+      : structuredFrame(run.role, run.task, answerVia, context, lookup);
   const maxUsd = Math.min(limits.maxUsd, leftUsd);
   const deadline = o.deadline(limits.maxMinutes * 60_000);
   const startedAt = o.clock.now();

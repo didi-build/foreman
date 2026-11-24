@@ -1,6 +1,8 @@
 // The pod variables a coding runtime's process may see (D-172): the coding images (Claude Code,
 // OpenCode) pass only these through, plus their own settings. Nothing else reaches the runtime,
-// so a variable added to the pod later is not handed to the agent by accident.
+// so a variable added to the pod later is not handed to the agent by accident. FOREMAN_LOOKUP_URL,
+// the egress proxy's documentation lookup route, is set only for a run with lookup hosts (ADR 0119
+// slice 4); the OpenCode image's MCP server reads it from the environment OpenCode passes on.
 export const PASSED_THROUGH = [
   "PATH",
   "TMPDIR",

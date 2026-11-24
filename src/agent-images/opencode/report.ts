@@ -18,7 +18,11 @@
 // The first form may also carry `outOfScopeFindings` (D-244, O-65): at most 3 bugs the run
 // noticed outside its item, each `{"title": "<one line>", "detail": "<what was seen>"}`, checked
 // by ../../core/out-of-scope-findings.ts. The runner submits each as a new idea for the Council;
-// they change nothing about the item. The stopped form has no findings: it is exactly two fields.
+// they change nothing about the item. It may also carry `siteRequests` (ADR 0119 slice 4, D-460):
+// at most 3 documentation sites the run found useful off its trusted list, each
+// `{"host": "<host name>", "reason": "<one line>"}`, checked by ../../core/site-requests.ts. The
+// runner opens one request per host for Didi; they change nothing about the item either. The
+// stopped form has neither: it is exactly two fields.
 // Its `stopped` is `needs_decision`, or `already_done` when the item's work is already done on
 // the default branch (D-308 (3), O-97): the runner then asks the Council whether the item is
 // still needed.
@@ -33,6 +37,11 @@ import {
   readOutOfScopeFindings,
   type OutOfScopeFinding,
 } from "../../core/out-of-scope-findings.ts";
+import {
+  SITE_REQUESTS,
+  checkSiteRequests,
+  type SiteRequest,
+} from "../../core/site-requests.ts";
 
 export interface DocsNote {
   impact: "updated" | "none";
@@ -44,6 +53,8 @@ export interface RunReport {
   docsNote: DocsNote;
   /** Bugs seen outside the item, trimmed; empty when the block has none (D-244). */
   outOfScopeFindings: OutOfScopeFinding[];
+  /** Documentation sites the run asks to add, canonical; empty when the block has none. */
+  siteRequests: SiteRequest[];
   /** The final message without the block, trimmed. */
   summary: string;
 }
@@ -64,7 +75,12 @@ const MAX_TITLE = 200;
 const MAX_NOTE = 2000;
 /** The runner reads the same bound (NEEDS_DECISION_MAX_REASON in the runtime's result.ts). */
 export const MAX_STOP_REASON = 1000;
-const REPORT_KEYS = ["pullRequestTitle", "docsNote", OUT_OF_SCOPE_FINDINGS];
+const REPORT_KEYS = [
+  "pullRequestTitle",
+  "docsNote",
+  OUT_OF_SCOPE_FINDINGS,
+  SITE_REQUESTS,
+];
 const STOPPED_KEYS = ["stopped", "reason"];
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -101,7 +117,7 @@ export function parseRunReport(
   if (!isObject(value) || !onlyKeys(value, REPORT_KEYS)) {
     return {
       problem:
-        "the foreman-report block must be an object with pullRequestTitle, docsNote and an optional outOfScopeFindings only, or with stopped and reason only",
+        "the foreman-report block must be an object with pullRequestTitle, docsNote and the optional outOfScopeFindings and siteRequests only, or with stopped and reason only",
     };
   }
   const title = value.pullRequestTitle;
@@ -137,6 +153,8 @@ export function parseRunReport(
   }
   const found = readOutOfScopeFindings(value[OUT_OF_SCOPE_FINDINGS]);
   if ("problem" in found) return found;
+  const sites = checkSiteRequests(value[SITE_REQUESTS]);
+  if ("problem" in sites) return sites;
   const summary = [...lines.slice(0, start), ...lines.slice(end + 1)].join("\n").trim();
   return {
     report: {
@@ -146,6 +164,7 @@ export function parseRunReport(
         ...(typeof note.note === "string" ? { note: note.note } : {}),
       },
       outOfScopeFindings: found.findings,
+      siteRequests: sites.siteRequests,
       summary,
     },
   };

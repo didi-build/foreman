@@ -10,7 +10,10 @@
 //
 // A task that lists context tools (ADR 0119 slice 3c) gets the local MCP server `foreman` in its
 // config: OpenCode starts ./context-mcp.ts with this Node and the listed tools, and the server
-// reads the state API's address and the run's token from the environment OpenCode passes on.
+// reads the state API's address and the run's token from the environment OpenCode passes on. A
+// task that lists documentation hosts (ADR 0119 slice 4b) gets the documentation lookup from the
+// same server, which reads the proxy's lookup route, FOREMAN_LOOKUP_URL, the same way; a run
+// whose task lists hosts without that setting fails before OpenCode starts.
 //
 // A task in the close-only mode (`close_pull_request`, D-318) never starts OpenCode: once the
 // settings and the task are read, the wrapper closes the one pull request its input names with
@@ -27,7 +30,8 @@ import {
   printResult,
   type AgentResult,
 } from "../shared/result.ts";
-import { secretValues } from "../shared/settings.ts";
+import { readConfig } from "../../service-kit/config.ts";
+import { baseUrl, secretValues } from "../shared/settings.ts";
 import { readTask } from "../shared/task.ts";
 import { CLOSE_MODE } from "../../adapters/agent-runtime/kubernetes/task.ts";
 import { closePullRequest, closeResult } from "./close.ts";
@@ -81,6 +85,10 @@ export async function runOpenCodeImage(
     const settings = readOpenCodeSettings(env);
     secrets = secretValues(settings, env);
     const task = readTask(settings.role, settings.taskFile);
+    // The lookup's server reads its route from OpenCode's environment: check it is there first.
+    if ((task.docsLookupHosts ?? []).length > 0) {
+      readConfig({ lookupUrl: baseUrl("FOREMAN_LOOKUP_URL") }, env);
+    }
     // The proxy may not answer yet when this pod starts (O-133).
     await (deps.waitForProxy ?? waitForProxy)(settings.egressProxyUrl);
     // The task file check already refused a Developer or Designer task without these.
@@ -168,6 +176,7 @@ export async function runOpenCodeImage(
         stateApiUrl: settings.stateApiUrl,
         stateApiToken: settings.stateApiToken,
         secrets,
+        docsLookupHosts: task.docsLookupHosts ?? [],
       },
     );
   } catch (error) {

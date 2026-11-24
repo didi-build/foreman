@@ -140,6 +140,31 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     expect(close.task).not.toHaveProperty("contextTools");
   });
 
+  it("passes the given docs lookup hosts into the task, never into a close run's or one with images (ADR 0119 slice 4b)", () => {
+    const base = parts();
+    const hosts = ["developer.mozilla.org", "vitest.dev"];
+    const withHosts = parts({ bot: { ...base.bot, docsLookupHosts: hosts } });
+    expect(buildKubernetesTask(withHosts).task.docsLookupHosts).toEqual(hosts);
+    expect(buildKubernetesTask(parts()).task).not.toHaveProperty("docsLookupHosts");
+    expect(
+      buildKubernetesTask(parts({ bot: { ...base.bot, docsLookupHosts: [] } })).task,
+    ).not.toHaveProperty("docsLookupHosts");
+    const close = buildKubernetesTask({
+      ...withHosts,
+      run: { ...base.run, taskType: "developer:close", prNumber: 7 },
+    });
+    expect(close.task.mode).toBe("close_pull_request");
+    expect(close.task).not.toHaveProperty("docsLookupHosts");
+    const visual = buildKubernetesTask({
+      ...withHosts,
+      run: { ...base.run, bot: "qa", taskType: "qa:visual", headSha: "a".repeat(40) },
+      bot: { ...withHosts.bot, allowedTools: undefined, allowedHosts: [] },
+      images: [{ label: "Image 1", mediaType: "image/png", data: "iVBORw0KGgo=" }],
+    });
+    expect(visual.task.images).toHaveLength(1);
+    expect(visual.task).not.toHaveProperty("docsLookupHosts");
+  });
+
   it("refuses a run whose provider has no provider setting", () => {
     const others = parts().providers.filter((p) => p.name !== "anthropic");
     expect(() => buildKubernetesTask(parts({ providers: others }))).toThrow(

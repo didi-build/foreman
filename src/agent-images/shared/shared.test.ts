@@ -251,6 +251,99 @@ describe("task file (unit: the same rules as the runner)", () => {
       expect(parse("triage", triage)).not.toHaveProperty("contextTools");
     });
   });
+
+  describe("the documentation lookup's hosts (ADR 0119 slice 4b)", () => {
+    const HOSTS = ["developer.mozilla.org", "vitest.dev"];
+    const schema = { type: "object" };
+    const builder = {
+      foremanTask: 1,
+      instructions: "Build.",
+      input: "The item.",
+      allowedTools: ["Read"],
+      nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      branch: "foreman/1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    };
+    const triage = {
+      foremanTask: 1,
+      instructions: "Plan.",
+      input: "The idea.",
+      outputSchema: schema,
+    };
+    const parse = (role: Parameters<typeof parseTask>[0], task: object) =>
+      parseTask(role, JSON.stringify(task));
+
+    it("accepts canonical hosts, each once, on QA's review, Triage, the Developer and the Designer", () => {
+      expect(
+        parse("qa", { ...qaTask, docsLookupHosts: HOSTS }).docsLookupHosts,
+      ).toEqual(HOSTS);
+      expect(parse("triage", { ...triage, docsLookupHosts: ["vitest.dev"] })).toEqual({
+        ...triage,
+        docsLookupHosts: ["vitest.dev"],
+      });
+      for (const role of ["developer", "designer"] as const) {
+        expect(
+          parse(role, { ...builder, docsLookupHosts: HOSTS }).docsLookupHosts,
+        ).toEqual(HOSTS);
+      }
+      const fifty = Array.from({ length: 50 }, (_, i) => `h${i}.dev`);
+      expect(
+        parse("triage", { ...triage, docsLookupHosts: fifty }).docsLookupHosts,
+      ).toEqual(fifty);
+    });
+
+    it.each([
+      [[], /must be a list of 1 to 50 hosts/],
+      ["vitest.dev", /must be a list of 1 to 50 hosts/],
+      [
+        Array.from({ length: 51 }, (_, i) => `h${i}.dev`),
+        /must be a list of 1 to 50 hosts/,
+      ],
+      [["Vitest.dev"], /must be canonical host names/],
+      [["vitest.dev."], /must be canonical host names/],
+      [["vitest.dev:443"], /must be canonical host names/],
+      [["https://vitest.dev"], /must be canonical host names/],
+      [["10.0.0.1"], /must be canonical host names/],
+      [["*.vitest.dev"], /must be canonical host names/],
+      [[3], /must be canonical host names/],
+      [["vitest.dev", "vitest.dev"], /lists a docs lookup host twice/],
+    ])("refuses the list %j, naming the field and never a value", (hosts, problem) => {
+      expect(() => parse("triage", { ...triage, docsLookupHosts: hosts })).toThrow(
+        problem,
+      );
+      expect(() => parse("triage", { ...triage, docsLookupHosts: hosts })).not.toThrow(
+        /vitest|10\.0/,
+      );
+    });
+
+    it("refuses them on a Council task, a QA task with images and a close run", () => {
+      expect(() =>
+        parse("council", {
+          ...triage,
+          instructions: "Decide.",
+          docsLookupHosts: HOSTS,
+        }),
+      ).toThrow(/^a council run has no docs lookup$/);
+      expect(() =>
+        parse("qa", {
+          ...qaTask,
+          outputSchema: schema,
+          images: [{ label: "Image 1", mediaType: "image/png", data: "iVBORw0KGgo=" }],
+          docsLookupHosts: HOSTS,
+        }),
+      ).toThrow(/^a qa task with images has no docs lookup$/);
+      expect(() =>
+        parse("developer", {
+          ...builder,
+          mode: "close_pull_request",
+          docsLookupHosts: HOSTS,
+        }),
+      ).toThrow(/^a close run has no docs lookup$/);
+    });
+
+    it("leaves a task without them as it was", () => {
+      expect(parse("triage", triage)).not.toHaveProperty("docsLookupHosts");
+    });
+  });
 });
 
 describe("result line (unit: round trip through the runtime's parser, ADR 0106 section 4)", () => {
