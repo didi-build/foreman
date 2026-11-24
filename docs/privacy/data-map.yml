@@ -23,6 +23,26 @@ other_items:
       (Anthropic or DeepInfra), as runs' inputs already do.
     source: db/migrations/0001_factory_schema.sql
     verified: false
+  # The documentation lookup (ADR 0119 slice 4, D-460, D-472). A run reads a page from a site on
+  # the trusted list through its egress proxy; Foreman stores neither the address nor the page.
+  - id: agent_runs.docs_lookup
+    whose: operator
+    data: >-
+      The address of a documentation page a Developer run reads, which can carry text from the
+      project's repository (D-472), and the page's text. No secret: an address that holds a known
+      secret value is refused. No end-user personal data: agents work from synthetic data (D-154).
+    purpose: Reading the docs of the language, frameworks and tools a project uses (ADR 0119).
+    storage: >-
+      Not stored by Foreman. The run's egress proxy logs the site's host only, never the address.
+      The page's text goes into the run, and so to the model provider its route names.
+    processors: [Anthropic, DeepInfra]
+    retention: >-
+      Foreman keeps nothing. A documentation site keeps its own request logs under its own policy.
+    who_can_see: >-
+      the documentation site on the trusted list (setting trusted_docs_hosts) that the run asks,
+      the run, and the model provider its route names
+    source: src/egress-proxy/lookup.ts
+    verified: false
   # Windmill's job history (D-294). Flow inputs and results stay in Windmill after each run.
   - id: windmill.job_history
     whose: operator

@@ -247,6 +247,7 @@ None of these uses real DNS or the network.
 9. Unit, the task builders (`src/adapters/agent-runtime/kubernetes/build-task.test.ts`, `test/flows/tasks.test.ts`): no task carries docs lookup hosts today; given hosts go into the task file, an empty list gives none, and `qa:visual`, a run with images and a close run get none. Slice 4c reads the list from the settings instead, gives the hosts to the run's spec too, and refuses QA and Triage (below).
 10. The weekly model test (`src/agent-images/eval/eval.test.ts`): no case lists hosts, so no case gets the lookup; a case whose task lists hosts gets the real lookup over a stand-in that answers every listed URL with "This page is not available in the weekly model test." in the real frame, still refuses an unlisted host, and never reaches the network.
 11. Repo guard (`test/agent-image-dockerfiles.test.ts`): each image copies every folder and file its code imports, now with `src/core/site-requests.ts` in the OpenCode, Messages API and Claude Code images.
+12. Slice 4e, the declaration (`src/adapters/contracts-file/bot-files.test.ts`): the Developer's bot file declares `docs_lookup` and no other does; its task text names `foreman_read_docs_page` and how to add `siteRequests`; nodrift accepts the data map's `agent_runs.docs_lookup` and the two model providers in the subprocessors list.
 
 ### The trusted list and site requests (ADR 0119 slice 4c, D-473 to D-475, O-172)
 
