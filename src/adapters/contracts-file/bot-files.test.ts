@@ -528,15 +528,20 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(JSON.stringify(problems("qa", ["vitest.dev"]))).not.toContain("vitest");
   });
 
-  it("declare the documentation lookup in no bot file yet (ADR 0119 slice 4b, D-196)", () => {
+  it("declare the documentation lookup for the Developer only, so far (ADR 0119 slice 4e, D-196, D-471)", () => {
     const bots = readBotFiles();
-    for (const role of BOT_ROLES) {
+    expect(bots.developer.docsLookup).toBe(true);
+    expect(botProfiles(bots).developer.docsLookup).toBe(true);
+    for (const role of BOT_ROLES.filter((r) => r !== "developer")) {
       expect(bots[role].docsLookup, role).toBeUndefined();
       expect(botProfiles(bots)[role], role).not.toHaveProperty("docsLookup");
       expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
         "docs_lookup",
       );
     }
+    const text = bots.developer.instructions.replace(/\s+/g, " ");
+    expect(text).toContain("foreman_read_docs_page");
+    expect(text).toContain('add "siteRequests" to the object');
   });
 
   it("give QA's visual comparison its answer schema and its own instructions, and no other role any (D-242)", () => {

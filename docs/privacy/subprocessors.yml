@@ -10,4 +10,14 @@ subprocessors:
     data: Flow inputs and results, including the operator's own words where a result quotes them (docs/privacy/data-map.yml)
     location: To confirm at first hosting
     verified: false
+  - name: Anthropic
+    purpose: Model provider for agent runs whose route names it (ADR 0114)
+    data: Each such run's instructions, input and tool results, which can quote the operator's decisions and a project's repository (docs/privacy/data-map.yml)
+    location: United States, to confirm
+    verified: false
+  - name: DeepInfra
+    purpose: Model provider for agent runs whose route names it (D-421, D-425)
+    data: Each such run's instructions, input and tool results, which can quote the operator's decisions and a project's repository (docs/privacy/data-map.yml)
+    location: United States, to confirm
+    verified: false
 # This file is a starting skeleton, not legal advice. Review it with qualified counsel before relying on it.

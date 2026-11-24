@@ -63,7 +63,7 @@ states:
     input: A dispatched Developer agent scoped to this project. For UI work, only the spec merged on main.
     output: A branch, a PR, and a done report naming the PR.
     evidence_to_exit: CI result for the head commit, the PR link, and a docs note.
-    tools: The project repo and its CI, and the read-only context tools (ADR 0119). Developers may change gallery components only for props or small wiring fixes, never the design or the spec.
+    tools: The project repo and its CI, the read-only context tools and the documentation lookup on trusted sites (ADR 0119). Developers may change gallery components only for props or small wiring fixes, never the design or the spec.
     budget: not set
     side_effects: Commits on a branch. Reversible until merge.
     failure: A failed guard after a done report increments the failure counter. An overrun or a loop goes to the Council.

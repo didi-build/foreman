@@ -358,9 +358,15 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(file).not.toHaveProperty("contextTools");
   });
 
-  it("gives no task the documentation lookup today: no bot file declares it (ADR 0119 slices 4b and 4c)", async () => {
+  it("gives the documentation lookup to the Developer only, as the real bot files declare it (ADR 0119 slice 4e, D-471)", async () => {
     const { tasks } = source({ trustedDocsHosts: ["vitest.dev"] });
-    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+    const developer = (await tasks.taskFor(
+      startFor("developer"),
+    )) as KubernetesAgentTask;
+    const { spec, file } = acceptedByRuntime("developer", developer);
+    expect(file.docsLookupHosts).toEqual(["vitest.dev"]);
+    expect(spec.lookupHosts).toEqual(["vitest.dev"]);
+    for (const role of ["qa", "triage", "designer"] as const) {
       const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
       expect(task.task, role).not.toHaveProperty("docsLookupHosts");
       expect(task, role).not.toHaveProperty("lookupHosts");
@@ -382,10 +388,10 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
       expect(file.docsLookupHosts, role).toEqual(hosts);
       expect(spec.lookupHosts, role).toEqual(hosts);
     }
-    // A bot file that does not declare it gets neither, whatever the list holds.
+    // A bot file that does not declare it (the real Designer's) gets neither, whatever the list holds.
     const undeclared = source({ trustedDocsHosts: hosts });
     const plain = (await undeclared.tasks.taskFor(
-      startFor("developer"),
+      startFor("designer"),
     )) as KubernetesAgentTask;
     expect(plain.task).not.toHaveProperty("docsLookupHosts");
     expect(plain).not.toHaveProperty("lookupHosts");
