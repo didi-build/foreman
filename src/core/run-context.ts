@@ -59,7 +59,7 @@ import type {
   Track,
   Transition,
 } from "./store.ts";
-import { cut, quoted, readItemBody, section } from "./task-input.ts";
+import { cut, quoted, readItemBody, section, type ItemBody } from "./task-input.ts";
 
 export const CONTEXT_HEADING = "Context from this project";
 export const CONTEXT_NOTICE =
@@ -495,15 +495,28 @@ const newestFirst = <T>(rows: Dated<T>[]): T[] =>
     )
     .map((row) => row.entry);
 
-/** A body's description and paths in scope, or none when the body has the wrong shape. */
-function itemText(body: Json): { description: string | null; pathsInScope: string[] } {
+/**
+ * A body's description, acceptance criteria and paths in scope, or none when the body has the
+ * wrong shape. Slice 3b's item history reads an item's body with this too.
+ */
+export function itemFields(
+  body: Json,
+): Pick<ItemBody, "description" | "acceptanceCriteria" | "pathsInScope"> {
   try {
-    const item = readItemBody(body);
-    return { description: item.description, pathsInScope: item.pathsInScope };
+    const { description, acceptanceCriteria, pathsInScope } = readItemBody(body);
+    return { description, acceptanceCriteria, pathsInScope };
   } catch (error) {
-    if (error instanceof LibraryError) return { description: null, pathsInScope: [] };
+    if (error instanceof LibraryError) {
+      return { description: null, acceptanceCriteria: [], pathsInScope: [] };
+    }
     throw error;
   }
+}
+
+/** A body's description and paths in scope, or none when the body has the wrong shape. */
+function itemText(body: Json): { description: string | null; pathsInScope: string[] } {
+  const { description, pathsInScope } = itemFields(body);
+  return { description, pathsInScope };
 }
 
 /**

@@ -10,6 +10,12 @@
 // API starts the plan-approval flow for it (D-273 (2)), unless the kill switch or dry run is on
 // (D-333); if a switch holds it or the start fails, the submission stands and the reconcile pass
 // opens the request later.
+//
+// The three context routes under `/context/` (ADR 0119 slice 3b, D-459) are reads for runs of
+// Triage, QA, the Developer and the Designer, of the caller's own project only: a decision search,
+// similar items and one item's history (src/core/context-reads.ts). They are the only routes that
+// read the query string. A Council run token gets 403 on them until its personas come (slice 6),
+// and the public listener never serves them (./public.ts).
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
@@ -23,6 +29,12 @@ import {
   readPlanSubmission,
   SUBMIT_REFUSAL_MESSAGES,
 } from "../core/plans.ts";
+import {
+  createContextReads,
+  readDecisionSearch,
+  readSimilarSearch,
+  type ContextQuery,
+} from "../core/context-reads.ts";
 import { createPlanningReads, PLANNING_DATA_NOTICE } from "../core/planning-reads.ts";
 import { PROJECT_SLUG } from "../core/project-repository.ts";
 import { startErrorFields } from "../adapters/windmill/client.ts";
@@ -43,7 +55,12 @@ import {
   type Store,
   type StoreOps,
 } from "../core/store.ts";
-import { pathOnly, sendJson, type RequestHandler } from "../service-kit/server.ts";
+import {
+  pathOnly,
+  queryOf,
+  sendJson,
+  type RequestHandler,
+} from "../service-kit/server.ts";
 import { authenticate, isPlanningCaller, type Caller } from "./auth.ts";
 import { ENTRY_CONTRACTS, IDEA_ENTRY } from "./entry.ts";
 
@@ -74,6 +91,24 @@ interface Route {
 interface RouteContext {
   caller: Caller;
   body: () => Promise<Body>;
+  /** The request's query parameters, decoded. Only the context routes read them. */
+  query: URLSearchParams;
+}
+
+/** The roles whose runs may call the context routes (ADR 0119 slice 3b). */
+export const CONTEXT_ROLES: readonly AgentRole[] = [
+  "triage",
+  "qa",
+  "developer",
+  "designer",
+];
+
+/** Every value of every parameter, by name, as the context reads take them. */
+function contextQuery(query: URLSearchParams): ContextQuery {
+  const params = new Map<string, string[]>();
+  for (const [name, value] of query)
+    params.set(name, [...(params.get(name) ?? []), value]);
+  return params;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -267,6 +302,7 @@ export function createApiHandler({
   planning,
 }: ApiOptions): RequestHandler {
   const reads = createPlanningReads(store);
+  const context = createContextReads(store);
   const submissions = planning
     ? createPlanSubmissions({
         store: planning.store,
@@ -538,6 +574,53 @@ export function createApiHandler({
         return { status: 200, body: { gateRequests, nodes } };
       },
     },
+    // The context routes (ADR 0119 slice 3b): reads of the caller's own project only, each
+    // answer framed as data and bounded (src/core/context-reads.ts).
+    {
+      method: "GET",
+      path: /^\/context\/decisions$/,
+      roles: CONTEXT_ROLES,
+      async handle({ caller, query }) {
+        const read = readDecisionSearch(contextQuery(query));
+        if ("problem" in read) throw new HttpError(400, read.problem);
+        return {
+          status: 200,
+          body: await context.decisions(caller.projectId, read.search),
+        };
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/context\/similar-items$/,
+      roles: CONTEXT_ROLES,
+      async handle({ caller, query }) {
+        const read = readSimilarSearch(contextQuery(query));
+        if ("problem" in read) throw new HttpError(400, read.problem);
+        return {
+          status: 200,
+          body: await context.similarItems(
+            caller.projectId,
+            caller.run.nodeId,
+            read.search,
+          ),
+        };
+      },
+    },
+    {
+      method: "GET",
+      path: /^\/context\/items\/([^/]+)\/history$/,
+      roles: CONTEXT_ROLES,
+      async handle({ caller }, [nodeId]) {
+        if (!nodeId || !UUID.test(nodeId)) throw new HttpError(404, "node not found");
+        const history = await context.itemHistory(
+          caller.projectId,
+          nodeId,
+          caller.role,
+        );
+        if (!history) throw new HttpError(404, "node not found");
+        return { status: 200, body: history };
+      },
+    },
   ];
 
   return async (
@@ -586,7 +669,7 @@ export function createApiHandler({
         throw new HttpError(403, "this role may not do that");
       const params = (route.path.exec(path) ?? []).slice(1);
       const result = await route.handle(
-        { caller, body: () => readBody(request) },
+        { caller, body: () => readBody(request), query: queryOf(request.url) },
         params,
       );
       sendJson(response, result.status, result.body);

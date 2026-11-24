@@ -117,6 +117,8 @@ Constraint: unique (from_node, to_node, type). No self edges. A blocks cycle is 
 
 Enforcement: no UPDATE or DELETE for any application role (revoke, or a trigger that raises). Index: (node_id, at).
 
+Roles: only the runner (`factory_runner`) inserts them. The state API (`factory_api`) reads them since migration 0032 (D-470), for the item history route (ADR 0119 slice 3b), and writes none; its row policy shows every row, like its other read policies, and the API reads an item's moves only for an item of the caller's project. `factory_ingest` has no access.
+
 ## evidence (append-only)
 
 | Column        | Type        | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |

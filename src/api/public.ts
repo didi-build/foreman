@@ -110,8 +110,8 @@ export function createPublicHandler({
       sendJson(response, 413, { error: "request body is too large" });
       return true;
     }
-    // The API's own route, without the prefix; the query string is not passed on, and no route
-    // reads one.
+    // The API's own route, without the prefix; the query string is not passed on. Only the
+    // context routes read one (ADR 0119 slice 3b), and this listener never serves them.
     request.url = route;
     return api(request, response);
   };

@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFakeFlowStart } from "../adapters/windmill/fake-flow-start.ts";
 import { createLibrary } from "../core/library.ts";
 import { createMemoryStore } from "../core/memory-store.ts";
+import { testRouteColumns } from "../core/routing-testing.ts";
 import type { Store } from "../core/store.ts";
 import { createLogger } from "../service-kit/logger.ts";
 import { startService, type RunningService } from "../service-kit/server.ts";
@@ -217,6 +218,61 @@ describe("the public listener (API seam, D-271)", () => {
       expect((await send(method, path, planningToken, body)).status, path).toBe(404);
     }
     expect(await ideaCount()).toBe(before);
+  });
+
+  it("never serves the context routes, even to a valid run token (ADR 0119 slice 3b)", async () => {
+    nowMs += 120_000;
+    // A live Triage run of the project, whose token the internal port would accept.
+    const runId = nextId();
+    const runToken = randomBytes(32).toString("base64url");
+    await store.insertRun({
+      id: runId,
+      projectId: PROJECT,
+      nodeId: null,
+      bot: "triage",
+      agentId: null,
+      runtime: "claude_api",
+      model: "model-a",
+      headSha: null,
+      prNumber: null,
+      botVersion: "v1",
+      startedAt: new Date(nowMs),
+      endedAt: null,
+      outcome: null,
+      turns: null,
+      minutes: null,
+      costUsd: null,
+      tokens: null,
+      budget: {},
+      parentRunId: null,
+      transcriptRef: null,
+      usageExhaustedCause: null,
+      retryAfterSeconds: null,
+      questionTopic: null,
+      ...testRouteColumns("triage"),
+    });
+    await store.insertRunToken({
+      tokenHash: hashToken(runToken),
+      runId,
+      role: "triage",
+      projectId: PROJECT,
+      expiresAt: new Date(nowMs + 3_600_000),
+      revokedAt: null,
+    });
+    for (const path of [
+      "/api/context/decisions?q=settings",
+      "/api/context/similar-items?q=settings&path=src/",
+      `/api/context/items/${PROJECT}/history`,
+      "/context/decisions?q=settings",
+      "/context/similar-items?q=settings",
+      `/context/items/${PROJECT}/history`,
+    ]) {
+      for (const token of [runToken, planningToken, null]) {
+        const result = await send("GET", path, token);
+        expect(result.status, path).toBe(404);
+        expect(result.body, path).toEqual({ error: "not found" });
+      }
+    }
   });
 
   it("refuses the routes without the /api prefix with 404, as any unknown path (D-343)", async () => {
