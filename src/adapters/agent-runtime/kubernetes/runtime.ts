@@ -5,7 +5,9 @@
 // result; `cleanup` removes that too, after the runner has recorded the end. The result is read
 // from the run's pod, and a run that left none shows how that pod ended (D-415, ./pod-end.ts).
 // When the agent reported no served tier, the tier comes from the tally its egress proxy logged
-// (D-423, O-151), read from the proxy's pod before the proxy is deleted.
+// (D-423, O-151), read from the proxy's pod before the proxy is deleted. A QA review with a browser
+// (ADR 0119 slice 5b, D-476) gets its site Secret at `start` and its browser pod in `startReview`,
+// beside the agent stage; the browser goes with the run's other objects, and `cancel` stops it.
 //
 // Every object is deleted by its fixed name: the runner's Role cannot list Secrets, Services,
 // NetworkPolicies or PersistentVolumeClaims, on purpose. Jobs are also found by label.
@@ -23,11 +25,13 @@ import {
 } from "./client.ts";
 import {
   agentStage,
+  browserStage,
   checkRunSpec,
   checkSettings,
   fetchStage,
   hasFetchStep,
   runSecrets,
+  siteSecret,
   taskSecret,
   workspaceClaim,
   type KubernetesRunSettings,
@@ -51,6 +55,11 @@ export interface KubernetesAgentTask extends KubernetesRunSpec {
   credentials: RunCredentials;
   /** The run's task file (./task.ts). Written into a per-run Secret, never kept in the handle. */
   task: AgentTaskFile;
+  /**
+   * A browser run's site: the zip the runner read and checked (ADR 0119 slice 5a). Written into
+   * the run's site Secret, never kept in the handle. Required exactly when `browser` is set.
+   */
+  site?: Uint8Array;
 }
 
 /** Plain JSON, safe to store between reconcile passes. No credential values. */
@@ -144,6 +153,16 @@ export function createKubernetesRuntime(options: {
       ["Secret", n.taskSecret],
       ["PersistentVolumeClaim", n.workspaceClaim],
     ];
+    if (handle.spec.browser === true) {
+      // QA's browser (ADR 0119 slice 5b): its Job before its network and its site.
+      owned.splice(keepAgentJob ? 0 : 1, 0, ["Job", n.browserJob]);
+      owned.push(
+        ["Service", n.browserService],
+        ["NetworkPolicy", n.browserPolicy],
+        ["NetworkPolicy", n.agentBrowserPolicy],
+        ["Secret", n.siteSecret],
+      );
+    }
     return owned;
   }
 
@@ -240,14 +259,43 @@ export function createKubernetesRuntime(options: {
       model: handle.spec.model,
     });
 
-  /** QA after its fetch step succeeded: the review stage, then the fetch step goes. */
+  /**
+   * A browser run's browser pod (ADR 0119 slice 5b): its two policies, its Job and its Service.
+   * Gives the Service's IP address, which the agent is pointed at.
+   */
+  async function createBrowser(handle: KubernetesRunHandle, made: Owned[]) {
+    const stage = browserStage(handle.spec, handle.limits, settings);
+    for (const policy of stage.policies) {
+      await client.create(policy);
+      made.push(["NetworkPolicy", policy.metadata.name]);
+    }
+    await client.create(stage.job);
+    made.push(["Job", stage.job.metadata.name]);
+    const service = await client.create(stage.service);
+    made.push(["Service", stage.service.metadata.name]);
+    if (!service.clusterIP) {
+      throw new KubernetesApiError(
+        `create Service in ${handle.namespace}`,
+        0,
+        "NoClusterIP",
+      );
+    }
+    return service.clusterIP;
+  }
+
+  /**
+   * QA after its fetch step succeeded: the browser pod for a browser run, the review stage, then
+   * the fetch step goes.
+   */
   async function startReview(handle: KubernetesRunHandle): Promise<void> {
     const n = runNames(handle.runId);
     const made: Owned[] = [];
     try {
+      const browserAddress =
+        handle.spec.browser === true ? await createBrowser(handle, made) : undefined;
       await createStage(
         handle.namespace,
-        agentStage(handle.spec, handle.limits, settings),
+        agentStage(handle.spec, handle.limits, settings, browserAddress),
         made,
       );
     } catch (error) {
@@ -268,8 +316,15 @@ export function createKubernetesRuntime(options: {
 
   return {
     async start(task, limits) {
-      const { credentials, task: taskFile, ...spec } = task;
+      const { credentials, task: taskFile, site, ...spec } = task;
       checkRunSpec(spec, limits);
+      if ((spec.browser === true) !== (site !== undefined)) {
+        throw new Error(
+          spec.browser === true
+            ? "a browser run needs its site"
+            : "only a browser run carries a site",
+        );
+      }
       // The visual comparison's images are in its task file, and of QA's runs only it carries
       // them (D-242). A Council run may carry the option screenshots of its visual call (D-270);
       // it has no fetch step either way. No other run carries images.
@@ -282,7 +337,11 @@ export function createKubernetesRuntime(options: {
       }
       const namespace = agentNamespace(spec.projectSlug);
       // Build everything first, so a bad input fails before anything is created.
-      const secrets = [...runSecrets(spec, credentials), taskSecret(spec, taskFile)];
+      const secrets = [
+        ...runSecrets(spec, credentials),
+        taskSecret(spec, taskFile),
+        ...(site === undefined ? [] : [siteSecret(spec, site)]),
+      ];
       const firstStage = hasFetchStep(spec)
         ? fetchStage(spec, settings)
         : agentStage(spec, limits, settings);
@@ -366,6 +425,7 @@ export function createKubernetesRuntime(options: {
         [
           ["Job", n.agentJob],
           ["Job", n.fetchJob],
+          ...(handle.spec.browser === true ? ([["Job", n.browserJob]] as Owned[]) : []),
         ],
         {
           propagationPolicy: "Foreground",

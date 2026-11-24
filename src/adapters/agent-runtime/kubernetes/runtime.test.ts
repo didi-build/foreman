@@ -17,8 +17,10 @@ import {
   LIMITS,
   MODEL_KEY,
   QA,
+  QA_BROWSER,
   QA_LIMITS,
   SETTINGS,
+  SITE_ZIP,
   STATE_TOKEN,
   credentialsFor,
   taskFor,
@@ -216,6 +218,153 @@ describe("QA (adapter contract: the fetch step first, ADR 0106 section 5)", () =
     expect(fake.has("Job", NS, n.fetchJob)).toBe(true);
     expect(await runtime.poll(handle)).toEqual({ state: "running" });
     expect(fake.has("Job", NS, n.agentJob)).toBe(true);
+  });
+});
+
+describe("QA's browser (adapter contract: the sealed pod, ADR 0119 slice 5b, D-476)", () => {
+  const n = runNames(QA_BROWSER.runId);
+  const browserTask = () => ({ ...task(QA_BROWSER), site: SITE_ZIP });
+  const browserObjects = [
+    ["Job", n.browserJob],
+    ["Service", n.browserService],
+    ["NetworkPolicy", n.browserPolicy],
+    ["NetworkPolicy", n.agentBrowserPolicy],
+    ["Secret", n.siteSecret],
+  ] as const;
+
+  it("writes the site Secret at the start, and starts no browser before the fetch step is done", async () => {
+    const handle = await runtime.start(browserTask(), QA_LIMITS);
+    expect(created().slice(0, 5)).toEqual([
+      `create Secret/${n.stateTokenSecret}`,
+      `create Secret/${n.modelSecret}`,
+      `create Secret/${n.githubTokenSecret}`,
+      `create Secret/${n.taskSecret}`,
+      `create Secret/${n.siteSecret}`,
+    ]);
+    const site = fake.get<Secret>("Secret", NS, n.siteSecret);
+    expect(Buffer.from(site?.data?.["site.zip"] ?? "", "base64")).toEqual(
+      Buffer.from(SITE_ZIP),
+    );
+    expect(fake.has("Job", NS, n.browserJob)).toBe(false);
+    // The handle keeps the run's spec, never the site's bytes.
+    expect(handle.spec.browser).toBe(true);
+    expect(JSON.stringify(handle)).not.toContain(
+      Buffer.from(SITE_ZIP).toString("base64"),
+    );
+    expect(handle).not.toHaveProperty("site");
+  });
+
+  it("creates the browser pod beside the agent stage once the fetch step is done, and points the agent at its Service", async () => {
+    const handle = await runtime.start(browserTask(), QA_LIMITS);
+    fake.finishJob(NS, n.fetchJob, { condition: "Complete" });
+    const before = created().length;
+    expect(await runtime.poll(handle)).toEqual({ state: "running" });
+    expect(created().slice(before)).toEqual([
+      `create NetworkPolicy/${n.browserPolicy}`,
+      `create NetworkPolicy/${n.agentBrowserPolicy}`,
+      `create Job/${n.browserJob}`,
+      `create Service/${n.browserService}`,
+      `create NetworkPolicy/${n.agentPolicy}`,
+      `create NetworkPolicy/${n.proxyPolicy}`,
+      `create Job/${n.proxyJob}`,
+      `create Service/${n.proxyService}`,
+      `create Job/${n.agentJob}`,
+    ]);
+    // The fake gives Services 10.245.0.10 onward: the fetch proxy's, the browser's, the proxy's.
+    const agent = fake.get<Job>("Job", NS, n.agentJob);
+    expect(envValue(agent, "FOREMAN_BROWSER_URL")).toBe("http://10.245.0.11:8090");
+    expect(envValue(agent, "HTTPS_PROXY")).toBe("http://10.245.0.12:8080");
+    const browser = fake.get<Job>("Job", NS, n.browserJob);
+    expect(browser?.spec.template.spec.volumes).toContainEqual({
+      name: "site-zip",
+      secret: {
+        secretName: n.siteSecret,
+        items: [{ key: "site.zip", path: "site.zip" }],
+        defaultMode: 0o440,
+      },
+    });
+    expect(JSON.stringify(browser)).not.toContain(n.stateTokenSecret);
+    // The fetch step's token went with the fetch step, as for any QA review.
+    expect(fake.has("Secret", NS, n.githubTokenSecret)).toBe(false);
+  });
+
+  it("removes the browser with the run's other objects at the end, and the agent Job at cleanup", async () => {
+    const handle = await runtime.start(browserTask(), QA_LIMITS);
+    fake.finishJob(NS, n.fetchJob, { condition: "Complete" });
+    await runtime.poll(handle);
+    fake.finishJob(NS, n.agentJob, {
+      condition: "Complete",
+      log: result({ status: "success", structured: { verdict: "pass" } }),
+    });
+    expect(await finished(handle)).toMatchObject({ outcome: "success" });
+    for (const [kind, name] of browserObjects)
+      expect(fake.has(kind, NS, name), name).toBe(false);
+    expect([...fake.objects.keys()]).toEqual([`Job/${NS}/${n.agentJob}`]);
+    await runtime.cleanup(handle);
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it("stops the browser on cancel with the grace period, then removes the rest", async () => {
+    const handle = await runtime.start(browserTask(), QA_LIMITS);
+    fake.finishJob(NS, n.fetchJob, { condition: "Complete" });
+    await runtime.poll(handle);
+    await runtime.cancel(handle);
+    expect(fake.calls).toContain(`delete Job/${n.browserJob} grace=30`);
+    expect(fake.has("Job", NS, n.browserJob)).toBe(false);
+    expect(await finished(handle)).toMatchObject({ outcome: "cancelled" });
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it("cancels during the fetch step too, and leaves no site Secret", async () => {
+    const handle = await runtime.start(browserTask(), QA_LIMITS);
+    await runtime.cancel(handle);
+    expect(await finished(handle)).toMatchObject({ outcome: "cancelled" });
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it("leaves nothing of the browser half made if starting the review fails, and tries again next poll", async () => {
+    const handle = await runtime.start(browserTask(), QA_LIMITS);
+    fake.finishJob(NS, n.fetchJob, { condition: "Complete" });
+    fake.failNextCreate("Service", 500, "InternalError");
+    await expect(runtime.poll(handle)).rejects.toBeInstanceOf(KubernetesApiError);
+    for (const [kind, name] of browserObjects.slice(0, 4)) {
+      expect(fake.has(kind, NS, name), name).toBe(false);
+    }
+    expect(fake.has("Secret", NS, n.siteSecret)).toBe(true);
+    expect(fake.has("Job", NS, n.agentJob)).toBe(false);
+    expect(await runtime.poll(handle)).toEqual({ state: "running" });
+    expect(fake.has("Job", NS, n.browserJob)).toBe(true);
+    expect(fake.has("Job", NS, n.agentJob)).toBe(true);
+  });
+
+  it("refuses a browser run without its site, a site on any other run, and a browser outside QA's review, creating nothing", async () => {
+    await expect(runtime.start(task(QA_BROWSER), QA_LIMITS)).rejects.toThrow(
+      "a browser run needs its site",
+    );
+    await expect(
+      runtime.start({ ...task(QA), site: SITE_ZIP }, QA_LIMITS),
+    ).rejects.toThrow("only a browser run carries a site");
+    await expect(
+      runtime.start({ ...task(DEVELOPER), browser: true, site: SITE_ZIP }, LIMITS),
+    ).rejects.toThrow(/only QA's review/);
+    await expect(
+      runtime.start({ ...browserTask(), site: new Uint8Array(0) }, QA_LIMITS),
+    ).rejects.toThrow(/site zip/);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("creates, cancels and cleans up no browser object for a QA review without a browser", async () => {
+    const handle = await runtime.start(task(QA), QA_LIMITS);
+    const q = runNames(QA.runId);
+    fake.finishJob(NS, q.fetchJob, { condition: "Complete" });
+    await runtime.poll(handle);
+    const agent = fake.get<Job>("Job", NS, q.agentJob);
+    expect(agent).toBeDefined();
+    expect(envValue(agent, "FOREMAN_BROWSER_URL")).toBeUndefined();
+    await runtime.cancel(handle);
+    await finished(handle);
+    await runtime.cleanup(handle);
+    expect(fake.calls.filter((c) => /browser|-site\b/.test(c))).toEqual([]);
   });
 });
 

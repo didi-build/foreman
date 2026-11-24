@@ -2,7 +2,9 @@
 // map's own Job (D-275 (2), O-87), which reuses the same proxy stage and Job shape. Same input,
 // same objects: no clock, no random names. Every pod follows section 4 (non-root, read-only root,
 // no privilege escalation, drop ALL, seccomp RuntimeDefault, no service account token, no host
-// access, limits on every container) and runs on the tainted agents pool (D-193).
+// access, limits on every container) and runs on the tainted agents pool (D-193). QA's review may
+// also have a browser pod (ADR 0119 slice 5b, D-476): no egress at all, reached only by the run's
+// agent pod, holding only the site's zip.
 import { secretEnvName } from "../../../service-kit/config.ts";
 import { canonicalHost, parseAllowedHosts } from "../../../egress-proxy/hosts.ts";
 import {
@@ -86,6 +88,11 @@ export interface KubernetesRunSettings {
     proxy: Resources;
     fetch: Resources;
     repoMap: Resources;
+    /**
+     * QA's browser pod (ADR 0119 slice 5b). Optional until it is pinned in slice 5d; absent, the
+     * pod gets `BROWSER_RESOURCES` (D-480).
+     */
+    browser?: Resources;
   };
   /** Size limit of each `emptyDir` (the work folder and `/tmp`). */
   scratchSizeLimit: string;
@@ -171,6 +178,12 @@ export interface KubernetesRunSpec {
    * handle kept before this field existed is a QA review.
    */
   visual?: true;
+  /**
+   * QA's review with a browser (ADR 0119 slice 5b, D-476): the run gets a browser pod of its own,
+   * started beside the agent with the site's zip, and the agent gets FOREMAN_BROWSER_URL. QA's
+   * review (`qa:review`) only. No flow sets it yet (slice 5c).
+   */
+  browser?: true;
   providers: ModelProviderSetting[];
   /** The tier the run's route asked for (ADR 0114 section 8). */
   serviceTier: ServiceTier;
@@ -221,6 +234,27 @@ export const NON_PUBLIC_IPV4 = [
 ];
 
 const NO_CONNECT_HOSTS: readonly AgentRole[] = ["qa", "council", "triage"];
+
+/** The browser host's tool API port in the browser pod (ADR 0119 slice 5b). */
+export const BROWSER_PORT = 8090;
+/** The browser pod's command: the browser host, from the Messages API image. */
+export const BROWSER_HOST_COMMAND: readonly string[] = [
+  "node",
+  "src/agent-images/claude-api/browser-host.ts",
+];
+/** The browser pod's resources while `resources.browser` is not set (D-480). */
+export const BROWSER_RESOURCES: Resources = {
+  requests: { cpu: "250m", memory: "384Mi", "ephemeral-storage": "256Mi" },
+  limits: { cpu: "1", memory: "768Mi", "ephemeral-storage": "1Gi" },
+};
+/** The largest site zip a run takes (slice 5a's bound): a Secret holds at most 1 MiB. */
+export const MAX_SITE_ZIP_BYTES = 900 * 1024;
+/** The site Secret's key, and where the browser pod mounts it and unpacks it. */
+export const SITE_ZIP_KEY = "site.zip";
+export const SITE_ZIP_MOUNT = "/site-zip";
+export const SITE_MEMORY_PATH = "/site";
+/** The in-memory folder the site is unpacked into; it counts against the pod's memory. */
+export const SITE_MEMORY_LIMIT = "64Mi";
 /** The most hosts a run's documentation lookup may list. */
 export const MAX_LOOKUP_HOSTS = 50;
 const TIERS: readonly ServiceTier[] = ["standard", "flex", "priority"];
@@ -273,6 +307,13 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
   }
   if (spec.visual !== undefined && (spec.role !== "qa" || spec.visual !== true)) {
     throw new Error("only a QA run can be a visual comparison");
+  }
+  if (
+    spec.browser !== undefined &&
+    (spec.browser !== true || spec.role !== "qa" || spec.visual === true)
+  ) {
+    // QA's review alone runs a browser (ADR 0119 slice 5b, D-476).
+    throw new Error("only QA's review (qa:review) runs a browser");
   }
   if (spec.role === "qa") {
     if (!SHA.test(spec.headSha ?? ""))
@@ -441,6 +482,31 @@ export function taskSecret(spec: KubernetesRunSpec, task: AgentTaskFile): Secret
   };
 }
 
+/**
+ * The site's zip as the run's site Secret (ADR 0119 slice 5b, D-476), mounted read-only into the
+ * browser pod only. The zip is the one the runner read and checked (slice 5a); here only its size
+ * is bounded, so the Secret stays within what Kubernetes holds.
+ */
+export function siteSecret(spec: KubernetesRunSpec, zip: Uint8Array): Secret {
+  if (spec.browser !== true) throw new Error("only a browser run has a site");
+  if (zip.byteLength === 0 || zip.byteLength > MAX_SITE_ZIP_BYTES) {
+    throw new Error(`the site zip must be 1 to ${MAX_SITE_ZIP_BYTES} bytes`);
+  }
+  return {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: runNames(spec.runId).siteSecret,
+      namespace: agentNamespace(spec.projectSlug),
+      labels: runLabels(spec, "browser"),
+    },
+    type: "Opaque",
+    immutable: true,
+    stringData: {},
+    data: { [SITE_ZIP_KEY]: Buffer.from(zip).toString("base64") },
+  };
+}
+
 /** QA's per-run volume for the fetched tree (ADR 0106 section 5). */
 export function workspaceClaim(
   spec: KubernetesRunSpec,
@@ -472,12 +538,23 @@ export interface ProxyStage {
   clientJob: (proxyAddress: string) => Job;
 }
 
-/** The agent's stage: its proxy, its policies and the agent Job (ADR 0106 section 2). */
+/**
+ * The agent's stage: its proxy, its policies and the agent Job (ADR 0106 section 2). A browser
+ * run's agent also gets its browser pod's address, the browser Service's IP (ADR 0119 slice 5b).
+ */
 export function agentStage(
   spec: KubernetesRunSpec,
   limits: RunLimits,
   settings: KubernetesRunSettings,
+  browserAddress?: string,
 ): ProxyStage {
+  if ((spec.browser === true) !== (browserAddress !== undefined)) {
+    throw new Error(
+      spec.browser === true
+        ? "a browser run's agent needs its browser's address"
+        : "only a browser run's agent gets a browser's address",
+    );
+  }
   const names = runNames(spec.runId);
   const deadline = limits.maxMinutes * 60;
   return proxyStage(spec, settings, {
@@ -506,11 +583,142 @@ export function agentStage(
     clientJob: (proxyAddress) =>
       job(spec, settings, names.agentJob, "agent", deadline, {
         image: spec.image,
-        env: agentEnv(spec, limits, settings, names, proxyAddress),
+        env: agentEnv(spec, limits, settings, names, proxyAddress, browserAddress),
         resources: settings.resources.agent,
         ...agentVolumes(spec, settings, names),
       }),
   });
+}
+
+/** The browser pod's objects: its two NetworkPolicies, its Job and its Service. */
+export interface BrowserStage {
+  /** The browser pod's own policy, then the one that lets the agent pod reach it. */
+  policies: [NetworkPolicy, NetworkPolicy];
+  job: Job;
+  service: Service;
+}
+
+/**
+ * QA's browser pod (ADR 0119 slice 5b, D-476), created beside the agent stage once the fetch step
+ * is done. Its policy gives it no egress at all (no DNS, no proxy, no state API) and ingress only
+ * from the run's agent pod on the host's port; a second policy lets the agent pod reach it there.
+ * Its Job runs the agent's own image with the browser host as its command, under `job()`'s
+ * hardening, and holds no token, model key, task file, workspace or proxy variable: its one Secret
+ * is the site's zip, read-only, and its other mounts are an in-memory folder for the site and
+ * `/tmp`. It ends by itself after the agent's deadline and grace period, and Kubernetes stops it
+ * a margin later. A ClusterIP Service gives it a fixed address, so the agent needs no DNS.
+ */
+export function browserStage(
+  spec: KubernetesRunSpec,
+  limits: RunLimits,
+  settings: KubernetesRunSettings,
+): BrowserStage {
+  if (spec.browser !== true) throw new Error("only a browser run has a browser pod");
+  const names = runNames(spec.runId);
+  const namespace = agentNamespace(spec.projectSlug);
+  const ports = [{ protocol: "TCP" as const, port: BROWSER_PORT }];
+  const pods = (component: Component) => ({
+    podSelector: { matchLabels: componentSelector(spec.runId, component) },
+  });
+  const browserPolicy: NetworkPolicy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: names.browserPolicy,
+      namespace,
+      labels: runLabels(spec, "browser"),
+    },
+    spec: {
+      podSelector: { matchLabels: componentSelector(spec.runId, "browser") },
+      policyTypes: ["Ingress", "Egress"],
+      ingress: [{ from: [pods("agent")], ports }],
+      egress: [],
+    },
+  };
+  const agentBrowserPolicy: NetworkPolicy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: names.agentBrowserPolicy,
+      namespace,
+      labels: runLabels(spec, "agent"),
+    },
+    spec: {
+      podSelector: { matchLabels: componentSelector(spec.runId, "agent") },
+      policyTypes: ["Egress"],
+      ingress: [],
+      egress: [{ to: [pods("browser")], ports }],
+    },
+  };
+  // The host stops once the agent can run no longer; Kubernetes stops it a margin later.
+  const hostSeconds = limits.maxMinutes * 60 + settings.terminationGracePeriodSeconds;
+  const job_ = job(
+    spec,
+    settings,
+    names.browserJob,
+    "browser",
+    hostSeconds + settings.proxyDeadlineMarginSeconds,
+    {
+      image: spec.image,
+      command: [...BROWSER_HOST_COMMAND],
+      env: [
+        ...plainEnv({
+          FOREMAN_SITE_ZIP: `${SITE_ZIP_MOUNT}/${SITE_ZIP_KEY}`,
+          FOREMAN_SITE_DIR: SITE_MEMORY_PATH,
+          FOREMAN_BROWSER_PORT: String(BROWSER_PORT),
+          FOREMAN_BROWSER_DEADLINE_SECONDS: String(hostSeconds),
+          HOME: "/tmp",
+          TMPDIR: "/tmp",
+        }),
+        // The tool API listens on the pod's own address only.
+        {
+          name: "FOREMAN_BROWSER_LISTEN",
+          valueFrom: { fieldRef: { fieldPath: "status.podIP" } },
+        },
+      ],
+      resources: settings.resources.browser ?? BROWSER_RESOURCES,
+      ports: [{ name: "browser", containerPort: BROWSER_PORT, protocol: "TCP" }],
+      volumes: [
+        { name: "tmp", emptyDir: { sizeLimit: settings.scratchSizeLimit } },
+        { name: "site", emptyDir: { sizeLimit: SITE_MEMORY_LIMIT, medium: "Memory" } },
+        {
+          name: "site-zip",
+          secret: {
+            secretName: names.siteSecret,
+            items: [{ key: SITE_ZIP_KEY, path: SITE_ZIP_KEY }],
+            defaultMode: 0o440,
+          },
+        },
+      ],
+      volumeMounts: [
+        { name: "tmp", mountPath: "/tmp", readOnly: false },
+        { name: "site", mountPath: SITE_MEMORY_PATH, readOnly: false },
+        { name: "site-zip", mountPath: SITE_ZIP_MOUNT, readOnly: true },
+      ],
+    },
+  );
+  const service: Service = {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      name: names.browserService,
+      namespace,
+      labels: runLabels(spec, "browser"),
+    },
+    spec: {
+      type: "ClusterIP",
+      selector: componentSelector(spec.runId, "browser"),
+      ports: [
+        {
+          name: "browser",
+          protocol: "TCP",
+          port: BROWSER_PORT,
+          targetPort: BROWSER_PORT,
+        },
+      ],
+    },
+  };
+  return { policies: [browserPolicy, agentBrowserPolicy], job: job_, service };
 }
 
 /** Whether a QA run starts with its fetch step: its review does, its visual comparison does not. */
@@ -862,6 +1070,7 @@ function agentEnv(
   settings: KubernetesRunSettings,
   names: RunNames,
   proxyAddress: string,
+  browserAddress: string | undefined,
 ): EnvVar[] {
   const proxyBase = `http://${proxyAddress}:${settings.proxyPort}`;
   const plain: Record<string, string> = {
@@ -889,6 +1098,10 @@ function agentEnv(
     plain.FOREMAN_HEAD_SHA = spec.headSha ?? "";
     plain.FOREMAN_PR_NUMBER = String(spec.prNumber ?? "");
     if (hasFetchStep(spec)) plain.FOREMAN_WORKSPACE = WORKSPACE_PATH;
+  }
+  // The browser pod's tool API, by its Service's IP address, only for a browser run.
+  if (browserAddress !== undefined) {
+    plain.FOREMAN_BROWSER_URL = `http://${browserAddress}:${BROWSER_PORT}`;
   }
   for (const provider of spec.providers) {
     if (provider.baseUrlEnv)
@@ -998,6 +1211,8 @@ export function secretEnv(name: string, secret: string, key: string): EnvVar {
 
 export interface ContainerParts {
   image: string;
+  /** Replaces the image's own command (the browser pod's, ADR 0119 slice 5b). */
+  command?: string[];
   env: EnvVar[];
   resources: Resources;
   ports?: Container["ports"];
@@ -1031,6 +1246,7 @@ export function job(
     name: component,
     image: parts.image,
     imagePullPolicy: "IfNotPresent",
+    ...(parts.command ? { command: parts.command } : {}),
     env: parts.env,
     ...(parts.ports ? { ports: parts.ports } : {}),
     ...(parts.readinessProbe ? { readinessProbe: parts.readinessProbe } : {}),

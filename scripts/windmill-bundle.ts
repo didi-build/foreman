@@ -379,13 +379,18 @@ const RUN_SETTINGS_KEYS = [
   "workspace",
 ] as const;
 const RESOURCE_KINDS = ["agent", "proxy", "fetch", "repoMap"] as const;
+/**
+ * Taken when the file has it, and left out when it does not: QA's browser pod (ADR 0119 slice 5b),
+ * whose sizes the file pins in slice 5d. Without it the pod gets the runtime's D-480 sizes.
+ */
+const OPTIONAL_RESOURCE_KINDS = ["browser"] as const;
 const RESOURCE_NAMES = ["cpu", "memory", "ephemeral-storage"] as const;
 
 /**
  * `agent_run_settings` as the runner reads it (KubernetesRunSettings), or why it is not ready.
- * Refuses anything malformed, naming the setting.
+ * Refuses anything malformed, naming the setting. Exported for its unit test.
  */
-function agentRunSettings(
+export function agentRunSettings(
   committed: unknown,
   platform: PlatformSettings,
 ): { value: string } | { reason: string } {
@@ -400,8 +405,14 @@ function agentRunSettings(
     `platform.images.egressProxy in ${PLATFORM_SETTINGS_FILE}`,
     "an image reference pinned by digest",
   );
-  const resources = exactKeys(s.resources, RESOURCE_KINDS, `${at}: resources`);
-  for (const kind of RESOURCE_KINDS) {
+  const kinds = [
+    ...RESOURCE_KINDS,
+    ...OPTIONAL_RESOURCE_KINDS.filter(
+      (kind) => isObject(s.resources) && kind in s.resources,
+    ),
+  ];
+  const resources = exactKeys(s.resources, kinds, `${at}: resources`);
+  for (const kind of kinds) {
     const r = exactKeys(
       resources[kind],
       ["requests", "limits"],

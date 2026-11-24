@@ -63,6 +63,14 @@ export default tseslint.config(
     },
   },
   {
+    // The browser canary's fixture site runs in Chromium, not in Node (ADR 0119 slice 5b).
+    files: ["test/fixtures/browser-canary/site/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: { ...globals.browser, ...globals.worker },
+    },
+  },
+  {
     files: ["gallery/**/*.{ts,tsx}", "components/**/*.{ts,tsx}"],
     languageOptions: {
       ecmaVersion: 2022,
