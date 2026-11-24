@@ -25,8 +25,8 @@ COPY src/core/repo-map.ts ./src/core/repo-map.ts
 COPY src/core/scan.ts ./src/core/scan.ts
 COPY src/core/out-of-scope-findings.ts ./src/core/out-of-scope-findings.ts
 COPY src/core/github.ts ./src/core/github.ts
+COPY src/core/archive-path.ts ./src/core/archive-path.ts
 COPY src/adapters/github/runner-app-tokens.ts ./src/adapters/github/runner-app-tokens.ts
-COPY src/adapters/github/archive-path.ts ./src/adapters/github/archive-path.ts
 COPY src/adapters/repo-map/github.ts ./src/adapters/repo-map/github.ts
 COPY src/adapters/repo-map/head-commit.ts ./src/adapters/repo-map/head-commit.ts
 COPY src/adapters/repo-map/tarball.ts ./src/adapters/repo-map/tarball.ts

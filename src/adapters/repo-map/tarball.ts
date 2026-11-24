@@ -13,7 +13,7 @@
 // scan can say its checks did not run over it (D-301, O-93).
 import { gunzipSync } from "node:zlib";
 
-import { isPlainRelativePath } from "../github/archive-path.ts";
+import { isPlainRelativePath } from "../../core/archive-path.ts";
 
 /** The bounds of one archive. */
 export const TARBALL_LIMITS = {

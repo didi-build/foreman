@@ -3,9 +3,10 @@
 // Plain code with no network. A set that fails is refused with fixed text that names no path or
 // value from the build, and nothing is uploaded.
 //
-// The rules, each its own refusal:
+// The rules, each its own refusal. The first and the marker are the built site's shared rules
+// (src/core/built-site.ts), which QA's site uses too (src/core/qa-site.ts, O-174):
 // - Plain relative paths only: no absolute path, no `.` or `..` part, no backslash and no control
-//   character (`path_not_plain`, the zip reader's rule, ../github/archive-path.ts), and no
+//   character (`path_not_plain`, the zip reader's rule, src/core/archive-path.ts), and no
 //   symbolic link (`symlink`).
 // - Bounded by Cloudflare's documented static asset limits on the Workers Free plan, "Workers
 //   platform limits", section Static Assets (developers.cloudflare.com/workers/platform/limits/,
@@ -45,6 +46,11 @@
 //   sends, since D1 documents none across queries (`migrations_too_large`).
 import { isUtf8 } from "node:buffer";
 
+import {
+  markerRefusal,
+  unsafeEntry,
+  type SiteArchiveRefusal,
+} from "../../core/built-site.ts";
 import { COMMIT_MARKER_FILE } from "../../core/preview-check.ts";
 import type { DeployRefusalCause } from "../../core/staging-deploy.ts";
 import {
@@ -52,6 +58,7 @@ import {
   ZipError,
   type ZipEntry,
   type ZipErrorCode,
+  type ZipLimits,
 } from "../screenshots/zip.ts";
 import {
   DEPLOY_MANIFEST_FILE,
@@ -157,8 +164,8 @@ const refuse = (reason: SiteRefusal): SiteFileSet => ({
   text: SITE_REFUSALS[reason],
 });
 
-/** What a zip refusal means for the site. */
-const ZIP_REFUSALS: Record<ZipErrorCode, SiteRefusal> = {
+/** What a zip refusal means for a built site. */
+const ZIP_REFUSALS: Record<ZipErrorCode, SiteArchiveRefusal> = {
   not_zip: "archive_unreadable",
   malformed: "archive_unreadable",
   encrypted: "archive_unreadable",
@@ -170,23 +177,38 @@ const ZIP_REFUSALS: Record<ZipErrorCode, SiteRefusal> = {
   bad_path: "path_not_plain",
 };
 
+/**
+ * A built site's zip read within `limits`, or the refusal by the name the site rules give it. The
+ * zip reader refuses any path that is not plain (`isPlainRelativePath`), any entry over its bound
+ * and a set over the total, each before it unpacks it, and counts folders as entries. Shared with
+ * the read of QA's site (src/adapters/github/qa-sites.ts, O-174).
+ */
+export function readSiteEntries(
+  archive: Uint8Array,
+  limits: ZipLimits,
+): { ok: true; entries: ZipEntry[] } | { ok: false; reason: SiteArchiveRefusal } {
+  try {
+    return { ok: true, entries: readZipEntries(archive, limits) };
+  } catch (error) {
+    return {
+      ok: false,
+      reason:
+        error instanceof ZipError ? ZIP_REFUSALS[error.code] : "archive_unreadable",
+    };
+  }
+}
+
 /** The site's files from CI's artifact, or the refusal of the set. */
 export function readSiteFiles(archive: Uint8Array, commitSha: string): SiteFileSet {
-  let entries;
-  try {
-    entries = readZipEntries(archive, {
-      entries: ZIP_ENTRY_BOUND,
-      entryBytes: CLOUDFLARE_STATIC_ASSET_LIMITS.fileBytes,
-      totalBytes: SITE_TOTAL_BYTES,
-    });
-  } catch (error) {
-    return refuse(
-      error instanceof ZipError ? ZIP_REFUSALS[error.code] : "archive_unreadable",
-    );
-  }
-  // The zip reader has refused any path that is not plain (`isPlainRelativePath`), any file over
-  // 25 MiB and a set over the total, each before it unpacked it, and counted folders as entries.
-  if (entries.some((e) => e.symlink)) return refuse("symlink");
+  const read = readSiteEntries(archive, {
+    entries: ZIP_ENTRY_BOUND,
+    entryBytes: CLOUDFLARE_STATIC_ASSET_LIMITS.fileBytes,
+    totalBytes: SITE_TOTAL_BYTES,
+  });
+  if (!read.ok) return refuse(read.reason);
+  const { entries } = read;
+  const unsafe = unsafeEntry(entries);
+  if (unsafe) return refuse(unsafe);
   if (!entries.some((e) => e.path === DEPLOY_MANIFEST_FILE)) {
     return readSite(entries, commitSha, "marker_missing");
   }
@@ -205,11 +227,8 @@ function readSite(
   if (entries.some((e) => e.path.split("/").includes(WORKER_CODE_NAME))) {
     return refuse("worker_code");
   }
-  const marker = entries.find((e) => e.path === COMMIT_MARKER_FILE);
-  if (!marker) return refuse(missingMarker);
-  if (Buffer.from(marker.bytes).toString("latin1") !== `${commitSha}\n`) {
-    return refuse("marker_mismatch");
-  }
+  const marker = markerRefusal(entries, commitSha);
+  if (marker) return refuse(marker === "marker_missing" ? missingMarker : marker);
   return { ok: true, files: entries.map(({ path, bytes }) => ({ path, bytes })) };
 }
 

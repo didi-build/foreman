@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { Readable, pipeline } from "node:stream";
 import { createGunzip } from "node:zlib";
 
-import { isPlainRelativePath } from "../../adapters/github/archive-path.ts";
+import { isPlainRelativePath } from "../../core/archive-path.ts";
 
 /**
  * The bounds of one archive: the repo map's (`MAX_ARCHIVE_BYTES` in src/adapters/repo-map/
