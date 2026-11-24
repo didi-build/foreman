@@ -6,7 +6,8 @@
 
 role: triage
 
-# The Messages API image. Triage has no tools (ADR 0107).
+# The Messages API image. Triage's only tools are the read-only context tools below (ADR 0107,
+# ADR 0119).
 image: claude-api
 
 task_types:
@@ -16,6 +17,11 @@ task_types:
 # The persona each task type runs with (D-458, ADR 0119).
 task_personas:
   triage: { persona: product }
+
+# The read-only context tools this role's runs get (ADR 0119 slice 3d, D-196, D-459): the
+# project's decisions, similar items and one item's history, through the state API with the run's
+# own token (slice 3b's routes, slice 3c's client). Never for qa:visual or a close run.
+context_tools: [search_decisions, find_similar_items, read_item_history]
 
 # D-185, ADR 0106 section 6.
 limits:

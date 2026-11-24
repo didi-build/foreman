@@ -28,6 +28,11 @@ task_personas:
   "qa:review": { persona: quality }
   "qa:visual": { persona: quality, with_craft_standards_of: designer }
 
+# The read-only context tools this role's runs get (ADR 0119 slice 3d, D-196, D-459): the
+# project's decisions, similar items and one item's history, through the state API with the run's
+# own token (slice 3b's routes, slice 3c's client). Never for qa:visual or a close run.
+context_tools: [search_decisions, find_similar_items, read_item_history]
+
 # D-185, ADR 0106 section 6.
 limits:
   max_turns: 50

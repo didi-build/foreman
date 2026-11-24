@@ -433,13 +433,33 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     ).toEqual(["triage.yaml: output_schemas must give exactly: answer"]);
   });
 
-  it("declare no context tools yet: that is slice 3d, a change Didi approves (ADR 0119 slice 3c, D-196)", () => {
+  it("declare all three context tools for QA, Triage, the Developer and the Designer, and none for the Council (ADR 0119 slice 3d, D-196)", () => {
     const bots = readBotFiles();
-    for (const role of BOT_ROLES) {
-      expect(bots[role].contextTools, role).toBeUndefined();
-      expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
-        "context_tools",
-      );
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      expect(bots[role].contextTools, role).toEqual([
+        "search_decisions",
+        "find_similar_items",
+        "read_item_history",
+      ]);
+    }
+    expect(bots.council.contextTools).toBeUndefined();
+    expect(real().council.data as Record<string, unknown>).not.toHaveProperty(
+      "context_tools",
+    );
+  });
+
+  it("name the tools in the builders' task text, by the names OpenCode gives them (ADR 0119 slice 3d)", () => {
+    const bots = readBotFiles();
+    for (const role of ["developer", "designer"] as const) {
+      const text = bots[role].instructions.replace(/\s+/g, " ");
+      for (const tool of [
+        "search_decisions",
+        "find_similar_items",
+        "read_item_history",
+      ]) {
+        expect(text, role).toContain(`foreman_${tool}`);
+      }
+      expect(text, role).toContain("package files and tool results");
     }
   });
 

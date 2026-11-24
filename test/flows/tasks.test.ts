@@ -158,6 +158,7 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
       input: "Fixture input.",
       nodeId: NODE_ID,
       evidenceIds: [EVIDENCE_ID],
+      contextTools: ["search_decisions", "find_similar_items", "read_item_history"],
     });
     expect(minted).toEqual([
       {
@@ -290,11 +291,15 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(minted).toEqual([]);
   });
 
-  it("gives no task context tools today, since no bot file declares them (ADR 0119 slice 3c)", async () => {
+  it("gives QA's review, Triage and the builders the three context tools their bot files declare (ADR 0119 slice 3d)", async () => {
     const { tasks } = source();
     for (const role of ["qa", "triage", "developer", "designer"] as const) {
       const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
-      expect(task.task, role).not.toHaveProperty("contextTools");
+      expect(task.task.contextTools, role).toEqual([
+        "search_decisions",
+        "find_similar_items",
+        "read_item_history",
+      ]);
     }
     const council = (await tasks.taskFor(
       startFor("council", { outputSchema: COUNCIL_SCHEMA }),
