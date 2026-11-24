@@ -36,6 +36,7 @@ COPY src/adapters/contracts-file/bot-files.ts ./src/adapters/contracts-file/bot-
 COPY src/adapters/contracts-file/personas.ts ./src/adapters/contracts-file/personas.ts
 COPY src/adapters/repo-map/typescript.ts ./src/adapters/repo-map/typescript.ts
 COPY src/egress-proxy/hosts.ts ./src/egress-proxy/hosts.ts
+COPY src/egress-proxy/lookup.ts ./src/egress-proxy/lookup.ts
 COPY src/egress-proxy/providers.ts ./src/egress-proxy/providers.ts
 COPY src/egress-proxy/state-api.ts ./src/egress-proxy/state-api.ts
 COPY src/agent-images/opencode/permissions.ts ./src/agent-images/opencode/permissions.ts

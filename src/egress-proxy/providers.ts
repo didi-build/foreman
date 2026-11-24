@@ -18,8 +18,9 @@ const NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 // The secret store's three areas: the platform's, each project's, and the weekly model test's own
 // keys (`eval/models/<provider>`, D-433), which belong to no project.
 const SECRET_PATH = /^(?:platform|projects|eval)(?:\/[a-z0-9][a-z0-9_-]*)+$/;
-// `health` is the service's own endpoint and `state-api` is the state API route (D-195).
-const RESERVED_NAMES = new Set(["health", "state-api"]);
+// `health` is the service's own endpoint, `state-api` is the state API route (D-195) and `lookup`
+// is the documentation lookup route (ADR 0119 slice 4a).
+const RESERVED_NAMES = new Set(["health", "state-api", "lookup"]);
 
 /**
  * Parse the JSON provider list. An empty list serves no model traffic, as for the QA fetch step's

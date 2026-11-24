@@ -15,6 +15,8 @@ export const PASSED_THROUGH = [
   "FOREMAN_REPOSITORY",
   "FOREMAN_STATE_API_URL",
   "FOREMAN_STATE_API_TOKEN",
+  // The run's documentation lookup route, set only when the run has its hosts (ADR 0119 slice 4a).
+  "FOREMAN_LOOKUP_URL",
 ] as const;
 
 /** The listed variables that are set, and nothing else. */

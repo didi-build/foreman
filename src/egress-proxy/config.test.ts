@@ -42,6 +42,20 @@ describe("readProxyConfig (unit: egress proxy settings, ADR 0111)", () => {
     expect(config.maxModelRequests).toBe(200);
     expect(config.credentials.get("anthropic")).toBe(KEY_VALUE);
     expect(config.stateApi).toBeUndefined();
+    // Unset, the documentation lookup route is off, with the default ceiling.
+    expect(config.lookupHosts.size).toBe(0);
+    expect(config.maxLookupRequests).toBe(40);
+  });
+
+  it("reads the documentation lookup route's hosts and ceiling when set (ADR 0119 slice 4a)", () => {
+    const config = readProxyConfig({
+      ...goodEnv,
+      LOOKUP_HOSTS: "developer.mozilla.org, Vitest.Dev.",
+      MAX_LOOKUP_REQUESTS: "12",
+    });
+    expect([...config.lookupHosts]).toEqual(["developer.mozilla.org", "vitest.dev"]);
+    expect(config.maxLookupRequests).toBe(12);
+    expect(readProxyConfig({ ...goodEnv, LOOKUP_HOSTS: "" }).lookupHosts.size).toBe(0);
   });
 
   it("reads the state API route's upstream when set (D-195)", () => {
@@ -83,6 +97,12 @@ describe("readProxyConfig (unit: egress proxy settings, ADR 0111)", () => {
     ["MAX_REJECTED_MODEL_REQUESTS", "x"],
     ["STATE_API_UPSTREAM", "http://api.example.com:8080"],
     ["STATE_API_UPSTREAM", "http://169.254.169.254"],
+    ["LOOKUP_HOSTS", "10.0.0.1"],
+    ["LOOKUP_HOSTS", "*.docs-site.example.com"],
+    ["LOOKUP_HOSTS", "docs-site.example.com:443"],
+    ["LOOKUP_HOSTS", "docs-site.example.com/guide"],
+    ["MAX_LOOKUP_REQUESTS", "0"],
+    ["MAX_LOOKUP_REQUESTS", "forty"],
   ])("stops on a bad %s, naming it but not its value", (name, value) => {
     const found = problems({ ...goodEnv, [name]: value });
     expect(found).toHaveLength(1);

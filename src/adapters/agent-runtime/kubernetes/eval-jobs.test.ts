@@ -193,6 +193,8 @@ describe("starting the weekly test's Job (adapter: fake cluster, D-432, D-433)",
       MAX_MODEL_REQUESTS: String(s.sizing.maxModelRequests),
       MAX_REJECTED_MODEL_REQUESTS: String(s.sizing.maxRejectedModelRequests),
     });
+    // No documentation lookup route (ADR 0119 slice 4a): the weekly test reads no site.
+    expect(proxy.LOOKUP_HOSTS).toBeUndefined();
     // 3 cases, each on the 3 weekly models and its Claude model.
     expect(s.sizing.runs).toBe(12);
     // The keys come from the Secret by reference, never as values.

@@ -2,6 +2,7 @@
 // never its value. Each provider's credential is read by its secret path (D-143).
 import { port, readConfig, secret, type Setting } from "../service-kit/config.ts";
 import { parseAllowedHosts } from "./hosts.ts";
+import { DEFAULT_MAX_LOOKUP_REQUESTS } from "./lookup.ts";
 import { parseProviders, type Provider } from "./providers.ts";
 import { parseStateApiUpstream, type StateApiUpstream } from "./state-api.ts";
 
@@ -15,15 +16,20 @@ export interface ProxyConfig {
   maxRejectedModelRequests: number;
   /** The state API route's one upstream (D-195), or undefined when the route is off. */
   stateApi: StateApiUpstream | undefined;
+  /** The hosts the documentation lookup route may read (ADR 0119 slice 4a). Empty: route off. */
+  lookupHosts: ReadonlySet<string>;
+  /** The most lookups this run may forward. */
+  maxLookupRequests: number;
   /** Credential values by provider name. Never logged. */
   credentials: ReadonlyMap<string, string>;
 }
 
 const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-function positiveWholeNumber(env: string): Setting<number> {
+function positiveWholeNumber(env: string, fallback?: string): Setting<number> {
   return {
     env,
+    fallback,
     parse: (raw: string) => {
       const value = Number(raw);
       if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) {
@@ -64,6 +70,16 @@ const settings = {
     fallback: "",
     parse: parseStateApiUpstream,
   } satisfies Setting<StateApiUpstream | undefined>,
+  /**
+   * Comma-separated host names the documentation lookup route may read (ADR 0119 slice 4a), read
+   * as the CONNECT allow-list is. Unset or empty turns the route off.
+   */
+  lookupHosts: { env: "LOOKUP_HOSTS", fallback: "", parse: parseAllowedHosts },
+  /** The most lookups this run may forward, every forwarded lookup counted. */
+  maxLookupRequests: positiveWholeNumber(
+    "MAX_LOOKUP_REQUESTS",
+    String(DEFAULT_MAX_LOOKUP_REQUESTS),
+  ),
 };
 
 export function readProxyConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {

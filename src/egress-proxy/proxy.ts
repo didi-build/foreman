@@ -13,15 +13,21 @@
 // 3. The state API route (D-195): `/state-api/...` goes over plain HTTP to the one in-cluster
 //    address in its settings, the only private address the proxy ever reaches. The agent's own
 //    Authorization header (its per-run state API token) passes through unchanged.
+// 4. The documentation lookup route (ADR 0119 slice 4a, D-460, ./lookup.ts): `GET /lookup/<host>
+//    <path>` makes the proxy itself read one page from a host on the run's trusted list, over TLS
+//    to the vetted address with the certificate checked against the host's name. It is never a
+//    tunnel. No agent header reaches the site, only a few response headers come back, the body is
+//    cut at 2 MiB, each lookup has 8 seconds, and the run has a ceiling of lookups. GET only.
 // It also counts the tier the provider says it served each model request (D-423, O-151): it
 // reads `service_tier` from a copy of each served model response, after each chunk is passed on
 // (./tier-reader.ts), and logs the run's tally as one fixed line (./served-tiers.ts) that the
-// runtime adapter reads at the run's end. GitHub and state API traffic is never read.
-// Logs carry the run id, host names, durations, outcomes and served tier counts. Never a payload,
-// path or credential.
+// runtime adapter reads at the run's end. GitHub, state API and lookup traffic is never read.
+// Logs carry the run id, host names, durations, outcomes, byte counts and served tier counts.
+// Never a payload, path, query, header value or credential.
 import { lookup } from "node:dns/promises";
 import {
   request as httpRequest,
+  type ClientRequest,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
@@ -39,6 +45,19 @@ import {
   upstreamRequestHeaders,
 } from "./headers.ts";
 import { checkConnectTarget, TUNNEL_PORT } from "./hosts.ts";
+import {
+  DEFAULT_MAX_LOOKUP_REQUESTS,
+  hasRequestBody,
+  LOOKUP_BODY_LIMIT,
+  LOOKUP_PORT,
+  LOOKUP_REFUSALS,
+  LOOKUP_TIMEOUT_MS,
+  lookupRequestHeaders,
+  lookupResponseHeaders,
+  lookupTarget,
+  type LookupRefusal,
+  type LookupTarget,
+} from "./lookup.ts";
 import { routeToProvider, type Provider, type ProviderRoute } from "./providers.ts";
 import {
   emptyTally,
@@ -68,19 +87,29 @@ export interface EgressProxyOptions {
   maxRejectedModelRequests: number;
   /** The state API route's one upstream (D-195). Undefined turns the route off. */
   stateApi?: StateApiUpstream;
+  /**
+   * The hosts the documentation lookup route may read (ADR 0119 slice 4a). Undefined or empty
+   * turns the route off: every `/lookup` request is refused as off the list.
+   */
+  lookupHosts?: ReadonlySet<string>;
+  /** The most lookups this run may forward. Defaults to DEFAULT_MAX_LOOKUP_REQUESTS. */
+  maxLookupRequests?: number;
   logger: Logger;
   // Test seams. `main.ts` never sets them, so production resolves with the system resolver,
-  // connects to the vetted address and trusts only the system's certificate authorities.
+  // connects to the vetted address, trusts only the system's certificate authorities and gives
+  // each lookup LOOKUP_TIMEOUT_MS.
   /** Resolve a host name to its addresses. */
   resolve?: (host: string) => Promise<string[]>;
-  /** Open a TCP connection to a vetted public address (tunnels and model upstreams). */
+  /** Open a TCP connection to a vetted public address (tunnels, model upstreams and lookups). */
   connect?: (address: string, port: number) => Socket;
   /** Certificate authorities to trust for upstream TLS instead of the system's. */
   upstreamCa?: string;
+  /** How long one lookup may take. */
+  lookupTimeoutMs?: number;
 }
 
 export interface EgressProxy {
-  /** Handles plain HTTP requests: model traffic, the state API route, and refusals. */
+  /** Handles plain HTTP requests: model traffic, the state API and lookup routes, and refusals. */
   handle: (request: IncomingMessage, response: ServerResponse) => boolean;
   /** Handles CONNECT requests. */
   onConnect: (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
@@ -120,10 +149,15 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
   const connect =
     options.connect ??
     ((address: string, port: number) => netConnect({ host: address, port }));
+  const lookupHosts = options.lookupHosts ?? new Set<string>();
+  const maxLookupRequests = options.maxLookupRequests ?? DEFAULT_MAX_LOOKUP_REQUESTS;
+  const lookupTimeoutMs = options.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS;
   const tunnels = new Set<Duplex>();
   // Requests sent upstream and not rejected, those still waiting for an answer included.
   let modelRequests = 0;
   let rejectedRequests = 0;
+  // Lookups that passed the route's checks, whatever happened to them after.
+  let lookupRequests = 0;
   // Served model requests by the tier the provider named (D-423), and the reads under way.
   const servedTiers = emptyTally();
   let tierReads = 0;
@@ -276,6 +310,11 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
       forwardToStateApi(request, response, options.stateApi, statePath);
       return true;
     }
+    const lookup = lookupTarget(url, lookupHosts);
+    if (lookup !== undefined) {
+      handleLookup(request, response, lookup);
+      return true;
+    }
     const route = routeToProvider(url, providers);
     if (route === undefined) {
       warn("request refused", {
@@ -318,6 +357,198 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
       },
     );
     return true;
+  }
+
+  /**
+   * The documentation lookup route's checks, in order: the route is on, the method is GET, there
+   * is no body, the host is listed and the address plain, and the run is under its ceiling. A
+   * refusal sends a fixed text and logs the host and the reason, never the path or query.
+   */
+  function handleLookup(
+    request: IncomingMessage,
+    response: ServerResponse,
+    target: LookupTarget,
+  ): void {
+    // Nothing of the agent's request is sent on, so whatever it sent is read and dropped.
+    request.resume();
+    const refuse = (refusal: LookupRefusal, reason: string, fields: LogFields = {}) => {
+      warn("lookup refused", { host: target.host, reason, ...fields });
+      sendLookupRefusal(response, refusal);
+    };
+    if (lookupHosts.size === 0) {
+      refuse(LOOKUP_REFUSALS.unlisted, "lookup route off");
+      return;
+    }
+    if (request.method !== "GET") {
+      refuse(LOOKUP_REFUSALS.method, "method not allowed", { method: request.method });
+      return;
+    }
+    if (hasRequestBody(request.headers)) {
+      refuse(LOOKUP_REFUSALS.body, "request body");
+      return;
+    }
+    if (!target.ok) {
+      refuse(
+        target.reason === "invalid path"
+          ? LOOKUP_REFUSALS.malformed
+          : LOOKUP_REFUSALS.unlisted,
+        target.reason,
+      );
+      return;
+    }
+    if (lookupRequests >= maxLookupRequests) {
+      refuse(LOOKUP_REFUSALS.ceiling, "lookup ceiling", { maxLookupRequests });
+      return;
+    }
+    lookupRequests += 1;
+    // forwardLookup answers every failure itself; this is only the last resort.
+    forwardLookup(response, target.host, target.path, lookupRequests).catch(() =>
+      response.destroy(),
+    );
+  }
+
+  /**
+   * One lookup: the host's vetted address, TLS with the certificate checked against the host's
+   * name, a GET with the fixed headers, and the answer passed back with only the lookup's
+   * response headers and at most LOOKUP_BODY_LIMIT bytes. The deadline covers all of it.
+   */
+  async function forwardLookup(
+    response: ServerResponse,
+    host: string,
+    path: string,
+    count: number,
+  ): Promise<void> {
+    const started = Date.now();
+    let status: number | undefined;
+    let bytes = 0;
+    let settled = false;
+    let upstreamRequest: ClientRequest | undefined;
+    const finish = (outcome: string, fields: LogFields = {}): void => {
+      settled = true;
+      clearTimeout(timer);
+      // No path or query: they can carry what the agent read in the repository (D-472).
+      info("lookup request", {
+        host,
+        status,
+        outcome,
+        bytes,
+        durationMs: Date.now() - started,
+        count,
+        ...fields,
+      });
+    };
+    /** Ends the lookup early: a fixed text if nothing was sent yet, else the body stops short. */
+    const fail = (
+      refusal: LookupRefusal,
+      outcome: string,
+      fields?: LogFields,
+    ): void => {
+      if (settled) return;
+      finish(outcome, fields);
+      upstreamRequest?.destroy();
+      if (!response.headersSent) sendLookupRefusal(response, refusal);
+      else response.destroy();
+    };
+    // Declared after `finish` and `fail`, which only run once it is set.
+    const timer = setTimeout(
+      () => fail(LOOKUP_REFUSALS.timeout, "timeout"),
+      lookupTimeoutMs,
+    );
+    response.once("close", () => {
+      if (settled || response.writableFinished) return;
+      finish("client closed");
+      upstreamRequest?.destroy();
+    });
+
+    try {
+      // Checked like a tunnel's target, so a listed name can never lead to a private address.
+      const vetted = await vet(host);
+      if (settled) return;
+      if (!vetted.ok) {
+        fail(
+          vetted.reason === "blocked address"
+            ? LOOKUP_REFUSALS.blocked
+            : LOOKUP_REFUSALS.unreachable,
+          vetted.reason,
+          { errorType: vetted.errorType },
+        );
+        return;
+      }
+      const address = vetted.address;
+      upstreamRequest = httpsRequest({
+        host,
+        port: LOOKUP_PORT,
+        defaultPort: LOOKUP_PORT,
+        method: "GET",
+        path,
+        headers: lookupRequestHeaders(),
+        createConnection: () =>
+          tlsConnect({
+            socket: connect(address, LOOKUP_PORT),
+            host,
+            servername: host,
+            ca: options.upstreamCa,
+            // Explicit, so a stray NODE_TLS_REJECT_UNAUTHORIZED in the environment cannot turn it off.
+            rejectUnauthorized: true,
+            ALPNProtocols: ["http/1.1"],
+          }),
+      });
+      upstreamRequest.on("error", (error) =>
+        fail(LOOKUP_REFUSALS.unreachable, `upstream error ${errorType(error)}`),
+      );
+      upstreamRequest.on("response", (upstreamResponse) => {
+        upstreamResponse.on("error", () => {});
+        try {
+          relayLookup(upstreamResponse);
+        } catch (error) {
+          fail(LOOKUP_REFUSALS.unreachable, `relay error ${errorType(error)}`);
+        }
+      });
+      upstreamRequest.end();
+    } catch (error) {
+      fail(LOOKUP_REFUSALS.unreachable, `request error ${errorType(error)}`);
+    }
+
+    /** Passes the answer back: the status, the lookup's headers and the body up to the cut. */
+    function relayLookup(upstreamResponse: IncomingMessage): void {
+      if (settled) {
+        upstreamResponse.destroy();
+        return;
+      }
+      status = upstreamResponse.statusCode ?? 502;
+      response.sendDate = false;
+      response.writeHead(
+        status,
+        lookupResponseHeaders(status, upstreamResponse.headers),
+      );
+      upstreamResponse.on("data", (chunk: Buffer) => {
+        if (settled) return;
+        const room = LOOKUP_BODY_LIMIT - bytes;
+        if (chunk.length > room) {
+          // The cut: the body simply ends at the limit.
+          bytes += room;
+          finish("cut");
+          response.end(chunk.subarray(0, room));
+          upstreamRequest?.destroy();
+          return;
+        }
+        bytes += chunk.length;
+        if (!response.write(chunk)) {
+          upstreamResponse.pause();
+          response.once("drain", () => upstreamResponse.resume());
+        }
+      });
+      upstreamResponse.once("end", () => {
+        if (settled) return;
+        finish("ok");
+        response.end();
+      });
+      upstreamResponse.once("close", () => {
+        if (settled) return;
+        finish("stream closed early");
+        response.destroy();
+      });
+    }
   }
 
   function forwardToStateApi(
@@ -463,6 +694,17 @@ export function createEgressProxy(options: EgressProxyOptions): EgressProxy {
       for (const tunnel of tunnels) tunnel.destroy();
     },
   };
+}
+
+/** A lookup refusal: its status and fixed text, as plain text. */
+function sendLookupRefusal(response: ServerResponse, refusal: LookupRefusal): void {
+  response.sendDate = false;
+  response.writeHead(refusal.status, {
+    "content-type": "text/plain",
+    "content-length": Buffer.byteLength(refusal.text),
+    ...(refusal.status === 405 ? { allow: "GET" } : {}),
+  });
+  response.end(refusal.text);
 }
 
 /** The host name of an absolute request URL, for the log. */

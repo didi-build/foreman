@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { secretEnvName } from "../../../service-kit/config.ts";
+import { readProxyConfig } from "../../../egress-proxy/config.ts";
+import { PASSED_THROUGH } from "../../../agent-images/shared/environment.ts";
 import {
   COUNCIL,
   DEVELOPER,
@@ -18,6 +20,7 @@ import {
 } from "./fixtures.ts";
 import {
   AGENTS_POOL,
+  MAX_LOOKUP_HOSTS,
   REPO_MAP_HOSTS,
   agentStage,
   checkRunSpec,
@@ -453,6 +456,140 @@ describe("run network (unit: per-run NetworkPolicies, ADR 0106 section 2, D-195)
       selector: { [LABEL_RUN_ID]: DEVELOPER.runId, "foreman/component": "proxy" },
       ports: [{ name: "proxy", protocol: "TCP", port: 8080, targetPort: 8080 }],
     });
+  });
+});
+
+/** The plain variables of a Job, as the process in it reads them, with one value for each secret. */
+function processEnv(job: Job): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const entry of envOf(job).values()) {
+    env[entry.name] = "value" in entry ? entry.value : "secret-value-not-real";
+  }
+  return env;
+}
+
+describe("the documentation lookup (unit: run settings, ADR 0119 slice 4a)", () => {
+  const LOOKUP_HOSTS = ["developer.mozilla.org", "vitest.dev", "nodejs.org"];
+  const withLookup = { ...DEVELOPER, lookupHosts: LOOKUP_HOSTS };
+
+  it("gives the proxy its hosts and ceiling, and the agent the route's address, only when the run has hosts", () => {
+    const stage = agentStage(withLookup, LIMITS, SETTINGS);
+    expect(value(stage.proxyJob, "LOOKUP_HOSTS")).toBe(
+      "developer.mozilla.org,vitest.dev,nodejs.org",
+    );
+    expect(value(stage.proxyJob, "MAX_LOOKUP_REQUESTS")).toBe("40");
+    expect(value(stage.clientJob(PROXY_IP), "FOREMAN_LOOKUP_URL")).toBe(
+      `http://${PROXY_IP}:8080/lookup`,
+    );
+    // The proxy's own reader, on exactly the manifest's environment.
+    const config = readProxyConfig(processEnv(stage.proxyJob));
+    expect([...config.lookupHosts]).toEqual(LOOKUP_HOSTS);
+    expect(config.maxLookupRequests).toBe(40);
+    // The CONNECT allow-list does not change: a lookup host is not a tunnel host.
+    expect(value(stage.proxyJob, "ALLOWED_HOSTS")).toBe(
+      value(agentStage(DEVELOPER, LIMITS, SETTINGS).proxyJob, "ALLOWED_HOSTS"),
+    );
+    // The Designer's run takes it too.
+    const designer = agentStage(
+      { ...withLookup, role: "designer" },
+      LIMITS,
+      SETTINGS,
+    ).clientJob(PROXY_IP);
+    expect(value(designer, "FOREMAN_LOOKUP_URL")).toBe(
+      `http://${PROXY_IP}:8080/lookup`,
+    );
+  });
+
+  it("sets nothing for a run without hosts, nor for any other stage: the route stays off", () => {
+    const { jobs } = everything();
+    for (const job of jobs) {
+      const env = envOf(job);
+      expect(env.has("LOOKUP_HOSTS")).toBe(false);
+      expect(env.has("MAX_LOOKUP_REQUESTS")).toBe(false);
+      expect(env.has("FOREMAN_LOOKUP_URL")).toBe(false);
+    }
+    const config = readProxyConfig(
+      processEnv(agentStage(DEVELOPER, LIMITS, SETTINGS).proxyJob),
+    );
+    expect(config.lookupHosts.size).toBe(0);
+  });
+
+  it("changes no NetworkPolicy: the proxy already reaches public 443 and the agent only its proxy", () => {
+    expect(agentStage(withLookup, LIMITS, SETTINGS).policies).toEqual(
+      agentStage(DEVELOPER, LIMITS, SETTINGS).policies,
+    );
+  });
+
+  it("passes the route's address through to the coding runtime", () => {
+    expect(PASSED_THROUGH).toContain("FOREMAN_LOOKUP_URL");
+  });
+
+  it("accepts up to MAX_LOOKUP_HOSTS hosts", () => {
+    const hosts = Array.from(
+      { length: MAX_LOOKUP_HOSTS },
+      (_, i) => `docs${i}.example.com`,
+    );
+    expect(() =>
+      checkRunSpec({ ...DEVELOPER, lookupHosts: hosts }, LIMITS),
+    ).not.toThrow();
+  });
+
+  it.each<[string, KubernetesRunSpec, RegExp]>([
+    [
+      "on a QA run",
+      { ...QA, lookupHosts: ["vitest.dev"] },
+      /qa run has no documentation lookup/,
+    ],
+    [
+      "on a Council run",
+      { ...COUNCIL, lookupHosts: ["vitest.dev"] },
+      /council run has no documentation lookup/,
+    ],
+    [
+      "on a Triage run",
+      { ...COUNCIL, role: "triage", lookupHosts: ["vitest.dev"] },
+      /triage run has no documentation lookup/,
+    ],
+    ["an empty list", { ...DEVELOPER, lookupHosts: [] }, /1 to 50 hosts/],
+    [
+      "more than 50 hosts",
+      {
+        ...DEVELOPER,
+        lookupHosts: Array.from({ length: 51 }, (_, i) => `docs${i}.example.com`),
+      },
+      /1 to 50 hosts/,
+    ],
+    ...[
+      "*.example-docs.org",
+      "example-docs.org:443",
+      "140.82.112.3",
+      "[2606:4700::1]",
+      "Example-Docs.org",
+      "example-docs.org.",
+      "example-docs.org/guide",
+      "https://example-docs.org",
+      "example-docs.org,vitest.dev",
+      "",
+    ].map((host): [string, KubernetesRunSpec, RegExp] => [
+      `the host ${JSON.stringify(host)}`,
+      { ...DEVELOPER, lookupHosts: ["vitest.dev", host] },
+      /lookupHosts entry 2 is not an exact host name/,
+    ]),
+    [
+      "a repeated host",
+      { ...DEVELOPER, lookupHosts: ["vitest.dev", "nodejs.org", "vitest.dev"] },
+      /lookupHosts entry 3 repeats a host/,
+    ],
+  ])("refuses lookup hosts %s, naming no host", (_label, spec, pattern) => {
+    let message = "";
+    try {
+      checkRunSpec(spec, spec.role === "qa" ? QA_LIMITS : LIMITS);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(pattern);
+    expect(message).not.toContain("example-docs");
+    expect(message).not.toContain("vitest");
   });
 });
 

@@ -25,6 +25,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { createLogger } from "../service-kit/logger.ts";
 import { startService, type RunningService } from "../service-kit/server.ts";
 import { parseAllowedHosts } from "./hosts.ts";
+import {
+  LOOKUP_BODY_LIMIT,
+  LOOKUP_REFUSALS,
+  lookupRequestHeaders,
+  type LookupRefusal,
+} from "./lookup.ts";
 import { parseProviders } from "./providers.ts";
 import {
   CEILING_MESSAGE,
@@ -54,6 +60,20 @@ const GITHUB_ADDRESS = "140.82.112.3";
 /** The public address the fake DNS gives the model provider's name. */
 const MODEL_ADDRESS = "34.120.0.10";
 const MODEL_HOST = "models.example.com";
+/** A listed documentation host, and the public address the fake DNS gives it (ADR 0119 slice 4a). */
+const DOCS_HOST = "docs.example.com";
+const DOCS_ADDRESS = "34.120.0.20";
+/** Listed hosts the lookup must still refuse or fail: by address, by DNS and by certificate. */
+const LOOKUP_HOSTS = [
+  DOCS_HOST,
+  "private-docs.example.com",
+  "mixed-docs.example.com",
+  "missing-docs.example.com",
+  "wrong-name.example.com",
+].join(",");
+const PATH_MARKER = "PATH-MARKER-must-not-be-logged";
+const QUERY_MARKER = "QUERY-MARKER-must-not-be-logged";
+const COOKIE_MARKER = "COOKIE-MARKER-must-not-reach-the-site";
 
 const DNS: Record<string, string[]> = {
   "github.com": [GITHUB_ADDRESS],
@@ -64,6 +84,11 @@ const DNS: Record<string, string[]> = {
   [MODEL_HOST]: [MODEL_ADDRESS],
   "private-model.example.com": ["10.0.0.9"],
   [STATE_HOST]: ["127.0.0.1"],
+  [DOCS_HOST]: [DOCS_ADDRESS],
+  "private-docs.example.com": ["10.0.0.11"],
+  "mixed-docs.example.com": [DOCS_ADDRESS, "192.168.1.5"],
+  // Resolves to the docs stand-in, whose certificate does not name it.
+  "wrong-name.example.com": [DOCS_ADDRESS],
 };
 
 let certDir: string;
@@ -185,6 +210,109 @@ let otherService: HttpServer;
 let otherServicePort: number;
 let otherServiceSeen: Seen[] = [];
 
+// Stands in for a documentation site behind the lookup route (ADR 0119 slice 4a).
+let docs: HttpsServer;
+let docsPort: number;
+let docsSeen: Seen[] = [];
+/** What the docs stand-in sent as the body of each answer, in order. */
+let docsSent: Buffer[] = [];
+/** How to end each answer the docs stand-in is holding. */
+let docsHeld: (() => void)[] = [];
+/** A page body the size of the lookup's limit plus one MiB, to be cut. */
+const BIG_PAGE = randomBytes(LOOKUP_BODY_LIMIT + 1024 * 1024);
+const PAGE = `<html><body><main>${BODY_MARKER}</main></body></html>`;
+
+function docsServer(): HttpsServer {
+  return createHttpsServer({ cert, key }, (request, response) => {
+    request.resume();
+    request.on("end", () => {
+      docsSeen.push({
+        method: request.method,
+        path: request.url,
+        headers: request.headers,
+        bodyHash: "",
+      });
+      const page = (request.url ?? "").split("?")[0];
+      const send = (
+        status: number,
+        headers: Record<string, string | string[]>,
+        body: Buffer,
+      ): void => {
+        docsSent.push(body);
+        response.writeHead(status, headers);
+        response.end(body);
+      };
+      if (page === "/big" || page === "/big-chunked" || page === "/exact") {
+        const body =
+          page === "/exact" ? BIG_PAGE.subarray(0, LOOKUP_BODY_LIMIT) : BIG_PAGE;
+        docsSent.push(body);
+        response.writeHead(200, {
+          "content-type": "text/html",
+          ...(page === "/big-chunked" ? {} : { "content-length": String(body.length) }),
+        });
+        // In pieces, so the cut falls inside a write.
+        let offset = 0;
+        const next = (): void => {
+          if (offset >= body.length) {
+            response.end();
+            return;
+          }
+          const piece = body.subarray(offset, offset + 300_000);
+          offset += piece.length;
+          response.write(piece, next);
+        };
+        next();
+        return;
+      }
+      if (page === "/slow") {
+        // Never answers until released.
+        docsHeld.push(() => response.end());
+        return;
+      }
+      if (page === "/stall") {
+        // Answers, sends part of the body, then holds.
+        response.writeHead(200, { "content-type": "text/html" });
+        response.write("<html><body>part");
+        docsHeld.push(() => response.end("</body></html>"));
+        return;
+      }
+      if (page === "/redirect") {
+        send(
+          302,
+          { location: "/guide/next", "set-cookie": "visited=1", "content-length": "0" },
+          Buffer.alloc(0),
+        );
+        return;
+      }
+      if (page === "/gzip") {
+        send(
+          200,
+          { "content-type": "text/html", "content-encoding": "gzip" },
+          gzipSync(PAGE),
+        );
+        return;
+      }
+      if (page === "/missing") {
+        send(404, { "content-type": "text/plain" }, Buffer.from("no such page"));
+        return;
+      }
+      const body = Buffer.from(PAGE);
+      send(
+        200,
+        {
+          "content-type": "text/html; charset=utf-8",
+          "content-length": String(body.length),
+          "set-cookie": [`session=${COOKIE_MARKER}; Secure; HttpOnly`, "theme=dark"],
+          "cache-control": "max-age=60",
+          "x-powered-by": "docs-stand-in",
+          "access-control-allow-origin": "*",
+        },
+        body,
+      );
+    });
+  });
+}
+
 function recordingServer(seen: () => Seen[]): HttpServer {
   return createHttpServer((request, response) => {
     const chunks: Buffer[] = [];
@@ -220,7 +348,7 @@ beforeAll(async () => {
       "-subj",
       "/CN=127.0.0.1",
       "-addext",
-      `subjectAltName=DNS:${MODEL_HOST},IP:127.0.0.1`,
+      `subjectAltName=DNS:${MODEL_HOST},DNS:${DOCS_HOST},IP:127.0.0.1`,
       "-keyout",
       join(certDir, "key.pem"),
       "-out",
@@ -312,6 +440,9 @@ beforeAll(async () => {
   otherService = recordingServer(() => otherServiceSeen);
   await new Promise<void>((resolve) => otherService.listen(0, "127.0.0.1", resolve));
   otherServicePort = (otherService.address() as AddressInfo).port;
+  docs = docsServer();
+  await new Promise<void>((resolve) => docs.listen(0, "127.0.0.1", resolve));
+  docsPort = (docs.address() as AddressInfo).port;
 });
 
 afterAll(async () => {
@@ -319,6 +450,8 @@ afterAll(async () => {
   await new Promise((resolve) => upstream.close(resolve));
   await new Promise((resolve) => stateApi.close(resolve));
   await new Promise((resolve) => otherService.close(resolve));
+  docs.closeAllConnections();
+  await new Promise((resolve) => docs.close(resolve));
   rmSync(certDir, { recursive: true, force: true });
 });
 
@@ -342,6 +475,10 @@ afterEach(async () => {
   servedSent = [];
   for (const release of heldReleases) release();
   heldReleases = [];
+  docsSeen = [];
+  docsSent = [];
+  for (const release of docsHeld) release();
+  docsHeld = [];
 });
 
 async function start(
@@ -351,6 +488,10 @@ async function start(
     trustTestCa?: boolean;
     dns?: Record<string, string[]>[];
     stateApi?: boolean;
+    /** The lookup route's hosts, comma-separated. Empty turns the route off. */
+    lookupHosts?: string;
+    maxLookupRequests?: number;
+    lookupTimeoutMs?: number;
   } = {},
 ): Promise<Harness> {
   const logs: string[] = [];
@@ -409,6 +550,9 @@ async function start(
       overrides.stateApi === false
         ? undefined
         : parseStateApiUpstream(`http://127.0.0.1:${stateApiPort}`),
+    lookupHosts: parseAllowedHosts(overrides.lookupHosts ?? LOOKUP_HOSTS),
+    maxLookupRequests: overrides.maxLookupRequests,
+    lookupTimeoutMs: overrides.lookupTimeoutMs,
     logger,
     resolve: async (host) => {
       resolved.push(host);
@@ -423,6 +567,7 @@ async function start(
     connect: (address, port) => {
       connected.push(`${address}:${port}`);
       if (address === MODEL_ADDRESS) return netConnect(upstreamPort, "127.0.0.1");
+      if (address === DOCS_ADDRESS) return netConnect(docsPort, "127.0.0.1");
       if (address !== GITHUB_ADDRESS)
         throw new Error(`unexpected connect to ${address}`);
       return netConnect(tunnelTargetPort, "127.0.0.1");
@@ -1100,5 +1245,525 @@ describe("egress proxy served tier (integration: localhost fakes, D-423)", () =>
         "time",
       ]);
     }
+  });
+});
+
+/** What the agent gets back for one lookup, read raw: no decompression, no redirect followed. */
+interface LookupAnswer {
+  status: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+  /** True when the body stopped short of its end. */
+  aborted: boolean;
+}
+
+/** A request through the proxy, on its own connection, with any method, headers and body. */
+function lookupRequest(
+  path: string,
+  {
+    method = "GET",
+    headers = {},
+    body,
+  }: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  } = {},
+): Promise<LookupAnswer> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: harness?.service.port,
+      method,
+      path,
+      headers,
+      agent: false,
+    });
+    request.on("response", (response) => {
+      const chunks: Buffer[] = [];
+      let ended = false;
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => (ended = true));
+      response.on("error", () => {});
+      response.on("close", () =>
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks),
+          aborted: !ended,
+        }),
+      );
+    });
+    request.on("error", reject);
+    if (body === undefined) request.end();
+    else request.end(body);
+  });
+}
+
+/** Headers Node's server adds for the connection itself, not the answer. */
+const FRAMING = new Set(["connection", "keep-alive", "transfer-encoding"]);
+const answerHeaders = (answer: LookupAnswer): string[] =>
+  Object.keys(answer.headers)
+    .filter((name) => !FRAMING.has(name))
+    .sort();
+
+function expectRefusal(answer: LookupAnswer, refusal: LookupRefusal): void {
+  expect(answer.status).toBe(refusal.status);
+  expect(answer.headers["content-type"]).toBe("text/plain");
+  expect(answer.body.toString()).toBe(refusal.text);
+}
+
+const lookupLines = (logs: string[]) =>
+  logs
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter(
+      (entry) =>
+        entry.message === "lookup request" || entry.message === "lookup refused",
+    );
+
+/** Every agent header the site must never see, with values the logs must never hold. */
+const AGENT_HEADERS = {
+  authorization: `Bearer ${AGENT_KEY}`,
+  cookie: `session=${COOKIE_MARKER}`,
+  "x-api-key": AGENT_KEY,
+  "proxy-authorization": `Basic ${AGENT_KEY}`,
+  "x-forwarded-for": "10.0.0.5",
+  forwarded: "for=10.0.0.5",
+  "x-real-ip": "10.0.0.5",
+  referer: `http://10.0.0.5/${PATH_MARKER}`,
+  "user-agent": "agent-user-agent",
+  accept: "application/json",
+  "accept-encoding": "gzip, br",
+};
+
+describe("egress proxy documentation lookup (integration: localhost fakes, ADR 0119 slice 4a)", () => {
+  it("forwards a GET with only the fixed headers, at the vetted address, with the path and query unchanged", async () => {
+    const { connected, resolved } = await start();
+    const answer = await lookupRequest(
+      `/lookup/${DOCS_HOST}/guide/csv?q=CSV%20export&x=1&x=%E2%9C%93`,
+      { headers: AGENT_HEADERS },
+    );
+    expect(answer.status).toBe(200);
+    expect(answer.body.toString()).toBe(PAGE);
+    expect(resolved).toEqual([DOCS_HOST]);
+    expect(connected).toEqual([`${DOCS_ADDRESS}:443`]);
+    expect(docsSeen).toHaveLength(1);
+    const seen = docsSeen[0] as Seen;
+    expect(seen.method).toBe("GET");
+    expect(seen.path).toBe("/guide/csv?q=CSV%20export&x=1&x=%E2%9C%93");
+    // Only the fixed headers, the site's own Host and the client's framing reach the site.
+    expect(seen.headers).toEqual({
+      ...lookupRequestHeaders(),
+      host: DOCS_HOST,
+      connection: "close",
+    });
+    const sent = JSON.stringify(seen.headers);
+    expect(sent).not.toContain(AGENT_KEY);
+    expect(sent).not.toContain(COOKIE_MARKER);
+    expect(sent).not.toContain("10.0.0.5");
+    expect(sent).not.toContain("agent-user-agent");
+  });
+
+  it("passes back the status and only the type and length: Set-Cookie and the rest are dropped", async () => {
+    await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/guide`);
+    expect(answer.status).toBe(200);
+    expect(answerHeaders(answer)).toEqual(["content-length", "content-type"]);
+    expect(answer.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(answer.headers["content-length"]).toBe(String(Buffer.byteLength(PAGE)));
+    expect(answer.headers["set-cookie"]).toBeUndefined();
+    expect(JSON.stringify(answer.headers)).not.toContain(COOKIE_MARKER);
+
+    const missing = await lookupRequest(`/lookup/${DOCS_HOST}/missing`);
+    expect(missing.status).toBe(404);
+    expect(missing.body.toString()).toBe("no such page");
+  });
+
+  it("passes a redirect's location back and never follows it", async () => {
+    await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/redirect`);
+    expect(answer.status).toBe(302);
+    expect(answer.headers.location).toBe("/guide/next");
+    expect(answerHeaders(answer)).toEqual(["content-length", "location"]);
+    expect(docsSeen.map((seen) => seen.path)).toEqual(["/redirect"]);
+  });
+
+  it("passes a content encoding and its bytes unchanged", async () => {
+    await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/gzip`);
+    expect(answer.headers["content-encoding"]).toBe("gzip");
+    expect(sha256(answer.body)).toBe(sha256(docsSent[0] as Buffer));
+  });
+
+  it.each(["/big", "/big-chunked"])(
+    "cuts %s at 2 MiB: the body simply ends, with no length",
+    async (page) => {
+      const { logs } = await start();
+      const answer = await lookupRequest(`/lookup/${DOCS_HOST}${page}`);
+      expect(answer.status).toBe(200);
+      expect(answer.aborted).toBe(false);
+      expect(answer.headers["content-length"]).toBeUndefined();
+      expect(answer.body.length).toBe(LOOKUP_BODY_LIMIT);
+      expect(sha256(answer.body)).toBe(sha256(BIG_PAGE.subarray(0, LOOKUP_BODY_LIMIT)));
+      await vi.waitFor(() =>
+        expect(lookupLines(logs)).toContainEqual(
+          expect.objectContaining({ outcome: "cut", bytes: LOOKUP_BODY_LIMIT }),
+        ),
+      );
+    },
+  );
+
+  it("passes a body of exactly 2 MiB whole, with its length", async () => {
+    const { logs } = await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/exact`);
+    expect(answer.headers["content-length"]).toBe(String(LOOKUP_BODY_LIMIT));
+    expect(sha256(answer.body)).toBe(sha256(BIG_PAGE.subarray(0, LOOKUP_BODY_LIMIT)));
+    await vi.waitFor(() =>
+      expect(lookupLines(logs)).toContainEqual(
+        expect.objectContaining({ outcome: "ok", bytes: LOOKUP_BODY_LIMIT }),
+      ),
+    );
+  });
+
+  it.each(["POST", "PUT", "DELETE", "PATCH", "OPTIONS"])(
+    "refuses %s with 405 and sends nothing",
+    async (method) => {
+      const { resolved } = await start();
+      const answer = await lookupRequest(`/lookup/${DOCS_HOST}/guide`, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: `{"note":"${BODY_MARKER}"}`,
+      });
+      expectRefusal(answer, LOOKUP_REFUSALS.method);
+      expect(answer.headers.allow).toBe("GET");
+      expect(resolved).toEqual([]);
+      expect(docsSeen).toEqual([]);
+    },
+  );
+
+  it("refuses HEAD with 405", async () => {
+    await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/guide`, {
+      method: "HEAD",
+    });
+    expect(answer.status).toBe(405);
+    expect(docsSeen).toEqual([]);
+  });
+
+  it.each([
+    ["a length", { "content-length": "11" }],
+    ["chunks", { "transfer-encoding": "chunked" }],
+  ])("refuses a GET with a body sent with %s with 400", async (_label, headers) => {
+    const { resolved } = await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/guide`, {
+      headers,
+      body: BODY_MARKER.slice(0, 11),
+    });
+    expectRefusal(answer, LOOKUP_REFUSALS.body);
+    expect(resolved).toEqual([]);
+    expect(docsSeen).toEqual([]);
+  });
+
+  it("forwards a GET that says its body is empty", async () => {
+    await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/guide`, {
+      headers: { "content-length": "0" },
+    });
+    expect(answer.status).toBe(200);
+  });
+
+  it.each([
+    ["a host off the list", "/lookup/unlisted.example.com/guide"],
+    ["a suffix trick", `/lookup/${DOCS_HOST}.evil.com/guide`],
+    ["a subdomain of a listed host", `/lookup/api.${DOCS_HOST}/guide`],
+    ["a port", `/lookup/${DOCS_HOST}:443/guide`],
+    ["user info", `/lookup/agent@${DOCS_HOST}/guide`],
+    ["an IP literal", `/lookup/${DOCS_ADDRESS}/guide`],
+    ["no host", "/lookup"],
+    ["an empty first segment", `/lookup//${DOCS_HOST}/guide`],
+  ])("refuses %s with 403, resolving nothing", async (_label, path) => {
+    const { resolved, connected } = await start();
+    const answer = await lookupRequest(path);
+    expectRefusal(answer, LOOKUP_REFUSALS.unlisted);
+    expect(resolved).toEqual([]);
+    expect(connected).toEqual([]);
+    expect(docsSeen).toEqual([]);
+  });
+
+  it("refuses a path past 2,000 characters with 400 (D-472)", async () => {
+    const { resolved } = await start();
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/${"a".repeat(2_000)}`);
+    expectRefusal(answer, LOOKUP_REFUSALS.malformed);
+    expect(resolved).toEqual([]);
+  });
+
+  it.each([
+    ["a private address", "private-docs.example.com"],
+    ["an answer with one private address", "mixed-docs.example.com"],
+  ])(
+    "refuses a listed host that resolves to %s with 403, connecting nowhere",
+    async (_label, host) => {
+      const { connected, resolved } = await start();
+      const answer = await lookupRequest(`/lookup/${host}/guide`);
+      expectRefusal(answer, LOOKUP_REFUSALS.blocked);
+      expect(resolved).toEqual([host]);
+      expect(connected).toEqual([]);
+    },
+  );
+
+  it("answers 502 for a listed host that does not resolve", async () => {
+    const { connected } = await start();
+    const answer = await lookupRequest("/lookup/missing-docs.example.com/guide");
+    expectRefusal(answer, LOOKUP_REFUSALS.unreachable);
+    expect(connected).toEqual([]);
+  });
+
+  it("checks the certificate against the host's name, and trusts only the system's authorities in production", async () => {
+    const { connected } = await start();
+    const wrongName = await lookupRequest("/lookup/wrong-name.example.com/guide");
+    expectRefusal(wrongName, LOOKUP_REFUSALS.unreachable);
+    expect(connected).toEqual([`${DOCS_ADDRESS}:443`]);
+    expect(docsSeen).toEqual([]);
+    await harness?.service.stop();
+    harness = undefined;
+
+    await start({ trustTestCa: false });
+    const untrusted = await lookupRequest(`/lookup/${DOCS_HOST}/guide`);
+    expectRefusal(untrusted, LOOKUP_REFUSALS.unreachable);
+    expect(docsSeen).toEqual([]);
+  });
+
+  it("answers 504 when the site does not answer in time", async () => {
+    const { logs } = await start({ lookupTimeoutMs: 200 });
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/slow`);
+    expectRefusal(answer, LOOKUP_REFUSALS.timeout);
+    await vi.waitFor(() =>
+      expect(lookupLines(logs)).toContainEqual(
+        expect.objectContaining({ message: "lookup request", outcome: "timeout" }),
+      ),
+    );
+  });
+
+  it("stops the body short when the site stalls past the deadline", async () => {
+    const { logs } = await start({ lookupTimeoutMs: 300 });
+    const answer = await lookupRequest(`/lookup/${DOCS_HOST}/stall`);
+    expect(answer.status).toBe(200);
+    expect(answer.aborted).toBe(true);
+    expect(answer.body.toString()).toBe("<html><body>part");
+    await vi.waitFor(() =>
+      expect(lookupLines(logs)).toContainEqual(
+        expect.objectContaining({ outcome: "timeout", status: 200, bytes: 16 }),
+      ),
+    );
+  });
+
+  it("refuses lookups past the run's ceiling with 403, counting every forwarded lookup and no refusal", async () => {
+    const { logs } = await start({ maxLookupRequests: 3 });
+    // Refused before any lookup is sent: not counted.
+    expect((await lookupRequest("/lookup/unlisted.example.com/x")).status).toBe(403);
+    expect(
+      (await lookupRequest(`/lookup/${DOCS_HOST}/x`, { method: "POST" })).status,
+    ).toBe(405);
+    // Forwarded, whatever happened next: counted.
+    expect((await lookupRequest(`/lookup/${DOCS_HOST}/missing`)).status).toBe(404);
+    expect((await lookupRequest("/lookup/private-docs.example.com/x")).status).toBe(
+      403,
+    );
+    expect((await lookupRequest(`/lookup/${DOCS_HOST}/guide`)).status).toBe(200);
+    const past = await lookupRequest(`/lookup/${DOCS_HOST}/guide`);
+    expectRefusal(past, LOOKUP_REFUSALS.ceiling);
+    expect(docsSeen).toHaveLength(2);
+    expect(lookupLines(logs)).toContainEqual(
+      expect.objectContaining({
+        message: "lookup refused",
+        reason: "lookup ceiling",
+        maxLookupRequests: 3,
+      }),
+    );
+  });
+
+  it("does not share a ceiling with model requests", async () => {
+    await start({ maxModelRequests: 1, maxLookupRequests: 1 });
+    expect((await lookupRequest(`/lookup/${DOCS_HOST}/guide`)).status).toBe(200);
+    const model = await fetch(proxyUrl("/anthropic/v1/messages"), {
+      method: "POST",
+      body: "{}",
+    });
+    expect(model.status).toBe(200);
+  });
+
+  it("is off when LOOKUP_HOSTS is empty: every lookup gets 403 as off the list, and nothing is resolved", async () => {
+    const { resolved, connected, logs } = await start({ lookupHosts: "" });
+    expectRefusal(
+      await lookupRequest(`/lookup/${DOCS_HOST}/guide`),
+      LOOKUP_REFUSALS.unlisted,
+    );
+    expectRefusal(
+      await lookupRequest(`/lookup/${DOCS_HOST}/guide`, { method: "POST", body: "{}" }),
+      LOOKUP_REFUSALS.unlisted,
+    );
+    expectRefusal(await lookupRequest("/lookup"), LOOKUP_REFUSALS.unlisted);
+    expect(resolved).toEqual([]);
+    expect(connected).toEqual([]);
+    expect(docsSeen).toEqual([]);
+    expect(lookupLines(logs)).toContainEqual(
+      expect.objectContaining({ reason: "lookup route off", host: DOCS_HOST }),
+    );
+  });
+
+  it("is off when no list is given, as for a proxy started before the route existed", async () => {
+    const logs: string[] = [];
+    const proxy = createEgressProxy({
+      runId: RUN_ID,
+      allowedHosts: new Set(),
+      providers: [],
+      credentials: new Map(),
+      maxModelRequests: 1,
+      maxRejectedModelRequests: 1,
+      logger: createLogger("egress-proxy", (line) => logs.push(line)),
+      resolve: () => Promise.reject(new Error("never resolved")),
+    });
+    const service = await startService({
+      name: "egress-proxy",
+      port: 0,
+      logger: createLogger("egress-proxy", () => {}),
+      handle: proxy.handle,
+    });
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${service.port}/lookup/${DOCS_HOST}/guide`,
+      );
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe(LOOKUP_REFUSALS.unlisted.text);
+      expect(logs.join("\n")).toContain('"reason":"lookup route off"');
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("stops the lookup when the agent goes away", async () => {
+    const { logs } = await start();
+    await new Promise<void>((resolve, reject) => {
+      const request = httpRequest({
+        host: "127.0.0.1",
+        port: harness?.service.port,
+        path: `/lookup/${DOCS_HOST}/slow`,
+        agent: false,
+      });
+      request.on("error", () => resolve());
+      request.on("response", () => reject(new Error("answered")));
+      request.end();
+      void vi
+        .waitFor(() => expect(docsSeen).toHaveLength(1))
+        .then(() => request.destroy());
+    });
+    await vi.waitFor(() =>
+      expect(lookupLines(logs)).toContainEqual(
+        expect.objectContaining({
+          message: "lookup request",
+          outcome: "client closed",
+        }),
+      ),
+    );
+  });
+
+  it("logs the host, status, outcome, bytes, duration and count, and refusals with the host and reason: never a path, query, header value or body", async () => {
+    const { logs } = await start();
+    const secretPath = `/${PATH_MARKER}/guide?q=${QUERY_MARKER}&token=${AGENT_KEY}`;
+    await lookupRequest(`/lookup/${DOCS_HOST}${secretPath}`, {
+      headers: AGENT_HEADERS,
+    });
+    await lookupRequest(`/lookup/unlisted.example.com${secretPath}`, {
+      headers: AGENT_HEADERS,
+    });
+    await lookupRequest(`/lookup/${PATH_MARKER}:443${secretPath}`);
+    await lookupRequest(`/lookup/${DOCS_HOST}${secretPath}`, {
+      method: "POST",
+      headers: AGENT_HEADERS,
+      body: BODY_MARKER,
+    });
+    await lookupRequest(`/lookup/private-docs.example.com${secretPath}`);
+    await lookupRequest(`/lookup/${DOCS_HOST}${secretPath}#${PATH_MARKER}`);
+    await vi.waitFor(() =>
+      expect(
+        lookupLines(logs).filter((e) => e.message === "lookup request"),
+      ).toHaveLength(2),
+    );
+
+    const text = logs.join("\n");
+    for (const marker of [
+      PATH_MARKER,
+      QUERY_MARKER,
+      AGENT_KEY,
+      COOKIE_MARKER,
+      BODY_MARKER,
+    ]) {
+      expect(text).not.toContain(marker);
+    }
+    expect(text).not.toContain("guide");
+    expect(text).not.toContain("agent-user-agent");
+    const lines = lookupLines(logs);
+    const served = lines.find((e) => e.outcome === "ok");
+    expect(served).toMatchObject({
+      message: "lookup request",
+      runId: RUN_ID,
+      host: DOCS_HOST,
+      status: 200,
+      bytes: Buffer.byteLength(PAGE),
+      count: 1,
+    });
+    expect(Object.keys(served ?? {}).sort()).toEqual([
+      "bytes",
+      "count",
+      "durationMs",
+      "host",
+      "level",
+      "message",
+      "outcome",
+      "runId",
+      "service",
+      "status",
+      "time",
+    ]);
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        message: "lookup refused",
+        host: "unlisted.example.com",
+        reason: "host not listed",
+      }),
+    );
+    // A malformed host is never logged: only that it was malformed.
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        message: "lookup refused",
+        reason: "invalid host name",
+      }),
+    );
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        message: "lookup refused",
+        host: DOCS_HOST,
+        reason: "method not allowed",
+        method: "POST",
+      }),
+    );
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        message: "lookup request",
+        host: "private-docs.example.com",
+        outcome: "blocked address",
+        count: 2,
+      }),
+    );
+  });
+
+  it("leaves the tunnels and the state API route as they were", async () => {
+    const { service } = await start();
+    const { status, socket } = await connectThrough(service.port, `${DOCS_HOST}:443`);
+    socket.destroy();
+    // A lookup host is not a CONNECT host.
+    expect(status).toBe(403);
+    const state = await fetch(proxyUrl("/state-api/v1/runs"));
+    expect(state.status).toBe(200);
   });
 });

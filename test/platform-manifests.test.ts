@@ -1107,6 +1107,8 @@ describe("the shared Windmill proxy (unit: D-284, D-328, O-101)", () => {
     expect([...config.allowedHosts]).toEqual([PLATFORM.windmill.host]);
     expect(config.providers).toEqual([]);
     expect(config.stateApi).toBeUndefined();
+    // No documentation lookup route either (ADR 0119 slice 4a).
+    expect(config.lookupHosts.size).toBe(0);
     expect(config.credentials.size).toBe(0);
     expect(config.port).toBe(WINDMILL_PROXY.port);
   });
