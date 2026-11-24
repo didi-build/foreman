@@ -72,6 +72,8 @@ describe("egress proxy process (integration: container conventions, ADR 0111)", 
         runId: "run_process_test",
         allowedHosts: ["github.com"],
         providers: ["anthropic"],
+        lookupHosts: [],
+        maxLookupRequests: 40,
       });
 
       proxy.child.kill("SIGTERM");

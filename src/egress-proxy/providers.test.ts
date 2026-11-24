@@ -55,6 +55,11 @@ describe("parseProviders (unit: egress proxy provider settings, ADR 0106 section
       [{ ...anthropic, name: "state-api" }],
       /invalid name/,
     ],
+    [
+      "the reserved name lookup (ADR 0119 slice 4a)",
+      [{ ...anthropic, name: "lookup" }],
+      /invalid name/,
+    ],
     ["a repeated name", [anthropic, anthropic], /entry 2 repeats/],
     [
       "plain http",

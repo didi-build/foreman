@@ -4,7 +4,11 @@
 // no privilege escalation, drop ALL, seccomp RuntimeDefault, no service account token, no host
 // access, limits on every container) and runs on the tainted agents pool (D-193).
 import { secretEnvName } from "../../../service-kit/config.ts";
-import { parseAllowedHosts } from "../../../egress-proxy/hosts.ts";
+import { canonicalHost, parseAllowedHosts } from "../../../egress-proxy/hosts.ts";
+import {
+  DEFAULT_MAX_LOOKUP_REQUESTS,
+  LOOKUP_PREFIX,
+} from "../../../egress-proxy/lookup.ts";
 import { parseProviders } from "../../../egress-proxy/providers.ts";
 import {
   STATE_API_PREFIX,
@@ -154,6 +158,13 @@ export interface KubernetesRunSpec {
   /** QA's review only: the GitHub hosts its fetch step may reach. */
   fetchAllowedHosts?: string[];
   /**
+   * The hosts the run's documentation lookup may read through its proxy's `/lookup` route (ADR
+   * 0119 slice 4a, D-460): exact canonical names, 1 to `MAX_LOOKUP_HOSTS`. Absent turns the route
+   * off and gives the agent no FOREMAN_LOOKUP_URL. The Developer and the Designer only: QA,
+   * Council and Triage reach nothing outside (ADR 0106 section 3, D-471). No flow sets it yet.
+   */
+  lookupHosts?: string[];
+  /**
    * QA's visual comparison (task type `qa:visual`, D-242): it reads only the images in its task
    * file, so it has no fetch step, no workspace and no GitHub token (least privilege, N-57). A
    * handle kept before this field existed is a QA review.
@@ -209,6 +220,8 @@ export const NON_PUBLIC_IPV4 = [
 ];
 
 const NO_CONNECT_HOSTS: readonly AgentRole[] = ["qa", "council", "triage"];
+/** The most hosts a run's documentation lookup may list. */
+export const MAX_LOOKUP_HOSTS = 50;
 const TIERS: readonly ServiceTier[] = ["standard", "flex", "priority"];
 const NEEDS_REPOSITORY: readonly AgentRole[] = ["developer", "designer", "qa"];
 
@@ -253,6 +266,7 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
     );
   }
   parseAllowedHosts(spec.allowedHosts.join(","));
+  if (spec.lookupHosts !== undefined) checkLookupHosts(spec.role, spec.lookupHosts);
   if (NEEDS_REPOSITORY.includes(spec.role) && !REPOSITORY.test(spec.repository ?? "")) {
     throw new Error(`a ${spec.role} run needs its repository as owner/name`);
   }
@@ -313,6 +327,32 @@ export function checkRunSpec(spec: KubernetesRunSpec, limits: RunLimits): void {
     // The OpenCode image cannot reach its model without the provider's API and address.
     throw new Error(`a ${spec.role} run needs its provider's API`);
   }
+}
+
+/**
+ * A run's documentation lookup hosts (ADR 0119 slice 4a): only for the roles that may reach
+ * outside hosts, 1 to MAX_LOOKUP_HOSTS, each already in its canonical form (lower case, no
+ * trailing dot, no wildcard, port, path or IP address) and listed once. Errors name the
+ * entry's position, never its text.
+ */
+function checkLookupHosts(role: AgentRole, hosts: readonly string[]): void {
+  if (NO_CONNECT_HOSTS.includes(role)) {
+    throw new Error(`a ${role} run has no documentation lookup`);
+  }
+  if (!Array.isArray(hosts) || hosts.length === 0 || hosts.length > MAX_LOOKUP_HOSTS) {
+    throw new Error(`lookupHosts must list 1 to ${MAX_LOOKUP_HOSTS} hosts`);
+  }
+  const seen = new Set<string>();
+  hosts.forEach((host, index) => {
+    if (typeof host !== "string" || canonicalHost(host) !== host) {
+      throw new Error(
+        `lookupHosts entry ${index + 1} is not an exact host name (lower case, no wildcard, port or IP address)`,
+      );
+    }
+    if (seen.has(host))
+      throw new Error(`lookupHosts entry ${index + 1} repeats a host`);
+    seen.add(host);
+  });
 }
 
 export function checkSettings(settings: KubernetesRunSettings): void {
@@ -453,6 +493,13 @@ export function agentStage(
       MAX_MODEL_REQUESTS: String(limits.maxTurns * 2),
       MAX_REJECTED_MODEL_REQUESTS: String(spec.maxRejectedModelRequests),
       STATE_API_UPSTREAM: settings.stateApi.upstream,
+      // The lookup route only when the run has its hosts (ADR 0119 slice 4a): unset, it is off.
+      ...(spec.lookupHosts === undefined
+        ? {}
+        : {
+            LOOKUP_HOSTS: spec.lookupHosts.join(","),
+            MAX_LOOKUP_REQUESTS: String(DEFAULT_MAX_LOOKUP_REQUESTS),
+          }),
     },
     proxySecretEnv: modelSecretEnv(spec, names.modelSecret),
     clientJob: (proxyAddress) =>
@@ -833,6 +880,10 @@ function agentEnv(
     TMPDIR: "/tmp",
   };
   if (spec.repository) plain.FOREMAN_REPOSITORY = spec.repository;
+  // The documentation lookup route on the run's proxy, only when the run has its hosts.
+  if (spec.lookupHosts !== undefined) {
+    plain.FOREMAN_LOOKUP_URL = `${proxyBase}${LOOKUP_PREFIX}`;
+  }
   if (spec.role === "qa") {
     plain.FOREMAN_HEAD_SHA = spec.headSha ?? "";
     plain.FOREMAN_PR_NUMBER = String(spec.prNumber ?? "");
