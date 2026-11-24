@@ -7,7 +7,12 @@ import { join } from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { StoreConflictError, type Node, type Store } from "../../src/core/store.ts";
+import {
+  StoreConflictError,
+  type Decision,
+  type Node,
+  type Store,
+} from "../../src/core/store.ts";
 import {
   MigrationError,
   applyMigrations,
@@ -583,6 +588,96 @@ describe.skipIf(!adminUrl)(
         [linked.id, "active"],
         [direct.id, "reversed"],
       ]);
+    });
+
+    it("lists a project's newest decisions with their total, by status and leaving out one node's (ADR 0119 slice 3a)", async () => {
+      const own = id();
+      await store.insertProject({
+        id: own,
+        slug: "run-context",
+        name: "Run context",
+        repo: "didi-build/run-context",
+        linearProjectId: null,
+        galleryPathOverride: null,
+        privilegedPathsExtra: [],
+        prodRequiresApproval: true,
+        stagingUrl: null,
+        deployTarget: "cloudflare",
+        createdAt: T0,
+      });
+      const idea = node({ projectId: own, type: "idea", track: null });
+      const item = node({ projectId: own });
+      await store.insertNode(idea);
+      await store.insertNode(item);
+      const at = (minute: number) => new Date(T0.getTime() + minute * 60_000);
+      const decision = (
+        nodeId: string | null,
+        minute: number,
+        projectId = own,
+      ): Decision => ({
+        id: id(),
+        projectId,
+        nodeId,
+        kind: "answer",
+        scope: { pageUrl: "kept in the store only" },
+        textVerbatim: `at ${minute}`,
+        byActor: "didi",
+        recordedAt: at(minute),
+      });
+      const onIdea = decision(idea.id, 1);
+      const onProject = decision(null, 2);
+      const onItem = decision(item.id, 3);
+      const reversed = decision(item.id, 4);
+      // Two at the same time: the larger id comes first.
+      const tieA = decision(item.id, 5);
+      const tieB = decision(item.id, 5);
+      const elsewhere = decision(null, 6, projectId);
+      for (const d of [onIdea, onProject, onItem, reversed, tieA, tieB, elsewhere]) {
+        await store.insertDecision(d);
+      }
+      await store.insertDecisionEvent({
+        id: id(),
+        decisionId: reversed.id,
+        kind: "reversed",
+        byDecisionId: null,
+        reason: "changed",
+        recordedBy: "runner",
+        recordedAt: at(7),
+      });
+
+      const all = await store.listProjectDecisions({ projectId: own, limit: 10 });
+      expect(all.total).toBe(6);
+      expect(all.decisions.map((d) => d.id)).toEqual([
+        tieB.id,
+        tieA.id,
+        reversed.id,
+        onItem.id,
+        onProject.id,
+        onIdea.id,
+      ]);
+      expect(all.decisions[2]?.status).toBe("reversed");
+      const newest = await store.listProjectDecisions({
+        projectId: own,
+        limit: 2,
+        status: "active",
+        notRecordedOn: idea.id,
+      });
+      expect(newest).toEqual({
+        decisions: [
+          expect.objectContaining({ id: tieB.id, status: "active" }),
+          expect.objectContaining({ id: tieA.id }),
+        ],
+        total: 4,
+      });
+      const none = await store.listProjectDecisions({
+        projectId: own,
+        limit: 0,
+        status: "superseded",
+      });
+      expect(none).toEqual({ decisions: [], total: 0 });
+      expect(
+        (await store.listProjectDecisions({ projectId: own, limit: 0 })).total,
+      ).toBe(6);
     });
 
     it("lists a node's runs oldest first (M2.2)", async () => {

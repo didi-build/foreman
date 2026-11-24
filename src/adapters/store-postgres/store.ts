@@ -382,6 +382,29 @@ function ops(db: Queryable): StoreOps {
       );
       return result.map(toCurrentDecision);
     },
+    async listProjectDecisions(filter) {
+      // `node_id is distinct from` keeps the decisions recorded on no node.
+      const where = `project_id = $1 and ($2::text is null or status = $2)
+         and ($3::uuid is null or node_id is distinct from $3)`;
+      const values = [
+        filter.projectId,
+        filter.status ?? null,
+        filter.notRecordedOn ?? null,
+      ];
+      const counted = await one(
+        `select count(*)::int as n from factory.decisions_current where ${where}`,
+        values,
+      );
+      const result = await rows(
+        `select * from factory.decisions_current where ${where}
+         order by recorded_at desc, id desc limit $4`,
+        [...values, filter.limit],
+      );
+      return {
+        decisions: result.map(toCurrentDecision),
+        total: Number(counted?.n ?? 0),
+      };
+    },
     async linkNodeToDecision(nodeId, decisionId) {
       await exec(
         `insert into factory.node_decisions (node_id, decision_id) values ($1, $2)

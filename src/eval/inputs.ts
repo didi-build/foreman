@@ -16,6 +16,12 @@
 // - The Council: `escalationInput` over the escalation as the runner gathers it, and the bot
 //   file's escalation schema.
 //
+// QA's and Triage's inputs end with the short summary of the project's records, as a real run's
+// do (ADR 0119 slice 3a, src/core/run-context.ts). The case format holds no project records yet,
+// so each case's summary says "No records yet." (`emptyRunContext`). This is a known gap: a later
+// slice gives cases their own records, so the test also measures runs with a summary. The Council
+// gets no summary, as in real runs.
+//
 // The image's fixed frame (the system text around the instructions, and the facts it adds after
 // the fenced input) is applied when the set runs, by the weekly test job with the Messages API
 // image's own frame builders (src/agent-images/eval/week.ts, D-432).
@@ -33,6 +39,7 @@ import { escalationInput } from "../core/council-input.ts";
 import type { OutputSchema } from "../core/output-schema.ts";
 import type { PullRequestChange } from "../core/github.ts";
 import { checkRepoMap, type RepoMap } from "../core/repo-map.ts";
+import { contextSection, emptyRunContext } from "../core/run-context.ts";
 import { taskInput } from "../core/task-input.ts";
 import { triageInput } from "../core/triage.ts";
 import type { CouncilCase, EvalCase, QaCase, TriageCase } from "./cases.ts";
@@ -77,6 +84,12 @@ export type RunFor<C extends EvalCase> = C extends QaCase
     ? TriageRun
     : CouncilRun;
 
+/** The summary a case's input ends with: the empty one, until cases carry records (slice 3a). */
+function emptySummary(taskType: string) {
+  const context = emptyRunContext(taskType);
+  return context ? contextSection(context) : null;
+}
+
 function schemaOf(bot: BotFile, kind: string): OutputSchema {
   const schema = bot.outputSchemas?.[kind];
   if (!schema) throw new Error(`the ${bot.role} bot file has no ${kind} output schema`);
@@ -100,6 +113,7 @@ function qaRun(c: QaCase, bots: BotFiles, cases: readonly EvalCase[]): QaRun {
     prNumber: c.input.pullRequest,
     headSha: c.input.headSha,
     change,
+    context: emptySummary(c.taskType),
   });
   const evidenceIds = c.input.evidence.map((e) => e.id);
   const task: AgentTaskFile = {
@@ -139,6 +153,7 @@ function triageRun(c: TriageCase, bots: BotFiles): TriageRun {
       map,
       lastRejection: null,
       councilNote: null,
+      context: emptySummary(c.taskType),
     }),
     outputSchema,
   };

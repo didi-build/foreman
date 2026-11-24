@@ -87,7 +87,7 @@ export const DIRECTION_LABELS = {
 } as const;
 
 /** The agent roles whose `product_direction` decisions the read shows, labelled (D-286). */
-const DIRECTION_RECORDERS: ReadonlySet<string> = new Set(["council", "triage"]);
+export const DIRECTION_RECORDERS: ReadonlySet<string> = new Set(["council", "triage"]);
 
 export interface ApprovedDirectionView {
   label: typeof DIRECTION_LABELS.approved | typeof DIRECTION_LABELS.councilAccepted;

@@ -130,6 +130,8 @@ describe("the M3.5 success path (flow: fake adapters, D-228)", () => {
     expect(start.input).toContain("> Add the export button");
     expect(start.input).toContain("failure: 3");
     expect(start.input).toContain("report_refused");
+    // The Council gets no summary of the project's records until slice 6 (ADR 0119).
+    expect(start.input).not.toContain("# Context from this project");
     // A second trigger starts no second run.
     expect((await reconcileFlow(f.deps)).councilRuns).toMatchObject([
       { step: "running" },

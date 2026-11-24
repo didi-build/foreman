@@ -11,6 +11,7 @@
 import { CHANGE_STATUSES, type PullRequestChange } from "./github.ts";
 import type { QaFinding, VisualFindingPayload } from "./guards/evidence.ts";
 import { LibraryError } from "./library.ts";
+import type { ContextSection } from "./run-context.ts";
 import type { AgentRole, Json, Node, Project, StoreOps } from "./store.ts";
 
 /** The work item fields the task input reads from `nodes.body`. */
@@ -117,6 +118,12 @@ export interface TaskInputContext {
    * yet. Left out for every other role.
    */
   approvedOption?: ApprovedOption | null;
+  /**
+   * The short summary of the project's records (ADR 0119 slice 3a, D-459), as `contextSection`
+   * renders it (./run-context.ts), put after every other section. Left out or null: no section,
+   * as for a task type that gets none.
+   */
+  context?: ContextSection | null;
 }
 
 /** The option Didi approved: its name, its folder and the commit it was captured at. */
@@ -523,7 +530,8 @@ function approvedOptionText(option: ApprovedOption | null): string {
  * back (a failed QA round's findings, or the failed staging check or deploy). QA gets the pull request and the head
  * commit to review, which the runner set (ADR 0107), and the pull request's change at that head:
  * its changed files and their diff (D-431). Triage gets the item only. A Council run
- * gets its question instead (src/core/council-input.ts, D-228).
+ * gets its question instead (src/core/council-input.ts, D-228). Last comes the short summary of
+ * the project's records, when the run's task type gets one (ADR 0119 slice 3a).
  */
 export function taskInput(context: TaskInputContext): string {
   const item = readItemBody(context.node.body);
@@ -596,6 +604,7 @@ export function taskInput(context: TaskInputContext): string {
       changeSection(context.change),
     );
   }
+  if (context.context) parts.push(context.context);
   return `${parts.join("\n\n")}\n`;
 }
 
