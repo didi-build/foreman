@@ -508,6 +508,8 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
       );
       expect(problems, role).toEqual([]);
       expect(bots?.[role].docsLookup, role).toBe(true);
+      // The core reads it from the role's profile at the run's end (ADR 0119 slice 4c).
+      if (bots) expect(botProfiles(bots)[role].docsLookup, role).toBe(true);
     }
     const problems = (role: (typeof BOT_ROLES)[number], value: unknown) =>
       check(
@@ -530,6 +532,7 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     const bots = readBotFiles();
     for (const role of BOT_ROLES) {
       expect(bots[role].docsLookup, role).toBeUndefined();
+      expect(botProfiles(bots)[role], role).not.toHaveProperty("docsLookup");
       expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
         "docs_lookup",
       );

@@ -298,6 +298,16 @@ export interface Setting {
   updatedAt: Date;
 }
 
+/** One logged change of a setting (`settings_log`, append-only, written by its trigger). */
+export interface SettingChange {
+  key: string;
+  /** Null when the change created the setting. */
+  oldValue: Json | null;
+  newValue: Json;
+  changedBy: string;
+  changedAt: Date;
+}
+
 export interface SpecVersion {
   version: string;
   contentHash: string;
@@ -569,6 +579,15 @@ export interface StoreOps {
   /** Every request on the topic, open or closed, oldest first. */
   listGateRequests(projectId: string, topicKey: string): Promise<GateRequest[]>;
   /**
+   * Every request on the topic in any project, open or closed, oldest first (ADR 0119 slice 4c: a
+   * documentation site is asked about once across projects). With `{prefix: true}`, every
+   * request whose topic starts with `topicKey`.
+   */
+  listGateRequestsByTopic(
+    topicKey: string,
+    match?: { prefix: true },
+  ): Promise<GateRequest[]>;
+  /**
    * Every request on the node, open or closed, of any topic, oldest first (D-305, D-308: the
    * cancel's move closes the item's open requests).
    */
@@ -606,6 +625,14 @@ export interface StoreOps {
 
   getSetting(key: string): Promise<Setting | null>;
   setSetting(setting: Setting): Promise<void>;
+  /**
+   * Locks the setting's row until the transaction ends, so two writers that read a setting and
+   * write it back take turns (the trusted documentation list, ADR 0119 slice 4c). Returns false
+   * when the setting does not exist, which locks nothing. Use inside `transaction`.
+   */
+  lockSetting(key: string): Promise<boolean>;
+  /** The setting's logged changes, oldest first (`settings_log`). */
+  listSettingChanges(key: string): Promise<SettingChange[]>;
 
   insertDecisionPointRecord(record: DecisionPointRecord): Promise<void>;
   insertDecisionPointOutcome(outcome: DecisionPointOutcome): Promise<void>;

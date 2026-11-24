@@ -990,7 +990,10 @@ export function instructionsFor(bot: BotFile, taskType: string): string {
   return bot.runInstructions[taskType] as string;
 }
 
-/** What the core records and reads for each role: runtime, version, Council and QA schemas. */
+/**
+ * What the core records and reads for each role: runtime, version, Council and QA schemas, and
+ * whether the role's runs have the documentation lookup.
+ */
 export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
   const profiles = {} as Record<AgentRole, BotProfile>;
   for (const role of BOT_ROLES) {
@@ -1002,6 +1005,7 @@ export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
       bot.outputSchemas
         ? { outputSchemas: bot.outputSchemas }
         : {}),
+      ...(bot.docsLookup ? { docsLookup: true as const } : {}),
     };
   }
   return profiles;

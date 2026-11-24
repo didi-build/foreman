@@ -27,6 +27,7 @@ import {
   toModelEvalResult,
   toScanRecord,
   toSetting,
+  toSettingChange,
   toSpecVersion,
   toTransition,
 } from "./rows.ts";
@@ -469,6 +470,17 @@ function ops(db: Queryable): StoreOps {
       );
       return result.map(toGateRequest);
     },
+    async listGateRequestsByTopic(topicKey, match) {
+      // No index: the table is small, and only the runner's documentation site requests read
+      // it this way (ADR 0119 slice 4c).
+      const result = await rows(
+        match?.prefix
+          ? "select * from factory.gate_requests where starts_with(topic_key, $1) order by created_at, id"
+          : "select * from factory.gate_requests where topic_key = $1 order by created_at, id",
+        [topicKey],
+      );
+      return result.map(toGateRequest);
+    },
     async listGateRequestsForNode(nodeId) {
       const result = await rows(
         "select * from factory.gate_requests where node_id = $1 order by created_at, id",
@@ -653,6 +665,21 @@ function ops(db: Queryable): StoreOps {
            set value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
         [s.key, json(s.value), s.updatedBy, s.updatedAt],
       );
+    },
+    async lockSetting(key) {
+      // The runner's update grant on settings (migration 0001) covers the row lock.
+      const locked = await rows(
+        "select key from factory.settings where key = $1 for update",
+        [key],
+      );
+      return locked.length === 1;
+    },
+    async listSettingChanges(key) {
+      const result = await rows(
+        "select key, old_value, new_value, changed_by, changed_at from factory.settings_log where key = $1 order by id",
+        [key],
+      );
+      return result.map(toSettingChange);
     },
 
     async insertDecisionPointRecord(d) {

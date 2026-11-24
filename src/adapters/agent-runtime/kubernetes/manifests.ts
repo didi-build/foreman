@@ -161,7 +161,8 @@ export interface KubernetesRunSpec {
    * The hosts the run's documentation lookup may read through its proxy's `/lookup` route (ADR
    * 0119 slice 4a, D-460): exact canonical names, 1 to `MAX_LOOKUP_HOSTS`. Absent turns the route
    * off and gives the agent no FOREMAN_LOOKUP_URL. The Developer and the Designer only: QA,
-   * Council and Triage reach nothing outside (ADR 0106 section 3, D-471). No flow sets it yet.
+   * Council and Triage reach nothing outside (ADR 0106 section 3, D-471). `buildKubernetesTask`
+   * sets it to the task file's `docsLookupHosts`, from the trusted list (slice 4c).
    */
   lookupHosts?: string[];
   /**
