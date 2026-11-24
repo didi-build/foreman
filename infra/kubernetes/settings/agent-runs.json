@@ -6,7 +6,7 @@
   "runSettings": {
     "fetchImage": "ghcr.io/didi-build/foreman-qa-fetch@sha256:9c5f6e6da938bda1fe568aa91257cdd6e1cbe16f58e968fa0543e472e88e2a87",
     "repoMapImage": "ghcr.io/didi-build/foreman-repo-map@sha256:502484006a20c3a6462ad8d38f6480a1994f3be51ae710c0d9513485398deaaa",
-    "evalImage": "ghcr.io/didi-build/foreman-eval@sha256:569527f97156c461304ba0227fae1b650559412915f15b8d8e64f3abccb3b5bc",
+    "evalImage": "ghcr.io/didi-build/foreman-eval@sha256:dbaf3d54467c4707f3bfa68b713f527ebde400badaaf30e9a9bd2670e30ffbf1",
     "proxyPort": 8080,
     "runAsUser": 1000,
     "resources": {
