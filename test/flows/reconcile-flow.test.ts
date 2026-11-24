@@ -102,6 +102,7 @@ describe("reconcile flow (flow: fake adapters, build plan M3.1)", () => {
       screenshots: { read: notUsed },
       repoFolders: { folderId: notUsed },
       repoMaps: { read: notUsed },
+      qaSites: { read: notUsed },
       repoScans: { scan: notUsed },
       projectSettings: {
         standardQuota: notUsed,
@@ -152,6 +153,7 @@ function stagingFlowDeps(t: Awaited<ReturnType<typeof setupStaging>>): FlowDeps 
     screenshots: { read: notUsed },
     repoFolders: { folderId: notUsed },
     repoMaps: { read: notUsed },
+    qaSites: { read: notUsed },
     repoScans: { scan: notUsed },
     projectSettings: { standardQuota: notUsed, readFile: notUsed, createFile: notUsed },
     projectWorkflows: { start: notUsed },

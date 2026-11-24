@@ -344,6 +344,57 @@ describe("task file (unit: the same rules as the runner)", () => {
       expect(parse("triage", triage)).not.toHaveProperty("docsLookupHosts");
     });
   });
+
+  describe("the browser (ADR 0119 slice 5c)", () => {
+    const schema = { type: "object" };
+    const parse = (role: Parameters<typeof parseTask>[0], task: object) =>
+      parseTask(role, JSON.stringify(task));
+    const builder = {
+      foremanTask: 1,
+      instructions: "Build.",
+      input: "The item.",
+      allowedTools: ["Read"],
+      nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      branch: "foreman/1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    };
+    const structured = {
+      foremanTask: 1,
+      instructions: "Decide.",
+      input: "The question.",
+      outputSchema: schema,
+    };
+
+    it("is taken as true on QA's review only", () => {
+      expect(parse("qa", { ...qaTask, browser: true })).toEqual({
+        ...qaTask,
+        browser: true,
+      });
+      expect(parse("qa", qaTask)).not.toHaveProperty("browser");
+    });
+
+    it("is refused on QA's visual comparison, the Council, Triage, the Developer and the Designer, and as any value but true", () => {
+      const refused = /^only QA's review \(qa:review\) has a browser$/;
+      expect(() =>
+        parse("qa", {
+          ...qaTask,
+          outputSchema: schema,
+          images: [{ label: "Image 1", mediaType: "image/png", data: "iVBORw0KGgo=" }],
+          browser: true,
+        }),
+      ).toThrow(refused);
+      for (const role of ["council", "triage"] as const) {
+        expect(() => parse(role, { ...structured, browser: true })).toThrow(refused);
+      }
+      for (const role of ["developer", "designer"] as const) {
+        expect(() => parse(role, { ...builder, browser: true })).toThrow(refused);
+      }
+      for (const value of [false, "true", 1, null, {}]) {
+        expect(() => parse("qa", { ...qaTask, browser: value })).toThrow(
+          /^a task's browser must be true when given$/,
+        );
+      }
+    });
+  });
 });
 
 describe("result line (unit: round trip through the runtime's parser, ADR 0106 section 4)", () => {

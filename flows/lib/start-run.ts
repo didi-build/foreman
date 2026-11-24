@@ -20,7 +20,12 @@
 //    instead: the run's repository, the pull request and the fixed comment; one no longer due
 //    refuses here. A Developer, Designer or QA review input, and Triage's, ends with the short
 //    summary of the project's records, read from the store for the run's task type (ADR 0119
-//    slice 3a, src/core/run-context.ts); the other task types get none.
+//    slice 3a, src/core/run-context.ts); the other task types get none. A QA review whose bot
+//    file declares the browser (ADR 0119 slice 5c) reads and checks the head's site
+//    (`checkQaSite`, src/core/qa-site.ts): with a site, the run gets a browser pod with it; with
+//    none, its input says "No browser in this run: <reason>." and the run starts as without the
+//    browser (D-479). A read that fails throws here, as the change's does. Without the
+//    declaration no site is read.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
@@ -48,6 +53,7 @@ import {
 } from "../../src/core/visual-call.ts";
 import { createFailures } from "../../src/core/failures.ts";
 import { createPullRequestCloses } from "../../src/core/pr-close.ts";
+import { checkQaSite, type QaSiteCheck } from "../../src/core/qa-site.ts";
 import { contextSection, gatherRunContext } from "../../src/core/run-context.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { createTriage } from "../../src/core/triage.ts";
@@ -211,6 +217,14 @@ export async function startRun(
     input.role === "qa" && !isVisual && input.prNumber && input.headSha
       ? await deps.github.readChange(project.repo, input.prNumber, input.headSha)
       : undefined;
+  // QA's browser (ADR 0119 slice 5c): the head's site, read only for a bot file that declares it.
+  const site: QaSiteCheck | null =
+    change && input.headSha && deps.bots.qa.browser === true
+      ? await checkQaSite(
+          { store: deps.store, sites: deps.qaSites },
+          { nodeId: node.id, repo: project.repo, headSha: input.headSha },
+        )
+      : null;
   // The short summary of the project's records, for the run's task type (ADR 0119 slice 3a,
   // D-459, D-468). Triage gathers its own; the close, Council and visual inputs get none.
   const summary =
@@ -238,6 +252,8 @@ export async function startRun(
               branch: branch ?? undefined,
               returned,
               ...(change ? { change } : {}),
+              // No site: the run says why, as data, and starts as without the browser (D-479).
+              ...(site && !site.browser ? { noBrowser: site.reason } : {}),
               context: summary ? contextSection(summary) : null,
               // The Designer's step comes from the item's state (D-238): the state as the contracts
               // name it and its label, never a database id. It also gets the option Didi approved,
@@ -288,6 +304,7 @@ export async function startRun(
       ...(council ? { outputSchema: council.outputSchema } : {}),
       ...(council?.images ? { images: council.images } : {}),
       ...(visual ? { outputSchema: visual.outputSchema, images: visual.images } : {}),
+      ...(site?.browser ? { site: site.site } : {}),
     });
     handle = await deps.runtime.start(task, limitsFor(deps, input.role, run.taskType));
   } catch (error) {

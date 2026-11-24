@@ -271,6 +271,8 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         ["staging run", () => deps.stagingBuilds.getRun("didi-build/x", 1)],
         ["latest build", () => deps.stagingBuilds.latestMainBuild("didi-build/x")],
         ["site archive", () => deps.stagingBuilds.siteArchive("didi-build/x", 1)],
+        // The site QA's browser reads from the preview check's run (ADR 0119 slice 5c, O-174).
+        ["qa site", () => deps.qaSites.read("didi-build/x", 1)],
         [
           "workflow runs",
           () => deps.github.listWorkflowRuns("didi-build/x", "ci.yml", "b".repeat(40)),

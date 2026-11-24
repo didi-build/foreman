@@ -4,7 +4,8 @@
 // gets only the route's provider, so a run can reach no other provider and its proxy holds no
 // other provider's credential. The instructions and tools come from the bot file; the input is
 // the core's (src/core/task-input.ts). Credential values pass through to `start` and are never
-// kept here.
+// kept here. QA's review with a site (ADR 0119 slice 5c) gets the browser: the run's spec and its
+// task file say so, and the site's zip goes to `start` for the browser pod's Secret alone.
 import type { RunCapacityLimits } from "../../../core/runs.ts";
 import type { AgentRole, Run } from "../../../core/store.ts";
 import { PUSHING_ROLES, runBranch } from "../../../core/task-input.ts";
@@ -77,6 +78,12 @@ export interface KubernetesTaskParts {
    * option screenshots (D-270).
    */
   images?: TaskImage[];
+  /**
+   * QA's review only: the site the runner read and checked for the head (ADR 0119 slices 5a and
+   * 5c), as GitHub's zip. Given, the run gets a browser pod with it; the bytes go to `start` for
+   * the site Secret and never into the task file.
+   */
+  site?: Uint8Array;
   stateApiToken: string;
   /**
    * Developer and Designer: the agent pod. QA's review: the fetch pod. QA's visual comparison,
@@ -158,6 +165,14 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
   } else if (parts.images !== undefined) {
     throw new Error(`a ${role} run carries no images`);
   }
+  // QA's review alone runs a browser (D-476): never the visual comparison or another role.
+  const browser = parts.site !== undefined;
+  if (browser) {
+    if (role !== "qa" || parts.images !== undefined) {
+      throw new Error("only QA's review (qa:review) runs a browser");
+    }
+    task.browser = true;
+  }
 
   return {
     runId: run.id,
@@ -175,6 +190,7 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
           ...(parts.images !== undefined
             ? { visual: true as const }
             : { fetchAllowedHosts: [...(bot.fetchAllowedHosts ?? [])] }),
+          ...(browser ? { browser: true as const } : {}),
         }
       : {}),
     allowedHosts: [...bot.allowedHosts],
@@ -193,5 +209,6 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
       models,
     },
     task,
+    ...(parts.site !== undefined ? { site: parts.site } : {}),
   };
 }

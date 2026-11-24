@@ -1,16 +1,18 @@
 // Seam: unit. A run's input and branch (D-213, N-33, ADR 0107): which sections each role gets,
 // the item text kept as quoted data, the sentence for each missing field, the branch rule, the
-// QA evidence a verdict may cite, QA's change with its bounds (D-431), and a malformed body
-// refused by field name.
+// QA evidence a verdict may cite, QA's change with its bounds (D-431), the line that says QA's
+// run has no browser (D-479), and a malformed body refused by field name.
 import { describe, expect, it } from "vitest";
 
 import type { ChangedFile, PullRequestChange } from "./github.ts";
 import { LibraryError } from "./library.ts";
 import { createMemoryStore } from "./memory-store.ts";
+import { QA_SITE_REASONS, type QaSiteReason } from "./qa-site.ts";
 import { contextSection, emptyRunContext } from "./run-context.ts";
 import type { Json } from "./store.ts";
 import {
   CHANGE_LIMITS,
+  noBrowserLine,
   qaEvidenceIds,
   readItemBody,
   RETURN_LIMITS,
@@ -831,6 +833,68 @@ describe("the summary of the project's records (unit, ADR 0119 slice 3a)", () =>
         context,
       });
       expect(input).not.toContain("# Context from this project");
+    }
+  });
+});
+
+describe("QA's run without a browser (unit, ADR 0119 slice 5c, D-479)", () => {
+  const qa = (noBrowser?: QaSiteReason) =>
+    taskInput({
+      role: "qa",
+      node: node({}),
+      project,
+      prNumber: 7,
+      headSha: HEAD,
+      change: CHANGE,
+      ...(noBrowser === undefined ? {} : { noBrowser }),
+      context: contextSection(emptyRunContext("qa:review") ?? fail()),
+    });
+  const fail = (): never => {
+    throw new Error("qa:review gets a summary");
+  };
+
+  it("says why in one fixed line, after the head commit and before the change, as data", () => {
+    const input = qa("preview_check_failed");
+    expect(input).toContain(
+      `## Head commit\n\n${HEAD}\n\n## Browser\n\nNo browser in this run: CI's preview check did not pass on the head commit.\n\n# The pull request's change`,
+    );
+    expect(input.match(/No browser in this run/g)).toHaveLength(1);
+    // The rest of the input is today's, line for line.
+    expect(input.replace(/## Browser\n\n[^\n]+\n\n/, "")).toBe(qa());
+  });
+
+  it("names each reason by the check's own fixed text, never anything from the build", () => {
+    for (const reason of Object.keys(QA_SITE_REASONS) as QaSiteReason[]) {
+      expect(noBrowserLine(reason)).toBe(
+        `No browser in this run: ${QA_SITE_REASONS[reason]}.`,
+      );
+      expect(noBrowserLine(reason)).toMatch(/^No browser in this run: [^\n]+\.$/);
+      expect(qa(reason)).toContain(`## Browser\n\n${noBrowserLine(reason)}\n\n`);
+    }
+  });
+
+  it("is left out without a reason: a run with a browser, or a bot file that declares none", () => {
+    expect(qa()).not.toContain("## Browser");
+    expect(qa()).not.toContain("No browser");
+  });
+
+  it("refuses a reason the check does not know, and the line on any other role's input", () => {
+    expect(() => qa("<script>" as QaSiteReason)).toThrow(
+      "a qa input's no browser reason is unknown",
+    );
+    expect(() => qa("toString" as QaSiteReason)).toThrow(
+      "a qa input's no browser reason is unknown",
+    );
+    for (const role of ["developer", "triage"] as const) {
+      expect(() =>
+        taskInput({
+          role,
+          node: node({}),
+          project,
+          branch: runBranch(NODE_ID),
+          noBrowser: "missing",
+        }),
+      ).toThrow("only a qa input says it has no browser");
     }
   });
 });

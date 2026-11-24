@@ -16,6 +16,11 @@
 // `council:visual`, D-270) carries the option screenshots, and no other Council run carries any.
 // Neither value is kept, logged, or put in the task file or the
 // run's spec: `buildKubernetesTask` passes them to `start` in `credentials` only.
+//
+// QA's browser (ADR 0119 slice 5c, D-476): a QA review whose bot file declares `browser` and whose
+// head's site passed the runner's check (flows/lib/start-run.ts) gets the site. Its task file and
+// run spec then say `browser`, and its zip goes to `start` for the browser pod's site Secret only,
+// never into the task file. A site for any other run refuses it before any token is minted.
 import {
   buildKubernetesTask,
   type KubernetesBotFile,
@@ -131,6 +136,13 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
       if (!withImages && start.images !== undefined) {
         throw new Error("only a visual comparison or visual call run carries images");
       }
+      // QA's review alone gets a site, and only from a bot file that declares the browser.
+      if (start.site !== undefined) {
+        if (role !== "qa" || visual) {
+          throw new Error("only QA's review (qa:review) runs a browser");
+        }
+        if (!bot.browser) throw new Error("the qa bot file declares no browser");
+      }
       let outputSchema: Record<string, unknown> | undefined;
       if (visual) {
         // The visual comparison's answer schema and its images (D-242); the core read the schema
@@ -227,6 +239,7 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
               })),
             }
           : {}),
+        ...(start.site !== undefined ? { site: start.site.zip } : {}),
         stateApiToken: start.stateApiToken,
         ...(githubToken !== undefined ? { githubToken } : {}),
         modelCredentials,

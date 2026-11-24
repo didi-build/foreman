@@ -11,6 +11,7 @@
 import { CHANGE_STATUSES, type PullRequestChange } from "./github.ts";
 import type { QaFinding, VisualFindingPayload } from "./guards/evidence.ts";
 import { LibraryError } from "./library.ts";
+import { QA_SITE_REASONS, type QaSiteReason } from "./qa-site.ts";
 import type { ContextSection } from "./run-context.ts";
 import type { AgentRole, Json, Node, Project, StoreOps } from "./store.ts";
 
@@ -107,6 +108,13 @@ export interface TaskInputContext {
    * compare gives them (D-431, ADR 0112's default context). Required for a QA input.
    */
   change?: PullRequestChange;
+  /**
+   * QA's review, when its bot file declares the browser and the runner's check of the head's site
+   * gave none (ADR 0119 slice 5c, D-479): the check's reason, whose fixed text the input names
+   * in the line "No browser in this run: <reason>.". Left out: no line, as for a bot file that
+   * declares no browser or a run that has one.
+   */
+  noBrowser?: QaSiteReason;
   /**
    * Developer and Designer: why the item came back to the building state, when a failed QA round
    * or staging check sent it back (src/core/builder-runs.ts). Null or left out on a first run.
@@ -391,6 +399,10 @@ function returnSection(reason: ReturnReason): string {
 export const section = (heading: string, body: string): string =>
   `## ${heading}\n\n${body}`;
 
+/** The line QA's input carries when its run has no browser (D-479). */
+export const noBrowserLine = (reason: QaSiteReason): string =>
+  `No browser in this run: ${QA_SITE_REASONS[reason]}.`;
+
 /**
  * The bounds of the pull request's change in QA's input (D-431, O-154). The list stops where
  * GitHub's compare does. Each file's diff is cut at a line end within its own bound, so one large
@@ -601,8 +613,18 @@ export function taskInput(context: TaskInputContext): string {
       section("Repository", context.project.repo),
       section("Pull request", String(context.prNumber)),
       section("Head commit", context.headSha),
-      changeSection(context.change),
     );
+    // The runner's own fixed text for why the run has no browser, looked up by its reason, never
+    // text read from a record or the build (D-479).
+    if (context.noBrowser !== undefined) {
+      if (!Object.hasOwn(QA_SITE_REASONS, context.noBrowser)) {
+        throw new LibraryError("a qa input's no browser reason is unknown");
+      }
+      parts.push(section("Browser", noBrowserLine(context.noBrowser)));
+    }
+    parts.push(changeSection(context.change));
+  } else if (context.noBrowser !== undefined) {
+    throw new LibraryError("only a qa input says it has no browser");
   }
   if (context.context) parts.push(context.context);
   return `${parts.join("\n\n")}\n`;

@@ -8,7 +8,9 @@
 // credentials are only in `credentials`, for `start`. A bot file that declares the documentation
 // lookup gives the Developer's and the Designer's task file and run spec the trusted list from the
 // settings (ADR 0119 slice 4c); a malformed list, or the lookup declared for QA or Triage, refuses
-// the run before any token is minted.
+// the run before any token is minted. A QA review whose bot file declares the browser and that is
+// given a site gets the browser in its task file and run spec, and the zip for its site Secret
+// only (ADR 0119 slice 5c); a site for any other run refuses it before any token is minted.
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -22,6 +24,7 @@ import {
 import {
   checkRunSpec,
   runSecrets,
+  siteSecret,
   taskSecret,
 } from "../../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import type { KubernetesAgentTask } from "../../src/adapters/agent-runtime/kubernetes/runtime.ts";
@@ -517,6 +520,67 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
       "docsLookupHosts",
     );
     expect(visualTask).not.toHaveProperty("lookupHosts");
+  });
+
+  describe("QA's browser (ADR 0119 slice 5c, D-476)", () => {
+    const SITE = {
+      commitSha: HEAD,
+      workflowRunId: 77,
+      zip: new Uint8Array(Buffer.from("PK\u0005\u0006fixture-site-zip")),
+      files: 3,
+      bytes: 1200,
+    };
+    const declared = { ...BOTS, qa: { ...BOTS.qa, browser: true as const } };
+
+    it("gives a QA review with a site the browser in its task file and run spec, and the zip for its site Secret only", async () => {
+      const { tasks } = source({ bots: declared });
+      const task = (await tasks.taskFor({
+        ...startFor("qa"),
+        site: SITE,
+      })) as KubernetesAgentTask;
+      const { spec, file } = acceptedByRuntime("qa", task);
+      expect(spec.browser).toBe(true);
+      expect(file.browser).toBe(true);
+      expect(task.site).toBe(SITE.zip);
+      expect(siteSecret(spec, task.site ?? new Uint8Array()).data).toEqual({
+        "site.zip": Buffer.from(SITE.zip).toString("base64"),
+      });
+      // The site never reaches the task file.
+      expect(JSON.stringify(file)).not.toContain("fixture-site-zip");
+      expect(JSON.stringify(file)).not.toContain(
+        Buffer.from(SITE.zip).toString("base64"),
+      );
+      // Without a site the declared bot file's run has no browser, as before.
+      const plain = (await tasks.taskFor(startFor("qa"))) as KubernetesAgentTask;
+      expect(acceptedByRuntime("qa", plain).file).not.toHaveProperty("browser");
+      expect(plain).not.toHaveProperty("browser");
+      expect(plain).not.toHaveProperty("site");
+    });
+
+    it("refuses a site for a bot file that declares no browser, for qa:visual and for any other role, before any token is minted", async () => {
+      const undeclared = source();
+      await expect(
+        undeclared.tasks.taskFor({ ...startFor("qa"), site: SITE }),
+      ).rejects.toThrow("the qa bot file declares no browser");
+      expect(undeclared.minted).toEqual([]);
+      const { tasks, minted } = source({ bots: declared });
+      const visual = startFor("qa", { outputSchema: BOTS.qa.outputSchemas?.visual });
+      (visual.run as { taskType: string }).taskType = "qa:visual";
+      visual.evidenceIds = [];
+      visual.images = [
+        { label: "Image 1: the approved option", png: new Uint8Array([1]) },
+      ];
+      await expect(tasks.taskFor({ ...visual, site: SITE })).rejects.toThrow(
+        "only QA's review (qa:review) runs a browser",
+      );
+      for (const role of ["developer", "triage"] as const) {
+        await expect(
+          tasks.taskFor({ ...startFor(role), site: SITE }),
+          role,
+        ).rejects.toThrow("only QA's review (qa:review) runs a browser");
+      }
+      expect(minted).toEqual([]);
+    });
   });
 
   it("gives each task type its own composed instructions, and refuses one the role does not allow (ADR 0119 slice 2)", async () => {

@@ -2,7 +2,8 @@
 // needs from its environment: the store from the runner's database secret, the contracts, the
 // task types and the bot files at the bundle's spec version, the guards, a clock and an id source,
 // the runner's GitHub client over the runner App's narrow tokens (D-381), the agent runtime, the
-// repo map's Job (and its scan mode), each run's task, the staging check, the staging deploy (CI's
+// repo map's Job (and its scan mode), each run's task, the site QA's browser reads from CI (ADR
+// 0119 slice 5c), the staging check, the staging deploy (CI's
 // builds and the deploy adapter's target, O-116), the ports for `BOOTSTRAP_TOKEN`'s access, the New
 // project form's settings, workflow starts and DNS lookup (O-161), and the GitHub Apps' token
 // ports, each App's key and id read on its first token (O-125), and the Set project secret form's
@@ -92,6 +93,7 @@ import {
   createSettingsWriteTokens,
   type SettingsWriteTokens,
 } from "../../src/adapters/github/settings-write-tokens.ts";
+import { createGitHubQaSites } from "../../src/adapters/github/qa-sites.ts";
 import { createGitHubStagingBuilds } from "../../src/adapters/github/staging-builds.ts";
 import { createGitHubWorkflowReads } from "../../src/adapters/github/workflow-runs.ts";
 import {
@@ -121,6 +123,7 @@ import type {
   PublicNames,
 } from "../../src/core/new-project.ts";
 import type { ProjectRepositories } from "../../src/core/project-repository.ts";
+import type { QaSite, QaSites } from "../../src/core/qa-site.ts";
 import type { RepoMaps } from "../../src/core/repo-map.ts";
 import type { ShortLivedVariables } from "../../src/core/set-project-secret.ts";
 import type { RepoScans } from "../../src/core/scan.ts";
@@ -175,6 +178,12 @@ export interface RunToStart {
   outputSchema?: Record<string, unknown>;
   /** QA's visual comparison: the image pairs, in order, as PNG bytes (D-242, D-250). */
   images?: VisualImage[];
+  /**
+   * QA's review, when its bot file declares the browser and the runner's check of the head gave a
+   * site (src/core/qa-site.ts, ADR 0119 slice 5c): the run gets a browser pod with it. The zip goes
+   * to the run's site Secret only, never into the task file.
+   */
+  site?: QaSite;
 }
 
 /**
@@ -244,6 +253,12 @@ export interface FlowDeps extends ReconcileDeps {
    * `contents: read` token (D-267, D-275 (2), O-125).
    */
   repoMaps: RepoMaps;
+  /**
+   * CI's `qa-site` build for QA's browser (ADR 0119 slices 5a and 5c, O-174), read from the preview
+   * check's own run with the runner App's `actions: read` token for one repository (D-267,
+   * O-125). Read only for a QA review whose bot file declares the browser.
+   */
+  qaSites: QaSites;
   /**
    * The Scanner's stage 1 scan of a project's repository (D-300, O-92): the repo map Job in its
    * scan mode, with the same isolation and the same one `contents: read` token.
@@ -544,6 +559,11 @@ export function runnerScreenshotBundles(tokens: RunnerAppTokens): ScreenshotBund
   return createGitHubScreenshotBundles({ tokens, http: createGitHubHttp() });
 }
 
+/** CI's `qa-site` build of a preview check's run, for QA's browser (O-174, D-267). */
+export function runnerQaSites(tokens: RunnerAppTokens): QaSites {
+  return createGitHubQaSites({ tokens, http: createGitHubHttp() });
+}
+
 /** A folder's git tree id at a commit (D-281, D-267). */
 export function runnerRepoFolders(tokens: RunnerAppTokens): RepoFolders {
   return createGitHubRepoFolders({ tokens, http: createGitHubHttp() });
@@ -780,6 +800,7 @@ export async function compose(env: FlowEnvironment): Promise<FlowDeps> {
     screenshots: runnerScreenshotBundles(apps.runner),
     repoFolders: runnerRepoFolders(apps.runner),
     repoMaps: runnerRepoMaps(clusterParts, apps.runner),
+    qaSites: runnerQaSites(apps.runner),
     repoScans: runnerRepoScans(clusterParts, apps.runner),
     projectSettings: runnerProjectSettings(apps.runner, apps.settingsWrite),
     projectWorkflows: runnerProjectWorkflows(apps.workflowStart),

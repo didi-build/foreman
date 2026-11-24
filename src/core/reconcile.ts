@@ -125,6 +125,11 @@ export interface BotProfile {
    * end opens its site requests (slice 4c, ./docs-sites.ts).
    */
   docsLookup?: true;
+  /**
+   * QA only: the bot file declares the browser (`browser`, ADR 0119 slice 5c). The start of QA's
+   * review then reads and checks the head's site (./qa-site.ts); without it, no site is read.
+   */
+  browser?: true;
 }
 
 export interface ReconcileDeps {

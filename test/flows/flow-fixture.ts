@@ -1,6 +1,7 @@
 // Test support for the flows (build plan M3.1, M3.2): the reconcile fixture's store, contracts,
-// guards, clock, ids and fake GitHub, plus a fake agent runtime, a fake task source, generated
-// state API tokens and a Windmill execution count the test sets. Fake data only; nothing reaches
+// guards, clock, ids and fake GitHub, plus a fake agent runtime, a fake task source, a fake read
+// of CI's `qa-site` builds, generated state API tokens and a Windmill execution count the test
+// sets. Fake data only; nothing reaches
 // Windmill, a cluster, a model or GitHub.
 import { randomBytes } from "node:crypto";
 
@@ -47,6 +48,7 @@ import type {
   ImagesBuild,
   PlatformApplied,
 } from "../../src/core/cluster-release.ts";
+import type { QaSiteRead, QaSites } from "../../src/core/qa-site.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
 import { createReconcileFixture, HEAD } from "../reconcile-fixture.ts";
@@ -123,6 +125,27 @@ function createFakeAddOnlyApplies(): FakeAddOnlyApplies {
       fake.reads.push(since);
       if (fake.fail) throw new Error("the fake GitHub refused the read");
       return fake.jobs;
+    },
+  };
+  return fake;
+}
+
+/** CI's `qa-site` builds for QA's browser (ADR 0119 slice 5c), as the test sets them. */
+export interface FakeQaSites extends QaSites {
+  /** What a read gives, by `repo#workflowRunId`; none kept when unset. */
+  sites: Map<string, QaSiteRead>;
+  /** Each read, as `repo#workflowRunId`. */
+  reads: string[];
+}
+
+function createFakeQaSites(): FakeQaSites {
+  const fake: FakeQaSites = {
+    sites: new Map(),
+    reads: [],
+    async read(repo, workflowRunId) {
+      const key = `${repo}#${workflowRunId}`;
+      fake.reads.push(key);
+      return fake.sites.get(key) ?? { found: false, reason: "missing" };
     },
   };
   return fake;
@@ -213,6 +236,7 @@ export function flowDepsFor(
   const screenshots = createFakeScreenshotBundles();
   const repoFolders = createFakeRepoFolders();
   const repoMaps = createFakeRepoMaps();
+  const qaSites = createFakeQaSites();
   const repoScans = createFakeRepoScans();
   const projectSettings = createFakeProjectSettings();
   const projectWorkflows = createFakeProjectWorkflows();
@@ -236,6 +260,7 @@ export function flowDepsFor(
     screenshots,
     repoFolders,
     repoMaps,
+    qaSites,
     repoScans,
     projectSettings,
     projectWorkflows,
@@ -280,6 +305,7 @@ export function flowDepsFor(
     screenshots,
     repoFolders,
     repoMaps,
+    qaSites,
     repoScans,
     projectSettings,
     projectWorkflows,
@@ -310,6 +336,7 @@ export async function createFlowFixture() {
     screenshots,
     repoFolders,
     repoMaps,
+    qaSites,
     repoScans,
     projectSettings,
     projectWorkflows,
@@ -349,6 +376,7 @@ export async function createFlowFixture() {
     screenshots,
     repoFolders,
     repoMaps,
+    qaSites,
     repoScans,
     projectSettings,
     projectWorkflows,
