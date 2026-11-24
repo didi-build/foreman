@@ -1,12 +1,12 @@
 {
   "agentImages": {
-    "opencode": "ghcr.io/didi-build/foreman-agent-opencode@sha256:11de47db86f050658a46cf16671fc48c1f93fdcdae9d7b1cf3a3401f4afc8346",
-    "claude-api": "ghcr.io/didi-build/foreman-agent-claude-api@sha256:dca1676a4ffac0e3fa298385a71769cdf87b3f450881a32107e85617bff5c924"
+    "opencode": "ghcr.io/didi-build/foreman-agent-opencode@sha256:c61a7e4abf53916006fb47d1078fcfc52a8e666258e2768d61092af8634eb1da",
+    "claude-api": "ghcr.io/didi-build/foreman-agent-claude-api@sha256:475184552204e94acc183498ebdf430ddace3334384b39375455b908e1d17fa6"
   },
   "runSettings": {
     "fetchImage": "ghcr.io/didi-build/foreman-qa-fetch@sha256:9c5f6e6da938bda1fe568aa91257cdd6e1cbe16f58e968fa0543e472e88e2a87",
     "repoMapImage": "ghcr.io/didi-build/foreman-repo-map@sha256:502484006a20c3a6462ad8d38f6480a1994f3be51ae710c0d9513485398deaaa",
-    "evalImage": "ghcr.io/didi-build/foreman-eval@sha256:34ece32360c27e9be09e33418a0f0aeb94921706591751ab63401b69539d50c5",
+    "evalImage": "ghcr.io/didi-build/foreman-eval@sha256:6811aa518f790187959e52ade5ec202cae053adf0ec7995d23d5bb17e3dbb8d2",
     "proxyPort": 8080,
     "runAsUser": 1000,
     "resources": {
