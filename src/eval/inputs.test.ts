@@ -4,6 +4,7 @@ import { taskFileJson } from "../adapters/agent-runtime/kubernetes/task.ts";
 import { instructionsFor, readBotFiles } from "../adapters/contracts-file/bot-files.ts";
 import { createWorkspace } from "../agent-images/claude-api/files.ts";
 import { fixture } from "../core/guards/testing.ts";
+import { CONTEXT_NOTICE } from "../core/run-context.ts";
 import { quoted } from "../core/task-input.ts";
 import { NEEDS_DECISION_ESCALATION_REASON } from "../core/run-reports.ts";
 import { loadCases, type CouncilCase, type QaCase, type TriageCase } from "./cases.ts";
@@ -18,6 +19,9 @@ const of = <R extends "qa" | "triage" | "council">(role: R) =>
     : R extends "triage"
       ? TriageCase
       : CouncilCase)[];
+
+/** The summary every case's input ends with, until cases carry records (ADR 0119 slice 3a). */
+const EMPTY_SUMMARY = `# Context from this project\n\n${CONTEXT_NOTICE}\n\nNo records yet.`;
 
 describe("weekly model test set inputs (unit: each case's run, built by the runner's builders, ADR 0117)", () => {
   it("builds every case's task file, and the runner's task file check accepts it", () => {
@@ -65,6 +69,8 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
       }
       expect(input, c.id).not.toContain("not shown here");
       expect(input, c.id).not.toContain("is cut here");
+      // The case format holds no project records yet: the summary says so (ADR 0119 slice 3a).
+      expect(input.endsWith(`${EMPTY_SUMMARY}\n`), c.id).toBe(true);
       expect(run.task.nodeId, c.id).toBe(c.input.item.id);
       expect(run.evidenceIds, c.id).toEqual(c.input.evidence.map((e) => e.id));
       expect(run.task.outputSchema, c.id).toBeUndefined();
@@ -91,6 +97,7 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
       expect(run.map.scripts.check, c.id).toBeDefined();
       expect(run.task.input, c.id).toContain(quoted(c.input.plan));
       expect(run.task.input, c.id).toContain(`at commit ${c.input.commitSha}`);
+      expect(run.task.input.endsWith(`${EMPTY_SUMMARY}\n`), c.id).toBe(true);
       expect(run.outputSchema, c.id).toEqual(bots.triage.outputSchemas?.answer);
       expect(run.task.outputSchema, c.id).toEqual(run.outputSchema);
     }
@@ -113,6 +120,7 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
       );
       for (const why of c.input.why)
         expect(run.task.input, c.id).toContain(quoted(why));
+      expect(run.task.input, c.id).not.toContain("# Context from this project");
       expect(run.outputSchema, c.id).toEqual(bots.council.outputSchemas?.escalation);
     }
   });

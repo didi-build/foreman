@@ -77,6 +77,8 @@ describe("QA's visual comparison through the flows (flow: fake adapters, D-242, 
     expect(start?.input).toContain("# Visual comparison");
     // The pull request's change is the review's input only (D-431).
     expect(start?.input).not.toContain("# The pull request's change");
+    // Nor does it get a summary of the project's records (ADR 0119 slice 3a).
+    expect(start?.input).not.toContain("# Context from this project");
     expect(f.github.changeReads).toEqual([]);
   });
 

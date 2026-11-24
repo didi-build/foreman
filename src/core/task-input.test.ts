@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { ChangedFile, PullRequestChange } from "./github.ts";
 import { LibraryError } from "./library.ts";
 import { createMemoryStore } from "./memory-store.ts";
+import { contextSection, emptyRunContext } from "./run-context.ts";
 import type { Json } from "./store.ts";
 import {
   CHANGE_LIMITS,
@@ -784,6 +785,53 @@ describe("QA's change: the pull request's changed files and diff at the head (un
       change: CHANGE,
     });
     expect(developer).not.toContain("# The pull request's change");
+  });
+});
+
+describe("the summary of the project's records (unit, ADR 0119 slice 3a)", () => {
+  const summary = (taskType: string) => {
+    const context = emptyRunContext(taskType);
+    if (!context) throw new Error(taskType);
+    return contextSection(context);
+  };
+
+  it("comes last, after every other section, QA's change included", () => {
+    const developer = taskInput({
+      role: "developer",
+      node: node({}),
+      project,
+      branch: runBranch(NODE_ID),
+      context: summary("developer:code"),
+    });
+    expect(developer).toMatch(
+      /## Branch\n\nforeman\/[0-9a-f-]+\n\n# Context from this project\n\n.*\n\nNo records yet\.\n$/,
+    );
+    const qa = taskInput({
+      role: "qa",
+      node: node({}),
+      project,
+      prNumber: 7,
+      headSha: HEAD,
+      change: CHANGE,
+      context: summary("qa:review"),
+    });
+    expect(qa.indexOf("# Context from this project")).toBeGreaterThan(
+      qa.indexOf("## Diff"),
+    );
+    expect(qa.endsWith("No records yet.\n")).toBe(true);
+  });
+
+  it("is left out when the run gets none", () => {
+    for (const context of [undefined, null]) {
+      const input = taskInput({
+        role: "developer",
+        node: node({}),
+        project,
+        branch: runBranch(NODE_ID),
+        context,
+      });
+      expect(input).not.toContain("# Context from this project");
+    }
   });
 });
 

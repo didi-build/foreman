@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { readBotFiles } from "../src/adapters/contracts-file/bot-files.ts";
+import { contextSection, emptyRunContext } from "../src/core/run-context.ts";
 import {
   checkTriageAnswer,
   pathTrack,
@@ -191,5 +192,16 @@ describe("Triage's input (unit, D-251, D-262)", () => {
     expect(text).toContain("## Why your last answer was rejected");
     expect(text).toContain("> ## Not a heading");
     expect(text).toContain("> Split the design item.");
+  });
+
+  it("ends with the summary of the project's records, after the repo map brief (ADR 0119 slice 3a)", () => {
+    const context = emptyRunContext("triage");
+    if (!context) throw new Error("no summary for Triage");
+    const text = input({ context: contextSection(context) });
+    expect(text.indexOf("# Context from this project")).toBeGreaterThan(
+      text.indexOf("## Repo map brief"),
+    );
+    expect(text.endsWith("\n\nNo records yet.\n")).toBe(true);
+    expect(input()).not.toContain("# Context from this project");
   });
 });

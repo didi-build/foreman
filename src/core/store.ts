@@ -549,6 +549,18 @@ export interface StoreOps {
    * the state API's database role cannot read. Oldest first.
    */
   listDecisionsRecordedOn(nodeId: string): Promise<CurrentDecision[]>;
+  /**
+   * The project's newest decisions, newest first (`recordedAt`, then id), at most `limit` (a
+   * whole number, 0 or more), with how many match in all (ADR 0119 slice 3a). `status` keeps only
+   * the decisions with that status; `notRecordedOn` leaves out the decisions recorded on that
+   * node, and keeps those recorded on no node.
+   */
+  listProjectDecisions(filter: {
+    projectId: string;
+    limit: number;
+    status?: CurrentDecision["status"];
+    notRecordedOn?: string;
+  }): Promise<{ decisions: CurrentDecision[]; total: number }>;
 
   insertGateRequest(request: GateRequest): Promise<void>;
   getGateRequest(id: string): Promise<GateRequest | null>;

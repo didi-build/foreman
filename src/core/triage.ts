@@ -7,6 +7,8 @@
 // (`plan_attached`). An idea in Triage gets one Triage run (task type `triage`) on the idea, whose
 // input is the accepted plan, verbatim, and the runner's repo map brief at one commit (D-251); the
 // run records that commit as its `headSha`, so its answer is checked against the map Triage saw.
+// The input ends with the short summary of the project's records: its decisions, then the roadmap
+// of accepted plans and open work items (ADR 0119 slice 3a, D-468, D-469, ./run-context.ts).
 //
 // Triage has no tools (ADR 0107). It answers with structured output against the schema in its bot
 // file (contracts/bots/triage.yaml). When the run ends, the runner checks the answer (D-228's
@@ -57,6 +59,11 @@ import {
   type RepoMap,
 } from "./repo-map.ts";
 import { canonicalJson } from "./routing.ts";
+import {
+  contextSection,
+  gatherRunContext,
+  type ContextSection,
+} from "./run-context.ts";
 import { reportTrigger } from "./run-reports.ts";
 import type {
   AgentRole,
@@ -446,12 +453,18 @@ export interface TriageInputContext {
   lastRejection: string | null;
   /** The Council's note from the escalation that returned the idea to Triage, if any. */
   councilNote: string | null;
+  /**
+   * The short summary of the project's records (ADR 0119 slice 3a, D-459, D-469), as
+   * `contextSection` renders it, after the repo map brief. Left out or null: no section.
+   */
+  context?: ContextSection | null;
 }
 
 /**
- * Triage's input: the idea, the accepted plan verbatim, the repo map brief naming its commit, and
- * why the last answer was rejected. Everything is data: every piece of text is quoted line by line
- * under a fixed heading, so nothing in it can start a section of its own.
+ * Triage's input: the idea, the accepted plan verbatim, the repo map brief naming its commit, why
+ * the last answer was rejected, and the short summary of the project's records (decisions, then
+ * the roadmap: accepted plans and open work items). Everything is data: every piece of text is
+ * quoted line by line under a fixed heading, so nothing in it can start a section of its own.
  */
 export function triageInput(context: TriageInputContext): string {
   const parts = [
@@ -483,6 +496,7 @@ export function triageInput(context: TriageInputContext): string {
       `The runner's map of the repository at commit ${context.map.commitSha}. Your answer is checked against this commit.\n\n${quoted(repoMapBrief(context.map).trimEnd())}`,
     ),
   );
+  if (context.context) parts.push(context.context);
   return `${parts.join("\n\n")}\n`;
 }
 
@@ -837,8 +851,9 @@ export function createTriage(options: TriageOptions) {
     },
 
     /**
-     * The input of the idea's next Triage run, from its accepted plan and the repo map. Null when
-     * the idea is not in Triage or has no accepted plan.
+     * The input of the idea's next Triage run, from its accepted plan, the repo map and the short
+     * summary of the project's records (ADR 0119 slice 3a). Null when the idea is not in Triage or
+     * has no accepted plan.
      */
     async taskFor(
       ideaId: string,
@@ -849,6 +864,13 @@ export function createTriage(options: TriageOptions) {
       const decisions = await activeDecisions(ideaId);
       if (!decisions.plan) return null;
       const rejections = await rejectionsSinceState(idea);
+      const summary = await gatherRunContext(store, {
+        projectId: idea.projectId,
+        node: idea,
+        role: "triage",
+        taskType: TRIAGE_TASK_TYPE,
+        contracts,
+      });
       return {
         input: triageInput({
           idea,
@@ -856,6 +878,7 @@ export function createTriage(options: TriageOptions) {
           map,
           lastRejection: rejections.at(-1) ?? null,
           councilNote: decisions.councilNote?.textVerbatim ?? null,
+          context: summary ? contextSection(summary) : null,
         }),
         commitSha: map.commitSha,
       };

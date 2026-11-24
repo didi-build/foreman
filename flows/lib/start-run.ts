@@ -18,7 +18,9 @@
 //    the next pass tries again. The close-only run of a cancelled item's pull request (D-318,
 //    task type `developer:close` or `designer:close`, src/core/pr-close.ts) gets the close input
 //    instead: the run's repository, the pull request and the fixed comment; one no longer due
-//    refuses here.
+//    refuses here. A Developer, Designer or QA review input, and Triage's, ends with the short
+//    summary of the project's records, read from the store for the run's task type (ADR 0119
+//    slice 3a, src/core/run-context.ts); the other task types get none.
 // 2. Check the dispatch move's guards (`checkStart`), so a run is not started only for its move
 //    to be refused, and read the Flex capacity bounds from the settings, so a bad setting
 //    refuses before anything is written.
@@ -46,6 +48,7 @@ import {
 } from "../../src/core/visual-call.ts";
 import { createFailures } from "../../src/core/failures.ts";
 import { createPullRequestCloses } from "../../src/core/pr-close.ts";
+import { contextSection, gatherRunContext } from "../../src/core/run-context.ts";
 import { createRunStart } from "../../src/core/run-start.ts";
 import { createTriage } from "../../src/core/triage.ts";
 import {
@@ -208,6 +211,18 @@ export async function startRun(
     input.role === "qa" && !isVisual && input.prNumber && input.headSha
       ? await deps.github.readChange(project.repo, input.prNumber, input.headSha)
       : undefined;
+  // The short summary of the project's records, for the run's task type (ADR 0119 slice 3a,
+  // D-459, D-468). Triage gathers its own; the close, Council and visual inputs get none.
+  const summary =
+    close || council || triage || visual
+      ? null
+      : await gatherRunContext(deps.store, {
+          projectId: project.id,
+          node,
+          role: input.role,
+          taskType: taskType ?? deps.taskTypes.roles[input.role].default,
+          contracts: deps.contracts,
+        });
   const text = close
     ? close.input
     : council
@@ -223,6 +238,7 @@ export async function startRun(
               branch: branch ?? undefined,
               returned,
               ...(change ? { change } : {}),
+              context: summary ? contextSection(summary) : null,
               // The Designer's step comes from the item's state (D-238): the state as the contracts
               // name it and its label, never a database id. It also gets the option Didi approved,
               // once one is recorded (D-242, D-243 rule 3).

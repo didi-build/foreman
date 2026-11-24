@@ -120,6 +120,19 @@ function ops(state: State): StoreOps {
     insertUnique(state.evidence, e.id, e, "evidence_pkey");
   }
 
+  /** A decision with its status from its event, as the `decisions_current` view gives it. */
+  function current(decision: Decision): CurrentDecision {
+    const event = [...state.decisionEvents.values()].find(
+      (e) => e.decisionId === decision.id,
+    );
+    return {
+      ...copy(decision),
+      status: event?.kind ?? "active",
+      replacedById: event?.byDecisionId ?? null,
+      statusChangedAt: event ? copy(event.recordedAt) : null,
+    };
+  }
+
   async function decisionsForNode(nodeId: string): Promise<CurrentDecision[]> {
     const linked = new Set(
       [...state.nodeDecisions]
@@ -127,21 +140,10 @@ function ops(state: State): StoreOps {
         .filter(([n]) => n === nodeId)
         .map(([, d]) => d),
     );
-    const ids = [...state.decisions.values()]
+    return [...state.decisions.values()]
       .filter((d) => d.nodeId === nodeId || linked.has(d.id))
       .sort(byTimeThenId<Decision>((d) => d.recordedAt))
-      .map((d) => d.id);
-    return ids.map((id) => {
-      const decision = state.decisions.get(id) as Decision;
-      const event = [...state.decisionEvents.values()].find((e) => e.decisionId === id);
-      const current: CurrentDecision = {
-        ...copy(decision),
-        status: event?.kind ?? "active",
-        replacedById: event?.byDecisionId ?? null,
-        statusChangedAt: event ? copy(event.recordedAt) : null,
-      };
-      return current;
-    });
+      .map(current);
   }
 
   return {
@@ -311,15 +313,7 @@ function ops(state: State): StoreOps {
     },
     async getDecision(id) {
       const decision = state.decisions.get(id);
-      if (!decision) return null;
-      const event = [...state.decisionEvents.values()].find((e) => e.decisionId === id);
-      const current: CurrentDecision = {
-        ...copy(decision),
-        status: event?.kind ?? "active",
-        replacedById: event?.byDecisionId ?? null,
-        statusChangedAt: event ? copy(event.recordedAt) : null,
-      };
-      return current;
+      return decision ? current(decision) : null;
     },
     async linkNodeToDecision(nodeId, decisionId) {
       state.nodeDecisions.add(`${nodeId}|${decisionId}`);
@@ -327,6 +321,22 @@ function ops(state: State): StoreOps {
     listDecisionsForNode: decisionsForNode,
     async listDecisionsRecordedOn(nodeId) {
       return (await decisionsForNode(nodeId)).filter((d) => d.nodeId === nodeId);
+    },
+    async listProjectDecisions(filter) {
+      const matching = [...state.decisions.values()]
+        .filter(
+          (d) =>
+            d.projectId === filter.projectId &&
+            (filter.notRecordedOn === undefined || d.nodeId !== filter.notRecordedOn),
+        )
+        .map(current)
+        .filter((d) => filter.status === undefined || d.status === filter.status)
+        .sort(byTimeThenId<CurrentDecision>((d) => d.recordedAt))
+        .reverse();
+      return {
+        decisions: matching.slice(0, Math.max(0, filter.limit)),
+        total: matching.length,
+      };
     },
     async listNodesForDecision(decisionId) {
       return [...state.nodeDecisions]
