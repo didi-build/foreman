@@ -10,7 +10,7 @@
 // (src/adapters/deploy/site-files.ts, O-116), which refuses links. Every refusal names its `code`.
 import { inflateRawSync } from "node:zlib";
 
-import { isPlainRelativePath } from "../github/archive-path.ts";
+import { isPlainRelativePath } from "../../core/archive-path.ts";
 
 export const ZIP_LIMITS = {
   entries: 2_000,

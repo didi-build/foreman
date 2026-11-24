@@ -163,7 +163,10 @@ jobs:
   # The scripts live in .github/scripts/, a privileged path.
   # On a push to main only, the build it probed is kept as the artifact `staging-site` for 7 days:
   # the runner fetches it with its `actions: read` and deploys exactly those files to the project's
-  # staging site (D-353, O-116). The job still holds no secret and no environment.
+  # staging site (D-353, O-116). On a pull request only, the same build, marker included, is kept
+  # as the artifact `qa-site` for 3 days: the runner reads it with the same `actions: read` and
+  # checks it for QA's browser (ADR 0119 slice 5, D-476 to D-480, O-174). The job still holds no
+  # secret and no environment.
   preview-check:
     name: preview-check
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
@@ -204,3 +207,11 @@ jobs:
           path: dist/gallery/
           if-no-files-found: error
           retention-days: 7
+      - name: Keep the probed build for QA's browser
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qa-site
+          path: dist/gallery/
+          if-no-files-found: error
+          retention-days: 3

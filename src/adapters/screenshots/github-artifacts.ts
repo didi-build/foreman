@@ -16,7 +16,9 @@
 //
 // The listing of one run's artifacts by name, the choice of the newest unexpired one and the
 // bounded download are shared with the staging deploy's read of CI's `staging-site` build
-// (src/adapters/github/staging-builds.ts, O-116).
+// (src/adapters/github/staging-builds.ts, O-116) and the read of QA's `qa-site` build
+// (src/adapters/github/qa-sites.ts, O-174), which also reads the zip's size from the listing
+// and downloads within a smaller bound of its own.
 import type {
   BundleKind,
   ScreenshotBundle,
@@ -52,6 +54,8 @@ export interface Artifact {
   name: string;
   expired: boolean;
   createdAt: string;
+  /** The zip's size as GitHub lists it (`size_in_bytes`), or null when it lists none. */
+  sizeInBytes: number | null;
 }
 
 function json(body: Uint8Array, what: string): unknown {
@@ -109,16 +113,16 @@ export function newestArtifact(
     )[0];
 }
 
-/** An artifact's zip file, at most `MAX_ARTIFACT_BYTES`. */
+/** An artifact's zip file, at most `maxBytes` (`MAX_ARTIFACT_BYTES` when not given). */
 export async function downloadArtifact(
   http: GitHubHttp,
-  request: { repo: string; id: number; token: string },
+  request: { repo: string; id: number; token: string; maxBytes?: number },
 ): Promise<Uint8Array> {
   const download = await http.get({
     path: `/repos/${request.repo}/actions/artifacts/${request.id}/zip`,
     token: request.token,
     accept: "download",
-    maxBytes: MAX_ARTIFACT_BYTES,
+    maxBytes: request.maxBytes ?? MAX_ARTIFACT_BYTES,
   });
   if (download.status !== 200) {
     throw new GitHubReadError(
@@ -142,6 +146,10 @@ function artifacts(body: Uint8Array, runId: number): Artifact[] {
         name: a.name,
         expired: a.expired === true,
         createdAt: typeof a.created_at === "string" ? a.created_at : "",
+        sizeInBytes:
+          Number.isSafeInteger(a.size_in_bytes) && (a.size_in_bytes as number) >= 0
+            ? (a.size_in_bytes as number)
+            : null,
       },
     ];
   });

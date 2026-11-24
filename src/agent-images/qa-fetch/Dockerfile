@@ -19,7 +19,7 @@ WORKDIR /app
 COPY package.json ./
 COPY src/service-kit/config.ts ./src/service-kit/config.ts
 COPY src/core/github.ts ./src/core/github.ts
-COPY src/adapters/github/archive-path.ts ./src/adapters/github/archive-path.ts
+COPY src/core/archive-path.ts ./src/core/archive-path.ts
 COPY src/adapters/github/runner-app-tokens.ts ./src/adapters/github/runner-app-tokens.ts
 # The secret-value scan's forms of a value (ADR 0106 section 5): one file with no imports.
 COPY scripts/lib/find-secret-values.mjs ./scripts/lib/find-secret-values.mjs

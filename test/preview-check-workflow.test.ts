@@ -4,8 +4,10 @@
 // PR's head commit (never the merge ref's), and serves and probes the build with the scripts in
 // `.github/scripts/`. The hosted preview is gone. The scripts' behaviour is in
 // test/preview-check-scripts.test.ts. On a push to main only, the same job keeps the build it
-// probed as the artifact the runner's staging deploy fetches (D-353, O-116), with the
-// upload-artifact pin the repository already uses, a short retention and still no secret.
+// probed as the artifact the runner's staging deploy fetches (D-353, O-116), and on a pull request
+// only as the artifact `qa-site` the runner reads for QA's browser (ADR 0119 slice 5a, O-174),
+// each with the upload-artifact pin the repository already uses, a short retention and still no
+// secret. Nothing runs between the probe and the uploads.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,6 +20,11 @@ import {
   PREVIEW_CHECK_WORKFLOW,
   PREVIEW_CHECK_WORKFLOW_FILE,
 } from "../src/core/preview-check.ts";
+import {
+  QA_SITE_ARTIFACT,
+  QA_SITE_PIPELINE_PATHS,
+  QA_SITE_RETENTION_DAYS,
+} from "../src/core/qa-site.ts";
 import {
   STAGING_BUILD_WORKFLOW,
   STAGING_SITE_ARTIFACT,
@@ -135,9 +142,9 @@ describe("the preview check's workflow (unit: repo guard, D-354, O-111)", () => 
   it("uses only actions pinned as the rest of CI pins them, and the repository's upload pin", () => {
     const pins = workflow.jobs.check!.steps.flatMap((s) => (s.uses ? [s.uses] : []));
     const used = job.steps.flatMap((s) => (s.uses ? [s.uses] : []));
-    expect(used).toHaveLength(3);
+    expect(used).toHaveLength(4);
     for (const uses of used.slice(0, 2)) expect(pins, uses).toContain(uses);
-    expect(used[2]).toBe(UPLOAD_PIN);
+    expect(used.slice(2)).toEqual([UPLOAD_PIN, UPLOAD_PIN]);
   });
 
   it("keeps the workflow and the scripts on privileged paths", () => {
@@ -171,10 +178,35 @@ const UPLOAD_PIN = (() => {
   return [...found][0]!;
 })();
 
-describe("the staging site artifact (unit: repo guard, D-353, O-116)", () => {
-  const index = job.steps.findIndex((s) =>
-    s.uses?.startsWith("actions/upload-artifact@"),
+/** The index of the job's upload step that keeps the artifact `name`. */
+const uploadOf = (name: string) =>
+  job.steps.findIndex(
+    (s) => s.uses?.startsWith("actions/upload-artifact@") && s.with?.name === name,
   );
+
+/** The step that serves and probes the build. */
+const probeStep = job.steps.findIndex((s) =>
+  /preview-check\.mjs probe /.test(s.run ?? ""),
+);
+
+describe("the probed build's artifacts (unit: repo guard, D-353, O-116, O-174)", () => {
+  it("runs nothing between the probe and the uploads, so what is kept is what the probe served", () => {
+    expect(probeStep).toBeGreaterThan(0);
+    const after = job.steps.slice(probeStep + 1);
+    expect(after.map((s) => s.with?.name)).toEqual([
+      STAGING_SITE_ARTIFACT,
+      QA_SITE_ARTIFACT,
+    ]);
+    for (const step of after) {
+      expect(step.uses).toBe(UPLOAD_PIN);
+      expect(step.run).toBeUndefined();
+    }
+    expect(probeStep + 2).toBe(job.steps.length - 1);
+  });
+});
+
+describe("the staging site artifact (unit: repo guard, D-353, O-116)", () => {
+  const index = uploadOf(STAGING_SITE_ARTIFACT);
   const upload = job.steps[index]!;
 
   it("keeps the probed build as staging-site, after the probe, with the repository's pin", () => {
@@ -185,13 +217,8 @@ describe("the staging site artifact (unit: repo guard, D-353, O-116)", () => {
     expect(upload.with?.name).toBe(STAGING_SITE_ARTIFACT);
     expect(upload.with?.path).toBe(`${SITE}/`);
     expect(upload.with?.["if-no-files-found"]).toBe("error");
-    // The last step: what is kept is exactly the site the probe served, marker included.
-    expect(index).toBe(job.steps.length - 1);
-    const probe = job.steps.findIndex((s) =>
-      /preview-check\.mjs probe /.test(s.run ?? ""),
-    );
-    expect(probe).toBeGreaterThan(0);
-    expect(probe).toBeLessThan(index);
+    // Right after the probe: what is kept is exactly the site the probe served, marker included.
+    expect(index).toBe(probeStep + 1);
     expect(COMMIT_MARKER_FILE).toBe("foreman-commit.txt");
   });
 
@@ -216,6 +243,67 @@ describe("the staging site artifact (unit: repo guard, D-353, O-116)", () => {
     expect(upload.env).toBeUndefined();
     expect(job.permissions).toEqual({ contents: "read" });
     expect(job.environment).toBeUndefined();
+  });
+});
+
+describe("the QA site artifact (unit: repo guard, ADR 0119 slice 5a, D-476 to D-480, O-174)", () => {
+  const index = uploadOf(QA_SITE_ARTIFACT);
+  const upload = job.steps[index]!;
+
+  it("keeps the probed build as qa-site, marker included, after the probe, with the repository's pin", () => {
+    expect(QA_SITE_ARTIFACT).toBe("qa-site");
+    expect(index).toBeGreaterThan(probeStep);
+    expect(upload.name).toBe("Keep the probed build for QA's browser");
+    expect(upload.uses).toBe(UPLOAD_PIN);
+    // The same folder the marker step wrote the head commit's marker into and the probe served.
+    expect(upload.with?.path).toBe(`${SITE}/`);
+    expect(runs).toContain(
+      `node .github/scripts/preview-check.mjs marker ${SITE} "$COMMIT_SHA"`,
+    );
+    expect(upload.with?.["if-no-files-found"]).toBe("error");
+  });
+
+  it("runs on a pull request only, never on a push", () => {
+    expect(upload.if).toBe("github.event_name == 'pull_request'");
+    // The job's own condition lets only a pull request from the same repository through.
+    expect(job.if).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(upload["continue-on-error"]).toBeUndefined();
+  });
+
+  it("keeps it for 3 days, with no secret, token or environment", () => {
+    expect(QA_SITE_RETENTION_DAYS).toBe(3);
+    expect(upload.with?.["retention-days"]).toBe(QA_SITE_RETENTION_DAYS);
+    expect(Object.keys(upload.with ?? {}).sort()).toEqual([
+      "if-no-files-found",
+      "name",
+      "path",
+      "retention-days",
+    ]);
+    expect(JSON.stringify(upload)).not.toMatch(
+      /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN/,
+    );
+    expect(upload.env).toBeUndefined();
+    expect(job.permissions).toEqual({ contents: "read" });
+    expect(job.environment).toBeUndefined();
+  });
+
+  it("names in the pipeline rule exactly this workflow and the scripts the job runs", () => {
+    const scripts = new Set(
+      runs.flatMap((run) =>
+        [...run.matchAll(/\.github\/scripts\/[\w.-]+/g)].map((m) => m[0]),
+      ),
+    );
+    expect([...scripts].sort()).toEqual([
+      ".github/scripts/preview-check.mjs",
+      ".github/scripts/serve-site.mjs",
+    ]);
+    expect([...QA_SITE_PIPELINE_PATHS].sort()).toEqual(
+      [PREVIEW_CHECK_WORKFLOW, ...scripts].sort(),
+    );
+    for (const path of QA_SITE_PIPELINE_PATHS)
+      expect(existsSync(path), path).toBe(true);
   });
 });
 

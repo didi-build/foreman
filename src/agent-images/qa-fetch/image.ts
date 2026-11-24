@@ -30,7 +30,7 @@ import {
   secretForms,
 } from "../../../scripts/lib/find-secret-values.mjs";
 import { REPOSITORY } from "../../core/github.ts";
-import { isPlainRelativePath } from "../../adapters/github/archive-path.ts";
+import { isPlainRelativePath } from "../../core/archive-path.ts";
 import { githubApiGet } from "../../adapters/github/runner-app-tokens.ts";
 import { readConfig, text, type Setting } from "../../service-kit/config.ts";
 import { matching, retryConnects } from "../shared/job-kit.ts";

@@ -1,6 +1,9 @@
-// The one check both archive readers use (the repo map's tarball and the screenshot artifact's
-// zip, D-267): a path inside an archive must be relative and plain, so a crafted archive cannot
-// name a file outside what it unpacks to. Nothing is written to disk either way.
+// The one check every archive reader uses (the repo map's tarball, the screenshot artifact's zip,
+// QA's fetch step, D-267) and the built site's rules (./built-site.ts): a path inside an archive
+// must be relative and plain, so a crafted archive cannot name a file outside what it unpacks to.
+// Nothing is written to disk either way. Plain logic in the core, with no import, so the core's
+// checks and the images that copy it (QA's fetch step, the repo map) share one rule (ADR 0119
+// slice 5a, O-174).
 
 /**
  * True when `path` is relative, has no empty, `.` or `..` part, and holds no backslash or control
