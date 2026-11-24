@@ -47,6 +47,12 @@ export interface TaskSourceOptions {
   secret(path: string): Promise<string>;
   githubTokens: InstallationTokens;
   store: Pick<Store, "getSetting">;
+  /**
+   * The trusted documentation hosts for a run whose bot file declares the documentation lookup
+   * (ADR 0119 slice 4b). Passed through when given; slice 4c gives it the trusted list from the
+   * settings. Until then no composition gives it, so no run gets the lookup.
+   */
+  docsLookupHosts?: () => Promise<readonly string[]>;
 }
 
 /**
@@ -129,6 +135,13 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
       // (ADR 0119 slice 2), the task's text being its own where it has one (QA's `qa:visual`,
       // D-242, the Council's `council:visual`, D-270). A task type the role does not allow throws.
       const instructions = instructionsFor(bot, run.taskType);
+      // The documentation lookup, only for a bot file that declares it, and never for the visual
+      // comparison, which reads only its images; `buildKubernetesTask` also leaves it out of a
+      // close run.
+      const docsLookupHosts =
+        bot.docsLookup && !visual && options.docsLookupHosts
+          ? [...(await options.docsLookupHosts())]
+          : [];
       const botFile: KubernetesBotFile = {
         image,
         instructions,
@@ -137,6 +150,7 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         // The read-only context tools (ADR 0119 slice 3c), not for the visual comparison, which
         // reads only its images; `buildKubernetesTask` also leaves them out of a close run.
         ...(bot.contextTools && !visual ? { contextTools: [...bot.contextTools] } : {}),
+        ...(docsLookupHosts.length > 0 ? { docsLookupHosts } : {}),
         // The visual comparison has no fetch step (N-57): it reads only its images.
         ...(bot.fetchAllowedHosts && !visual
           ? { fetchAllowedHosts: [...bot.fetchAllowedHosts] }

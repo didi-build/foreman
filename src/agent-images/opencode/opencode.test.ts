@@ -196,6 +196,61 @@ describe("OpenCode permissions (unit: D-196 mapped, check 3 of the spike)", () =
       openCodePermissions("developer", ["Read"], ["search_decisions", "bash" as never]),
     ).toThrow(/^context tool 2 is not a known tool$/);
   });
+
+  it("allows the documentation lookup by its exact foreman_ name after the deny, only when asked (ADR 0119 slice 4b)", () => {
+    const permission = openCodePermissions(
+      "developer",
+      TOOLS,
+      ["search_decisions"],
+      true,
+    );
+    expect(permission).toEqual({
+      "*": "deny",
+      read: "allow",
+      edit: "allow",
+      glob: "allow",
+      grep: "allow",
+      bash: { "*": "deny", "git *": "allow", "npm *": "allow" },
+      foreman_search_decisions: "allow",
+      foreman_read_docs_page: "allow",
+    });
+    expect(Object.keys(permission)[0]).toBe("*");
+    expect(openCodePermissions("designer", ["Read"], [], true)).toEqual({
+      "*": "deny",
+      read: "allow",
+      foreman_read_docs_page: "allow",
+    });
+    expect(openCodePermissions("developer", ["Read"], [], false)).not.toHaveProperty(
+      "foreman_read_docs_page",
+    );
+    expect(openCodePermissions("developer", ["Read"])).not.toHaveProperty(
+      "foreman_read_docs_page",
+    );
+  });
+
+  it("never allows OpenCode's own webfetch or websearch, with or without the lookup", () => {
+    for (const docsLookup of [false, true]) {
+      const permission = openCodePermissions(
+        "designer",
+        [...TOOLS, "mcp__magicpath"],
+        ["search_decisions", "find_similar_items", "read_item_history"],
+        docsLookup,
+      );
+      expect(permission["*"]).toBe("deny");
+      expect(Object.keys(permission)[0]).toBe("*");
+      expect(permission).not.toHaveProperty("webfetch");
+      expect(permission).not.toHaveProperty("websearch");
+      expect(Object.keys(permission).filter((k) => /web|fetch|\*$/.test(k))).toEqual([
+        "*",
+        "magicpath_*",
+      ]);
+    }
+    for (const tool of ["WebFetch", "WebSearch", "webfetch"]) {
+      expect(() => openCodePermissions("developer", ["Read", tool])).toThrow(
+        /^allowed tool 2 has no OpenCode permission$/,
+      );
+    }
+  });
 });
 
 describe("OpenCode config (unit: one provider at the proxy, catalog prices, limits)", () => {
@@ -421,6 +476,65 @@ describe("OpenCode config (unit: one provider at the proxy, catalog prices, limi
         "magicpath_*": "allow",
         foreman_search_decisions: "allow",
       });
+    });
+
+    it("starts the same server for the documentation lookup, one --docs-host argument a host (ADR 0119 slice 4b)", () => {
+      const hosts = ["developer.mozilla.org", "vitest.dev"];
+      const only = openCodeConfig(
+        settings,
+        { allowedTools: TOOLS, docsLookupHosts: hosts },
+        "/tmp/i.md",
+        undefined,
+        launch,
+      );
+      expect(only.mcp).toEqual({
+        foreman: {
+          type: "local",
+          command: [
+            launch.node,
+            launch.script,
+            "--docs-host=developer.mozilla.org",
+            "--docs-host=vitest.dev",
+          ],
+          enabled: true,
+          timeout: 10000,
+        },
+      });
+      expect(only.permission).toMatchObject({
+        "*": "deny",
+        foreman_read_docs_page: "allow",
+      });
+      expect(only.permission).not.toHaveProperty("webfetch");
+      const both = openCodeConfig(
+        settings,
+        {
+          allowedTools: TOOLS,
+          contextTools: ["search_decisions"],
+          docsLookupHosts: hosts,
+        },
+        "/tmp/i.md",
+        undefined,
+        launch,
+      );
+      expect(both.mcp?.foreman?.command).toEqual([
+        launch.node,
+        launch.script,
+        "search_decisions",
+        "--docs-host=developer.mozilla.org",
+        "--docs-host=vitest.dev",
+      ]);
+      expect(Object.keys(both.permission).slice(-2)).toEqual([
+        "foreman_search_decisions",
+        "foreman_read_docs_page",
+      ]);
+      expect(JSON.stringify(both)).not.toContain("lookup");
+      expect(() =>
+        openCodeConfig(
+          settings,
+          { allowedTools: TOOLS, docsLookupHosts: hosts },
+          "/tmp/i.md",
+        ),
+      ).toThrow(/server's command/);
     });
 
     it("refuses listed tools without the server's command", () => {
@@ -1043,6 +1157,38 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
     expect(call().config).not.toHaveProperty("mcp");
   });
 
+  it("starts the lookup's server with the listed hosts, the lookup route only in OpenCode's environment (ADR 0119 slice 4b)", async () => {
+    env.FOREMAN_LOOKUP_URL = "http://10.245.0.10:8080/lookup";
+    writeTask("scenario=success", { docsLookupHosts: ["vitest.dev"] });
+    const { code } = await run();
+    expect(code).toBe(0);
+    const seen = call();
+    const { mcp, permission } = seen.config as {
+      mcp: { foreman: { command: string[] } };
+      permission: Record<string, unknown>;
+    };
+    expect(mcp.foreman.command).toEqual([
+      process.execPath,
+      expect.stringMatching(/\/src\/agent-images\/opencode\/context-mcp\.ts$/),
+      "--docs-host=vitest.dev",
+    ]);
+    expect(permission).toMatchObject({ "*": "deny", foreman_read_docs_page: "allow" });
+    expect(permission).not.toHaveProperty("webfetch");
+    expect(readFileSync(seen.env.OPENCODE_CONFIG as string, "utf8")).not.toContain(
+      "10.245.0.10:8080/lookup",
+    );
+    expect(seen.env.FOREMAN_LOOKUP_URL).toBe("http://10.245.0.10:8080/lookup");
+  });
+
+  it("fails before OpenCode starts when the task lists docs hosts and the lookup route is not set", async () => {
+    writeTask("scenario=success", { docsLookupHosts: ["vitest.dev"] });
+    const { code, result } = await run();
+    expect(code).toBe(1);
+    expect(result?.errorText).toContain("FOREMAN_LOOKUP_URL is not set");
+    expect(checkouts).toEqual([]);
+    expect(existsSync(join(work, "fake-opencode-call.json"))).toBe(false);
+  });
+
   it("stops OpenCode at the dollar cap before the next request (max_budget)", async () => {
     // Each fake step costs (100 x 3 + 1000 x 0.3 + 10 x 15) / 1e6 = 0.00075 USD.
     env.FOREMAN_MAX_BUDGET_USD = "0.01";
@@ -1478,7 +1624,7 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
       [
         "an unknown field",
         '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "merge": true}\n```',
-        "the foreman-report block must be an object with pullRequestTitle, docsNote and an optional outOfScopeFindings only, or with stopped and reason only",
+        "the foreman-report block must be an object with pullRequestTitle, docsNote and the optional outOfScopeFindings and siteRequests only, or with stopped and reason only",
       ],
       [
         "four out-of-scope findings",
@@ -1632,6 +1778,73 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         outcome: "success",
         structured: { outOfScopeFindings: expected },
       });
+    });
+
+    it("carries the sites the run asks to add, each once, none already listed, with no token in them (ADR 0119 slice 4)", async () => {
+      env.FOREMAN_LOOKUP_URL = "http://10.245.0.10:8080/lookup";
+      const asked = [
+        { host: "Vitest.dev", reason: "Already on the list." },
+        {
+          host: "docs.example.dev",
+          reason: ` Its API pages, read with ${GITHUB_TOKEN}. `,
+        },
+        { host: "docs.example.dev", reason: "The same host again." },
+      ];
+      writeTask(
+        withFinal(
+          `Done.\n\`\`\`foreman-report\n${JSON.stringify({ pullRequestTitle: "Add the form", docsNote: { impact: "none" }, siteRequests: asked })}\n\`\`\``,
+        ),
+        { docsLookupHosts: ["vitest.dev"] },
+      );
+      const { code, result } = await run();
+      expect(code).toBe(0);
+      expect(lines.join("\n")).not.toContain(GITHUB_TOKEN);
+      const expected = [
+        { host: "docs.example.dev", reason: "Its API pages, read with [redacted]." },
+      ];
+      expect(result?.structured).toMatchObject({
+        pullRequest: { number: 101 },
+        siteRequests: expected,
+      });
+      // The wrapper sends them nowhere: only the docs note goes to the state API.
+      expect(proxy.stateApiRequests).toHaveLength(1);
+      expect(github.pulls[0]?.body).toBe("Done.");
+      expect(mapRunEnd("complete", null, result, "m")).toMatchObject({
+        outcome: "success",
+        structured: { siteRequests: expected },
+      });
+    });
+
+    it("leaves a site out whose host holds a credential value, and the field out when none is left", async () => {
+      // A credential value that happens to look like a host name.
+      const token = "abcdefgh12345678.example";
+      env.GITHUB_TOKEN = token;
+      writeTask(
+        withFinal(
+          `Done.\n\`\`\`foreman-report\n${JSON.stringify({ pullRequestTitle: "t", docsNote: { impact: "none" }, siteRequests: [{ host: token, reason: "r" }] })}\n\`\`\``,
+        ),
+      );
+      const { code, result } = await run();
+      expect(code).toBe(0);
+      expect(result?.status).toBe("success");
+      expect(result?.structured).toMatchObject({ pullRequest: { number: 101 } });
+      expect(JSON.stringify(result)).not.toContain("abcdefgh12345678");
+      expect(result?.structured).not.toHaveProperty("siteRequests");
+    });
+
+    it("fails clearly on malformed site requests, opening no PR", async () => {
+      writeTask(
+        withFinal(
+          '```foreman-report\n{"pullRequestTitle": "t", "docsNote": {"impact": "none"}, "siteRequests": [{"host": "https://docs.example.dev/", "reason": "r"}]}\n```',
+        ),
+      );
+      const { code, result } = await run();
+      expect(code).toBe(1);
+      expect(result?.errorText).toBe(
+        `${FINISH_FAILURES.report}: a site request's host must be a plain host name, with no scheme, path, port, IP address or wildcard`,
+      );
+      expect(github.calls).toEqual([]);
+      expect(proxy.stateApiRequests).toEqual([]);
     });
 
     it("fails clearly on malformed findings, opening no PR", async () => {
@@ -1956,6 +2169,7 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
         pullRequestTitle: "Add the form",
         docsNote: { impact: "none", note: "no docs" },
         outOfScopeFindings: [],
+        siteRequests: [],
         summary: "Changed the form.\n\n\nThanks.",
       },
     });
@@ -1971,6 +2185,7 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
         pullRequestTitle: "t",
         docsNote: { impact: "updated", note: "docs/a.md" },
         outOfScopeFindings: [],
+        siteRequests: [],
         summary: "",
       },
     });
@@ -2088,6 +2303,68 @@ describe("the run's report (unit: the final message's foreman-report block, N-44
       expect(
         parseRunReport(
           '```foreman-report\n{"stopped": "needs_decision", "reason": "r", "outOfScopeFindings": []}\n```',
+        ),
+      ).toEqual({
+        problem:
+          "a stopped foreman-report block must have stopped and reason only, with no pull request fields",
+      });
+    });
+  });
+
+  describe("documentation sites the run asks to add (unit: siteRequests, ADR 0119 slice 4)", () => {
+    const block = (sites: unknown) =>
+      `Done.\n\`\`\`foreman-report\n${JSON.stringify({ pullRequestTitle: "t", docsNote: { impact: "none" }, siteRequests: sites })}\n\`\`\``;
+    const problem = (sites: unknown) =>
+      (parseRunReport(block(sites)) as { problem?: string }).problem;
+
+    it("reads none, and up to three, each host canonical and each reason trimmed", () => {
+      expect(parseRunReport(block([]))).toMatchObject({ report: { siteRequests: [] } });
+      expect(
+        parseRunReport(
+          block([{ host: "Docs.Example.dev", reason: " Its API pages. " }]),
+        ),
+      ).toMatchObject({
+        report: {
+          siteRequests: [{ host: "docs.example.dev", reason: "Its API pages." }],
+        },
+      });
+      expect(
+        parseRunReport(
+          `Done.\n\`\`\`foreman-report\n${JSON.stringify({
+            pullRequestTitle: "t",
+            docsNote: { impact: "none" },
+            outOfScopeFindings: [{ title: "bug", detail: "seen" }],
+            siteRequests: [{ host: "a.dev", reason: "r" }],
+          })}\n\`\`\``,
+        ),
+      ).toMatchObject({
+        report: {
+          outOfScopeFindings: [{ title: "bug", detail: "seen" }],
+          siteRequests: [{ host: "a.dev", reason: "r" }],
+        },
+      });
+    });
+
+    it.each([
+      [
+        "four",
+        ["a.dev", "b.dev", "c.dev", "d.dev"].map((host) => ({ host, reason: "r" })),
+      ],
+      ["not a list", { host: "a.dev", reason: "r" }],
+      ["an extra field", [{ host: "a.dev", reason: "r", url: "https://a.dev/" }]],
+      ["a URL as the host", [{ host: "https://a.dev/x", reason: "r" }]],
+      ["a reason on two lines", [{ host: "a.dev", reason: "a\nb" }]],
+      ["a long reason", [{ host: "a.dev", reason: "r".repeat(301) }]],
+    ])("fails on %s", (_case, sites) => {
+      expect(problem(sites)).toMatch(
+        /^(siteRequests must be|each of siteRequests|a site request's)/,
+      );
+    });
+
+    it("keeps the stopped form to its two fields", () => {
+      expect(
+        parseRunReport(
+          '```foreman-report\n{"stopped": "needs_decision", "reason": "r", "siteRequests": []}\n```',
         ),
       ).toEqual({
         problem:

@@ -4,10 +4,11 @@
 // and the agent never holds a credential (ADR 0106 section 5). The model gets the run's catalog
 // prices, so OpenCode's own cost figure matches the wrapper's.
 //
-// A task that lists context tools (ADR 0119 slice 3c) gets one local MCP server, `foreman`: the
-// image's own ./context-mcp.ts, started by OpenCode with Node and the listed tools as its
-// arguments. It reads the state API's address and the run's token from the environment OpenCode
-// passes on to it, so the token is never in this file.
+// A task that lists context tools (ADR 0119 slice 3c) or documentation hosts (slice 4b) gets one
+// local MCP server, `foreman`: the image's own ./context-mcp.ts, started by OpenCode with Node, the
+// listed tools and `--docs-host=<host>` for each listed host as its arguments. It reads the state
+// API's address, the run's token and the lookup route from the environment OpenCode passes on to
+// it, so none of them is in this file.
 import type { ServiceTier } from "../../core/store.ts";
 import type { TierPrice } from "../../core/routing.ts";
 import type { RunPrice } from "../shared/price.ts";
@@ -16,6 +17,7 @@ import type { AgentTaskFile } from "../shared/task.ts";
 import { mcpBlock, type McpBlock } from "./magicpath.ts";
 import {
   CONTEXT_MCP_SERVER,
+  DOCS_HOST_ARGUMENT,
   openCodePermissions,
   type Permissions,
 } from "./permissions.ts";
@@ -132,27 +134,35 @@ export function openCodeConfig(
     | "maxOutputTokens"
     | "magicPathUrl"
   >,
-  task: Pick<AgentTaskFile, "allowedTools" | "contextTools">,
+  task: Pick<AgentTaskFile, "allowedTools" | "contextTools" | "docsLookupHosts">,
   instructionsPath: string,
   magicPathEnabled?: boolean,
   contextServer?: ContextServerLaunch,
 ): OpenCodeConfig {
   const contextTools = task.contextTools ?? [];
+  const docsHosts = task.docsLookupHosts ?? [];
+  const served = contextTools.length > 0 || docsHosts.length > 0;
   const permission = openCodePermissions(
     settings.role,
     task.allowedTools ?? [],
     contextTools,
+    docsHosts.length > 0,
   );
-  if (contextTools.length > 0 && contextServer === undefined) {
+  if (served && contextServer === undefined) {
     throw new Error("the context tools need their server's command");
   }
   const mcp: McpServers = {
     ...mcpBlock(settings.role, settings.magicPathUrl, magicPathEnabled),
-    ...(contextTools.length > 0 && contextServer
+    ...(served && contextServer
       ? {
           [CONTEXT_MCP_SERVER]: {
             type: "local" as const,
-            command: [contextServer.node, contextServer.script, ...contextTools],
+            command: [
+              contextServer.node,
+              contextServer.script,
+              ...contextTools,
+              ...docsHosts.map((host) => `${DOCS_HOST_ARGUMENT}${host}`),
+            ],
             enabled: true as const,
             timeout: CONTEXT_MCP_TIMEOUT_MS,
           },

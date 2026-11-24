@@ -499,6 +499,43 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(JSON.stringify(problems("qa", ["Bash(curl *)"]))).not.toContain("curl");
   });
 
+  it("take docs_lookup: true for QA, Triage, the Developer and the Designer, and nothing else (ADR 0119 slice 4b)", () => {
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      const { bots, problems } = check(
+        withData(role, (d) => {
+          d.docs_lookup = true;
+        }),
+      );
+      expect(problems, role).toEqual([]);
+      expect(bots?.[role].docsLookup, role).toBe(true);
+    }
+    const problems = (role: (typeof BOT_ROLES)[number], value: unknown) =>
+      check(
+        withData(role, (d) => {
+          d.docs_lookup = value;
+        }),
+      ).problems;
+    expect(problems("council", true)).toEqual([
+      "council.yaml: docs_lookup: a council run gets no documentation lookup",
+    ]);
+    for (const value of [false, "true", 1, null, ["vitest.dev"], { enabled: true }]) {
+      expect(problems("developer", value), JSON.stringify(value)).toEqual([
+        "developer.yaml: docs_lookup must be true when given",
+      ]);
+    }
+    expect(JSON.stringify(problems("qa", ["vitest.dev"]))).not.toContain("vitest");
+  });
+
+  it("declare the documentation lookup in no bot file yet (ADR 0119 slice 4b, D-196)", () => {
+    const bots = readBotFiles();
+    for (const role of BOT_ROLES) {
+      expect(bots[role].docsLookup, role).toBeUndefined();
+      expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
+        "docs_lookup",
+      );
+    }
+  });
+
   it("give QA's visual comparison its answer schema and its own instructions, and no other role any (D-242)", () => {
     const bots = readBotFiles();
     expect(Object.keys(bots.qa.outputSchemas ?? {})).toEqual(["visual"]);

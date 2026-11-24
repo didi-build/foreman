@@ -5,7 +5,8 @@ import { systemText } from "./prompts.ts";
 
 // Unit: the fixed frames around a run's instructions (ADR 0107, ADR 0112, O-152). Each frame below
 // is the exact text the image sent before ADR 0119 slice 3c, generated from prompts.ts at commit
-// 879c3b0. With no context tools listed, every frame must still be that text, byte for byte.
+// 879c3b0. With no context tools and no documentation lookup listed (slice 4b), every frame must
+// still be that text, byte for byte.
 
 const TODAY: Record<string, string> = {
   "qa-schema":
@@ -45,24 +46,26 @@ const withLines = (key: string, lines: readonly string[]) => {
   return today.replace(TODAY_DATA_RULE, lines.join("\n"));
 };
 
-describe("the frames without context tools (unit: byte for byte as before ADR 0119 slice 3c)", () => {
+describe("the frames without context tools or the lookup (unit: byte for byte as before ADR 0119 slice 3c)", () => {
   it.each(VIAS)("are today's texts, answering by %s", (via) => {
     for (const tools of [undefined, []] as const) {
-      expect(systemText("qa", "INSTRUCTIONS", false, via, tools)).toBe(
-        TODAY[`qa-${via}`],
-      );
-      expect(systemText("qa", "INSTRUCTIONS", true, via, tools)).toBe(
-        TODAY[`qa-visual-${via}`],
-      );
-      expect(systemText("triage", "INSTRUCTIONS", false, via, tools)).toBe(
-        TODAY[`triage-${via}`],
-      );
-      expect(systemText("council", "INSTRUCTIONS", false, via, tools)).toBe(
-        TODAY[`council-${via}`],
-      );
-      expect(systemText("council", "INSTRUCTIONS", true, via, tools)).toBe(
-        TODAY[`council-images-${via}`],
-      );
+      for (const lookup of [undefined, false] as const) {
+        expect(systemText("qa", "INSTRUCTIONS", false, via, tools, lookup)).toBe(
+          TODAY[`qa-${via}`],
+        );
+        expect(systemText("qa", "INSTRUCTIONS", true, via, tools, lookup)).toBe(
+          TODAY[`qa-visual-${via}`],
+        );
+        expect(systemText("triage", "INSTRUCTIONS", false, via, tools, lookup)).toBe(
+          TODAY[`triage-${via}`],
+        );
+        expect(systemText("council", "INSTRUCTIONS", false, via, tools, lookup)).toBe(
+          TODAY[`council-${via}`],
+        );
+        expect(systemText("council", "INSTRUCTIONS", true, via, tools, lookup)).toBe(
+          TODAY[`council-images-${via}`],
+        );
+      }
     }
   });
 
@@ -114,6 +117,49 @@ describe("the frames with context tools (unit: named only when listed, their res
         TODAY[`qa-visual-${via}`],
       );
       expect(systemText("council", "INSTRUCTIONS", true, via, CONTEXT_TOOL_NAMES)).toBe(
+        TODAY[`council-images-${via}`],
+      );
+    }
+  });
+});
+
+const LOOKUP_LINE =
+  "For the language, framework and tool docs this project uses, you can read a page from a trusted documentation site with the read-only tool read_docs_page. Each page comes between <docs_page> and </docs_page>.";
+
+describe("the frames with the documentation lookup (unit: ADR 0119 slice 4b, named only when listed)", () => {
+  it.each(VIAS)("QA's review names it after its file tools, answering by %s", (via) => {
+    expect(systemText("qa", "INSTRUCTIONS", false, via, [], true)).toBe(
+      withLines(`qa-${via}`, [LOOKUP_LINE, DATA_RULE_WITH_TOOLS]),
+    );
+  });
+
+  it.each(VIAS)("Triage names it before its data rule, answering by %s", (via) => {
+    expect(systemText("triage", "INSTRUCTIONS", false, via, [], true)).toBe(
+      withLines(`triage-${via}`, [LOOKUP_LINE, DATA_RULE_WITH_TOOLS]),
+    );
+  });
+
+  it("comes after the context tools' line when both are listed", () => {
+    for (const via of VIAS) {
+      expect(
+        systemText("qa", "INSTRUCTIONS", false, via, CONTEXT_TOOL_NAMES, true),
+      ).toBe(
+        withLines(`qa-${via}`, [ALL_TOOLS_LINE, LOOKUP_LINE, DATA_RULE_WITH_TOOLS]),
+      );
+      expect(
+        systemText("triage", "INSTRUCTIONS", false, via, CONTEXT_TOOL_NAMES, true),
+      ).toBe(
+        withLines(`triage-${via}`, [ALL_TOOLS_LINE, LOOKUP_LINE, DATA_RULE_WITH_TOOLS]),
+      );
+    }
+  });
+
+  it("never names it in a frame with images: QA's visual comparison and the Council's visual call", () => {
+    for (const via of VIAS) {
+      expect(systemText("qa", "INSTRUCTIONS", true, via, [], true)).toBe(
+        TODAY[`qa-visual-${via}`],
+      );
+      expect(systemText("council", "INSTRUCTIONS", true, via, [], true)).toBe(
         TODAY[`council-images-${via}`],
       );
     }
