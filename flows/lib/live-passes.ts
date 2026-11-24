@@ -43,7 +43,10 @@
 //    ./triage-runs.ts).
 // 13. The hold release pass clears the hold flag of each held item whose release request Didi
 //    approved, when the approval step could not (a switch held it, or it was cut short; D-269,
-//    src/core/hold-release.ts), and the released item gets its first run at once.
+//    src/core/hold-release.ts), and the released item gets its first run at once. Then the
+//    documentation site pass (`docsSitePass`) adds to the trusted list each host whose site
+//    request Didi approved, when the approval step could not, once (ADR 0119 slice 4c,
+//    src/core/docs-sites.ts).
 // 14. The option capture pass captures each design item's exploration options once CI has
 //    rendered them at its PR head, opens Didi's visual-approval request and asks again for the
 //    Designer report's move into Waiting for Didi (O-88, ./option-capture.ts).
@@ -69,6 +72,7 @@ import {
   bootstrapAccessPass,
   type BootstrapAccessPass,
 } from "../../src/core/bootstrap-access.ts";
+import { createDocsSites, type DocsSiteAdd } from "../../src/core/docs-sites.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import {
   createHoldReleases,
@@ -160,6 +164,11 @@ export interface LivePasses {
   triage: TriagePassStep[] | null;
   /** What the hold release pass did for each held item with an answered release request (D-269). */
   holdReleases: HoldReleaseStep[] | null;
+  /**
+   * What the documentation site pass did for each site request Didi approved whose host is not
+   * added yet (ADR 0119 slice 4c).
+   */
+  docsSites: DocsSiteAdd[] | null;
   /** What the option capture pass did for each design item in exploration (O-88). */
   optionCaptures: OptionCapturePassStep[] | null;
   /** The builder runs due with no move, and what their dispatch did. */
@@ -171,6 +180,19 @@ export interface LivePasses {
   bootstrapAccess: BootstrapAccessPass | null;
   /** Settings the passes needed and could not read. */
   problems: string[];
+}
+
+/**
+ * The documentation site pass (ADR 0119 slice 4c): each site request whose latest answer is
+ * Didi's Approve and whose host is not added yet gets its add, which checks it all again under
+ * the list's lock, so a host is added once. An Approve recorded while a switch was on is added
+ * here once both are off. Empty when nothing is due.
+ */
+export async function docsSitePass(deps: FlowDeps): Promise<DocsSiteAdd[]> {
+  const sites = createDocsSites(deps);
+  const added: DocsSiteAdd[] = [];
+  for (const request of await sites.pending()) added.push(await sites.add(request));
+  return added;
 }
 
 /** Step 16, unless the kill switch stopped the pass; a list it cannot read is a problem. */
@@ -218,6 +240,7 @@ export async function runLivePasses(
       plans: null,
       triage: null,
       holdReleases: null,
+      docsSites: null,
       optionCaptures: null,
       builderRuns: null,
       ...access,
@@ -269,6 +292,7 @@ export async function runLivePasses(
       holdReleases.filter((h) => h.step === "released").map((h) => h.nodeId),
     )),
   );
+  const docsSites = await docsSitePass(deps);
   const optionCaptures = await optionCapturePass(deps);
   const builderRuns = await startBuilderRuns(deps);
   const access = await accessBackstop(deps, stopped);
@@ -291,6 +315,7 @@ export async function runLivePasses(
     plans,
     triage,
     holdReleases,
+    docsSites,
     optionCaptures,
     builderRuns,
     bootstrapAccess: access.bootstrapAccess,

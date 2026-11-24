@@ -33,6 +33,7 @@ import {
   seededRunPrice,
   SONNET_CACHE_MODEL_CATALOG,
 } from "../../src/core/routing-testing.ts";
+import { readTrustedDocsHosts } from "../../src/core/docs-sites.ts";
 import type { AgentRole, Json } from "../../src/core/store.ts";
 import {
   adminUrl,
@@ -1677,6 +1678,80 @@ describe.skipIf(!adminUrl)(
       } finally {
         expect(set("2", "migration").ok).toBe(true);
       }
+    });
+
+    describe("the trusted documentation sites (migration 0033, ADR 0119 slice 4c, D-474, O-172)", () => {
+      const TRUSTED = "db/migrations/0033_trusted_docs_hosts.sql";
+      const FIRST_LIST = [
+        "developer.mozilla.org",
+        "developers.cloudflare.com",
+        "docs.github.com",
+        "kubernetes.io",
+        "node-postgres.com",
+        "nodejs.org",
+        "opentofu.org",
+        "playwright.dev",
+        "react.dev",
+        "vite.dev",
+        "vitest.dev",
+        "www.postgresql.org",
+        "www.typescriptlang.org",
+        "www.windmill.dev",
+      ];
+      const row = () =>
+        JSON.parse(
+          sql(
+            "select json_build_object('value', value, 'by', updated_by) from factory.settings where key = 'trusted_docs_hosts';",
+          ).out,
+        ) as { value: unknown; by: string };
+      const logged = () =>
+        Number(
+          sql(
+            "select count(*) from factory.settings_log where key = 'trusted_docs_hosts';",
+          ).out,
+        );
+
+      it("seeds the first list of 14 hosts, sorted and canonical, as the runner reads it", () => {
+        expect(row()).toEqual({ value: FIRST_LIST, by: "migration" });
+        expect(readTrustedDocsHosts(row().value as Json)).toEqual(FIRST_LIST);
+        expect([...FIRST_LIST].sort()).toEqual(FIRST_LIST);
+        expect(
+          sql(
+            "select coalesce(old_value::text, '-') || ' by ' || changed_by from factory.settings_log where key = 'trusted_docs_hosts' order by id;",
+          ).out,
+        ).toBe("- by migration");
+      });
+
+      it("changes nothing when it runs again", () => {
+        const before = logged();
+        const again = sql(readFileSync(TRUSTED, "utf8"));
+        expect(again.ok, again.err).toBe(true);
+        expect(row()).toEqual({ value: FIRST_LIST, by: "migration" });
+        expect(logged()).toBe(before);
+      });
+
+      it("never replaces a list an operator set, and adds no grant", () => {
+        const set = (value: string, by: string) =>
+          sql(
+            `update factory.settings set value = '${value}'::jsonb, updated_by = '${by}', updated_at = ${AT} where key = 'trusted_docs_hosts';`,
+          );
+        try {
+          expect(set('["vitest.dev"]', "didi").ok).toBe(true);
+          const again = sql(readFileSync(TRUSTED, "utf8"));
+          expect(again.ok, again.err).toBe(true);
+          expect(row()).toEqual({ value: ["vitest.dev"], by: "didi" });
+        } finally {
+          expect(set(JSON.stringify(FIRST_LIST), "migration").ok).toBe(true);
+        }
+        // The state API reads settings, as before (0001), and still writes none.
+        expectRejected(
+          sql(
+            "update factory.settings set value = '[]'::jsonb where key = 'trusted_docs_hosts';",
+            "factory_api",
+          ),
+          /permission denied/,
+        );
+      });
     });
 
     it("keeps a usage-exhausted cause and retry-after on usage_exhausted ends only", () => {

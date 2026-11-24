@@ -116,6 +116,7 @@ import {
   type StillNeededOpen,
 } from "../../src/core/still-needed.ts";
 import { createFindingIdeas, type FindingIdeas } from "../../src/core/finding-ideas.ts";
+import { createDocsSites, type DocsSiteRequests } from "../../src/core/docs-sites.ts";
 import {
   createVisualComparisons,
   VISUAL_TASK_TYPE,
@@ -131,7 +132,7 @@ import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { createRunReports } from "../../src/core/run-reports.ts";
 import type { RunReport } from "../../src/core/runs.ts";
-import type { Run } from "../../src/core/store.ts";
+import type { AgentRole, Run } from "../../src/core/store.ts";
 import {
   reportedMoveAndFixRound,
   startBuilderRuns,
@@ -461,6 +462,12 @@ export type AfterRunEnd = AfterReport &
   CouncilAfter & {
     /** When the end was recorded now: the ideas made from the run's findings (D-244, O-65). */
     findingIdeas?: FindingIdeas;
+    /**
+     * When the end was recorded now, for a role whose bot file declares the documentation lookup:
+     * the site requests opened for Didi from the run's result, with those skipped and those
+     * dropped past the open limit counted (ADR 0119 slice 4c, D-473 to D-475).
+     */
+    docsSites?: DocsSiteRequests;
     /** A visual comparison run's answer as the runner recorded it, or why not (D-242). */
     visual?: VisualRecord;
     /** After a QA run: the visual comparison's one more run after a `cannot_tell` (D-252). */
@@ -543,16 +550,19 @@ export async function visualRerun(
  * or QA run, it submits each bug the run reported outside its item as a new idea (D-244, O-65),
  * still before the end is recorded: the runtime's result is not kept, so a flow cut short after
  * the end would lose them, while one cut short before it polls again and finds the ideas made.
- * The ideas never change the report or the item's move. `after` runs once the end is recorded:
- * for a Designer run the capture of its exploration options when CI has already rendered them
- * (src/core/option-capture.ts, O-88), the reported move and fix round (./builder-runs.ts), then
- * for a Council run `afterCouncilRun`. After a builder's or QA's run on an item in review, QA's
+ * Beside them, for a role whose bot file declares the documentation lookup, it opens Didi's
+ * request for each documentation site the run asked to trust (src/core/docs-sites.ts, ADR 0119
+ * slice 4c). Neither the ideas nor the requests change the report or the item's move. `after`
+ * runs once the end is recorded: for a Designer run the capture of its exploration options when
+ * CI has already rendered them (src/core/option-capture.ts, O-88), the reported move and fix
+ * round (./builder-runs.ts), then for a Council run `afterCouncilRun`. After a builder's or QA's run on an item in review, QA's
  * next run on its head starts (N-80, O-104). Last, for every run, the first runs of the project's
  * ready items its freed slot lets start (N-81, ./ready-runs.ts).
  */
 export function runEndSteps(deps: FlowDeps, run: Run) {
   let answer: CouncilAnswer | undefined;
   let findingIdeas: FindingIdeas | undefined;
+  let docsSites: DocsSiteRequests | undefined;
   let visual: VisualRecord | undefined;
   let triageAnswer: TriageRecord | undefined;
   const isCouncil = run.bot === "council";
@@ -654,6 +664,7 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
       ...(optionCapture ? { optionCapture } : {}),
       ...after,
       ...(findingIdeas ? { findingIdeas } : {}),
+      ...(docsSites ? { docsSites } : {}),
       ...(visual ? { visual } : {}),
     };
     if (isCouncil) {
@@ -741,6 +752,9 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
         !isClose
       ) {
         findingIdeas = await createFindingIdeas(deps).submit(run.id, result.structured);
+        if (deps.bots[run.bot as AgentRole]?.docsLookup === true) {
+          docsSites = await createDocsSites(deps).submit(run, result.structured);
+        }
       }
       return recorded;
     },

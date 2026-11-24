@@ -19,6 +19,11 @@ import {
   STILL_NEEDED_PREFIX,
   type FollowUpStep,
 } from "../../src/core/council.ts";
+import {
+  createDocsSites,
+  DOCS_SITE_PREFIX,
+  type DocsSiteAdd,
+} from "../../src/core/docs-sites.ts";
 import { createEscalations, type EscalationStep } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import {
@@ -248,6 +253,13 @@ export interface AfterAnswer {
     stillNeeded: StillNeededOpen[];
     council: CouncilPassStep[];
   };
+  /**
+   * For a run's request to trust a documentation site (ADR 0119 slice 4c, D-473 to D-475): on
+   * Didi's Approve, the one host's add to the trusted list; nothing on a Reject or a request for
+   * changes. The reconcile flow's documentation site pass adds it if a switch held this step or
+   * it was cut short.
+   */
+  docsSite?: DocsSiteAdd;
 }
 
 /**
@@ -263,12 +275,15 @@ export interface AfterAnswer {
  * Request changes sends an idea in Submitted back to Council planning (src/core/plans.ts), and
  * on a Council plan the Council pass starts its replan with Didi's words (D-316 (3)). For a
  * privileged-path request, Didi's Approve merges the item at once through the merge pass's own
- * path, then runs the merged-change check, when no switch holds the runner (N-82, D-334). Any
- * other gate kind asks for nothing of its own. Last, when no switch holds the runner, the request's item
- * gets its first run if the answer left it ready (D-329, ./ready-runs.ts): the check decides, so
- * an item still held, blocked, gated or running gets nothing. An escalation Didi's answer returned
- * to a building state starts the item's fix round instead, and an idea returned to Triage its
- * Triage run, as the Council's answer does at its run's end (`afterEscalationReturned`, O-104);
+ * path, then runs the merged-change check, when no switch holds the runner (N-82, D-334). For a
+ * run's documentation site request (a `new_credentials` request on a `docs-site:` topic), Didi's
+ * Approve adds that one host to the trusted list, once, when no switch holds the runner
+ * (src/core/docs-sites.ts, ADR 0119 slice 4c). Any other gate kind asks for nothing of its own.
+ * Last, when no switch holds the runner, the request's item gets its first run if the answer left
+ * it ready (D-329, ./ready-runs.ts): the check decides, so an item still held, blocked, gated or
+ * running gets nothing. An escalation Didi's answer returned to a building state starts the
+ * item's fix round instead, and an idea returned to Triage its Triage run, as the Council's
+ * answer does at its run's end (`afterEscalationReturned`, O-104);
  * also only when no switch holds the runner, so the builder runs pass takes it on later.
  */
 export async function afterAnswer(
@@ -302,6 +317,9 @@ export async function afterAnswer(
     gate.nodeId && gate.topicKey === `${CANCEL_REQUEST_PREFIX}${gate.nodeId}`
       ? await createCancels(deps).step(gate.nodeId)
       : undefined;
+  const docsSite = gate.topicKey.startsWith(DOCS_SITE_PREFIX)
+    ? await createDocsSites(deps).afterAnswer(gate)
+    : undefined;
   let plan: AfterAnswer["plan"];
   if (gate.nodeId && gate.topicKey === `${PLAN_APPROVAL_PREFIX}${gate.nodeId}`) {
     const step = await createPlanApprovals(deps).step(gate.nodeId);
@@ -338,6 +356,7 @@ export async function afterAnswer(
     ...(cancel ? { cancel } : {}),
     ...(firstRuns.length > 0 ? { firstRuns } : {}),
     ...(privilegedMerge ? { privilegedMerge } : {}),
+    ...(docsSite ? { docsSite } : {}),
   };
 }
 

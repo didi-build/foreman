@@ -120,6 +120,11 @@ export interface BotProfile {
    * Triage: its answer (M3.6).
    */
   outputSchemas?: Readonly<Record<string, OutputSchema>>;
+  /**
+   * The bot file declares the documentation lookup (`docs_lookup`, ADR 0119 slice 4b): the run's
+   * end opens its site requests (slice 4c, ./docs-sites.ts).
+   */
+  docsLookup?: true;
 }
 
 export interface ReconcileDeps {

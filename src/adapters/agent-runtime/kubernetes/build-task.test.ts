@@ -140,21 +140,28 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     expect(close.task).not.toHaveProperty("contextTools");
   });
 
-  it("passes the given docs lookup hosts into the task, never into a close run's or one with images (ADR 0119 slice 4b)", () => {
+  it("passes the given docs lookup hosts into the task and the run's proxy, never into a close run's or one with images (ADR 0119 slices 4b and 4c)", () => {
     const base = parts();
     const hosts = ["developer.mozilla.org", "vitest.dev"];
     const withHosts = parts({ bot: { ...base.bot, docsLookupHosts: hosts } });
-    expect(buildKubernetesTask(withHosts).task.docsLookupHosts).toEqual(hosts);
+    const built = buildKubernetesTask(withHosts);
+    expect(built.task.docsLookupHosts).toEqual(hosts);
+    // The proxy's lookup route gets exactly the hosts the tool lists (slice 4a's field).
+    expect(built.lookupHosts).toEqual(hosts);
     expect(buildKubernetesTask(parts()).task).not.toHaveProperty("docsLookupHosts");
-    expect(
-      buildKubernetesTask(parts({ bot: { ...base.bot, docsLookupHosts: [] } })).task,
-    ).not.toHaveProperty("docsLookupHosts");
+    expect(buildKubernetesTask(parts())).not.toHaveProperty("lookupHosts");
+    const empty = buildKubernetesTask(
+      parts({ bot: { ...base.bot, docsLookupHosts: [] } }),
+    );
+    expect(empty.task).not.toHaveProperty("docsLookupHosts");
+    expect(empty).not.toHaveProperty("lookupHosts");
     const close = buildKubernetesTask({
       ...withHosts,
       run: { ...base.run, taskType: "developer:close", prNumber: 7 },
     });
     expect(close.task.mode).toBe("close_pull_request");
     expect(close.task).not.toHaveProperty("docsLookupHosts");
+    expect(close).not.toHaveProperty("lookupHosts");
     const visual = buildKubernetesTask({
       ...withHosts,
       run: { ...base.run, bot: "qa", taskType: "qa:visual", headSha: "a".repeat(40) },
@@ -163,6 +170,7 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     });
     expect(visual.task.images).toHaveLength(1);
     expect(visual.task).not.toHaveProperty("docsLookupHosts");
+    expect(visual).not.toHaveProperty("lookupHosts");
   });
 
   it("refuses a run whose provider has no provider setting", () => {
@@ -239,5 +247,58 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     await expect(runtime.start(qa, QA_LIMITS)).resolves.toMatchObject({
       runId: QA.runId,
     });
+  });
+
+  it("starts a Developer task with docs lookup hosts with its proxy's lookup route on those hosts, and refuses one for QA (ADR 0119 slice 4c, ADR 0106 section 3)", async () => {
+    const client = createFakeKubernetes();
+    const runtime = createKubernetesRuntime({ client, settings: SETTINGS });
+    const hosts = ["developer.mozilla.org", "vitest.dev"];
+    const base = parts();
+    const task = buildKubernetesTask(
+      parts({ bot: { ...base.bot, docsLookupHosts: hosts } }),
+    );
+    const handle = await runtime.start(task, LIMITS);
+    expect(handle.spec.lookupHosts).toEqual(hosts);
+    const env = [...client.objects.values()]
+      .filter((o) => o.kind === "Job")
+      .flatMap((job) =>
+        (
+          job as {
+            spec: { template: { spec: { containers: { env?: unknown[] }[] } } };
+          }
+        ).spec.template.spec.containers.flatMap((c) => c.env ?? []),
+      ) as { name: string; value?: string }[];
+    expect(env.find((e) => e.name === "LOOKUP_HOSTS")?.value).toBe(hosts.join(","));
+    expect(env.find((e) => e.name === "FOREMAN_LOOKUP_URL")?.value).toMatch(
+      /\/lookup$/,
+    );
+    // QA reaches nothing outside its providers and the state API (ADR 0106 section 3, D-471).
+    const qa = buildKubernetesTask(
+      parts({
+        run: {
+          id: QA.runId,
+          bot: "qa",
+          model: "claude-opus-5-5",
+          provider: "anthropic",
+          serviceTierRequested: "standard",
+          modelPrice: firstRunPrice("claude-opus-5-5"),
+          nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+          headSha: QA.headSha ?? null,
+          prNumber: QA.prNumber ?? null,
+          taskType: "qa:review",
+        },
+        bot: {
+          image: QA.image,
+          instructions: "Fixture instructions.",
+          allowedHosts: [],
+          fetchAllowedHosts: QA.fetchAllowedHosts,
+          docsLookupHosts: hosts,
+        },
+      }),
+    );
+    expect(qa.lookupHosts).toEqual(hosts);
+    await expect(runtime.start(qa, QA_LIMITS)).rejects.toThrow(
+      "a qa run has no documentation lookup",
+    );
   });
 });

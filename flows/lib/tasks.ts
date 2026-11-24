@@ -3,7 +3,9 @@
 // the spec version) gives the instructions, composed with the run's persona (ADR 0119 slice 2),
 // the image kind, the tools, the hosts and the provider's address and key path; the run's route, recorded on the run, gives the model, the
 // provider, the tier and the price; the run's input is the core's (D-213); the settings give the
-// image references and the project's package registries (D-187).
+// image references, the project's package registries (D-187) and, for a bot file that declares
+// the documentation lookup, the one trusted documentation list (D-474, ADR 0119 slice 4c), whose
+// hosts go to both the task file and the run's proxy.
 //
 // Credentials: the model key is read by its secret path for the route's provider only, and goes to
 // the run's egress proxy only (D-143, ADR 0106 section 5). The GitHub installation token is minted
@@ -30,8 +32,14 @@ import {
   type InstallationTokens,
   type TokenRole,
 } from "../../src/adapters/github/installation-tokens.ts";
+import {
+  MAX_TRUSTED_DOCS_HOSTS,
+  readTrustedDocsHosts,
+  TRUSTED_DOCS_HOSTS,
+} from "../../src/core/docs-sites.ts";
 import type { AgentRole, Store } from "../../src/core/store.ts";
 import { PUSHING_ROLES } from "../../src/core/task-input.ts";
+import { isCloseTaskType } from "../../src/core/task-types.ts";
 import { VISUAL_CALL_TASK_TYPE } from "../../src/core/visual-call.ts";
 import { VISUAL_TASK_TYPE } from "../../src/core/visual-comparison.ts";
 import type { RunToStart, TaskSource } from "./compose.ts";
@@ -46,13 +54,8 @@ export interface TaskSourceOptions {
   /** A secret by its path. Never logged. */
   secret(path: string): Promise<string>;
   githubTokens: InstallationTokens;
+  /** The settings: package registries and the trusted documentation list. */
   store: Pick<Store, "getSetting">;
-  /**
-   * The trusted documentation hosts for a run whose bot file declares the documentation lookup
-   * (ADR 0119 slice 4b). Passed through when given; slice 4c gives it the trusted list from the
-   * settings. Until then no composition gives it, so no run gets the lookup.
-   */
-  docsLookupHosts?: () => Promise<readonly string[]>;
 }
 
 /**
@@ -76,6 +79,27 @@ async function packageRegistries(
     );
   }
   return entry as string[];
+}
+
+/**
+ * The one trusted documentation list from the settings (D-474, migration 0033), for a run whose
+ * bot file declares the documentation lookup (ADR 0119 slice 4c). Each entry must be a canonical
+ * host name, the task file's own rule, listed once, and at most as many as a run takes. A
+ * missing or empty list gives the run no lookup; a malformed one refuses the run, naming the
+ * setting, never a value.
+ */
+export async function trustedDocsHosts(
+  store: TaskSourceOptions["store"],
+): Promise<string[]> {
+  const hosts = readTrustedDocsHosts(
+    (await store.getSetting(TRUSTED_DOCS_HOSTS))?.value,
+  );
+  if (!hosts) {
+    throw new Error(
+      `${TRUSTED_DOCS_HOSTS} must be a list of at most ${MAX_TRUSTED_DOCS_HOSTS} canonical host names, each once`,
+    );
+  }
+  return hosts;
 }
 
 export function createTaskSource(options: TaskSourceOptions): TaskSource {
@@ -136,12 +160,20 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
       // D-242, the Council's `council:visual`, D-270). A task type the role does not allow throws.
       const instructions = instructionsFor(bot, run.taskType);
       // The documentation lookup, only for a bot file that declares it, and never for the visual
-      // comparison, which reads only its images; `buildKubernetesTask` also leaves it out of a
-      // close run.
-      const docsLookupHosts =
-        bot.docsLookup && !visual && options.docsLookupHosts
-          ? [...(await options.docsLookupHosts())]
-          : [];
+      // comparison, which reads only its images, or a close run, which starts no model. The
+      // list is read only then, so a malformed list refuses no other run. The run's proxy
+      // serves the lookup only for the roles that may reach outside hosts, the Developer and the
+      // Designer (ADR 0106 section 3, D-471): QA and Triage wait for that record to change, so a
+      // bot file of theirs that declares it refuses the run before any token is minted.
+      let docsLookupHosts: string[] = [];
+      if (bot.docsLookup && !visual && !isCloseTaskType(run.taskType)) {
+        if (!PUSHING_ROLES.includes(role)) {
+          throw new Error(
+            `a ${role} run has no documentation lookup yet: only the Developer and the Designer reach the lookup route (ADR 0106 section 3, D-471)`,
+          );
+        }
+        docsLookupHosts = await trustedDocsHosts(options.store);
+      }
       const botFile: KubernetesBotFile = {
         image,
         instructions,

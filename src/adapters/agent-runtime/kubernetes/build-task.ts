@@ -33,9 +33,10 @@ export interface KubernetesBotFile {
   contextTools?: ContextToolName[];
   /**
    * The trusted documentation hosts, for a bot file that declares the documentation lookup (ADR
-   * 0119 slice 4b), as the task source gives them. A close run and a run with images never get
-   * them. Slice 4b passes them into the task file only: the proxy's lookup route and its hosts
-   * are set for a run once the runner reads the trusted list (slice 4c).
+   * 0119 slice 4b), as the task source reads them from the trusted list (slice 4c). A close run
+   * and a run with images never get them. The same hosts go into the task file, for the tool,
+   * and into the run's spec as `lookupHosts`, for its proxy's lookup route, so the two always
+   * agree; the runtime accepts them only for the Developer and the Designer.
    */
   docsLookupHosts?: string[];
   /** CONNECT hosts for the agent's proxy. Empty for QA, Council and Triage. */
@@ -127,7 +128,7 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
   ) {
     task.contextTools = [...bot.contextTools];
   }
-  // The same runs get no documentation lookup either.
+  // The same runs get no documentation lookup either. The run's proxy gets the same hosts below.
   if (
     bot.docsLookupHosts !== undefined &&
     bot.docsLookupHosts.length > 0 &&
@@ -177,6 +178,10 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
         }
       : {}),
     allowedHosts: [...bot.allowedHosts],
+    // The lookup route on the run's proxy, for exactly the hosts the task file lists (slice 4a).
+    ...(task.docsLookupHosts !== undefined
+      ? { lookupHosts: [...task.docsLookupHosts] }
+      : {}),
     providers: [{ ...provider }],
     serviceTier: run.serviceTierRequested,
     price: structuredClone(run.modelPrice),

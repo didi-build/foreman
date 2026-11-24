@@ -26,6 +26,7 @@ import {
   type RunToken,
   type ScanRecord,
   type Setting,
+  type SettingChange,
   type SpecVersion,
   type Store,
   type StoreOps,
@@ -52,6 +53,8 @@ interface State {
   runHandles: Map<string, Json>;
   counters: Map<string, number>;
   settings: Map<string, Setting>;
+  /** `settings_log`: every setting write, oldest first, as the settings trigger logs it. */
+  settingsLog: SettingChange[];
   decisionPointRecords: Map<string, DecisionPointRecord>;
   decisionPointOutcomes: Map<string, DecisionPointOutcome>;
   scans: Map<string, ScanRecord>;
@@ -78,6 +81,7 @@ const emptyState = (): State => ({
   runHandles: new Map(),
   counters: new Map(),
   settings: new Map(),
+  settingsLog: [],
   decisionPointRecords: new Map(),
   decisionPointOutcomes: new Map(),
   scans: new Map(),
@@ -385,6 +389,14 @@ function ops(state: State): StoreOps {
         .sort(byTimeThenId<GateRequest>((g) => g.createdAt))
         .map(copy);
     },
+    async listGateRequestsByTopic(topicKey, match) {
+      return [...state.gateRequests.values()]
+        .filter((g) =>
+          match?.prefix ? g.topicKey.startsWith(topicKey) : g.topicKey === topicKey,
+        )
+        .sort(byTimeThenId<GateRequest>((g) => g.createdAt))
+        .map(copy);
+    },
     async listGateRequestsForNode(nodeId) {
       return [...state.gateRequests.values()]
         .filter((g) => g.nodeId === nodeId)
@@ -470,7 +482,25 @@ function ops(state: State): StoreOps {
       return copy(state.settings.get(key) ?? null);
     },
     async setSetting(s) {
+      // The settings trigger logs every insert and update (migration 0001).
+      const before = state.settings.get(s.key);
+      state.settingsLog.push(
+        copy({
+          key: s.key,
+          oldValue: before === undefined ? null : before.value,
+          newValue: s.value,
+          changedBy: s.updatedBy,
+          changedAt: s.updatedAt,
+        }),
+      );
       state.settings.set(s.key, copy(s));
+    },
+    // Every transaction here already runs alone, so there is nothing to lock.
+    async lockSetting(key) {
+      return state.settings.has(key);
+    },
+    async listSettingChanges(key) {
+      return state.settingsLog.filter((c) => c.key === key).map(copy);
     },
 
     async insertDecisionPointRecord(r) {
@@ -610,6 +640,7 @@ function cloneState(state: State): State {
     runHandles: new Map(state.runHandles),
     counters: new Map(state.counters),
     settings: new Map(state.settings),
+    settingsLog: [...state.settingsLog],
     decisionPointRecords: new Map(state.decisionPointRecords),
     decisionPointOutcomes: new Map(state.decisionPointOutcomes),
     scans: new Map(state.scans),

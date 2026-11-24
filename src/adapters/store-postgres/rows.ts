@@ -17,6 +17,7 @@ import type {
   RunToken,
   ScanRecord,
   Setting,
+  SettingChange,
   SpecVersion,
   Transition,
 } from "../../core/store.ts";
@@ -207,6 +208,14 @@ export const toSetting = (r: Row): Setting => ({
   value: r.value as Json,
   updatedBy: r.updated_by as string,
   updatedAt: r.updated_at as Date,
+});
+
+export const toSettingChange = (r: Row): SettingChange => ({
+  key: r.key as string,
+  oldValue: (r.old_value ?? null) as Json | null,
+  newValue: r.new_value as Json,
+  changedBy: r.changed_by as string,
+  changedAt: r.changed_at as Date,
 });
 
 export const toScanRecord = (r: Row): ScanRecord => ({

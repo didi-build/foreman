@@ -5,11 +5,20 @@
 // they refuse, sending nothing (O-125). Council and Triage tasks need no token and build fully.
 // Each task carries its task type's composed instructions (ADR 0119 slice 2), and a task type the
 // role does not allow is refused. No secret value is in the task file or the run's spec:
-// credentials are only in `credentials`, for `start`.
+// credentials are only in `credentials`, for `start`. A bot file that declares the documentation
+// lookup gives the Developer's and the Designer's task file and run spec the trusted list from the
+// settings (ADR 0119 slice 4c); a malformed list, or the lookup declared for QA or Triage, refuses
+// the run before any token is minted.
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import type { RunToStart } from "../../flows/lib/compose.ts";
-import { createTaskSource, PACKAGE_REGISTRIES_SETTING } from "../../flows/lib/tasks.ts";
+import {
+  createTaskSource,
+  PACKAGE_REGISTRIES_SETTING,
+  trustedDocsHosts,
+} from "../../flows/lib/tasks.ts";
 import {
   checkRunSpec,
   runSecrets,
@@ -25,6 +34,7 @@ import type {
   InstallationTokenRequest,
   InstallationTokens,
 } from "../../src/adapters/github/installation-tokens.ts";
+import { TRUSTED_DOCS_HOSTS } from "../../src/core/docs-sites.ts";
 import {
   SEEDED_ROUTING_POLICY,
   TEST_TASK_TYPES,
@@ -86,7 +96,8 @@ function source(
     tokens?: InstallationTokens;
     registries?: Json;
     bots?: typeof BOTS;
-    docsLookupHosts?: readonly string[];
+    /** The `trusted_docs_hosts` setting's value; left out, the setting is missing. */
+    trustedDocsHosts?: Json;
   } = {},
 ) {
   const secretsRead: string[] = [];
@@ -98,9 +109,6 @@ function source(
       secretsRead.push(path);
       return MODEL_KEY;
     },
-    ...(options.docsLookupHosts
-      ? { docsLookupHosts: async () => options.docsLookupHosts ?? [] }
-      : {}),
     githubTokens: options.tokens ?? {
       mint: async (request) => {
         minted.push(request);
@@ -108,15 +116,17 @@ function source(
       },
     },
     store: {
-      getSetting: async (key) =>
-        key === PACKAGE_REGISTRIES_SETTING && options.registries !== undefined
-          ? {
-              key,
-              value: options.registries,
-              updatedBy: "test",
-              updatedAt: new Date(0),
-            }
-          : null,
+      getSetting: async (key) => {
+        const value =
+          key === PACKAGE_REGISTRIES_SETTING
+            ? options.registries
+            : key === TRUSTED_DOCS_HOSTS
+              ? options.trustedDocsHosts
+              : undefined;
+        return value === undefined
+          ? null
+          : { key, value, updatedBy: "test", updatedAt: new Date(0) };
+      },
     },
   });
   return { tasks, secretsRead, minted };
@@ -348,44 +358,148 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(file).not.toHaveProperty("contextTools");
   });
 
-  it("gives no task the documentation lookup today: no bot file declares it (ADR 0119 slice 4b)", async () => {
-    const { tasks } = source({ docsLookupHosts: ["vitest.dev"] });
+  it("gives no task the documentation lookup today: no bot file declares it (ADR 0119 slices 4b and 4c)", async () => {
+    const { tasks } = source({ trustedDocsHosts: ["vitest.dev"] });
     for (const role of ["qa", "triage", "developer", "designer"] as const) {
       const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
       expect(task.task, role).not.toHaveProperty("docsLookupHosts");
+      expect(task, role).not.toHaveProperty("lookupHosts");
     }
   });
 
-  it("passes the given hosts to a bot file that declares the lookup, never to qa:visual or a close run (ADR 0119 slice 4b)", async () => {
+  it("gives the trusted list to the Developer's and the Designer's task file and run spec when the bot file declares the lookup, never to a close run (ADR 0119 slice 4c)", async () => {
     const hosts = ["developer.mozilla.org", "vitest.dev"];
-    const declared = (role: "qa" | "triage" | "developer" | "designer") => ({
-      ...BOTS[role],
-      docsLookup: true as const,
-    });
     const bots = {
       ...BOTS,
-      qa: declared("qa"),
-      triage: declared("triage"),
-      developer: declared("developer"),
-      designer: declared("designer"),
+      developer: { ...BOTS.developer, docsLookup: true as const },
+      designer: { ...BOTS.designer, docsLookup: true as const },
     };
-    const { tasks } = source({ bots, docsLookupHosts: hosts });
-    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+    const { tasks } = source({ bots, trustedDocsHosts: hosts });
+    for (const role of ["developer", "designer"] as const) {
       const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
-      // The runtime's own task file check accepts it.
-      expect(acceptedByRuntime(role, task).file.docsLookupHosts, role).toEqual(hosts);
+      // The runtime's own checks accept both: the tool's hosts and the proxy's route agree.
+      const { spec, file } = acceptedByRuntime(role, task);
+      expect(file.docsLookupHosts, role).toEqual(hosts);
+      expect(spec.lookupHosts, role).toEqual(hosts);
     }
-    // No list given (slice 4b's composition gives none): no lookup, even when declared.
-    const none = source({ bots });
-    const task = (await none.tasks.taskFor(
+    // A bot file that does not declare it gets neither, whatever the list holds.
+    const undeclared = source({ trustedDocsHosts: hosts });
+    const plain = (await undeclared.tasks.taskFor(
       startFor("developer"),
     )) as KubernetesAgentTask;
-    expect(task.task).not.toHaveProperty("docsLookupHosts");
-    const empty = source({ bots, docsLookupHosts: [] });
-    const emptyTask = (await empty.tasks.taskFor(
-      startFor("triage"),
-    )) as KubernetesAgentTask;
-    expect(emptyTask.task).not.toHaveProperty("docsLookupHosts");
+    expect(plain.task).not.toHaveProperty("docsLookupHosts");
+    expect(plain).not.toHaveProperty("lookupHosts");
+    // A missing or an empty list gives no lookup, even when declared.
+    for (const value of [undefined, null, []]) {
+      const { tasks: none } = source({
+        bots,
+        ...(value === undefined ? {} : { trustedDocsHosts: value }),
+      });
+      const task = (await none.taskFor(startFor("developer"))) as KubernetesAgentTask;
+      expect(
+        acceptedByRuntime("developer", task).file,
+        JSON.stringify(value),
+      ).not.toHaveProperty("docsLookupHosts");
+      expect(task, JSON.stringify(value)).not.toHaveProperty("lookupHosts");
+    }
+    // A close run starts no model: no lookup, and its list is not even read, so a malformed one
+    // refuses no close run.
+    for (const value of [hosts, "not a list"]) {
+      const close = startFor("developer");
+      (close.run as { taskType: string; prNumber: number }).taskType =
+        "developer:close";
+      (close.run as { prNumber: number }).prNumber = 7;
+      const { tasks: closing } = source({ bots, trustedDocsHosts: value });
+      const closeTask = (await closing.taskFor(close)) as KubernetesAgentTask;
+      const { file } = acceptedByRuntime("developer", closeTask);
+      expect(file.mode).toBe("close_pull_request");
+      expect(file).not.toHaveProperty("docsLookupHosts");
+      expect(closeTask).not.toHaveProperty("lookupHosts");
+    }
+  });
+
+  it("gives a Developer run every host migration 0033 seeds, and the runtime accepts them (ADR 0119 slice 4c)", async () => {
+    const sql = readFileSync("db/migrations/0033_trusted_docs_hosts.sql", "utf8");
+    const seeded = JSON.parse(/'(\[[^']*\])'/.exec(sql)?.[1] ?? "null") as string[];
+    expect(seeded).toHaveLength(14);
+    expect(seeded).toEqual([...seeded].sort());
+    expect(
+      await trustedDocsHosts({
+        getSetting: async (key) => ({
+          key,
+          value: seeded,
+          updatedBy: "migration",
+          updatedAt: new Date(0),
+        }),
+      }),
+    ).toEqual(seeded);
+    const bots = {
+      ...BOTS,
+      developer: { ...BOTS.developer, docsLookup: true as const },
+    };
+    const { tasks } = source({ bots, trustedDocsHosts: seeded });
+    const task = (await tasks.taskFor(startFor("developer"))) as KubernetesAgentTask;
+    const { spec, file } = acceptedByRuntime("developer", task);
+    expect(file.docsLookupHosts).toEqual(seeded);
+    expect(spec.lookupHosts).toEqual(seeded);
+  });
+
+  it("refuses a run whose trusted list is malformed, naming the setting and never a value, before any secret is read or token minted (ADR 0119 slice 4c)", async () => {
+    const bots = {
+      ...BOTS,
+      developer: { ...BOTS.developer, docsLookup: true as const },
+    };
+    const malformed: Json[] = [
+      "vitest.dev",
+      { hosts: ["vitest.dev"] },
+      [1],
+      ["Vitest.dev"],
+      ["vitest.dev."],
+      ["https://vitest.dev"],
+      ["vitest.dev:443"],
+      ["*.vitest.dev"],
+      ["10.0.0.1"],
+      ["localhost"],
+      ["vitest.dev", "vitest.dev"],
+      Array.from({ length: 51 }, (_, i) => `docs${i}.example.com`),
+    ];
+    for (const value of malformed) {
+      const { tasks, secretsRead, minted } = source({ bots, trustedDocsHosts: value });
+      const refused = tasks.taskFor(startFor("developer"));
+      await expect(refused, JSON.stringify(value)).rejects.toThrow(
+        "trusted_docs_hosts must be a list of at most 50 canonical host names, each once",
+      );
+      const message = await refused.catch((error: Error) => error.message);
+      expect(message).not.toMatch(/vitest|docs\d|10\.0|localhost/i);
+      expect(secretsRead).toEqual([]);
+      expect(minted).toEqual([]);
+    }
+    // Fifty hosts, the most a run takes, are accepted.
+    const fifty = Array.from({ length: 50 }, (_, i) => `docs${i}.example.com`);
+    const { tasks } = source({ bots, trustedDocsHosts: fifty });
+    const task = (await tasks.taskFor(startFor("developer"))) as KubernetesAgentTask;
+    expect(acceptedByRuntime("developer", task).spec.lookupHosts).toEqual(fifty);
+  });
+
+  it("refuses a QA or Triage run whose bot file declares the lookup, before any token is minted, and gives qa:visual none (ADR 0106 section 3, D-471)", async () => {
+    const bots = {
+      ...BOTS,
+      qa: { ...BOTS.qa, docsLookup: true as const },
+      triage: { ...BOTS.triage, docsLookup: true as const },
+    };
+    for (const role of ["qa", "triage"] as const) {
+      const { tasks, secretsRead, minted } = source({
+        bots,
+        trustedDocsHosts: ["vitest.dev"],
+      });
+      await expect(tasks.taskFor(startFor(role)), role).rejects.toThrow(
+        `a ${role} run has no documentation lookup yet: only the Developer and the Designer reach the lookup route (ADR 0106 section 3, D-471)`,
+      );
+      expect(secretsRead, role).toEqual([]);
+      expect(minted, role).toEqual([]);
+    }
+    // QA's visual comparison reads only its images: no lookup, and no refusal.
+    const { tasks } = source({ bots, trustedDocsHosts: ["vitest.dev"] });
     const visual = startFor("qa", { outputSchema: BOTS.qa.outputSchemas?.visual });
     (visual.run as { taskType: string }).taskType = "qa:visual";
     visual.evidenceIds = [];
@@ -396,13 +510,7 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(acceptedByRuntime("qa", visualTask).file).not.toHaveProperty(
       "docsLookupHosts",
     );
-    const close = startFor("developer");
-    (close.run as { taskType: string; prNumber: number }).taskType = "developer:close";
-    (close.run as { prNumber: number }).prNumber = 7;
-    const closeTask = (await tasks.taskFor(close)) as KubernetesAgentTask;
-    const { file } = acceptedByRuntime("developer", closeTask);
-    expect(file.mode).toBe("close_pull_request");
-    expect(file).not.toHaveProperty("docsLookupHosts");
+    expect(visualTask).not.toHaveProperty("lookupHosts");
   });
 
   it("gives each task type its own composed instructions, and refuses one the role does not allow (ADR 0119 slice 2)", async () => {
