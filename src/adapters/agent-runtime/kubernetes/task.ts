@@ -20,6 +20,12 @@ export interface AgentTaskFile {
   /** Developer and Designer: the Claude Code tools the run may use, from the bot file. */
   allowedTools?: string[];
   /**
+   * The read-only context tools the run may call, from the bot file's `context_tools` (ADR 0119
+   * slice 3c, D-459): QA's review, Triage, the Developer and the Designer. Never on a Council
+   * task, a QA task with images or a close run.
+   */
+  contextTools?: ContextToolName[];
+  /**
    * QA: the node the verdict is for. Developer and Designer: the node the run works on, which
    * the OpenCode image's wrapper names when it posts the run's docs note (N-44, D-235).
    */
@@ -54,6 +60,22 @@ export interface AgentTaskFile {
 /** The one mode a task may name. Without it a builder's run is its model's work. */
 export const CLOSE_MODE = "close_pull_request";
 export type TaskMode = typeof CLOSE_MODE;
+
+/**
+ * The read-only context tools a run may be given (ADR 0119 slice 3c, D-459). Each reads the run's
+ * own project through the state API with the run's token. Their definitions and their client are
+ * in src/agent-images/shared/context-tools.ts; this list is the one the task file and the bot
+ * files are checked against.
+ */
+export const CONTEXT_TOOL_NAMES = [
+  "search_decisions",
+  "find_similar_items",
+  "read_item_history",
+] as const;
+export type ContextToolName = (typeof CONTEXT_TOOL_NAMES)[number];
+
+export const isContextToolName = (value: unknown): value is ContextToolName =>
+  (CONTEXT_TOOL_NAMES as readonly unknown[]).includes(value);
 
 /** The roles whose task may carry images: QA's visual comparison and the Council's visual call. */
 const IMAGE_ROLES: readonly AgentRole[] = ["qa", "council"];
@@ -161,6 +183,22 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     }
     if ((task.evidenceIds ?? []).length > 0) {
       throw new Error("a QA task with images cites no evidence ids");
+    }
+  }
+  if (task.contextTools !== undefined) {
+    // The Council, QA's visual comparison and a close run read no project records (ADR 0119).
+    if (role === "council") throw new Error("a council run has no context tools");
+    if (visual) throw new Error(`a ${role} task with images has no context tools`);
+    if (task.mode === CLOSE_MODE) throw new Error("a close run has no context tools");
+    const tools: unknown = task.contextTools;
+    if (!Array.isArray(tools) || tools.length === 0) {
+      throw new Error(`a ${role} task's context tools must be a non-empty list`);
+    }
+    if (!tools.every(isContextToolName)) {
+      throw new Error(`a ${role} task's context tools must be known tools`);
+    }
+    if (new Set(tools).size !== tools.length) {
+      throw new Error(`a ${role} task lists a context tool twice`);
     }
   }
   const structured = role === "council" || role === "triage" || visual;

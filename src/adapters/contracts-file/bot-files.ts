@@ -3,7 +3,8 @@
 // (ADR 0105). Each run records its bot file's version as `runs.bot_version`.
 //
 // A bot file holds the task's own instructions (the cached prefix of every run's task file), its
-// agent image, its tools, its hosts, its model providers with each key's secret path (D-142,
+// agent image, its tools, its read-only context tools if any (`context_tools`, ADR 0119 slice 3c,
+// none declared before slice 3d), its hosts, its model providers with each key's secret path (D-142,
 // D-143), its per-run limits (D-185), its task types with each one's persona (`task_personas`,
 // D-458) and, for the Council, Triage and QA's visual comparison, its output schemas. A task type
 // other than the role's default may have its own instructions (`task_instructions`, QA's
@@ -62,7 +63,12 @@ import {
   type MessagesApiSetting,
   type ModelProviderSetting,
 } from "../agent-runtime/kubernetes/manifests.ts";
-import { TOOL } from "../agent-runtime/kubernetes/task.ts";
+import {
+  CONTEXT_TOOL_NAMES,
+  TOOL,
+  isContextToolName,
+  type ContextToolName,
+} from "../agent-runtime/kubernetes/task.ts";
 import { listBundledFolder, readBundledFile } from "../bundle-files/files.ts";
 import { PERSONAS_DIR, readPersonas } from "./personas.ts";
 
@@ -122,6 +128,13 @@ const TASK_LIMITS: Partial<Record<AgentRole, readonly string[]>> = {
 const NO_PERSONAS: Partial<Record<AgentRole, string>> = {
   council: "the Council gets its personas in ADR 0119's slice 6",
 };
+/** The roles whose runs may get the read-only context tools (ADR 0119 slice 3c, D-459). */
+const CONTEXT_TOOL_ROLES: readonly AgentRole[] = [
+  "qa",
+  "triage",
+  "developer",
+  "designer",
+];
 /** ADR 0106 section 5: an installation token lasts at most an hour. */
 const GITHUB_TOKEN_MINUTES = 60;
 /** The most characters a bot file's text, or a run's composed instructions, may have. */
@@ -143,6 +156,7 @@ const FIELDS = [
   "providers",
   "allowed_hosts",
   "allowed_tools",
+  "context_tools",
   "mcp",
   "fetch_allowed_hosts",
   "output_schemas",
@@ -179,6 +193,12 @@ export interface BotFile {
   allowedHosts: string[];
   /** Developer and Designer (D-196). */
   allowedTools?: string[];
+  /**
+   * The read-only context tools the role's runs get (ADR 0119 slice 3c): QA (its review only),
+   * Triage, the Developer and the Designer (not their close runs). Each is a bot file change Didi
+   * approves (D-196); none is declared before slice 3d.
+   */
+  contextTools?: ContextToolName[];
   /** Designer: whether MagicPath is on. Always false until D-190's gate. */
   magicPath?: boolean;
   /** QA: the fetch step's GitHub hosts. */
@@ -484,6 +504,39 @@ function checkTools(
     }
   });
   return ok ? [...raw] : undefined;
+}
+
+/**
+ * The role's context tools (ADR 0119 slice 3c): optional, and when given a non-empty list of known
+ * tools, each once, for a role whose runs may have them. Problems name the position, never a value.
+ */
+function checkContextTools(
+  role: AgentRole,
+  raw: unknown,
+  add: (p: string) => void,
+): ContextToolName[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!CONTEXT_TOOL_ROLES.includes(role)) {
+    add(`context_tools: a ${role} run gets no context tools`);
+    return undefined;
+  }
+  if (!isTextList(raw) || raw.length === 0) {
+    add(
+      `context_tools must be a non-empty list of context tools (${CONTEXT_TOOL_NAMES.join(", ")})`,
+    );
+    return undefined;
+  }
+  let ok = true;
+  raw.forEach((tool, i) => {
+    if (!isContextToolName(tool)) {
+      add(`context_tools[${i}] is not a context tool`);
+      ok = false;
+    } else if (raw.indexOf(tool) !== i) {
+      add(`context_tools[${i}] repeats an earlier tool`);
+      ok = false;
+    }
+  });
+  return ok ? (raw as ContextToolName[]).slice() : undefined;
 }
 
 function checkMagicPath(raw: unknown, add: (p: string) => void): boolean | undefined {
@@ -808,6 +861,8 @@ function checkBotFile(
       add(`allowed_tools: a ${role} run has no tools`);
     if (data.mcp !== undefined) add("mcp is only for the Designer (D-196)");
   }
+  const contextTools = checkContextTools(role, data.context_tools, add);
+  if (contextTools) bot.contextTools = contextTools;
   if (role === "qa") {
     const hosts = checkHosts("fetch_allowed_hosts", data.fetch_allowed_hosts, add);
     if (hosts && hosts.length === 0)

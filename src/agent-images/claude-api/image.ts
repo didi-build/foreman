@@ -7,6 +7,9 @@
 // with images is its call on a visual approval (D-270): the same, through the structured run.
 // A provider without structured outputs (DeepInfra's Anthropic endpoint, O-152) gets the same
 // answer through an `answer` tool the model must call (FOREMAN_ANSWER_VIA=tool).
+// QA's review and Triage also get the read-only context tools their task file lists (ADR 0119
+// slice 3c, ../shared/context-tools.ts): after QA's file tools, and before the answer tool, which
+// stays last. QA's visual comparison and the Council never get them.
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -34,6 +37,12 @@ import {
   type ImageSettings,
 } from "../shared/settings.ts";
 import { readTask, type AgentTaskFile } from "../shared/task.ts";
+import {
+  contextToolDefinitions,
+  createContextTools,
+  type ContextTools,
+} from "../shared/context-tools.ts";
+import { isContextToolName } from "../../adapters/agent-runtime/kubernetes/task.ts";
 import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
 import { WORKSPACE_TOOLS, createWorkspace, type Workspace } from "./files.ts";
 import {
@@ -195,46 +204,81 @@ export type RunFrame = Pick<
 >;
 
 /**
- * QA's review: the read-only tools over the tree, the head commit and the evidence ids after the
- * fenced input, and the verdict's schema. Exported for the weekly test job (ADR 0117), so its QA
- * runs get exactly a real run's frame.
+ * The context tools a frame offers (ADR 0119 slice 3c): the ones the task lists, which need their
+ * source, a real run's state API client or the weekly test's stand-in. The Council and a task
+ * with images get none, as the task file check also says.
+ */
+function listedContextTools(
+  role: AgentRole,
+  task: AgentTaskFile,
+  context: ContextTools | undefined,
+) {
+  const listed =
+    role === "council" || task.images !== undefined ? [] : (task.contextTools ?? []);
+  if (listed.length > 0 && context === undefined) {
+    throw new Error("a task with context tools needs their source");
+  }
+  return listed;
+}
+
+/**
+ * QA's review: the read-only tools over the tree, then the context tools the task lists, the head
+ * commit and the evidence ids after the fenced input, and the verdict's schema. Exported for the
+ * weekly test job (ADR 0117), so its QA runs get exactly a real run's frame.
  */
 export function qaReviewFrame(
   task: AgentTaskFile,
   headSha: string,
   answerVia: AnswerVia,
   workspace: Workspace,
+  context?: ContextTools,
 ): RunFrame {
   const evidenceIds = task.evidenceIds ?? [];
+  const listed = listedContextTools("qa", task, context);
   return {
-    system: systemText("qa", task.instructions, false, answerVia),
-    tools: WORKSPACE_TOOLS,
+    system: systemText("qa", task.instructions, false, answerVia, listed),
+    tools: [...WORKSPACE_TOOLS, ...contextToolDefinitions(listed)],
     input: fencedInput(task.input, [
       `Head commit: ${headSha}`,
       `Evidence ids you may cite: ${evidenceIds.length > 0 ? evidenceIds.join(", ") : "none"}`,
     ]),
     outputSchema: VERDICT_SCHEMA,
-    runTool: (name, input) => workspace.run(name, input),
+    // A context tool's name goes to their source, which refuses one the task does not list.
+    runTool: (name, input) =>
+      context !== undefined && listed.length > 0 && isContextToolName(name)
+        ? context.run(name, input)
+        : workspace.run(name, input),
   };
 }
 
 /**
- * A Council or Triage run, or the Council's visual call: no tools (ADR 0107), the images after
- * the input when the task has them, and the task's answer schema. Exported for the weekly test
- * job, as `qaReviewFrame` is.
+ * A Council or Triage run, or the Council's visual call: no tools but Triage's context tools when
+ * its task lists them (ADR 0107, ADR 0119 slice 3c), the images after the input when the task has
+ * them, and the task's answer schema. Exported for the weekly test job, as `qaReviewFrame` is.
  */
 export function structuredFrame(
   role: AgentRole,
   task: AgentTaskFile,
   answerVia: AnswerVia,
+  context?: ContextTools,
 ): RunFrame {
+  const listed = listedContextTools(role, task, context);
   return {
-    system: systemText(role, task.instructions, task.images !== undefined, answerVia),
-    tools: [],
+    system: systemText(
+      role,
+      task.instructions,
+      task.images !== undefined,
+      answerVia,
+      listed,
+    ),
+    tools: contextToolDefinitions(listed),
     input: fencedInput(task.input),
     // The Council's visual call (D-270): the option screenshots after the input.
     ...(task.images ? { images: task.images } : {}),
     ...(task.outputSchema ? { outputSchema: task.outputSchema } : {}),
+    ...(context !== undefined && listed.length > 0
+      ? { runTool: (name: string, input: unknown) => context.run(name, input) }
+      : {}),
   };
 }
 
@@ -246,6 +290,7 @@ async function qaRun(
   deps: ApiImageDeps,
   common: Common,
   secrets: readonly string[],
+  context: ContextTools,
 ): Promise<AgentResult> {
   const qa = readConfig(qaSettings, env);
   const logger = createLogger("agent-qa", deps.write);
@@ -260,7 +305,7 @@ async function qaRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    ...qaReviewFrame(task, qa.headSha, common.answerVia, workspace),
+    ...qaReviewFrame(task, qa.headSha, common.answerVia, workspace, context),
   });
   if (result.status !== "success") return result;
   const parsed = parseVerdict(result.finalText, evidenceIds);
@@ -365,6 +410,7 @@ async function structuredRun(
   client: MessagesClient,
   common: Common,
   deps: ApiImageDeps,
+  context: ContextTools,
 ): Promise<AgentResult> {
   const { result } = await runLoop({
     client,
@@ -373,7 +419,7 @@ async function structuredRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    ...structuredFrame(settings.role, task, common.answerVia),
+    ...structuredFrame(settings.role, task, common.answerVia, context),
   });
   if (result.status !== "success") return result;
   try {
@@ -399,12 +445,23 @@ export async function runClaudeApiImage(
     // The proxy may not answer yet when this pod starts (O-133).
     await (deps.waitForProxy ?? waitForProxy)(settings.modelBaseUrl);
     const client = deps.client?.(settings) ?? proxyClient(settings.modelBaseUrl);
+    // The context tools the task lists, through the state API with the run's token (ADR 0119
+    // slice 3c). Each call is logged by tool, status and size only.
+    const logger = createLogger(`agent-${settings.role}`, deps.write);
+    const context = createContextTools({
+      stateApiUrl: settings.stateApiUrl,
+      token: settings.stateApiToken,
+      allowed: task.contextTools ?? [],
+      secrets,
+      log: (entry) => logger.info("context tool call", { ...entry }),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    });
     result =
       settings.role === "qa" && task.images !== undefined
         ? await visualRun(settings, task, client, common, deps, secrets)
         : settings.role === "qa"
-          ? await qaRun(settings, task, env, client, deps, common, secrets)
-          : await structuredRun(settings, task, client, common, deps);
+          ? await qaRun(settings, task, env, client, deps, common, secrets, context)
+          : await structuredRun(settings, task, client, common, deps, context);
   } catch (error) {
     // Setting and task errors name the problem, never a value.
     result = errorResult(error instanceof Error ? error.message : "the run failed");

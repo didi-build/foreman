@@ -8,6 +8,10 @@
 // the task are read. Prompts, keys and tokens are never logged: the result line is the only
 // output, with every credential value removed.
 //
+// A task that lists context tools (ADR 0119 slice 3c) gets the local MCP server `foreman` in its
+// config: OpenCode starts ./context-mcp.ts with this Node and the listed tools, and the server
+// reads the state API's address and the run's token from the environment OpenCode passes on.
+//
 // A task in the close-only mode (`close_pull_request`, D-318) never starts OpenCode: once the
 // settings and the task are read, the wrapper closes the one pull request its input names with
 // the run's GitHub token (./close.ts) and prints that as its result line. Nothing is written to
@@ -15,6 +19,7 @@
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   errorResult,
@@ -37,6 +42,15 @@ import { limitStop, type LimitStop } from "./limits.ts";
 import { runOpenCode, SYSTEM_CLOCK, type StopClock } from "./process.ts";
 import { openCodeResult } from "./result.ts";
 import { readOpenCodeSettings } from "./settings.ts";
+
+/**
+ * How OpenCode starts the context tools' MCP server (ADR 0119 slice 3c): this Node, by its path,
+ * and the server's file beside this one, by its path. No shell and no PATH lookup.
+ */
+const CONTEXT_SERVER = {
+  node: process.execPath,
+  script: fileURLToPath(new URL("./context-mcp.ts", import.meta.url)),
+};
 
 export interface OpenCodeImageDeps {
   write?: (line: string) => void;
@@ -110,6 +124,7 @@ export async function runOpenCodeImage(
       task,
       instructionsPath,
       deps.magicPathEnabled,
+      CONTEXT_SERVER,
     );
     mkdirSync(runDir, { mode: 0o700 });
     writeFileSync(instructionsPath, task.instructions, { mode: 0o600 });

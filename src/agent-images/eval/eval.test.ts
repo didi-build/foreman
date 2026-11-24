@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -391,6 +391,88 @@ describe("the weekly test job (integration: every case through the egress proxy,
     expect(system).toContain("call the answer tool with your verdict");
     // The composed text a real QA review run gets (ADR 0119 slice 2).
     expect(system).toContain(instructionsFor(bots.qa, "qa:review"));
+  });
+
+  it("gives QA and Triage the context tools their bot files declare, against a state API with no records (ADR 0119 slice 3c)", async () => {
+    // Bot files that declare the tools, as slice 3d will: the real ones plus one line each.
+    const dir = mkdtempSync(join(tmpdir(), "foreman-eval-bots-"));
+    made.push(dir);
+    for (const role of ["developer", "designer", "qa", "council", "triage"]) {
+      const text = readFileSync(join("contracts", "bots", `${role}.yaml`), "utf8");
+      writeFileSync(
+        join(dir, `${role}.yaml`),
+        role === "qa" || role === "triage"
+          ? `${text}context_tools: [search_decisions, read_item_history]\n`
+          : text,
+      );
+    }
+    proxy.respond = (request) => {
+      const c = caseOf(request);
+      if (turnOf(request) > 1)
+        return reply.toolUse("answer", c.example, "toolu_a", usage());
+      return c.role === "qa"
+        ? reply.toolUse(
+            "read_item_history",
+            { itemId: c.input.item.id },
+            "toolu_c",
+            usage(),
+          )
+        : reply.toolUse("search_decisions", { query: "truncate" }, "toolu_c", usage());
+    };
+    const { code, structured } = await run(
+      envFor([entry(A)], {
+        FOREMAN_EVAL_CASES: "qa-truncate-pass,triage-truncate-plan",
+      }),
+      { botsDir: dir },
+    );
+    expect(code).toBe(0);
+    expect(structured.runs.map((r) => [r.caseId, r.outcome])).toEqual([
+      ["qa-truncate-pass", "correct"],
+      ["triage-truncate-plan", "correct"],
+    ]);
+    const [qaCall, qaAnswer, triageCall, triageAnswer] =
+      proxy.modelRequests as RecordedRequest[];
+    const toolNames = (r?: RecordedRequest) =>
+      (r?.body.tools as { name: string }[]).map((t) => t.name);
+    expect(toolNames(qaCall)).toEqual([
+      "list_files",
+      "read_file",
+      "search_files",
+      "search_decisions",
+      "read_item_history",
+      "answer",
+    ]);
+    expect(toolNames(triageCall)).toEqual([
+      "search_decisions",
+      "read_item_history",
+      "answer",
+    ]);
+    const resultOf = (r?: RecordedRequest) =>
+      (
+        (r?.body.messages as { content: unknown }[])[2]?.content as {
+          content: string;
+          is_error?: boolean;
+        }[]
+      )[0];
+    expect(resultOf(qaAnswer)).toMatchObject({
+      content: "No item with that id in this project.",
+      is_error: true,
+    });
+    expect(resultOf(triageAnswer)?.content).toBe(
+      [
+        '<context_result tool="search_decisions">',
+        "No records yet.",
+        '{"truncated":false,"data":[]}',
+        "</context_result>",
+      ].join("\n"),
+    );
+    for (const r of [qaCall, triageCall]) {
+      expect((r?.body.system as { text: string }[])[0]?.text).toContain(
+        "with the read-only tools search_decisions and read_item_history.",
+      );
+    }
+    // The stand-in state API is never on the network.
+    expect(proxy.stateApiRequests).toEqual([]);
   });
 
   it("runs Claude's baseline entries on their roles only, with structured outputs and no cache key", async () => {

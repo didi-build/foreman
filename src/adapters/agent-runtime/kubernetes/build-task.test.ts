@@ -122,6 +122,24 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     expect(buildKubernetesTask(parts()).task.mode).toBeUndefined();
   });
 
+  it("passes the bot file's context tools into the task, never into a close run's (ADR 0119 slice 3c)", () => {
+    const base = parts();
+    const withTools = parts({
+      bot: { ...base.bot, contextTools: ["search_decisions", "find_similar_items"] },
+    });
+    expect(buildKubernetesTask(withTools).task.contextTools).toEqual([
+      "search_decisions",
+      "find_similar_items",
+    ]);
+    expect(buildKubernetesTask(parts()).task).not.toHaveProperty("contextTools");
+    const close = buildKubernetesTask({
+      ...withTools,
+      run: { ...base.run, taskType: "developer:close", prNumber: 7 },
+    });
+    expect(close.task.mode).toBe("close_pull_request");
+    expect(close.task).not.toHaveProperty("contextTools");
+  });
+
   it("refuses a run whose provider has no provider setting", () => {
     const others = parts().providers.filter((p) => p.name !== "anthropic");
     expect(() => buildKubernetesTask(parts({ providers: others }))).toThrow(

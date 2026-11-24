@@ -175,6 +175,82 @@ describe("task file (unit: the same rules as the runner)", () => {
       parseTask("qa", JSON.stringify({ ...qaTask, foremanTask: 2 })),
     ).toThrow(/version 1/);
   });
+
+  describe("the context tools (ADR 0119 slice 3c)", () => {
+    const ALL = ["search_decisions", "find_similar_items", "read_item_history"];
+    const schema = { type: "object" };
+    const builder = {
+      foremanTask: 1,
+      instructions: "Build.",
+      input: "The item.",
+      allowedTools: ["Read"],
+      nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      branch: "foreman/1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    };
+    const triage = {
+      foremanTask: 1,
+      instructions: "Plan.",
+      input: "The idea.",
+      outputSchema: schema,
+    };
+    const parse = (role: Parameters<typeof parseTask>[0], task: object) =>
+      parseTask(role, JSON.stringify(task));
+
+    it("accepts known tools, each once, on QA's review, Triage, the Developer and the Designer", () => {
+      expect(parse("qa", { ...qaTask, contextTools: ALL }).contextTools).toEqual(ALL);
+      expect(
+        parse("triage", { ...triage, contextTools: ["search_decisions"] }),
+      ).toEqual({
+        ...triage,
+        contextTools: ["search_decisions"],
+      });
+      for (const role of ["developer", "designer"] as const) {
+        expect(parse(role, { ...builder, contextTools: ALL }).contextTools).toEqual(
+          ALL,
+        );
+      }
+    });
+
+    it.each([
+      [[], /must be a non-empty list/],
+      ["search_decisions", /must be a non-empty list/],
+      [["search_decisions", "rm"], /must be known tools/],
+      [["search_decisions", 3], /must be known tools/],
+      [["read_item_history", "read_item_history"], /lists a context tool twice/],
+    ])("refuses the list %j, naming the field and never a value", (tools, problem) => {
+      expect(() => parse("triage", { ...triage, contextTools: tools })).toThrow(
+        problem,
+      );
+      expect(() => parse("triage", { ...triage, contextTools: tools })).not.toThrow(
+        /\brm\b/,
+      );
+    });
+
+    it("refuses them on a Council task, a QA task with images and a close run", () => {
+      expect(() =>
+        parse("council", { ...triage, instructions: "Decide.", contextTools: ALL }),
+      ).toThrow(/^a council run has no context tools$/);
+      expect(() =>
+        parse("qa", {
+          ...qaTask,
+          outputSchema: schema,
+          images: [{ label: "Image 1", mediaType: "image/png", data: "iVBORw0KGgo=" }],
+          contextTools: ["search_decisions"],
+        }),
+      ).toThrow(/^a qa task with images has no context tools$/);
+      expect(() =>
+        parse("developer", {
+          ...builder,
+          mode: "close_pull_request",
+          contextTools: ["search_decisions"],
+        }),
+      ).toThrow(/^a close run has no context tools$/);
+    });
+
+    it("leaves a task without them as it was", () => {
+      expect(parse("triage", triage)).not.toHaveProperty("contextTools");
+    });
+  });
 });
 
 describe("result line (unit: round trip through the runtime's parser, ADR 0106 section 4)", () => {

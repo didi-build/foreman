@@ -11,7 +11,12 @@ import { PUSHING_ROLES, runBranch } from "../../../core/task-input.ts";
 import { isCloseTaskType } from "../../../core/task-types.ts";
 import type { ModelProviderSetting } from "./manifests.ts";
 import type { KubernetesAgentTask } from "./runtime.ts";
-import { CLOSE_MODE, type AgentTaskFile, type TaskImage } from "./task.ts";
+import {
+  CLOSE_MODE,
+  type AgentTaskFile,
+  type ContextToolName,
+  type TaskImage,
+} from "./task.ts";
 
 /** What a bot file gives a Kubernetes run (ADR 0107). No credential value is in it. */
 export interface KubernetesBotFile {
@@ -21,6 +26,11 @@ export interface KubernetesBotFile {
   instructions: string;
   /** Developer and Designer. */
   allowedTools?: string[];
+  /**
+   * The read-only context tools (ADR 0119 slice 3c): QA's review, Triage, the Developer and the
+   * Designer. A close run and a run with images never get them.
+   */
+  contextTools?: ContextToolName[];
   /** CONNECT hosts for the agent's proxy. Empty for QA, Council and Triage. */
   allowedHosts: string[];
   /** QA's review only; the visual comparison has no fetch step. */
@@ -101,6 +111,15 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
     input: parts.input,
   };
   if (bot.allowedTools !== undefined) task.allowedTools = [...bot.allowedTools];
+  // A close run starts no model (D-318), and QA's visual comparison reads only its images, so
+  // neither gets the context tools.
+  if (
+    bot.contextTools !== undefined &&
+    !isCloseTaskType(run.taskType) &&
+    parts.images === undefined
+  ) {
+    task.contextTools = [...bot.contextTools];
+  }
   if (bot.outputSchema !== undefined) task.outputSchema = bot.outputSchema;
   if (PUSHING_ROLES.includes(role)) {
     // The wrapper opens the run's PR on this branch and names this node with its docs note

@@ -22,6 +22,10 @@
 // slice gives cases their own records, so the test also measures runs with a summary. The Council
 // gets no summary, as in real runs.
 //
+// QA's and Triage's tasks list the context tools their bot file declares (`context_tools`, ADR
+// 0119 slice 3c), as flows/lib/tasks.ts passes them; no bot file declares any yet (slice 3d). The
+// weekly test job runs them against a state API with no records (src/agent-images/eval/week.ts).
+//
 // The image's fixed frame (the system text around the instructions, and the facts it adds after
 // the fenced input) is applied when the set runs, by the weekly test job with the Messages API
 // image's own frame builders (src/agent-images/eval/week.ts, D-432).
@@ -90,6 +94,10 @@ function emptySummary(taskType: string) {
   return context ? contextSection(context) : null;
 }
 
+/** The context tools a run of the role gets, as the runner passes them: only when declared. */
+const contextToolsOf = (bot: BotFile): Pick<AgentTaskFile, "contextTools"> =>
+  bot.contextTools ? { contextTools: [...bot.contextTools] } : {};
+
 function schemaOf(bot: BotFile, kind: string): OutputSchema {
   const schema = bot.outputSchemas?.[kind];
   if (!schema) throw new Error(`the ${bot.role} bot file has no ${kind} output schema`);
@@ -122,6 +130,7 @@ function qaRun(c: QaCase, bots: BotFiles, cases: readonly EvalCase[]): QaRun {
     input,
     nodeId: item.id,
     evidenceIds,
+    ...contextToolsOf(bots.qa),
   };
   taskFileJson("qa", task);
   return {
@@ -156,6 +165,7 @@ function triageRun(c: TriageCase, bots: BotFiles): TriageRun {
       context: emptySummary(c.taskType),
     }),
     outputSchema,
+    ...contextToolsOf(bots.triage),
   };
   taskFileJson("triage", task);
   return {

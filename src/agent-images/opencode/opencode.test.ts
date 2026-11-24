@@ -168,6 +168,34 @@ describe("OpenCode permissions (unit: D-196 mapped, check 3 of the spike)", () =
       /only for a Designer/,
     );
   });
+
+  it("allows each listed context tool by its exact foreman_ name, after the deny (ADR 0119 slice 3c)", () => {
+    const permission = openCodePermissions("developer", TOOLS, [
+      "search_decisions",
+      "read_item_history",
+    ]);
+    expect(permission).toEqual({
+      "*": "deny",
+      read: "allow",
+      edit: "allow",
+      glob: "allow",
+      grep: "allow",
+      bash: { "*": "deny", "git *": "allow", "npm *": "allow" },
+      foreman_search_decisions: "allow",
+      foreman_read_item_history: "allow",
+    });
+    expect(Object.keys(permission)[0]).toBe("*");
+    // No wildcard over the server: a tool it is not listed for stays denied.
+    expect(permission).not.toHaveProperty("foreman_*");
+    expect(permission).not.toHaveProperty("foreman_find_similar_items");
+    expect(openCodePermissions("developer", ["Read"], [])).toEqual({
+      "*": "deny",
+      read: "allow",
+    });
+    expect(() =>
+      openCodePermissions("developer", ["Read"], ["search_decisions", "bash" as never]),
+    ).toThrow(/^context tool 2 is not a known tool$/);
+  });
 });
 
 describe("OpenCode config (unit: one provider at the proxy, catalog prices, limits)", () => {
@@ -304,6 +332,106 @@ describe("OpenCode config (unit: one provider at the proxy, catalog prices, limi
     expect(() =>
       mcpBlock("designer", "http://user:pw@10.245.0.10:8080/magicpath", true),
     ).toThrow(/no credentials/);
+  });
+
+  describe("the context tools' local MCP server (ADR 0119 slice 3c)", () => {
+    const launch = {
+      node: "/usr/local/bin/node",
+      script: "/app/src/agent-images/opencode/context-mcp.ts",
+    };
+    const ALL = [
+      "search_decisions",
+      "find_similar_items",
+      "read_item_history",
+    ] as const;
+
+    it("adds the foreman server and its tools' permissions only when the task lists tools", () => {
+      const config = openCodeConfig(
+        settings,
+        { allowedTools: TOOLS, contextTools: [...ALL] },
+        "/tmp/i.md",
+        undefined,
+        launch,
+      );
+      expect(config.mcp).toEqual({
+        foreman: {
+          type: "local",
+          command: [launch.node, launch.script, ...ALL],
+          enabled: true,
+          timeout: 10000,
+        },
+      });
+      expect(config.permission).toMatchObject({
+        "*": "deny",
+        foreman_search_decisions: "allow",
+        foreman_find_similar_items: "allow",
+        foreman_read_item_history: "allow",
+      });
+      const without = openCodeConfig(
+        settings,
+        { allowedTools: TOOLS },
+        "/tmp/i.md",
+        undefined,
+        launch,
+      );
+      expect(without).not.toHaveProperty("mcp");
+      expect(JSON.stringify(without.permission)).not.toContain("foreman_");
+    });
+
+    it("never writes the run's token, the state API's address or any environment into the config", () => {
+      const text = JSON.stringify(
+        openCodeConfig(
+          settings,
+          { allowedTools: TOOLS, contextTools: [...ALL] },
+          "/tmp/i.md",
+          undefined,
+          launch,
+        ),
+      );
+      expect(text).not.toContain(STATE_TOKEN);
+      expect(text).not.toContain(GITHUB_TOKEN);
+      expect(text).not.toContain(settings.stateApiUrl);
+      expect(text).not.toContain("environment");
+    });
+
+    it("keeps MagicPath's block as it is beside the foreman server", () => {
+      const config = openCodeConfig(
+        {
+          ...settings,
+          role: "designer",
+          magicPathUrl: "http://10.245.0.10:8080/magicpath/mcp",
+        },
+        {
+          allowedTools: ["Read", "mcp__magicpath"],
+          contextTools: ["search_decisions"],
+        },
+        "/tmp/i.md",
+        true,
+        launch,
+      );
+      expect(config.mcp?.magicpath).toEqual(
+        mcpBlock("designer", "http://10.245.0.10:8080/magicpath/mcp", true)?.magicpath,
+      );
+      expect(config.mcp?.foreman?.command).toEqual([
+        launch.node,
+        launch.script,
+        "search_decisions",
+      ]);
+      expect(config.permission).toMatchObject({
+        "magicpath_*": "allow",
+        foreman_search_decisions: "allow",
+      });
+    });
+
+    it("refuses listed tools without the server's command", () => {
+      expect(() =>
+        openCodeConfig(
+          settings,
+          { allowedTools: TOOLS, contextTools: ["search_decisions"] },
+          "/tmp/i.md",
+        ),
+      ).toThrow(/server's command/);
+    });
   });
 });
 
@@ -874,6 +1002,45 @@ describe("OpenCode image (integration: a fake opencode executable, no network)",
         },
       },
     });
+  });
+
+  it("starts the context tools' server with this Node and the listed tools, the token only in OpenCode's environment (ADR 0119 slice 3c)", async () => {
+    writeTask("scenario=success", {
+      contextTools: ["search_decisions", "read_item_history"],
+    });
+    const { code } = await run();
+    expect(code).toBe(0);
+    const seen = call();
+    const configText = readFileSync(seen.env.OPENCODE_CONFIG as string, "utf8");
+    expect(configText).not.toContain(STATE_TOKEN);
+    expect(configText).not.toContain(GITHUB_TOKEN);
+    const { mcp, permission } = seen.config as {
+      mcp: { foreman: { type: string; command: string[] } };
+      permission: Record<string, unknown>;
+    };
+    expect(mcp.foreman.type).toBe("local");
+    expect(mcp.foreman.command).toEqual([
+      process.execPath,
+      expect.stringMatching(/\/src\/agent-images\/opencode\/context-mcp\.ts$/),
+      "search_decisions",
+      "read_item_history",
+    ]);
+    expect(existsSync(mcp.foreman.command[1] as string)).toBe(true);
+    expect(permission).toMatchObject({
+      "*": "deny",
+      foreman_search_decisions: "allow",
+      foreman_read_item_history: "allow",
+    });
+    expect(permission).not.toHaveProperty("foreman_find_similar_items");
+    // OpenCode passes its own environment on to its local servers: the server reads these.
+    expect(seen.env.FOREMAN_STATE_API_TOKEN).toBe(STATE_TOKEN);
+    expect(seen.env.FOREMAN_STATE_API_URL).toBe(proxy.stateApiUrl);
+  });
+
+  it("writes no MCP block when the task lists no context tools", async () => {
+    writeTask("scenario=success");
+    await run();
+    expect(call().config).not.toHaveProperty("mcp");
   });
 
   it("stops OpenCode at the dollar cap before the next request (max_budget)", async () => {

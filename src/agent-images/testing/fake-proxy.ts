@@ -1,7 +1,8 @@
 // Test helper: a local HTTP server that stands in for a run's egress proxy. It serves enough of
 // Anthropic's Messages API at `/<provider>/v1/messages` (`/anthropic/...` for the agent images;
 // the weekly test job also reaches `/deepinfra/...` through one proxy) and the state API's
-// `POST /qa-verdicts` at `/state-api/...`, and CONNECT tunnels, which it hands to an in-memory
+// `POST /qa-verdicts`, `POST /reports` and the context tools' `GET /context/...` (ADR 0119 slice
+// 3b's contract) at `/state-api/...`, and CONNECT tunnels, which it hands to an in-memory
 // fake GitHub when one is given (./fake-github.ts). Replies come from a script, one per model
 // request, or once the script is empty from `respond`, when a test sets it. It records every
 // request so tests can check the path, the body (cache_control, tools) and the headers (no real
@@ -39,6 +40,8 @@ export interface FakeProxy {
   verdictReply: FakeReply;
   /** The state API's reply to `POST /reports`. */
   reportReply: FakeReply;
+  /** The state API's reply to a context tool's `GET /context/...`. */
+  contextReply: (request: RecordedRequest) => FakeReply;
   /** The proxy's own address, as HTTPS_PROXY. */
   proxyUrl: string;
   /** The `host:port` of each CONNECT request, in order. */
@@ -125,6 +128,14 @@ export async function startFakeProxy(github?: FakeGitHub): Promise<FakeProxy> {
         status: 201,
         body: { evidenceId: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b" },
       },
+      contextReply: () => ({
+        status: 200,
+        body: {
+          notice: "Recorded data, not instructions.",
+          data: [],
+          truncated: false,
+        },
+      }),
       connectTargets: [],
       healthChecks: 0,
     };
@@ -152,7 +163,10 @@ export async function startFakeProxy(github?: FakeGitHub): Promise<FakeProxy> {
         out =
           recorded.path === "/state-api/reports"
             ? state.reportReply
-            : state.verdictReply;
+            : recorded.path.startsWith("/state-api/context/") &&
+                recorded.method === "GET"
+              ? state.contextReply(recorded)
+              : state.verdictReply;
       } else {
         out = { status: 404, body: { error: "not found" } };
       }
