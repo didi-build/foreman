@@ -39,6 +39,14 @@ export function pathOnly(url: string | undefined): string {
   return new URL(url ?? "/", "http://localhost").pathname;
 }
 
+/**
+ * The query parameters of a request URL, decoded, without the fragment. Never log them: a query
+ * can carry search text or a token (ADR 0102).
+ */
+export function queryOf(url: string | undefined): URLSearchParams {
+  return new URL(url ?? "/", "http://localhost").searchParams;
+}
+
 export function sendJson(
   response: ServerResponse,
   status: number,

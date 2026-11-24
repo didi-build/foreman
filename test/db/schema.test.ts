@@ -1958,6 +1958,62 @@ describe.skipIf(!adminUrl)(
       );
     });
 
+    it("lets the API role read transitions and nothing more on them (migration 0032, D-470)", () => {
+      // The grant: select only, for the API's role only.
+      const privileges = sql(
+        `select string_agg(p || '=' || has_table_privilege('factory_api', 'factory.transitions', p), ','
+           order by p)
+         from unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) p;`,
+      );
+      expect(privileges.ok, privileges.err).toBe(true);
+      expect(privileges.out).toBe(
+        "DELETE=false,INSERT=false,REFERENCES=false,SELECT=true,TRIGGER=false,TRUNCATE=false,UPDATE=false",
+      );
+      // The policy mirrors the role's other `api_read` policies exactly: select, every row.
+      const policies = sql(
+        `select string_agg(tablename || ':' || cmd || ':' || array_to_string(roles, '+') || ':' || qual,
+           ',' order by tablename)
+         from pg_policies
+         where schemaname = 'factory' and policyname = 'api_read'
+           and tablename in ('transitions', 'nodes', 'evidence', 'runs');`,
+      );
+      expect(policies.ok, policies.err).toBe(true);
+      expect(policies.out).toBe(
+        [
+          "evidence:SELECT:factory_api:true",
+          "nodes:SELECT:factory_api:true",
+          "runs:SELECT:factory_api:true",
+          "transitions:SELECT:factory_api:true",
+        ].join(","),
+      );
+      expect(
+        sql(
+          "select count(*) from pg_policies where schemaname = 'factory' and tablename = 'transitions' and 'factory_api' = any(roles);",
+        ).out,
+      ).toBe("1");
+      // It reads the fixture's move, and still cannot write, change or remove one.
+      const read = sql(
+        `select from_state || '>' || to_state from factory.transitions where id = '${ID.transition}';`,
+        "factory_api",
+      );
+      expect(read.ok, read.err).toBe(true);
+      expect(read.out).toBe("triage>ready_for_dev");
+      for (const statement of [
+        `insert into factory.transitions (id, node_id, from_state, to_state, trigger_kind, actor_kind, actor_id, guard_result, spec_version, mode, at)
+           values (gen_random_uuid(), '${ID.node}', 'ready_for_dev', 'done', 'bot_report', 'bot', 'developer', '[]', '${SHA}', 'applied', ${AT});`,
+        `update factory.transitions set reason = 'x' where id = '${ID.transition}';`,
+        `delete from factory.transitions where id = '${ID.transition}';`,
+        "truncate factory.transitions;",
+      ]) {
+        expectRejected(sql(statement, "factory_api"), /permission denied/);
+      }
+      // The receiver's role gains nothing.
+      expectRejected(
+        sql("select count(*) from factory.transitions;", "factory_ingest"),
+        /permission denied/,
+      );
+    });
+
     it("keeps one open gate request per topic", () => {
       const open = (id: string) =>
         `insert into factory.gate_requests (id, project_id, topic_key, kind, owner, blocking, status, created_at)

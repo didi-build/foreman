@@ -1,7 +1,13 @@
 import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLogger } from "./logger.ts";
-import { pathOnly, sendJson, startService, type RunningService } from "./server.ts";
+import {
+  pathOnly,
+  queryOf,
+  sendJson,
+  startService,
+  type RunningService,
+} from "./server.ts";
 
 const quietLogger = createLogger("test", () => {});
 let running: RunningService | undefined;
@@ -102,5 +108,25 @@ describe("pathOnly (unit: service kit, ADR 0102)", () => {
     [undefined, "/"],
   ])("turns %j into %j", (input, expected) => {
     expect(pathOnly(input)).toBe(expected);
+  });
+});
+
+describe("queryOf (unit: service kit, ADR 0119 slice 3b)", () => {
+  it.each([
+    [
+      "/a/b?q=two%20words&path=src%2Fa.ts&path=src/b#frag",
+      "q=two+words&path=src%2Fa.ts&path=src%2Fb",
+    ],
+    ["/a?q=%F0%9F%99%82+x", "q=%F0%9F%99%82+x"],
+    ["/a#q=hidden", ""],
+    [undefined, ""],
+  ])("reads the query of %j as %j", (input, expected) => {
+    expect(queryOf(input).toString()).toBe(expected);
+  });
+
+  it("keeps every value of a repeated parameter, in order, decoded", () => {
+    const query = queryOf("/x?path=src%2Fa.ts&q=a+b&path=docs/");
+    expect(query.getAll("path")).toEqual(["src/a.ts", "docs/"]);
+    expect(query.get("q")).toBe("a b");
   });
 });

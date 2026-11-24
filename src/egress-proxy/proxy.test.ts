@@ -76,6 +76,8 @@ let upstreamPort: number;
 let releaseStream: () => void = () => {};
 
 interface Seen {
+  /** The method, as the state API's stand-in recorded it. */
+  method?: string;
   path?: string;
   headers: IncomingHttpHeaders;
   bodyHash: string;
@@ -190,6 +192,7 @@ function recordingServer(seen: () => Seen[]): HttpServer {
     request.on("end", () => {
       const body = Buffer.concat(chunks);
       seen().push({
+        method: request.method,
         path: request.url,
         headers: request.headers,
         bodyHash: sha256(body),
@@ -771,6 +774,34 @@ describe("egress proxy state API route (integration: localhost fakes, D-195)", (
     expect(seen.headers.authorization).toBe(`Bearer ${STATE_TOKEN}`);
     expect(seen.headers.host).toBe(`127.0.0.1:${stateApiPort}`);
     expect(seen.bodyHash).toBe(sha256(body));
+    expect(upstreamSeen).toEqual([]);
+  });
+
+  it("forwards a GET with a query string, the method, path, query and token unchanged (ADR 0119 slice 3b)", async () => {
+    await start();
+    const query =
+      "q=CSV%20export&path=src%2Freport%2Fexport.ts&path=src/report/csv/&path=%E2%9C%93";
+    const response = await fetch(
+      proxyUrl(`/state-api/context/similar-items?${query}`),
+      {
+        headers: { authorization: `Bearer ${STATE_TOKEN}` },
+      },
+    );
+    expect(response.status).toBe(200);
+    const history = await fetch(
+      proxyUrl("/state-api/context/decisions?q=d-468+scope"),
+      { headers: { authorization: `Bearer ${STATE_TOKEN}` } },
+    );
+    expect(history.status).toBe(200);
+    expect(stateApiSeen.map((seen) => [seen.method, seen.path])).toEqual([
+      ["GET", `/context/similar-items?${query}`],
+      ["GET", "/context/decisions?q=d-468+scope"],
+    ]);
+    for (const seen of stateApiSeen) {
+      expect(seen.headers.authorization).toBe(`Bearer ${STATE_TOKEN}`);
+      expect(seen.headers.host).toBe(`127.0.0.1:${stateApiPort}`);
+      expect(seen.bodyHash).toBe(sha256(Buffer.alloc(0)));
+    }
     expect(upstreamSeen).toEqual([]);
   });
 
