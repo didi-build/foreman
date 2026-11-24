@@ -125,6 +125,27 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
     }
   });
 
+  it("lists QA's and Triage's declared context tools as the runner does, and none today (ADR 0119 slice 3c)", () => {
+    for (const c of cases) {
+      expect(buildCaseRun(c, bots, cases).task, c.id).not.toHaveProperty(
+        "contextTools",
+      );
+    }
+    const tools = ["search_decisions", "find_similar_items"] as const;
+    const declared = {
+      ...bots,
+      qa: { ...bots.qa, contextTools: [...tools] },
+      triage: { ...bots.triage, contextTools: [...tools] },
+    };
+    for (const c of cases) {
+      const run = buildCaseRun(c, declared, cases);
+      expect(() => taskFileJson(c.role, run.task), c.id).not.toThrow();
+      if (c.role === "council")
+        expect(run.task, c.id).not.toHaveProperty("contextTools");
+      else expect(run.task.contextTools, c.id).toEqual(tools);
+    }
+  });
+
   it("records a builder's stop exactly as the runner does: its reason and the guard's detail", async () => {
     for (const c of of("council")) {
       const [reason, detail] = c.input.why;

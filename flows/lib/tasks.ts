@@ -134,6 +134,9 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
         instructions,
         allowedHosts,
         ...(bot.allowedTools ? { allowedTools: [...bot.allowedTools] } : {}),
+        // The read-only context tools (ADR 0119 slice 3c), not for the visual comparison, which
+        // reads only its images; `buildKubernetesTask` also leaves them out of a close run.
+        ...(bot.contextTools && !visual ? { contextTools: [...bot.contextTools] } : {}),
         // The visual comparison has no fetch step (N-57): it reads only its images.
         ...(bot.fetchAllowedHosts && !visual
           ? { fetchAllowedHosts: [...bot.fetchAllowedHosts] }

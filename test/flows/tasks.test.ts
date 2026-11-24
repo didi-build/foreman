@@ -85,12 +85,13 @@ function source(
   options: {
     tokens?: InstallationTokens;
     registries?: Json;
+    bots?: typeof BOTS;
   } = {},
 ) {
   const secretsRead: string[] = [];
   const minted: InstallationTokenRequest[] = [];
   const tasks = createTaskSource({
-    bots: BOTS,
+    bots: options.bots ?? BOTS,
     images: async () => IMAGES,
     secret: async (path) => {
       secretsRead.push(path);
@@ -287,6 +288,55 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(file.outputSchema).toEqual(BOTS.triage.outputSchemas?.answer);
     expect(file.instructions).toBe(instructionsFor(BOTS.triage, "triage"));
     expect(minted).toEqual([]);
+  });
+
+  it("gives no task context tools today, since no bot file declares them (ADR 0119 slice 3c)", async () => {
+    const { tasks } = source();
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
+      expect(task.task, role).not.toHaveProperty("contextTools");
+    }
+    const council = (await tasks.taskFor(
+      startFor("council", { outputSchema: COUNCIL_SCHEMA }),
+    )) as KubernetesAgentTask;
+    expect(council.task).not.toHaveProperty("contextTools");
+  });
+
+  it("passes declared context tools to QA's review, Triage and the builders, never to qa:visual or a close run", async () => {
+    const tools = ["search_decisions", "read_item_history"] as const;
+    const declared = (role: "qa" | "triage" | "developer" | "designer") => ({
+      ...BOTS[role],
+      contextTools: [...tools],
+    });
+    const { tasks } = source({
+      bots: {
+        ...BOTS,
+        qa: declared("qa"),
+        triage: declared("triage"),
+        developer: declared("developer"),
+        designer: declared("designer"),
+      },
+    });
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
+      // The runtime's own task file check accepts it.
+      expect(acceptedByRuntime(role, task).file.contextTools, role).toEqual(tools);
+    }
+    const visual = startFor("qa", { outputSchema: BOTS.qa.outputSchemas?.visual });
+    (visual.run as { taskType: string }).taskType = "qa:visual";
+    visual.evidenceIds = [];
+    visual.images = [
+      { label: "Image 1: the approved option", png: new Uint8Array([1]) },
+    ];
+    const visualTask = (await tasks.taskFor(visual)) as KubernetesAgentTask;
+    expect(acceptedByRuntime("qa", visualTask).file).not.toHaveProperty("contextTools");
+    const close = startFor("developer");
+    (close.run as { taskType: string; prNumber: number }).taskType = "developer:close";
+    (close.run as { prNumber: number }).prNumber = 7;
+    const closeTask = (await tasks.taskFor(close)) as KubernetesAgentTask;
+    const { file } = acceptedByRuntime("developer", closeTask);
+    expect(file.mode).toBe("close_pull_request");
+    expect(file).not.toHaveProperty("contextTools");
   });
 
   it("gives each task type its own composed instructions, and refuses one the role does not allow (ADR 0119 slice 2)", async () => {

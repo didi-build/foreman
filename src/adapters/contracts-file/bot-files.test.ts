@@ -433,6 +433,52 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     ).toEqual(["triage.yaml: output_schemas must give exactly: answer"]);
   });
 
+  it("declare no context tools yet: that is slice 3d, a change Didi approves (ADR 0119 slice 3c, D-196)", () => {
+    const bots = readBotFiles();
+    for (const role of BOT_ROLES) {
+      expect(bots[role].contextTools, role).toBeUndefined();
+      expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
+        "context_tools",
+      );
+    }
+  });
+
+  it("take context_tools for QA, Triage, the Developer and the Designer, each a known tool once (ADR 0119 slice 3c)", () => {
+    for (const role of ["qa", "triage", "developer", "designer"] as const) {
+      const { bots, problems } = check(
+        withData(role, (d) => {
+          d.context_tools = ["read_item_history", "search_decisions"];
+        }),
+      );
+      expect(problems, role).toEqual([]);
+      expect(bots?.[role].contextTools, role).toEqual([
+        "read_item_history",
+        "search_decisions",
+      ]);
+    }
+    const problems = (role: (typeof BOT_ROLES)[number], value: unknown) =>
+      check(
+        withData(role, (d) => {
+          d.context_tools = value;
+        }),
+      ).problems;
+    expect(problems("council", ["search_decisions"])).toEqual([
+      "council.yaml: context_tools: a council run gets no context tools",
+    ]);
+    const shape =
+      "triage.yaml: context_tools must be a non-empty list of context tools (search_decisions, find_similar_items, read_item_history)";
+    expect(problems("triage", [])).toEqual([shape]);
+    expect(problems("triage", "search_decisions")).toEqual([shape]);
+    expect(problems("triage", [3])).toEqual([shape]);
+    expect(
+      problems("qa", ["search_decisions", "Bash(curl *)", "search_decisions"]),
+    ).toEqual([
+      "qa.yaml: context_tools[1] is not a context tool",
+      "qa.yaml: context_tools[2] repeats an earlier tool",
+    ]);
+    expect(JSON.stringify(problems("qa", ["Bash(curl *)"]))).not.toContain("curl");
+  });
+
   it("give QA's visual comparison its answer schema and its own instructions, and no other role any (D-242)", () => {
     const bots = readBotFiles();
     expect(Object.keys(bots.qa.outputSchemas ?? {})).toEqual(["visual"]);

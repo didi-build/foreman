@@ -21,12 +21,18 @@
 // - **Errors.** A provider error, or any other end of the loop that is not an answer, ends that
 //   run as `error` with a fixed reason, and the next run starts. A successful run's final text is
 //   scored (`scoreAnswer`).
+// - **Context tools.** A case's task lists the context tools its role's bot file declares, as a
+//   real run's does (ADR 0119 slice 3c). The cases hold no project records yet (slice 3a's known
+//   gap), so the tools run against a stand-in for the state API that has none: each search finds
+//   nothing, under the notice "No records yet.", and no item has a history. Calls go through the
+//   real client, so the framing, the refusals and the call cap are a real run's.
 import type { BotFiles } from "../../adapters/contracts-file/bot-files.ts";
 import type { EvalCase } from "../../eval/cases.ts";
 import type { CaseRun } from "../../eval/inputs.ts";
 import { scoreAnswer } from "../../eval/scoring.ts";
 import { qaReviewFrame, structuredFrame } from "../claude-api/image.ts";
 import { createWorkspace } from "../claude-api/files.ts";
+import { createContextTools, type ContextTools } from "../shared/context-tools.ts";
 import {
   LOOP_ERRORS,
   runLoop,
@@ -93,6 +99,24 @@ export interface WeekOptions {
 
 const NO_TOKENS = { uncachedInput: 0, cachedInput: 0, cacheWriteInput: 0, output: 0 };
 
+/** The stand-in state API of a case's context tools: no records in any project. */
+export const NO_RECORDS_NOTICE = "No records yet.";
+const noRecords: typeof fetch = async (url) =>
+  String(url).endsWith("/history")
+    ? Response.json({ error: "not found" }, { status: 404 })
+    : Response.json({ notice: NO_RECORDS_NOTICE, data: [], truncated: false });
+
+/** A case's context tools: the real client over the stand-in, which is never on the network. */
+export function caseContextTools(run: CaseRun): ContextTools {
+  return createContextTools({
+    stateApiUrl: "http://eval.invalid/state-api",
+    token: "the-weekly-test-has-no-state-api-token",
+    allowed: run.task.contextTools ?? [],
+    fetchImpl: noRecords,
+    log: () => undefined,
+  });
+}
+
 /** The loop's fixed error texts, by reason. */
 const LOOP_REASONS: Record<string, EvalReason> = {
   [LOOP_ERRORS.unreachable]: "endpoint_unreachable",
@@ -151,6 +175,7 @@ async function runOne(
   const limits = bot.taskLimits?.[c.taskType] ?? bot.limits;
   const api = bot.providers.find((p) => p.name === entry.provider)?.messagesApi;
   const answerVia = api?.answer ?? "schema";
+  const context = caseContextTools(run);
   const frame =
     run.role === "qa"
       ? qaReviewFrame(
@@ -159,8 +184,9 @@ async function runOne(
           answerVia,
           // The trees are fixed fixtures: their reads are not logged, unlike a real QA run's.
           createWorkspace(run.workspace, () => undefined),
+          context,
         )
-      : structuredFrame(run.role, run.task, answerVia);
+      : structuredFrame(run.role, run.task, answerVia, context);
   const maxUsd = Math.min(limits.maxUsd, leftUsd);
   const deadline = o.deadline(limits.maxMinutes * 60_000);
   const startedAt = o.clock.now();
