@@ -125,11 +125,16 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
     }
   });
 
-  it("lists QA's and Triage's declared context tools as the runner does, and none today (ADR 0119 slice 3c)", () => {
+  it("lists QA's and Triage's declared context tools as the runner does, and none for the Council (ADR 0119 slice 3d)", () => {
     for (const c of cases) {
-      expect(buildCaseRun(c, bots, cases).task, c.id).not.toHaveProperty(
-        "contextTools",
-      );
+      const task = buildCaseRun(c, bots, cases).task;
+      if (c.role === "council") expect(task, c.id).not.toHaveProperty("contextTools");
+      else
+        expect(task.contextTools, c.id).toEqual([
+          "search_decisions",
+          "find_similar_items",
+          "read_item_history",
+        ]);
     }
     const tools = ["search_decisions", "find_similar_items"] as const;
     const declared = {

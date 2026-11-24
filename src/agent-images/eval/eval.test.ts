@@ -368,6 +368,9 @@ describe("the weekly test job (integration: every case through the egress proxy,
       "list_files",
       "read_file",
       "search_files",
+      "search_decisions",
+      "find_similar_items",
+      "read_item_history",
       "answer",
     ]);
     // The read tool read the case's own tree, and the run's input names the head and evidence.
@@ -394,7 +397,7 @@ describe("the weekly test job (integration: every case through the egress proxy,
   });
 
   it("gives QA and Triage the context tools their bot files declare, against a state API with no records (ADR 0119 slice 3c)", async () => {
-    // Bot files that declare the tools, as slice 3d will: the real ones plus one line each.
+    // Bot files that declare two of the tools: the real ones, with their declared list narrowed.
     const dir = mkdtempSync(join(tmpdir(), "foreman-eval-bots-"));
     made.push(dir);
     for (const role of ["developer", "designer", "qa", "council", "triage"]) {
@@ -402,7 +405,10 @@ describe("the weekly test job (integration: every case through the egress proxy,
       writeFileSync(
         join(dir, `${role}.yaml`),
         role === "qa" || role === "triage"
-          ? `${text}context_tools: [search_decisions, read_item_history]\n`
+          ? text.replace(
+              /^context_tools: .*$/m,
+              "context_tools: [search_decisions, read_item_history]",
+            )
           : text,
       );
     }
@@ -512,6 +518,9 @@ describe("the weekly test job (integration: every case through the egress proxy,
       "list_files",
       "read_file",
       "search_files",
+      "search_decisions",
+      "find_similar_items",
+      "read_item_history",
     ]);
     expect(structured.totals.models.map((m) => [m.model, m.runs, m.correct])).toEqual([
       [OPUS, 1, 1],

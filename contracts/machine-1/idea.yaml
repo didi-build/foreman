@@ -121,7 +121,7 @@ states:
     input: The accepted plan, verbatim, and the runner's repo map brief at one commit (D-251).
     output: Triage's structured answer, which the runner checks (D-262, D-264).
     evidence_to_exit: A checked answer. The runner creates the work items, their links and gate requests.
-    tools: None. Triage has no tools (ADR 0107).
+    tools: The read-only context tools for the project's decisions, similar items and one item's history (ADR 0119).
     budget: not set
     side_effects: Creating work items starts Machine 2.
     failure: A bad answer is rejected whole and Triage runs once more with the reason; a second bad answer goes to the Council.
