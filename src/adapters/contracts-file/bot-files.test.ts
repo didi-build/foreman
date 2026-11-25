@@ -5,7 +5,8 @@
 // bot file. With the real persona files (ADR 0119 slice 2): each task type's persona is D-458's,
 // each run's instructions are composed from the shared base, the persona and the task's text, the
 // Council's stay as the file gives them, and a persona change reaches exactly the versions of the
-// roles whose composed text it changes.
+// roles whose composed text it changes. The Council's discussion table (ADR 0119 slice 6a) loads
+// as data, changes no run's text, and is refused on another role or when malformed.
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import { parse } from "yaml";
 import { outputProblem } from "../../core/output-schema.ts";
 import {
   COMPOSED_HEADINGS,
+  composeDiscussionInstructions,
   composeInstructions,
   type Personas,
 } from "../../core/personas.ts";
@@ -1049,5 +1051,262 @@ describe("each task type's persona and composed instructions (unit: contracts-fi
     expect(() => readBotFiles(BOT_FILES_DIR, empty)).toThrow(
       /^The persona files are invalid: shared\.yaml is missing/,
     );
+  });
+});
+
+describe("the Council's discussion table (unit: contracts-file adapter, ADR 0119 slice 6a, D-482 to D-487)", () => {
+  /** The Council's real file with its `discussion` changed. */
+  const councilWith = (change: (discussion: Record<string, unknown>) => void) =>
+    check(
+      withData("council", (d) => {
+        change(d.discussion as Record<string, unknown>);
+      }),
+    );
+  const castsOf = (discussion: Record<string, unknown>) =>
+    discussion.casts as Record<string, unknown>;
+
+  it("load the real table: Product chairs, two pull-ins at most, a cast for every question kind", () => {
+    const bots = readBotFiles();
+    expect(bots.council.discussion).toEqual({
+      chair: "product",
+      maxPullIns: 2,
+      casts: {
+        escalation: ["builder", "quality"],
+        reversal: ["stale_builders"],
+        visual_call: ["designer", "quality"],
+        scanner_gone: ["developer"],
+        still_needed: ["developer"],
+        plan: ["developer", "designer_if_ui"],
+      },
+    });
+    // No run reads it before slice 6e: it is on the bot file only, never on a profile.
+    expect(botProfiles(bots).council).not.toHaveProperty("discussion");
+    for (const role of BOT_ROLES.filter((r) => r !== "council")) {
+      expect(bots[role].discussion, role).toBeUndefined();
+      expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
+        "discussion",
+      );
+    }
+  });
+
+  it("change no run's text: the Council's is the same with the table or without it", () => {
+    const withTable = readBotFiles().council;
+    const { bots, problems } = check(
+      withData("council", (d) => {
+        delete d.discussion;
+      }),
+    );
+    expect(problems).toEqual([]);
+    const without = bots?.council;
+    expect(without?.discussion).toBeUndefined();
+    expect(withTable.runInstructions).toEqual(without?.runInstructions);
+    for (const taskType of ["council", "council:visual"]) {
+      expect(instructionsFor(withTable, taskType)).toBe(
+        without && instructionsFor(without, taskType),
+      );
+    }
+    // Still the file's own text, byte for byte, with no composed frame.
+    expect(instructionsFor(withTable, "council")).toBe(withTable.instructions);
+    expect(instructionsFor(withTable, "council:visual")).toBe(
+      withTable.taskInstructions?.["council:visual"],
+    );
+    expect(instructionsFor(withTable, "council")).not.toContain(
+      COMPOSED_HEADINGS.shared,
+    );
+  });
+
+  it("leave room for the discussion's composed text within the 32,000 character limit", () => {
+    // No run reads it before slice 6e, whose task text replaces today's; with today's text and
+    // the real personas, under Product as chair, it is about half the limit.
+    const bots = readBotFiles();
+    for (const task of [
+      bots.council.instructions,
+      bots.council.taskInstructions?.["council:visual"] ?? "",
+    ]) {
+      const text = composeDiscussionInstructions({
+        personas: PERSONAS_READ,
+        chair: "product",
+        task,
+      });
+      expect(text.length).toBeLessThan(32_000);
+      expect(text.endsWith(task.trimEnd())).toBe(true);
+    }
+  });
+
+  it("refuse the table on any other role, naming the field", () => {
+    for (const role of BOT_ROLES.filter((r) => r !== "council")) {
+      expect(
+        check(
+          withData(role, (d) => {
+            d.discussion = structuredClone(
+              real().council.data as Record<string, unknown>,
+            ).discussion;
+          }),
+        ).problems,
+        role,
+      ).toEqual([
+        `${role}.yaml: discussion: a ${role} run has no discussion; only the Council's does`,
+      ]);
+    }
+  });
+
+  it("refuse a table that is not a mapping, or gives other fields than chair, max_pull_ins and casts", () => {
+    for (const value of [null, "product", ["product"], 2]) {
+      expect(
+        check(
+          withData("council", (d) => {
+            d.discussion = value;
+          }),
+        ).problems,
+        JSON.stringify(value),
+      ).toEqual([
+        "council.yaml: discussion must be a mapping of chair, max_pull_ins, casts",
+      ]);
+    }
+    expect(
+      councilWith((d) => {
+        d.supervisor = PASTED_KEY;
+      }).problems,
+    ).toEqual([
+      "council.yaml: discussion must give exactly: chair, max_pull_ins, casts",
+    ]);
+    expect(
+      councilWith((d) => {
+        delete d.max_pull_ins;
+      }).problems,
+    ).toEqual([
+      "council.yaml: discussion must give exactly: chair, max_pull_ins, casts",
+      "council.yaml: discussion.max_pull_ins must be a whole number from 0 to 2 (D-464)",
+    ]);
+  });
+
+  it("refuse a chair that is not a persona, and the chair in a cast or behind a rule token", () => {
+    for (const chair of ["analyst", "Product", null, PASTED_KEY]) {
+      const { problems } = councilWith((d) => {
+        d.chair = chair;
+      });
+      expect(problems, String(chair)).toEqual([
+        "council.yaml: discussion.chair must be one of: product, developer, designer, quality",
+      ]);
+      expect(problems.join("\n")).not.toContain("sk-ant");
+    }
+    expect(
+      councilWith((d) => {
+        castsOf(d).visual_call = ["designer", "product"];
+      }).problems,
+    ).toEqual([
+      "council.yaml: discussion.casts.visual_call[1] is the chair, who is never in a cast (D-462)",
+    ]);
+    // With the Developer as chair, the table's Developer entries and the tokens that can name it
+    // are refused; designer_if_ui names only the Designer, so it stays.
+    expect(
+      councilWith((d) => {
+        d.chair = "developer";
+      }).problems,
+    ).toEqual([
+      "council.yaml: discussion.casts.escalation[0] is a rule token that can name the chair",
+      "council.yaml: discussion.casts.reversal[0] is a rule token that can name the chair",
+      "council.yaml: discussion.casts.scanner_gone[0] is the chair, who is never in a cast (D-462)",
+      "council.yaml: discussion.casts.still_needed[0] is the chair, who is never in a cast (D-462)",
+      "council.yaml: discussion.casts.plan[0] is the chair, who is never in a cast (D-462)",
+    ]);
+  });
+
+  it("take max_pull_ins as a whole number from 0 to 2 only", () => {
+    for (const value of [0, 1, 2]) {
+      const { bots, problems } = councilWith((d) => {
+        d.max_pull_ins = value;
+      });
+      expect(problems, String(value)).toEqual([]);
+      expect(bots?.council.discussion?.maxPullIns).toBe(value);
+    }
+    for (const value of [3, -1, 1.5, "2", null, Number.NaN]) {
+      expect(
+        councilWith((d) => {
+          d.max_pull_ins = value;
+        }).problems,
+        String(value),
+      ).toEqual([
+        "council.yaml: discussion.max_pull_ins must be a whole number from 0 to 2 (D-464)",
+      ]);
+    }
+  });
+
+  it("need exactly the six question kinds the Council answers in casts", () => {
+    const exactly =
+      "council.yaml: discussion.casts must give exactly: escalation, reversal, visual_call, scanner_gone, still_needed, plan";
+    expect(
+      councilWith((d) => {
+        delete castsOf(d).scanner_gone;
+      }).problems,
+    ).toEqual([exactly]);
+    expect(
+      councilWith((d) => {
+        castsOf(d).research = ["developer"];
+      }).problems,
+    ).toEqual([exactly]);
+    expect(
+      councilWith((d) => {
+        d.casts = [["developer"]];
+      }).problems,
+    ).toEqual([exactly]);
+  });
+
+  it("refuse an unknown persona, a token on another kind's cast, a repeat, and an empty cast but reversal's, by position", () => {
+    const { problems } = councilWith((d) => {
+      const casts = castsOf(d);
+      casts.escalation = ["builder", "analyst"];
+      casts.still_needed = [PASTED_KEY];
+      casts.plan = ["developer", "stale_builders"];
+      casts.visual_call = ["designer", "builder"];
+      casts.scanner_gone = ["designer_if_ui"];
+    });
+    expect(problems).toEqual([
+      "council.yaml: discussion.casts.escalation[1] must be a persona (product, developer, designer, quality) or a rule token (builder, stale_builders, designer_if_ui)",
+      "council.yaml: discussion.casts.visual_call[1] is a rule token for the escalation cast only",
+      "council.yaml: discussion.casts.scanner_gone[0] is a rule token for the plan cast only",
+      "council.yaml: discussion.casts.still_needed[0] must be a persona (product, developer, designer, quality) or a rule token (builder, stale_builders, designer_if_ui)",
+      "council.yaml: discussion.casts.plan[1] is a rule token for the reversal cast only",
+    ]);
+    expect(problems.join("\n")).not.toContain("analyst");
+    expect(problems.join("\n")).not.toContain("sk-ant");
+    expect(
+      councilWith((d) => {
+        castsOf(d).visual_call = ["designer", "quality", "designer"];
+        castsOf(d).escalation = ["builder", "quality", "builder"];
+      }).problems,
+    ).toEqual([
+      "council.yaml: discussion.casts.escalation[2] repeats an earlier entry",
+      "council.yaml: discussion.casts.visual_call[2] repeats an earlier entry",
+    ]);
+    // Only a reversal may have nobody in its base cast: then Product decides alone (D-486).
+    const empty = councilWith((d) => {
+      castsOf(d).reversal = [];
+    });
+    expect(empty.problems).toEqual([]);
+    expect(empty.bots?.council.discussion?.casts.reversal).toEqual([]);
+    for (const kind of [
+      "escalation",
+      "visual_call",
+      "scanner_gone",
+      "still_needed",
+      "plan",
+    ]) {
+      expect(
+        councilWith((d) => {
+          castsOf(d)[kind] = [];
+        }).problems,
+        kind,
+      ).toEqual([
+        `council.yaml: discussion.casts.${kind} must name a persona or a rule token: only reversal's cast may be empty`,
+      ]);
+    }
+    expect(
+      councilWith((d) => {
+        castsOf(d).plan = "developer";
+      }).problems,
+    ).toEqual([
+      "council.yaml: discussion.casts.plan must be a list of personas and rule tokens",
+    ]);
   });
 });

@@ -37,6 +37,24 @@ providers:
     base_url_env: ANTHROPIC_BASE_URL
     messages_api: { answer: tool, prompt_cache_key: true }
 
+# The Council as a discussion that Product chairs (ADR 0119, D-462, D-463, D-482 to D-487). Each
+# question kind starts with a fixed cast, and the discussion may pull in at most two more personas
+# (D-464). Rule tokens: builder is the Designer for a design item, else the Developer, for every
+# escalation (D-466); stale_builders comes from the tracks of the items a reversal made stale, and
+# may name nobody (D-486); designer_if_ui is the Designer when the plan touches the UI (D-487).
+# scanner_gone gets the Developer, as still_needed does (D-466). No run reads this before slice 6e
+# (O-178).
+discussion:
+  chair: product
+  max_pull_ins: 2
+  casts:
+    escalation: [builder, quality]
+    reversal: [stale_builders]
+    plan: [developer, designer_if_ui]
+    still_needed: [developer]
+    visual_call: [designer, quality]
+    scanner_gone: [developer]
+
 # One schema per question kind (D-228). The task file carries the run's one, and the runner checks
 # the answer against it before src/core/council.ts reads it (O-49, D-229).
 output_schemas:
