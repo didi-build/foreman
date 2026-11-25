@@ -301,7 +301,9 @@ export async function startRun(
       evidenceIds,
       capacity,
       stateApiToken,
-      ...(council ? { outputSchema: council.outputSchema } : {}),
+      ...(council
+        ? { outputSchema: council.outputSchema, discussion: council.discussion }
+        : {}),
       ...(council?.images ? { images: council.images } : {}),
       ...(visual ? { outputSchema: visual.outputSchema, images: visual.images } : {}),
       ...(site?.browser ? { site: site.site } : {}),

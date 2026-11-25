@@ -14,6 +14,9 @@
 // visual comparison gets neither the token nor the fetch step's hosts, since it reads only the
 // images in its task file (N-57). The Council's call on a visual approval (task type
 // `council:visual`, D-270) carries the option screenshots, and no other Council run carries any.
+// Every Council run, of either task type, is a discussion (ADR 0119 slice 6e): its task file
+// carries its question's chair, cast and pull-in limit as the core resolved them, and no other
+// role's task carries one.
 // Neither value is kept, logged, or put in the task file or the
 // run's spec: `buildKubernetesTask` passes them to `start` in `credentials` only.
 //
@@ -136,6 +139,13 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
       if (!withImages && start.images !== undefined) {
         throw new Error("only a visual comparison or visual call run carries images");
       }
+      // Every Council run is its question's discussion (ADR 0119 slice 6e), and no other run is.
+      if (role === "council" && start.discussion === undefined) {
+        throw new Error("a Council run needs its question's discussion");
+      }
+      if (role !== "council" && start.discussion !== undefined) {
+        throw new Error("only a Council run is a discussion");
+      }
       // QA's review alone gets a site, and only from a bot file that declares the browser.
       if (start.site !== undefined) {
         if (role !== "qa" || visual) {
@@ -240,6 +250,15 @@ export function createTaskSource(options: TaskSourceOptions): TaskSource {
             }
           : {}),
         ...(start.site !== undefined ? { site: start.site.zip } : {}),
+        ...(start.discussion !== undefined
+          ? {
+              discussion: {
+                chair: start.discussion.chair,
+                cast: [...start.discussion.cast],
+                maxPullIns: start.discussion.maxPullIns,
+              },
+            }
+          : {}),
         stateApiToken: start.stateApiToken,
         ...(githubToken !== undefined ? { githubToken } : {}),
         modelCredentials,

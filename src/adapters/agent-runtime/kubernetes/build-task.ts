@@ -5,7 +5,8 @@
 // other provider's credential. The instructions and tools come from the bot file; the input is
 // the core's (src/core/task-input.ts). Credential values pass through to `start` and are never
 // kept here. QA's review with a site (ADR 0119 slice 5c) gets the browser: the run's spec and its
-// task file say so, and the site's zip goes to `start` for the browser pod's Secret alone.
+// task file say so, and the site's zip goes to `start` for the browser pod's Secret alone. A
+// Council run's discussion (ADR 0119 slice 6e) goes into its task file only, never its spec.
 import type { RunCapacityLimits } from "../../../core/runs.ts";
 import type { AgentRole, Run } from "../../../core/store.ts";
 import { PUSHING_ROLES, runBranch } from "../../../core/task-input.ts";
@@ -16,6 +17,7 @@ import {
   CLOSE_MODE,
   type AgentTaskFile,
   type ContextToolName,
+  type TaskDiscussion,
   type TaskImage,
 } from "./task.ts";
 
@@ -84,6 +86,11 @@ export interface KubernetesTaskParts {
    * the site Secret and never into the task file.
    */
   site?: Uint8Array;
+  /**
+   * The Council only: its question's discussion, the chair, the cast in speaking order and the
+   * pull-in limit (ADR 0119 slices 6b and 6e). It goes into the task file, never the run's spec.
+   */
+  discussion?: TaskDiscussion;
   stateApiToken: string;
   /**
    * Developer and Designer: the agent pod. QA's review: the fetch pod. QA's visual comparison,
@@ -164,6 +171,15 @@ export function buildKubernetesTask(parts: KubernetesTaskParts): KubernetesAgent
     if (parts.images !== undefined) task.images = parts.images.map((i) => ({ ...i }));
   } else if (parts.images !== undefined) {
     throw new Error(`a ${role} run carries no images`);
+  }
+  // A Council run is its question's discussion (D-483); no other run is one.
+  if (parts.discussion !== undefined) {
+    if (role !== "council") throw new Error(`a ${role} run has no discussion`);
+    task.discussion = {
+      chair: parts.discussion.chair,
+      cast: [...parts.discussion.cast],
+      maxPullIns: parts.discussion.maxPullIns,
+    };
   }
   // QA's review alone runs a browser (D-476): never the visual comparison or another role.
   const browser = parts.site !== undefined;

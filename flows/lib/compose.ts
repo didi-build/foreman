@@ -134,6 +134,7 @@ import type {
   DeployTargets,
 } from "../../src/core/deploy-target.ts";
 import type { ClusterReleases } from "../../src/core/cluster-release.ts";
+import type { QuestionDiscussion } from "../../src/core/council-cast.ts";
 import type { StagingBuilds } from "../../src/core/staging-deploy.ts";
 import type { RunCapacityLimits } from "../../src/core/runs.ts";
 import { validateTaskTypes } from "../../src/core/task-types.ts";
@@ -176,6 +177,11 @@ export interface RunToStart {
    * file carries it, and the runner checks the answer against the same schema when the run ends.
    */
   outputSchema?: Record<string, unknown>;
+  /**
+   * Council, and needed there: its question's discussion, the chair, the cast and the pull-in
+   * limit (src/core/council.ts `taskFor`, ADR 0119 slice 6e). The task file carries it.
+   */
+  discussion?: QuestionDiscussion;
   /** QA's visual comparison: the image pairs, in order, as PNG bytes (D-242, D-250). */
   images?: VisualImage[];
   /**

@@ -8,7 +8,9 @@
 // each reason of its outcome, facts only for a usable answer and the totals' counts.
 // test/model-eval-contract.test.ts holds the two checks to the same answers, field lists, codes
 // and bounds, so neither can drift. Errors name the field, never a value.
+import { MAX_PULL_INS } from "./discussion-record.ts";
 import type { EvalPlanEntry, EvalRole } from "./model-eval.ts";
+import { PERSONAS, type PersonaId } from "./personas.ts";
 import type {
   Json,
   ModelEvalJob,
@@ -41,6 +43,7 @@ export const EVAL_REASONS: Readonly<Record<string, EvalOutcome>> = {
   answer_not_json: "unusable",
   answer_rejected: "unusable",
   citation_not_at_head: "unusable",
+  discussion_rejected: "unusable",
   provider_error: "error",
   endpoint_unreachable: "error",
   max_turns: "error",
@@ -60,6 +63,10 @@ export const EVAL_RESULT_BOUNDS = {
   maxPlanEntries: 8,
   maxFindingPaths: 5,
   maxItemCount: 1000,
+  /** A Council discussion's cast in the facts: every persona but the chair (ADR 0119 slice 6e). */
+  maxCast: PERSONAS.length - 1,
+  /** A Council discussion's pull-ins in the facts (D-464). */
+  maxPullIns: MAX_PULL_INS,
 } as const;
 /** The most bytes of the Job's log the runner reads: the result line and its frame. */
 export const EVAL_RESULT_LOG_BYTES = 1024 * 1024;
@@ -89,6 +96,12 @@ export type EvalFacts =
       outcome: "resolve" | "cannot_resolve";
       changesProductDirection: boolean;
       passesGate: boolean;
+      /**
+       * The discussion's cast and pull-ins, persona ids only (ADR 0119 slice 6e). Both or neither:
+       * a weekly test image from before slice 6e, still pinned until slice 6f, gives neither.
+       */
+      cast?: PersonaId[];
+      pullIns?: { persona: PersonaId; by: PersonaId }[];
     };
 
 export interface EvalRunRecord {
@@ -216,17 +229,40 @@ function readFacts(value: unknown, at: string, role: EvalRole): EvalFacts {
       itemCount: count(f.itemCount, `${at}.itemCount`, EVAL_RESULT_BOUNDS.maxItemCount),
     };
   }
-  const f = object(value, at, ["outcome", "changesProductDirection", "passesGate"]);
+  const f = object(
+    value,
+    at,
+    ["outcome", "changesProductDirection", "passesGate"],
+    ["cast", "pullIns"],
+  );
   if (
     typeof f.changesProductDirection !== "boolean" ||
     typeof f.passesGate !== "boolean"
   ) {
     fail(at, "has a flag that is not true or false");
   }
-  return {
+  const facts = {
     outcome: oneOf(f.outcome, `${at}.outcome`, ["resolve", "cannot_resolve"] as const),
     changesProductDirection: f.changesProductDirection as boolean,
     passesGate: f.passesGate as boolean,
+  };
+  // The discussion's two facts come together, or not at all from an image before slice 6e.
+  if ("cast" in f !== "pullIns" in f) fail(at, "has one of cast and pullIns only");
+  if (!("cast" in f)) return facts;
+  return {
+    ...facts,
+    cast: list(f.cast, `${at}.cast`, EVAL_RESULT_BOUNDS.maxCast).map((id, i) =>
+      oneOf(id, `${at}.cast[${i}]`, PERSONAS),
+    ),
+    pullIns: list(f.pullIns, `${at}.pullIns`, EVAL_RESULT_BOUNDS.maxPullIns).map(
+      (entry, i) => {
+        const p = object(entry, `${at}.pullIns[${i}]`, ["persona", "by"]);
+        return {
+          persona: oneOf(p.persona, `${at}.pullIns[${i}].persona`, PERSONAS),
+          by: oneOf(p.by, `${at}.pullIns[${i}].by`, PERSONAS),
+        };
+      },
+    ),
   };
 }
 
@@ -382,6 +418,10 @@ function factsJson(facts: EvalFacts): Json {
     outcome: facts.outcome,
     changesProductDirection: facts.changesProductDirection,
     passesGate: facts.passesGate,
+    ...(facts.cast ? { cast: [...facts.cast] } : {}),
+    ...(facts.pullIns
+      ? { pullIns: facts.pullIns.map(({ persona, by }) => ({ persona, by })) }
+      : {}),
   };
 }
 

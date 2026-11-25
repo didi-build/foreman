@@ -1,8 +1,8 @@
 // Test support for the flows (build plan M3.1, M3.2): the reconcile fixture's store, contracts,
 // guards, clock, ids and fake GitHub, plus a fake agent runtime, a fake task source, a fake read
 // of CI's `qa-site` builds, generated state API tokens and a Windmill execution count the test
-// sets. Fake data only; nothing reaches
-// Windmill, a cluster, a model or GitHub.
+// sets, and the discussion record a Council run's image gives for the discussion its task carried
+// (ADR 0119 slice 6e). Fake data only; nothing reaches Windmill, a cluster, a model or GitHub.
 import { randomBytes } from "node:crypto";
 
 import type {
@@ -48,6 +48,7 @@ import type {
   ImagesBuild,
   PlatformApplied,
 } from "../../src/core/cluster-release.ts";
+import type { DiscussionRecord } from "../../src/core/discussion-record.ts";
 import type { QaSiteRead, QaSites } from "../../src/core/qa-site.ts";
 import type { ReconcileDeps } from "../../src/core/reconcile.ts";
 import type { StagingChecker } from "../../src/core/staging.ts";
@@ -106,6 +107,29 @@ function createFakeRuntime(): FakeRuntime {
 }
 
 export type FlowFixture = Awaited<ReturnType<typeof createFlowFixture>>;
+
+/**
+ * What a Council run's image reports for the discussion its task carried (ADR 0119 slice 6e):
+ * each persona of the cast gives one view, in order, and nobody is pulled in. As a result's
+ * `discussion`, to spread into it; nothing for a run whose task carried none, such as any run
+ * that is not the Council's.
+ */
+export function discussionAsSent(
+  f: Pick<FlowFixture, "tasksFor">,
+  runId: string,
+): { discussion?: DiscussionRecord } {
+  const sent = f.tasksFor.find((start) => start.run.id === runId)?.discussion;
+  if (!sent) return {};
+  return {
+    discussion: {
+      chair: sent.chair,
+      cast: [...sent.cast],
+      views: sent.cast.map((persona) => ({ persona, text: `The ${persona}'s view.` })),
+      pullIns: [],
+      refusedPullIns: [],
+    },
+  };
+}
 
 /** The add-only apply jobs the daily check reads from GitHub (O-158), as the test sets them. */
 export interface FakeAddOnlyApplies extends AddOnlyApplies {

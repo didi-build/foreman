@@ -9,7 +9,7 @@
 // 0119 slice 5c, declared by none yet), its hosts, its model providers with each key's secret path (D-142,
 // D-143), its per-run limits (D-185), its task types with each one's persona (`task_personas`,
 // D-458), for the Council its discussion's chair, pull-in bound and cast table (`discussion`, ADR
-// 0119 slice 6a, read by no run before slice 6e) and, for the Council, Triage and QA's visual
+// 0119 slice 6a, which every Council run reads since slice 6e) and, for the Council, Triage and QA's visual
 // comparison, its output schemas. A task type other than the role's default may have its own
 // instructions (`task_instructions`, QA's `qa:visual`, D-242, and the Council's
 // `council:visual`, D-270), and limits of its own
@@ -19,10 +19,11 @@
 //
 // A run's instructions (ADR 0119 slice 2) are the shared base, the task type's persona and the
 // task's own instructions, composed by the core's `composeInstructions` over the persona files
-// (./personas.ts). The Council has no persona until ADR 0119's slice 6, so its runs get the bot
-// file's text unchanged. `instructionsFor` gives a run's text; the runner and the weekly model
-// test both use it. The version is the file's content hash for the Council, and for a role with
-// personas one hash of the file and each composed text (ADR 0119: "one hash of the three").
+// (./personas.ts). Every Council run is a discussion (ADR 0119 slice 6e), so both of its task
+// types compose the shared base, all four personas with the discussion's chair first, and the
+// task's text (`composeDiscussionInstructions`); the Council has no `task_personas`.
+// `instructionsFor` gives a run's text; the runner and the weekly model test both use it. The
+// version is one hash of the file and each composed text (ADR 0119: "one hash of the three").
 //
 // The check is strict and collects every problem: an unknown field is refused, and a problem names
 // the file and the field, never a value from the file, so a key pasted into the wrong place cannot
@@ -56,6 +57,7 @@ import {
 import { outputSchemaProblems, type OutputSchema } from "../../core/output-schema.ts";
 import {
   PERSONAS,
+  composeDiscussionInstructions,
   composeInstructions,
   isPersonaId,
   type Personas,
@@ -128,11 +130,13 @@ const TASK_LIMITS: Partial<Record<AgentRole, readonly string[]>> = {
   designer: [CLOSE_TASK_TYPES.designer],
 };
 /**
- * The roles whose task types have no persona yet, with the reason: every other role must map each
- * task type that runs a model to its persona (`task_personas`, D-458).
+ * The roles whose task types take no persona of their own, with the reason: every other role must
+ * map each task type that runs a model to its persona (`task_personas`, D-458). The Council's
+ * runs compose every persona through its discussion table instead (ADR 0119 slice 6e).
  */
 const NO_PERSONAS: Partial<Record<AgentRole, string>> = {
-  council: "the Council gets its personas in ADR 0119's slice 6",
+  council:
+    "the Council's runs compose every persona through its discussion table (ADR 0119 slice 6e)",
 };
 /** The roles whose runs may get the read-only context tools (ADR 0119 slice 3c, D-459). */
 const CONTEXT_TOOL_ROLES: readonly AgentRole[] = [
@@ -184,9 +188,9 @@ const FIELDS = [
 export interface BotFile {
   role: AgentRole;
   /**
-   * Recorded as `runs.bot_version`. `sha256:` and a SHA-256: of the file's bytes for a role with
-   * no `task_personas` (the Council); for a role with personas, of the file's bytes followed by
-   * each persona task type's composed text, in task type order, each after a line naming it.
+   * Recorded as `runs.bot_version`. `sha256:` and a SHA-256 of the file's bytes followed by each
+   * composed task type's text, in task type order, each after a line naming it: every task type
+   * with a persona, and both of the Council's, which compose its discussion (ADR 0119 slice 6e).
    */
   version: string;
   image: ImageKind;
@@ -194,12 +198,13 @@ export interface BotFile {
   instructions: string;
   /** `{allowed, default}`, checked by the core's validateTaskTypes. */
   taskTypes: unknown;
-  /** Each task type's persona (D-458). Absent for the Council until ADR 0119's slice 6. */
+  /** Each task type's persona (D-458). Absent for the Council, whose runs are discussions. */
   taskPersonas?: Record<string, TaskPersona>;
   /**
    * The instructions a run of each allowed task type gets, the stable, cached part of its task
-   * file: the shared base, the persona and the task's text, or, with no persona, the task's text
-   * unchanged. A close task type has the default task type's text. Read it with `instructionsFor`.
+   * file: the shared base, the persona and the task's text; for the Council, the shared base,
+   * every persona with the chair first and the task's text (ADR 0119 slice 6e). A close task type
+   * has the default task type's text. Read it with `instructionsFor`.
    */
   runInstructions: Record<string, string>;
   limits: RunLimits;
@@ -228,10 +233,11 @@ export interface BotFile {
    */
   browser?: true;
   /**
-   * Council only: the discussion's chair, its pull-in bound and each question kind's base cast
-   * (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487), resolved by the core's `councilCast`.
-   * The Council's profile carries it for the runner's check of a discussion (slice 6c). No run is
-   * sent it before slice 6e, and it changes no run's instructions.
+   * Council only, and needed there: the discussion's chair, its pull-in bound and each question
+   * kind's base cast (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487), resolved by the core's
+   * `councilCast`. The chair heads the Council's composed text; the Council's profile carries the
+   * table, from which the runner sends each question's cast in its task file and checks the run's
+   * discussion (slices 6c and 6e).
    */
   discussion?: CouncilDiscussion;
   /** Designer: whether MagicPath is on. Always false until D-190's gate. */
@@ -672,19 +678,23 @@ function checkCast(
 }
 
 /**
- * The Council's discussion table (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487): optional,
- * for the Council only, and when given exactly its chair (a persona), its pull-in bound (a whole
- * number from 0 to 2) and a base cast for each question kind the Council answers. Problems name
- * the field and the position, never a value.
+ * The Council's discussion table (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487): for the
+ * Council only, and needed there since every Council run is a discussion (slice 6e): exactly its
+ * chair (a persona), its pull-in bound (a whole number from 0 to 2) and a base cast for each
+ * question kind the Council answers. Problems name the field and the position, never a value.
  */
 function checkDiscussion(
   role: AgentRole,
   raw: unknown,
   add: (p: string) => void,
 ): CouncilDiscussion | undefined {
-  if (raw === undefined) return undefined;
   if (role !== "council") {
-    add(`discussion: a ${role} run has no discussion; only the Council's does`);
+    if (raw !== undefined)
+      add(`discussion: a ${role} run has no discussion; only the Council's does`);
+    return undefined;
+  }
+  if (raw === undefined) {
+    add("discussion is needed: every Council run is a discussion (ADR 0119 slice 6e)");
     return undefined;
   }
   if (!isRecord(raw)) {
@@ -930,32 +940,60 @@ function checkTaskPersonas(
   return ok ? checked : undefined;
 }
 
+/** What a role's runs compose their task's text with: a persona per task type, or a discussion. */
+type Composition =
+  | { taskPersonas: Record<string, TaskPersona> }
+  | { discussion: Pick<CouncilDiscussion, "chair"> };
+
 /**
- * The instructions a run of each allowed task type gets (ADR 0119 slice 2): the task's text, with
- * the shared base and its persona before it when it has one, each composed text within the same
- * limit as the file's own. A close task type has the default task type's text: no model reads
- * it, but its task file needs instructions (D-318).
+ * A task type's composed text (ADR 0119 slices 2 and 6e): the shared base and its persona before
+ * the task's text, or, for a discussion, the shared base and every persona, the chair first. A
+ * task type with neither keeps the task's text as it is.
+ */
+function composedText(
+  composition: Composition | undefined,
+  taskType: string,
+  task: string,
+  personas: Personas,
+): string | undefined {
+  if (composition && "discussion" in composition) {
+    return composeDiscussionInstructions({
+      personas,
+      chair: composition.discussion.chair,
+      task,
+    });
+  }
+  const persona = composition?.taskPersonas[taskType];
+  return persona ? composeInstructions({ personas, ...persona, task }) : undefined;
+}
+
+/**
+ * The instructions a run of each allowed task type gets (ADR 0119 slices 2 and 6e): the task's
+ * text, composed as `composedText` gives it, each composed text within the same limit as the
+ * file's own. A close task type has the default task type's text: no model reads it, but its
+ * task file needs instructions (D-318). Also gives the task types whose text was composed.
  */
 function runInstructionsOf(
   data: Record<string, unknown>,
   taskInstructions: Record<string, string> | undefined,
-  taskPersonas: Record<string, TaskPersona> | undefined,
+  composition: Composition | undefined,
   personas: Personas,
   add: (p: string) => void,
-): Record<string, string> {
+): { texts: Record<string, string>; composed: string[] } {
   const allowed = allowedOf(data.task_types);
   const texts: Record<string, string> = {};
+  const composedTypes: string[] = [];
   for (const taskType of allowed.filter((id) => !isCloseTaskType(id))) {
     const task =
       taskInstructions && Object.hasOwn(taskInstructions, taskType)
         ? (taskInstructions[taskType] as string)
         : (data.instructions as string);
-    const persona = taskPersonas?.[taskType];
-    if (!persona) {
+    const composed = composedText(composition, taskType, task, personas);
+    if (composed === undefined) {
       texts[taskType] = task;
       continue;
     }
-    const composed = composeInstructions({ personas, ...persona, task });
+    composedTypes.push(taskType);
     if (composed.length > MAX_INSTRUCTION_CHARS) {
       add(
         `the composed instructions of ${taskType} must be at most ${MAX_INSTRUCTION_CHARS} characters`,
@@ -973,23 +1011,23 @@ function runInstructionsOf(
       );
     }
   }
-  return texts;
+  return { texts, composed: composedTypes };
 }
 
 /**
- * The role's `runs.bot_version`. With no persona, the file's content hash, as before ADR 0119.
- * With personas, one hash of the file's bytes and each persona task type's composed text, so a
- * change to the shared base or a persona that reaches a run's text is a new version, and a
- * comment in a persona file is not.
+ * The role's `runs.bot_version` (D-467): one hash of the file's bytes and each composed task
+ * type's text, in task type order, so a change to the shared base or a persona that reaches a
+ * run's text is a new version, and a comment in a persona file is not. A role with no composed
+ * text has its file's content hash, as before ADR 0119.
  */
 function versionOf(
   raw: RawBotFile,
   runInstructions: Record<string, string>,
-  taskPersonas: Record<string, TaskPersona> | undefined,
+  composed: readonly string[],
 ): string {
-  if (!taskPersonas) return raw.version;
+  if (composed.length === 0) return raw.version;
   const hash = createHash("sha256").update(raw.bytes);
-  for (const taskType of Object.keys(taskPersonas).sort()) {
+  for (const taskType of [...composed].sort()) {
     hash.update(versionSeparator(taskType)).update(runInstructions[taskType] as string);
   }
   return `sha256:${hash.digest("hex")}`;
@@ -1090,17 +1128,22 @@ function checkBotFile(
   if (taskPersonas) bot.taskPersonas = taskPersonas;
 
   if (problems.length > before) return null;
-  const runInstructions = runInstructionsOf(
+  const composition: Composition | undefined = discussion
+    ? { discussion }
+    : taskPersonas
+      ? { taskPersonas }
+      : undefined;
+  const { texts: runInstructions, composed } = runInstructionsOf(
     data,
     taskInstructions,
-    taskPersonas,
+    composition,
     personas,
     add,
   );
   if (problems.length > before) return null;
   return {
     role,
-    version: versionOf(raw, runInstructions, taskPersonas),
+    version: versionOf(raw, runInstructions, composed),
     image,
     instructions: data.instructions as string,
     taskTypes: data.task_types,

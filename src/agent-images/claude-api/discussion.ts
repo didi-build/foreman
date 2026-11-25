@@ -1,8 +1,8 @@
 // A Council discussion in the Messages API image (ADR 0119 slice 6, D-483 to D-490): one run, in
 // which each persona of the task's cast speaks once, in a model call of its own, and then
-// Product, the chair, answers in the question kind's schema. A run uses it only when its Council
-// task has a `discussion`, which no flow sets until slice 6e; without one, the Council runs as
-// before (./image.ts).
+// Product, the chair, answers in the question kind's schema. A run uses it when its Council task
+// has a `discussion`, which the runner sets on every Council task since slice 6e (O-181); without
+// one, the Council runs as before (./image.ts).
 //
 // Every call is one loop (./loop.ts) on the same tools, system text and input, so all of them
 // share one cached prefix: the tools are `pull_in`, then in tool mode the answer tool; the system
@@ -192,7 +192,8 @@ function viewOf(answer: string): string | null {
 
 /**
  * Runs one Council discussion on the task's discussion (D-483): the cast in the task's order,
- * each giving one view, then the chair's answer. Exported for the weekly test job (slice 6e).
+ * each giving one view, then the chair's answer. The weekly test job runs its Council cases with it
+ * too (src/agent-images/eval/week.ts, slice 6e).
  */
 export async function runDiscussion(
   loop: DiscussionLoopOptions,

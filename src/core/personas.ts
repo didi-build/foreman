@@ -13,8 +13,8 @@
 // `composeInstructions` is the only place that frame is written. The runner and the weekly model
 // test both read its text through the bot file loader, so the test measures what runs get.
 // `composeDiscussionInstructions` (ADR 0119 slice 6) is the Council discussion's frame: the shared
-// base, every persona with the chair first, then the discussion's task. No run reads it until
-// slice 6e.
+// base, every persona with the chair first, then the discussion's task. Every Council run gets it
+// since slice 6e, through the bot file loader as well.
 
 /** The first four personas (D-456). Adding one is a change to this list and a new file. */
 export const PERSONAS = ["product", "developer", "designer", "quality"] as const;
@@ -337,7 +337,7 @@ export interface ComposeDiscussionInput {
  * every persona, the chair first and the others in `PERSONAS` order, each under its heading and
  * as `composeInstructions` gives a persona, then the task's own instructions, last and unchanged
  * but for their trailing whitespace. Every call of one discussion has the same text, so it stays
- * in the cached prefix. No run reads it until slice 6e.
+ * in the cached prefix. Every Council run gets it since slice 6e.
  */
 export function composeDiscussionInstructions({
   personas,

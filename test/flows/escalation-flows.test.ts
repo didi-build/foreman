@@ -16,7 +16,11 @@ import { createEscalations } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import { createLibrary } from "../../src/core/library.ts";
 import { HEAD } from "../reconcile-fixture.ts";
-import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
+import {
+  createFlowFixture,
+  discussionAsSent,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -295,7 +299,7 @@ describe("one cap on Council returns (flow: fake adapters, D-414, O-143)", () =>
     if (council?.outcome !== "started") throw new Error("the Council was not started");
     f.runtime.status.set(council.runId, {
       state: "finished",
-      result: { ...RESULT, structured: RESOLVE },
+      result: { ...RESULT, structured: RESOLVE, ...discussionAsSent(f, council.runId) },
     });
     const answered = await recordRunEnd(f.deps, { runId: council.runId });
     expect(answered).toMatchObject({ council: { escalation: { step: "returned" } } });

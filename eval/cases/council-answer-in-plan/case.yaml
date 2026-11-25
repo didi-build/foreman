@@ -56,6 +56,7 @@ example:
   note: >-
     The item already decides this: a max below 1 throws a RangeError (description and acceptance
     criterion 3). Next step: the Developer throws a RangeError for 0 and negative values, with a
-    test for each. Personas: product manager and CTO, who agreed.
+    test for each. Took part: Product as chair, the Developer and Quality, who agreed; no one was
+    pulled in.
   changesProductDirection: false
   passesGate: false

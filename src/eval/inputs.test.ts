@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { taskFileJson } from "../adapters/agent-runtime/kubernetes/task.ts";
 import { instructionsFor, readBotFiles } from "../adapters/contracts-file/bot-files.ts";
 import { createWorkspace } from "../agent-images/claude-api/files.ts";
+import { councilCast } from "../core/council-cast.ts";
 import { fixture } from "../core/guards/testing.ts";
 import { CONTEXT_NOTICE } from "../core/run-context.ts";
 import { quoted } from "../core/task-input.ts";
@@ -30,17 +31,18 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
       expect(() => taskFileJson(c.role, run.task), c.id).not.toThrow();
       expect(run.taskType, c.id).toBe(c.taskType);
       // The instructions a real run of the case's task type gets, never a copy: QA's and
-      // Triage's composed with their persona, the Council's as its file gives them (ADR 0119).
+      // Triage's composed with their persona, the Council's with all four, Product as chair, for
+      // its discussion (ADR 0119 slices 2 and 6e).
       expect(run.task.instructions, c.id).toBe(
         instructionsFor(bots[c.role], c.taskType),
       );
       const own =
         bots[c.role].taskInstructions?.[c.taskType] ?? bots[c.role].instructions;
-      if (c.role === "council") expect(run.task.instructions, c.id).toBe(own);
-      else {
-        expect(run.task.instructions, c.id).toMatch(/^## What every agent shares\n\n/);
-        expect(run.task.instructions.endsWith(own.trimEnd()), c.id).toBe(true);
-      }
+      expect(run.task.instructions, c.id).toMatch(/^## What every agent shares\n\n/);
+      expect(run.task.instructions.endsWith(own.trimEnd()), c.id).toBe(true);
+      expect(run.task.instructions.includes("### Product, the chair"), c.id).toBe(
+        c.role === "council",
+      );
     }
   });
 
@@ -122,6 +124,40 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
         expect(run.task.input, c.id).toContain(quoted(why));
       expect(run.task.input, c.id).not.toContain("# Context from this project");
       expect(run.outputSchema, c.id).toEqual(bots.council.outputSchemas?.escalation);
+    }
+  });
+
+  it("gives each Council case its discussion: Product as chair, the cast councilCast gives the escalated item, and the table's pull-in limit (ADR 0119 slice 6e)", () => {
+    const table = bots.council.discussion;
+    if (!table) throw new Error("the Council's bot file has no discussion table");
+    for (const c of of("council")) {
+      const run = buildCaseRun(c, bots, cases);
+      const cast = councilCast(table, {
+        kind: "escalation",
+        node: { track: c.input.item.track },
+      });
+      const expected = { chair: "product", cast, maxPullIns: table.maxPullIns };
+      expect(run.task.discussion, c.id).toEqual(expected);
+      expect(run.discussion, c.id).toEqual(expected);
+      // Both cases are code items: the Developer builds them, then Quality (D-463).
+      expect(cast, c.id).toEqual(["developer", "quality"]);
+    }
+    // A design item's escalation gets the Designer, from the same table and the same function.
+    const [first] = of("council");
+    if (!first) throw new Error("no Council case");
+    const design = {
+      ...first,
+      input: {
+        ...first.input,
+        item: { ...first.input.item, track: "design" as const },
+      },
+    };
+    const run = buildCaseRun(design, bots, cases);
+    expect(run.task.discussion?.cast).toEqual(["designer", "quality"]);
+    expect(() => taskFileJson("council", run.task)).not.toThrow();
+    // No other role's case is a discussion.
+    for (const c of cases.filter((x) => x.role !== "council")) {
+      expect(buildCaseRun(c, bots, cases).task, c.id).not.toHaveProperty("discussion");
     }
   });
 

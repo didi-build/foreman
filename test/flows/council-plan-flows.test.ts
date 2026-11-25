@@ -36,7 +36,11 @@ import { SCAN_CHECKS, type RepoScan } from "../../src/core/scan.ts";
 import type { Node } from "../../src/core/store.ts";
 import { REPO } from "../reconcile-fixture.ts";
 import { MAP_COMMIT, REPO_MAP } from "../triage-fixture.ts";
-import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
+import {
+  createFlowFixture,
+  discussionAsSent,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -91,8 +95,12 @@ const scannerIdea = (f: FlowFixture): Promise<Node> =>
     },
   });
 
+/** A Council run's end, with the discussion its task carried (ADR 0119 slice 6e). */
 function finish(f: FlowFixture, runId: string, structured: unknown) {
-  f.runtime.status.set(runId, { state: "finished", result: { ...RESULT, structured } });
+  f.runtime.status.set(runId, {
+    state: "finished",
+    result: { ...RESULT, structured, ...discussionAsSent(f, runId) },
+  });
   return recordRunEnd(f.deps, { runId });
 }
 

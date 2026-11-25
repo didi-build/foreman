@@ -10,7 +10,10 @@
 // settings (ADR 0119 slice 4c); a malformed list, or the lookup declared for QA or Triage, refuses
 // the run before any token is minted. A QA review whose bot file declares the browser and that is
 // given a site gets the browser in its task file and run spec, and the zip for its site Secret
-// only (ADR 0119 slice 5c); a site for any other run refuses it before any token is minted.
+// only (ADR 0119 slice 5c); a site for any other run refuses it before any token is minted. Every
+// Council task, of either task type, carries its question's discussion in its task file and never
+// in its spec, with the Council's composed discussion text; a Council run without one is refused,
+// and no other role's run may carry one (ADR 0119 slice 6e).
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -65,10 +68,23 @@ const PRICE = {
   pricePerMTok: { standard: { input: 3, cachedInput: 0.3, output: 15 } },
 };
 
+/** A Council question's discussion, as the core's `taskFor` gives it. */
+const DISCUSSION = { chair: "product", cast: ["developer"], maxPullIns: 2 } as const;
+
 function startFor(
   role: AgentRole,
-  extra: { provider?: string; slug?: string; outputSchema?: unknown } = {},
+  extra: {
+    provider?: string;
+    slug?: string;
+    outputSchema?: unknown;
+    /** A Council run's discussion: `DISCUSSION` unless given; null for none. */
+    discussion?: unknown;
+  } = {},
 ): RunToStart {
+  const discussion =
+    extra.discussion === undefined && role === "council"
+      ? structuredClone(DISCUSSION)
+      : extra.discussion;
   return {
     run: {
       id: "0b6c2f6e-1d2a-4c3b-9a8e-7f6d5c4b3a21",
@@ -91,6 +107,7 @@ function startFor(
     capacity: { flexCapacityRetries: 3, maxRejectedModelRequests: 6 },
     stateApiToken: STATE_TOKEN,
     ...(extra.outputSchema ? { outputSchema: extra.outputSchema } : {}),
+    ...(discussion ? { discussion } : {}),
   } as unknown as RunToStart;
 }
 
@@ -242,6 +259,7 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     const { tasks, minted } = source();
     const start = startFor("council", {
       outputSchema: BOTS.council.outputSchemas?.visual_call,
+      discussion: { chair: "product", cast: ["designer", "quality"], maxPullIns: 2 },
     });
     (start.run as { taskType: string }).taskType = "council:visual";
     start.images = [
@@ -252,7 +270,19 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(spec.visual).toBeUndefined();
     expect(credentials.githubToken).toBeUndefined();
     expect(minted).toEqual([]);
-    expect(file.instructions).toBe(BOTS.council.taskInstructions?.["council:visual"]);
+    // The visual call is a discussion too: the Designer and Quality, then Product (D-463).
+    expect(file.instructions).toBe(instructionsFor(BOTS.council, "council:visual"));
+    expect(
+      file.instructions.endsWith(
+        (BOTS.council.taskInstructions?.["council:visual"] ?? "").trimEnd(),
+      ),
+    ).toBe(true);
+    expect(file.discussion).toEqual({
+      chair: "product",
+      cast: ["designer", "quality"],
+      maxPullIns: 2,
+    });
+    expect(spec).not.toHaveProperty("discussion");
     expect(file.outputSchema).toEqual(BOTS.council.outputSchemas?.visual_call);
     expect(file.images).toEqual([
       { label: "Image 1: option a", mediaType: "image/png", data: "iVBORw==" },
@@ -283,20 +313,61 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     expect(task.task.instructions.endsWith(BOTS.qa.instructions.trimEnd())).toBe(true);
   });
 
-  it("builds the Council's task with its question's schema, and no GitHub token", async () => {
+  it("builds the Council's task with its question's schema and discussion, its composed text, and no GitHub token", async () => {
     const { tasks, minted } = source();
-    const task = (await tasks.taskFor(
-      startFor("council", { outputSchema: COUNCIL_SCHEMA }),
-    )) as KubernetesAgentTask;
-    const { file, credentials } = acceptedByRuntime("council", task);
-    expect(file.instructions).toBe(BOTS.council.instructions);
+    const start = startFor("council", { outputSchema: COUNCIL_SCHEMA });
+    const task = (await tasks.taskFor(start)) as KubernetesAgentTask;
+    const { file, spec, credentials } = acceptedByRuntime("council", task);
+    expect(file.instructions).toBe(instructionsFor(BOTS.council, "council"));
+    expect(file.instructions.endsWith(BOTS.council.instructions.trimEnd())).toBe(true);
+    expect(file.instructions.startsWith("## What every agent shares")).toBe(true);
     expect(file.outputSchema).toEqual(COUNCIL_SCHEMA);
+    expect(file.discussion).toEqual(DISCUSSION);
+    // Copied: the task file never shares the core's lists.
+    expect(file.discussion?.cast).not.toBe(start.discussion?.cast);
+    expect(spec).not.toHaveProperty("discussion");
     expect(credentials.githubToken).toBeUndefined();
     expect(minted).toEqual([]);
-    // The Council's schema comes with its question; without one the run is refused.
-    await expect(tasks.taskFor(startFor("council"))).rejects.toThrow(
-      "a Council run needs its question's output schema",
-    );
+    // The Council's schema and discussion come with its question; without either the run is
+    // refused before anything is read.
+    await expect(
+      tasks.taskFor(startFor("council", { discussion: DISCUSSION })),
+    ).rejects.toThrow("a Council run needs its question's output schema");
+    await expect(
+      tasks.taskFor(
+        startFor("council", { outputSchema: COUNCIL_SCHEMA, discussion: null }),
+      ),
+    ).rejects.toThrow("a Council run needs its question's discussion");
+    // Product alone, for a reversal that made nothing stale (D-486).
+    const alone = (await tasks.taskFor(
+      startFor("council", {
+        outputSchema: COUNCIL_SCHEMA,
+        discussion: { chair: "product", cast: [], maxPullIns: 2 },
+      }),
+    )) as KubernetesAgentTask;
+    expect(acceptedByRuntime("council", alone).file.discussion).toEqual({
+      chair: "product",
+      cast: [],
+      maxPullIns: 2,
+    });
+  });
+
+  it("gives no other role's task a discussion, and refuses a run of another role that brings one", async () => {
+    const { tasks, minted, secretsRead } = source();
+    for (const role of ["developer", "designer", "qa", "triage"] as const) {
+      const task = (await tasks.taskFor(startFor(role))) as KubernetesAgentTask;
+      expect(task.task, role).not.toHaveProperty("discussion");
+    }
+    minted.length = 0;
+    secretsRead.length = 0;
+    for (const role of ["developer", "designer", "qa", "triage"] as const) {
+      await expect(
+        tasks.taskFor(startFor(role, { discussion: DISCUSSION })),
+        role,
+      ).rejects.toThrow("only a Council run is a discussion");
+    }
+    expect(minted).toEqual([]);
+    expect(secretsRead).toEqual([]);
   });
 
   it("builds Triage's task with the schema from its bot file", async () => {

@@ -3,7 +3,8 @@
 // by week and while open, ended once; its results stored and listed in the Job's order with
 // numbers as numbers and the week as a plain date whatever the session's time zone; one open Job
 // at a time; and the weekly flow's pass over two days on this store with a fake Job port, its rows
-// and end written in one transaction.
+// and end written in one transaction. A Council run's facts with its discussion's cast and
+// pull-ins, and a refused discussion's code, fit the table's checks (ADR 0119 slice 6e).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -157,6 +158,36 @@ describe.skipIf(!adminUrl)(
       expect(rows[2]).toEqual(result(ID(1), 1));
       expect(typeof rows[2]?.costUsd).toBe("number");
       expect(await store.listModelEvalResults([])).toEqual([]);
+    });
+
+    it("stores a Council run's facts with its discussion's cast and pull-ins, and a refused discussion with no facts (ADR 0119 slice 6e)", async () => {
+      const council = {
+        caseId: "council-answer-in-plan",
+        role: "council" as const,
+      };
+      const discussed = result(ID(2), 3, {
+        ...council,
+        facts: {
+          outcome: "cannot_resolve",
+          changesProductDirection: false,
+          passesGate: false,
+          cast: ["developer", "designer", "quality"],
+          pullIns: [
+            { persona: "developer", by: "designer" },
+            { persona: "designer", by: "developer" },
+          ],
+        },
+      });
+      const refused = result(ID(2), 4, {
+        ...council,
+        outcome: "unusable",
+        reason: "discussion_rejected",
+        facts: null,
+      });
+      await store.insertModelEvalResult(discussed);
+      await store.insertModelEvalResult(refused);
+      const rows = await store.listModelEvalResults([ID(2)]);
+      expect(rows.filter((r) => r.seq >= 3)).toEqual([discussed, refused]);
     });
 
     it("runs the weekly pass on this store: a Job recorded, then its rows and end written together", async () => {

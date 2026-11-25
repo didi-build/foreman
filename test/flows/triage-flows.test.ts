@@ -48,7 +48,11 @@ import {
   REPO_MAP,
 } from "../triage-fixture.ts";
 import { REPO, TRIAGE_SCHEMAS } from "../reconcile-fixture.ts";
-import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
+import {
+  createFlowFixture,
+  discussionAsSent,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -69,10 +73,15 @@ function ticking(t: FlowFixture) {
   };
 }
 
+/** A run's end, with the discussion its task carried when it was the Council's (slice 6e). */
 function finish(f: FlowFixture, runId: string, structured?: unknown) {
   f.runtime.status.set(runId, {
     state: "finished",
-    result: { ...RESULT, ...(structured === undefined ? {} : { structured }) },
+    result: {
+      ...RESULT,
+      ...(structured === undefined ? {} : { structured }),
+      ...discussionAsSent(f, runId),
+    },
   });
   return recordRunEnd(f.deps, { runId });
 }

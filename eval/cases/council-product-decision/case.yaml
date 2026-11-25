@@ -68,6 +68,7 @@ example:
     Question for Didi: which rule wins? Options: (a) keep exactly 24 characters and cut the word;
     (b) cut at the last whole word, so some titles are shorter; (c) show the title uncut when the
     cut would split a word. Recommended: (b), since whole words read better and the limit stays a
-    maximum. Personas: product manager and designer; the designer preferred (c).
+    maximum. Took part: Product as chair, the Developer and Quality, and the Designer, whom the
+    Developer pulled in for how the titles read; the Designer preferred (c).
   changesProductDirection: true
   passesGate: false

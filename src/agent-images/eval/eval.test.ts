@@ -20,6 +20,7 @@ import {
   type FakeReply,
   type RecordedRequest,
 } from "../testing/fake-proxy.ts";
+import { discussionSystemText, fencedInput } from "../claude-api/prompts.ts";
 import { structuredFrame } from "../claude-api/image.ts";
 import { runEvalImage, type EvalImageDeps } from "./image.ts";
 import { STAND_IN_PAGE, caseContextTools, caseDocsLookup } from "./week.ts";
@@ -28,8 +29,10 @@ import type { EvalResult } from "./result.ts";
 // Integration: the weekly test job (ADR 0117, D-432) against a local fake of its egress proxy,
 // which serves the Messages API at `/anthropic/v1/messages` and `/deepinfra/v1/messages`, with
 // the real cases, bot files, builders, loop and scoring. Replies come from a function of the
-// request: it finds the case by the input the request carries. No real model call and no network
-// beyond 127.0.0.1.
+// request: it finds the case by the input the request carries. A Council case runs as one
+// discussion through the Messages API image's own `runDiscussion` (ADR 0119 slice 6e): a view call
+// per persona of the cast, then Product's answer, on one budget, scored with its record. No real
+// model call and no network beyond 127.0.0.1.
 
 const RUN_ID = "eval-2026-47";
 const A = "fake-ai/model-a";
@@ -123,30 +126,64 @@ async function run(env: Record<string, string>, deps: EvalImageDeps = {}) {
   return { code, lines, result, structured: result?.structured as EvalResult };
 }
 
+/** The text of a request's first message: its one string, or its text blocks joined. */
+function firstText(request: RecordedRequest): string {
+  const first = (request.body.messages as { content: unknown }[])[0]?.content;
+  if (typeof first === "string") return first;
+  return (first as { type: string; text?: string }[])
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "")
+    .join("\n");
+}
+
 /** The case a model request is for: the one whose input its first message carries. */
 function caseOf(request: RecordedRequest): EvalCase {
-  const messages = request.body.messages as { content: unknown }[];
-  const first = messages[0]?.content;
-  const found = cases.filter(
-    (c) =>
-      typeof first === "string" &&
-      first.includes((caseRuns.get(c.id) as CaseRun).task.input),
+  const first = firstText(request);
+  const found = cases.filter((c) =>
+    first.includes((caseRuns.get(c.id) as CaseRun).task.input),
   );
   expect(found).toHaveLength(1);
   return found[0] as EvalCase;
+}
+
+/** A Council discussion's call, by its turn: a persona's view, or Product's answer. */
+function speakerOf(request: RecordedRequest): string | null {
+  const blocks = (request.body.messages as { content: unknown }[])[0]?.content;
+  if (!Array.isArray(blocks)) return null;
+  const turn = (blocks.at(-1) as { text?: string }).text ?? "";
+  if (turn.includes("Now decide as Product, the chair")) return "product";
+  return /Now give (?:the )?(\w+)'s view/.exec(turn)?.[1]?.toLowerCase() ?? null;
+}
+
+/** A persona's view, as a model gives it. Model text, which must never reach the result line. */
+const viewText = (persona: string) => `As ${persona}, I would keep the item's rule.`;
+
+/** A view call's answer, through the answer tool or structured outputs as the request asks. */
+function viewReply(request: RecordedRequest, persona: string, over = {}): FakeReply {
+  const view = { view: viewText(persona) };
+  return request.path.startsWith("/deepinfra/")
+    ? reply.toolUse("answer", view, "toolu_view", usage(over))
+    : reply.text(JSON.stringify(view), usage(over));
 }
 
 const turnOf = (request: RecordedRequest) =>
   (request.body.messages as unknown[]).length;
 const usage = (over: Record<string, unknown> = {}) => ({ ...USAGE, ...over });
 
-/** A model that answers every case right; on QA it reads a changed file first. */
+/**
+ * A model that answers every case right; on QA it reads a changed file first, and in a Council
+ * discussion each persona gives its view before Product answers.
+ */
 function rightAnswer(request: RecordedRequest, over = {}): FakeReply {
   const c = caseOf(request);
   const byTool = request.path.startsWith("/deepinfra/");
   if (c.role === "qa" && turnOf(request) === 1) {
     const path = c.input.changedFiles[0] as string;
     return reply.toolUse("read_file", { path }, "toolu_read", usage(over));
+  }
+  const speaker = speakerOf(request);
+  if (c.role === "council" && speaker !== "product") {
+    return viewReply(request, speaker ?? "someone", over);
   }
   return byTool
     ? reply.toolUse("answer", c.example, "toolu_answer", usage(over))
@@ -166,6 +203,8 @@ function lazyAnswer(request: RecordedRequest): FakeReply {
     );
   }
   if (c.role === "triage") return reply.text(MODEL_PROSE, usage());
+  const speaker = speakerOf(request);
+  if (speaker !== "product") return viewReply(request, speaker ?? "someone");
   return reply.toolUse(
     "answer",
     {
@@ -211,11 +250,15 @@ describe("the weekly test job (integration: every case through the egress proxy,
       ]),
     );
     expect(proxy.modelRequests.map((r) => [caseOf(r).id, r.body.model])).toEqual(
-      cases.flatMap((c) => [
-        ...(c.role === "qa" ? [[c.id, A]] : []),
-        [c.id, A],
-        [c.id, B],
-      ]),
+      cases.flatMap((c) => {
+        // A Council case is a discussion: the Developer's and Quality's views, then Product's.
+        const calls = c.role === "council" ? 3 : 1;
+        return [
+          ...(c.role === "qa" ? [[c.id, A]] : []),
+          ...Array.from({ length: calls }, () => [c.id, A]),
+          ...Array.from({ length: calls }, () => [c.id, B]),
+        ];
+      }),
     );
     for (const r of structured.runs) {
       const c = caseById(r.caseId);
@@ -272,16 +315,18 @@ describe("the weekly test job (integration: every case through the egress proxy,
       outcome: "resolve",
       changesProductDirection: false,
       passesGate: false,
+      cast: ["developer", "quality"],
+      pullIns: [],
     });
 
-    // The totals: 31 requests at 0.0012 each.
+    // The totals: 39 requests at 0.0012 each.
     expect(structured.totals).toEqual({
-      spentUsd: 0.0372,
+      spentUsd: 0.0468,
       runs: 24,
       skipped: 0,
       models: [
-        { model: A, provider: "deepinfra", runs: 12, correct: 12, costUsd: 0.0228 },
-        { model: B, provider: "deepinfra", runs: 12, correct: 4, costUsd: 0.0144 },
+        { model: A, provider: "deepinfra", runs: 12, correct: 12, costUsd: 0.0276 },
+        { model: B, provider: "deepinfra", runs: 12, correct: 4, costUsd: 0.0192 },
       ],
     });
 
@@ -295,7 +340,7 @@ describe("the weekly test job (integration: every case through the egress proxy,
       "costUsd",
     ]);
     expect(last.finalText).toBe("");
-    expect(last.costUsd).toBe(0.0372);
+    expect(last.costUsd).toBe(0.0468);
     expect(Object.keys(structured)).toEqual([
       "evalResult",
       "runId",
@@ -328,7 +373,15 @@ describe("the weekly test job (integration: every case through the egress proxy,
         ...(example.findings ?? []).map((f) => f.note),
       ];
     });
-    noOutputHolds(lines, MODEL_PROSE, ...notes, PLACEHOLDER_CREDENTIAL, FAKE_KEY);
+    noOutputHolds(
+      lines,
+      MODEL_PROSE,
+      ...notes,
+      viewText("developer"),
+      viewText("quality"),
+      PLACEHOLDER_CREDENTIAL,
+      FAKE_KEY,
+    );
     for (const request of proxy.modelRequests) {
       // The placeholder only: the proxy removes it and adds the real key.
       expect(JSON.stringify(request.headers)).toContain(PLACEHOLDER_CREDENTIAL);
@@ -348,8 +401,10 @@ describe("the weekly test job (integration: every case through the egress proxy,
       ["council-answer-in-plan", "correct"],
       ["qa-truncate-pass", "correct"],
     ]);
-    const [council, qaRead, qaAnswer] = proxy.modelRequests as RecordedRequest[];
-    for (const request of [council, qaRead, qaAnswer] as RecordedRequest[]) {
+    // The Council's discussion: the Developer's view, Quality's, then Product's answer.
+    const [developer, quality, council, qaRead, qaAnswer] =
+      proxy.modelRequests as RecordedRequest[];
+    for (const request of proxy.modelRequests) {
       expect(request.path).toBe("/deepinfra/v1/messages");
       expect(request.body).toMatchObject({
         model: A,
@@ -359,13 +414,17 @@ describe("the weekly test job (integration: every case through the egress proxy,
       });
       expect(request.body.output_config).toBeUndefined();
     }
-    // Each run's own key: its place in the job's order.
-    expect(council?.body.prompt_cache_key).toBe(`${RUN_ID}-1`);
+    // Each run's own key: its place in the job's order, the same for every call of a discussion.
+    for (const call of [developer, quality, council]) {
+      expect(call?.body.prompt_cache_key).toBe(`${RUN_ID}-1`);
+    }
     expect(qaRead?.body.prompt_cache_key).toBe(`${RUN_ID}-2`);
     expect(qaAnswer?.body.prompt_cache_key).toBe(`${RUN_ID}-2`);
     const toolNames = (r?: RecordedRequest) =>
       (r?.body.tools as { name: string }[]).map((t) => t.name);
-    expect(toolNames(council)).toEqual(["answer"]);
+    for (const call of [developer, quality, council]) {
+      expect(toolNames(call)).toEqual(["pull_in", "answer"]);
+    }
     expect(toolNames(qaRead)).toEqual([
       "list_files",
       "read_file",
@@ -505,7 +564,15 @@ describe("the weekly test job (integration: every case through the egress proxy,
     const onAnthropic = proxy.modelRequests.filter(
       (r) => r.path === "/anthropic/v1/messages",
     );
-    expect(onAnthropic.map((r) => r.body.model)).toEqual([SONNET, OPUS, OPUS, SONNET]);
+    // The Council's discussion makes three calls: two views and Product's answer.
+    expect(onAnthropic.map((r) => r.body.model)).toEqual([
+      SONNET,
+      SONNET,
+      SONNET,
+      OPUS,
+      OPUS,
+      SONNET,
+    ]);
     for (const request of onAnthropic) {
       expect(request.body.prompt_cache_key).toBeUndefined();
       expect(request.body.tool_choice).toBeUndefined();
@@ -576,11 +643,12 @@ describe("the weekly test job (integration: every case through the egress proxy,
     expect(
       structured.runs.map((r) => [r.caseId, r.costUsd, r.serviceTierServed]),
     ).toEqual([
-      ["council-answer-in-plan", 0.0012, "flex"],
-      ["council-product-decision", 0.0024, null],
+      // Three calls each: two views and Product's answer.
+      ["council-answer-in-plan", 0.0036, "flex"],
+      ["council-product-decision", 0.0072, null],
       ["triage-slugify-plan", 0.0024, "standard"],
     ]);
-    expect(structured.totals.spentUsd).toBe(0.006);
+    expect(structured.totals.spentUsd).toBe(0.0132);
   });
 
   it("skips every run once the week's spend reaches the cap, and passes it by less than one request", async () => {
@@ -795,7 +863,166 @@ describe("the weekly test job (integration: every case through the egress proxy,
     );
     expect(ran.code).toBe(1);
     expect(ran.result?.errorText).toBe("the run's egress proxy did not become ready");
-    expect(proxy.modelRequests).toHaveLength(1);
+    // The first run's discussion: two views and Product's answer.
+    expect(proxy.modelRequests).toHaveLength(3);
+  });
+});
+
+describe("a Council case as one discussion (integration: the image's runDiscussion through the fake proxy, ADR 0119 slice 6e)", () => {
+  const ID = "council-answer-in-plan";
+  const only = { FOREMAN_EVAL_CASES: ID };
+
+  it("asks each persona of the cast for its view, then Product, on one prefix and one cache key, and scores the answer with the cast in its facts", async () => {
+    proxy.respond = rightAnswer;
+    const { code, lines, structured } = await run(envFor([entry(A)], only));
+    expect(code).toBe(0);
+    const calls = proxy.modelRequests;
+    expect(calls.map(speakerOf)).toEqual(["developer", "quality", "product"]);
+    const task = (caseRuns.get(ID) as CaseRun).task;
+    expect(task.discussion).toEqual({
+      chair: "product",
+      cast: ["developer", "quality"],
+      maxPullIns: 2,
+    });
+    // The same system text, pull-in tool and input block in every call, with the Council's
+    // composed discussion text a real Council run gets. In tool mode the views' answer tool takes
+    // the view schema and Product's the escalation schema (O-179).
+    const system = discussionSystemText(
+      instructionsFor(bots.council, "council"),
+      false,
+      "tool",
+    );
+    const tools = (call: RecordedRequest) =>
+      call.body.tools as { name: string; input_schema: { required: string[] } }[];
+    for (const call of calls) {
+      expect((call.body.system as { text: string }[])[0]?.text).toBe(system);
+      expect(tools(call)[0]).toEqual(tools(calls[0] as RecordedRequest)[0]);
+      const blocks = (call.body.messages as { content: { text: string }[] }[])[0]
+        ?.content;
+      expect(blocks?.[0]?.text).toBe(fencedInput(task.input));
+      expect(call.body.prompt_cache_key).toBe(`${RUN_ID}-1`);
+    }
+    expect(calls.map((call) => tools(call)[1]?.input_schema.required)).toEqual([
+      ["view"],
+      ["view"],
+      ["outcome", "note", "changesProductDirection", "passesGate"],
+    ]);
+    // Quality and then Product read the views before them, quoted as data.
+    expect(firstText(calls[1] as RecordedRequest)).toContain(
+      `<view persona="developer">\n${viewText("developer")}\n</view>`,
+    );
+    expect(firstText(calls[2] as RecordedRequest)).toContain(
+      `<view persona="quality">\n${viewText("quality")}\n</view>`,
+    );
+    expect(structured.runs).toEqual([
+      expect.objectContaining({
+        caseId: ID,
+        outcome: "correct",
+        reason: "as_expected",
+        turns: 3,
+        costUsd: 0.0036,
+        facts: {
+          outcome: "resolve",
+          changesProductDirection: false,
+          passesGate: false,
+          cast: ["developer", "quality"],
+          pullIns: [],
+        },
+      }),
+    ]);
+    noOutputHolds(lines, viewText("developer"), viewText("quality"));
+  });
+
+  it("names a pull-in in the facts by persona and who asked, never its reason or the view", async () => {
+    const REASON = "The error text is user-facing copy.";
+    proxy.respond = (request) => {
+      // The Developer pulls the Designer in before its own view.
+      if (speakerOf(request) === "developer" && turnOf(request) === 1) {
+        return reply.toolUse(
+          "pull_in",
+          { persona: "designer", reason: REASON },
+          "toolu_pull",
+          usage(),
+        );
+      }
+      return rightAnswer(request);
+    };
+    const { lines, structured } = await run(envFor([entry(A)], only));
+    expect(proxy.modelRequests.map(speakerOf)).toEqual([
+      "developer",
+      "designer",
+      "developer",
+      "quality",
+      "product",
+    ]);
+    expect(structured.runs[0]).toMatchObject({
+      outcome: "correct",
+      turns: 5,
+      facts: {
+        cast: ["developer", "quality"],
+        pullIns: [{ persona: "designer", by: "developer" }],
+      },
+    });
+    noOutputHolds(lines, REASON, viewText("designer"));
+  });
+
+  it("scores a view outside the view schema discussion_rejected, unusable with no facts", async () => {
+    proxy.respond = (request) =>
+      speakerOf(request) === "quality"
+        ? reply.toolUse("answer", { view: "x".repeat(2001) }, "toolu_view", usage())
+        : rightAnswer(request);
+    const { structured } = await run(envFor([entry(A)], only));
+    expect(proxy.modelRequests.map(speakerOf)).toEqual(["developer", "quality"]);
+    expect(structured.runs).toEqual([
+      expect.objectContaining({
+        outcome: "unusable",
+        reason: "discussion_rejected",
+        turns: 2,
+        costUsd: 0.0024,
+      }),
+    ]);
+    expect(structured.runs[0]).not.toHaveProperty("facts");
+  });
+
+  it("scores a discussion that refused more pull-ins than its record holds discussion_rejected, and a chair's prose answer_not_json", async () => {
+    // The Developer keeps asking for Quality, who is already in the discussion.
+    proxy.respond = (request) =>
+      speakerOf(request) === "developer"
+        ? reply.toolUse(
+            "pull_in",
+            { persona: "quality", reason: "Who tests it?" },
+            `toolu_${turnOf(request)}`,
+            usage(),
+          )
+        : rightAnswer(request);
+    let ran = await run(envFor([entry(A)], only));
+    expect(proxy.modelRequests).toHaveLength(6);
+    expect(ran.structured.runs.map((r) => [r.outcome, r.reason, r.turns])).toEqual([
+      ["unusable", "discussion_rejected", 6],
+    ]);
+    // On Anthropic the answer comes through structured outputs: prose from the chair is not JSON.
+    proxy.respond = (request) =>
+      speakerOf(request) === "product"
+        ? reply.text(MODEL_PROSE, usage())
+        : rightAnswer(request);
+    ran = await run(envFor([claude(SONNET, ["council"])], only));
+    expect(ran.structured.runs.map((r) => [r.outcome, r.reason, r.turns])).toEqual([
+      ["unusable", "answer_not_json", 3],
+    ]);
+    expect(ran.structured.runs[0]).not.toHaveProperty("facts");
+    noOutputHolds(ran.lines, MODEL_PROSE);
+  });
+
+  it("holds the whole discussion to the Council's one dollar limit, across its calls", async () => {
+    // Each call costs 1.5 USD at Flex: after two views the Council's 3 USD is spent.
+    proxy.respond = (request) =>
+      rightAnswer(request, { input_tokens: 1_500_000, output_tokens: 0 });
+    const { structured } = await run(envFor([entry(A)], only));
+    expect(bots.council.limits.maxUsd).toBe(3);
+    expect(proxy.modelRequests.map(speakerOf)).toEqual(["developer", "quality"]);
+    expect(
+      structured.runs.map((r) => [r.outcome, r.reason, r.turns, r.costUsd]),
+    ).toEqual([["error", "max_usd", 2, 3]]);
   });
 });
 

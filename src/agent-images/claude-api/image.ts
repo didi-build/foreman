@@ -16,7 +16,8 @@
 // lookup, through the run's browser pod (FOREMAN_BROWSER_URL), and before the answer tool.
 // A Council task with a `discussion` (ADR 0119 slice 6, D-483) runs as one discussion that
 // Product chairs (./discussion.ts): each persona of its cast gives a view, then the chair answers.
-// Without one, the Council runs as before. No flow sets it until slice 6e.
+// Without one, the Council runs as before. The runner sets it on every Council task since slice
+// 6e (O-181).
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 

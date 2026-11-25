@@ -3,11 +3,18 @@ import { describe, expect, it } from "vitest";
 import { readBotFiles } from "../adapters/contracts-file/bot-files.ts";
 import { parseVerdict } from "../agent-images/claude-api/verdict.ts";
 import { readEscalationAnswer } from "../core/council.ts";
+import type { DiscussionRecord } from "../core/discussion-record.ts";
 import { fixture } from "../core/guards/testing.ts";
 import { outputProblem } from "../core/output-schema.ts";
 import { checkTriageAnswer } from "../core/triage.ts";
 import { loadCases, type EvalCase } from "./cases.ts";
-import { buildCaseRun, type CouncilRun, type QaRun, type TriageRun } from "./inputs.ts";
+import {
+  buildCaseRun,
+  type CaseRun,
+  type CouncilRun,
+  type QaRun,
+  type TriageRun,
+} from "./inputs.ts";
 import { SCORE_CODES, goesToDidi, scoreAnswer, type ScoreOutcome } from "./scoring.ts";
 
 const bots = readBotFiles();
@@ -18,8 +25,28 @@ const caseOf = (id: string): EvalCase => {
   return c;
 };
 const runOf = (id: string) => buildCaseRun(caseOf(id), bots, cases);
-const outcome = (id: string, answer: unknown): ScoreOutcome =>
-  scoreAnswer(caseOf(id), runOf(id), JSON.stringify(answer)).outcome;
+
+/**
+ * The discussion record the image gives for a Council run's task (ADR 0119 slice 6e): each persona
+ * of the cast speaks once, nobody is pulled in. Nothing for another role's run.
+ */
+function discussionOf(run: CaseRun): DiscussionRecord | undefined {
+  if (run.role !== "council") return undefined;
+  const { chair, cast } = run.discussion;
+  return {
+    chair,
+    cast: [...cast],
+    views: cast.map((persona) => ({ persona, text: `The ${persona}'s view.` })),
+    pullIns: [],
+    refusedPullIns: [],
+  };
+}
+
+const outcome = (id: string, answer: unknown): ScoreOutcome => {
+  const run = runOf(id);
+  return scoreAnswer(caseOf(id), run, JSON.stringify(answer), discussionOf(run))
+    .outcome;
+};
 const example = (id: string) =>
   structuredClone(caseOf(id).example) as Record<string, unknown>;
 
@@ -45,7 +72,7 @@ describe("weekly model test set scoring (unit: answers checked by the runner's o
         ).toBeNull();
         expect("answer" in readEscalationAnswer(c.example), c.id).toBe(true);
       }
-      expect(scoreAnswer(c, run, text), c.id).toEqual({
+      expect(scoreAnswer(c, run, text, discussionOf(run)), c.id).toEqual({
         outcome: "correct",
         code: "as_expected",
         detail: expect.any(String),
@@ -58,8 +85,10 @@ describe("weekly model test set scoring (unit: answers checked by the runner's o
     const qa = "qa-truncate-off-by-one";
     const evidenceId = (runOf(qa) as QaRun).evidenceIds[0];
     const finding = (path: string) => ({ path, startLine: 1, endLine: 1, note: "x" });
-    const scored = (id: string, answer: unknown) =>
-      scoreAnswer(caseOf(id), runOf(id), JSON.stringify(answer));
+    const scored = (id: string, answer: unknown) => {
+      const run = runOf(id);
+      return scoreAnswer(caseOf(id), run, JSON.stringify(answer), discussionOf(run));
+    };
     expect(
       scored(qa, {
         verdict: "fail",
@@ -123,6 +152,8 @@ describe("weekly model test set scoring (unit: answers checked by the runner's o
         outcome: "cannot_resolve",
         changesProductDirection: false,
         passesGate: false,
+        cast: ["developer", "quality"],
+        pullIns: [],
       },
     });
     for (const [code, outcome] of Object.entries(SCORE_CODES)) {
@@ -370,6 +401,117 @@ describe("weekly model test set scoring (unit: answers checked by the runner's o
         "unusable",
       );
       expect(outcome(id, { outcome: "resolve", note: "x" })).toBe("unusable");
+    });
+
+    describe("its discussion (ADR 0119 slice 6e)", () => {
+      const id = "council-answer-in-plan";
+      const run = () => runOf(id) as CouncilRun;
+      const scoreWith = (discussion: unknown, a = answer("resolve", false, false)) =>
+        scoreAnswer(caseOf(id), run(), JSON.stringify(a), discussion);
+      const good = () => discussionOf(run()) as DiscussionRecord;
+
+      it("scores a fixture discussion correct, with its cast and pull-ins as persona ids in the facts", () => {
+        expect(scoreWith(good())).toEqual({
+          outcome: "correct",
+          code: "as_expected",
+          detail: expect.any(String),
+          facts: {
+            outcome: "resolve",
+            changesProductDirection: false,
+            passesGate: false,
+            cast: ["developer", "quality"],
+            pullIns: [],
+          },
+        });
+        // The Developer pulls in the Designer: still correct, and the facts name who and by whom,
+        // never the reason or a view.
+        const pulled: DiscussionRecord = {
+          ...good(),
+          views: [
+            { persona: "designer", pulledInBy: "developer", text: "A design view." },
+            ...good().views,
+          ],
+          pullIns: [
+            { persona: "designer", by: "developer", reason: "How the error reads." },
+          ],
+        };
+        const scored = scoreWith(pulled);
+        expect(scored).toMatchObject({
+          outcome: "correct",
+          facts: {
+            cast: ["developer", "quality"],
+            pullIns: [{ persona: "designer", by: "developer" }],
+          },
+        });
+        const facts = JSON.stringify(scored.facts);
+        for (const text of ["How the error reads.", "A design view.", "view"]) {
+          expect(facts).not.toContain(text);
+        }
+      });
+
+      it("scores a discussion the runner's check refuses discussion_rejected, unusable and with no facts, whatever the answer", () => {
+        const withChairView: DiscussionRecord = {
+          ...good(),
+          views: [...good().views, { persona: "product", text: "The chair's view." }],
+        };
+        const fromOutside: DiscussionRecord = {
+          ...good(),
+          views: [
+            ...good().views,
+            { persona: "designer", pulledInBy: "designer", text: "A design view." },
+          ],
+          pullIns: [{ persona: "designer", by: "designer", reason: "Me." }],
+        };
+        const limited: DiscussionRecord = {
+          ...good(),
+          refusedPullIns: [
+            { persona: "designer", by: "developer", reason: "A screen?", why: "limit" },
+          ],
+        };
+        for (const [discussion, code] of [
+          [undefined, "not_a_record"],
+          [{ chair: "product" }, "not_a_record"],
+          // The record's reader takes Product as the only chair.
+          [{ ...good(), chair: "quality" }, "not_a_record"],
+          [{ ...good(), cast: ["designer", "quality"] }, "wrong_cast"],
+          [withChairView, "chair_view"],
+          [fromOutside, "pull_in_by_outsider"],
+          [limited, "limit_without_didi"],
+        ] as const) {
+          for (const a of [
+            answer("resolve", false, false),
+            answer("resolve", true, false),
+          ]) {
+            expect(scoreWith(discussion, a), code).toEqual({
+              outcome: "unusable",
+              code: "discussion_rejected",
+              detail: `the runner rejects the discussion: ${code}`,
+            });
+          }
+        }
+        // After a refused pull-in over the limit, the way to Didi takes the discussion (D-484).
+        expect(
+          scoreWith(limited, answer("cannot_resolve", false, false)),
+        ).toMatchObject({
+          outcome: "wrong",
+          code: "should_resolve",
+          facts: { cast: ["developer", "quality"], pullIns: [] },
+        });
+        // An answer the runner refuses is scored for its answer first, as the runner reads it.
+        expect(
+          scoreAnswer(
+            caseOf(id),
+            run(),
+            JSON.stringify({ outcome: "resolve" }),
+            undefined,
+          ),
+        ).toMatchObject({ outcome: "unusable", code: "answer_rejected" });
+        expect(scoreAnswer(caseOf(id), run(), "{", undefined)).toMatchObject({
+          outcome: "unusable",
+          code: "answer_not_json",
+        });
+        expect(SCORE_CODES.discussion_rejected).toBe("unusable");
+      });
     });
   });
 });
