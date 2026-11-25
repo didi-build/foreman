@@ -1,0 +1,164 @@
+<!doctype html>
+<!--
+  The browser canary's page (ADR 0119 slice 5b, D-476). Served as the site under test, it tries
+  every way a page has to reach a host other than its own: a local canary server and the browser
+  host's own tool API. The canary must see nothing. The query names the canary's TCP and UDP ports
+  and the tool API's address, never with a scheme. Synthetic only.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>canary: running</title>
+    <link rel="prefetch" id="prefetch" />
+    <style id="style"></style>
+  </head>
+  <body>
+    <h1>Browser canary</h1>
+    <iframe name="target" title="Form target"></iframe>
+    <script>
+      (async () => {
+        const query = new URLSearchParams(location.search);
+        const port = query.get("canary");
+        const canary = `http://127.0.0.1:${port}`;
+        const api = `http://${query.get("api")}`;
+        const attempts = [];
+        const settle = (work, ms = 2000) =>
+          Promise.race([
+            Promise.resolve()
+              .then(work)
+              .catch(() => {}),
+            new Promise((done) => setTimeout(done, ms)),
+          ]);
+        const attempt = async (name, work) => {
+          attempts.push(name);
+          await settle(work);
+        };
+        const post = (action, enctype) => {
+          const form = document.createElement("form");
+          form.method = "post";
+          form.action = action;
+          form.target = "target";
+          if (enctype) form.enctype = enctype;
+          const field = document.createElement("input");
+          field.name = "x";
+          field.value = '{"view":"text"}';
+          form.append(field);
+          document.body.append(form);
+          form.submit();
+        };
+
+        await attempt("fetch", () => fetch(`${canary}/fetch`, { mode: "no-cors" }));
+        await attempt(
+          "img",
+          () =>
+            new Promise((done) => {
+              const image = new Image();
+              image.onload = image.onerror = done;
+              image.src = `${canary}/img`;
+            }),
+        );
+        await attempt(
+          "iframe",
+          () =>
+            new Promise((done) => {
+              const frame = document.createElement("iframe");
+              frame.title = "canary frame";
+              frame.onload = done;
+              frame.src = `${canary}/iframe`;
+              document.body.append(frame);
+            }),
+        );
+        await attempt("form", () => post(`${canary}/form`));
+        await attempt(
+          "websocket",
+          () =>
+            new Promise((done) => {
+              const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+              socket.onopen = socket.onerror = socket.onclose = done;
+            }),
+        );
+        await attempt(
+          "eventsource",
+          () =>
+            new Promise((done) => {
+              const events = new EventSource(`${canary}/events`);
+              events.onopen = done;
+              events.onerror = () => {
+                events.close();
+                done();
+              };
+            }),
+        );
+        await attempt("beacon", () => navigator.sendBeacon(`${canary}/beacon`, "x"));
+        await attempt("window.open", () => {
+          window.open(`${canary}/popup`, "_blank");
+        });
+        await attempt("service worker", () =>
+          navigator.serviceWorker.register(`/sw.js?canary=${port}`),
+        );
+        await attempt("webrtc", async () => {
+          const peer = new RTCPeerConnection({
+            iceServers: [
+              { urls: `stun:127.0.0.1:${query.get("udp")}` },
+              {
+                urls: `turn:127.0.0.1:${port}?transport=tcp`,
+                username: "canary",
+                credential: "canary",
+              },
+            ],
+          });
+          peer.createDataChannel("canary");
+          await peer.setLocalDescription(await peer.createOffer());
+          await new Promise((done) => {
+            peer.onicegatheringstatechange = () => {
+              if (peer.iceGatheringState === "complete") done();
+            };
+            setTimeout(done, 1800);
+          });
+          peer.close();
+        });
+        await attempt(
+          "worker",
+          () =>
+            new Promise((done) => {
+              const worker = new Worker(`/worker.js?canary=${port}`);
+              worker.onmessage = worker.onerror = done;
+            }),
+        );
+        await attempt("prefetch", () => {
+          document.getElementById("prefetch").href = `${canary}/prefetch`;
+        });
+        await attempt("css", () => {
+          document.getElementById("style").textContent =
+            `body { background-image: url(${canary}/css); }`;
+        });
+        await attempt("host api json", () =>
+          fetch(`${api}/read`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: '{"view":"text"}',
+          }),
+        );
+        await attempt("host api text", () =>
+          fetch(`${api}/read`, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "content-type": "text/plain" },
+            body: '{"view":"text"}',
+          }),
+        );
+        await attempt("host api beacon", () =>
+          navigator.sendBeacon(`${api}/read`, '{"view":"text"}'),
+        );
+        await attempt("host api form", () => post(`${api}/read`, "text/plain"));
+        await attempt("host api img", () => {
+          new Image().src = `${api}/read`;
+        });
+        await attempt("backend", () => fetch("/api/health"));
+
+        console.error(`canary attempts: ${attempts.join(", ")}`);
+        document.title = "canary: done";
+      })();
+    </script>
+  </body>
+</html>

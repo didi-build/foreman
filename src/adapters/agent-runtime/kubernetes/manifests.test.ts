@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { secretEnvName } from "../../../service-kit/config.ts";
+import { readConfig } from "../../../service-kit/config.ts";
 import { readProxyConfig } from "../../../egress-proxy/config.ts";
 import { PASSED_THROUGH } from "../../../agent-images/shared/environment.ts";
+import { BROWSER_HOST_SETTINGS } from "../../../agent-images/claude-api/browser-host.ts";
 import {
   COUNCIL,
   DEVELOPER,
@@ -12,23 +14,30 @@ import {
   MODEL_SECRET_PATH,
   OPENCODE_IMAGE,
   QA,
+  QA_BROWSER,
   QA_LIMITS,
   SETTINGS,
+  SITE_ZIP,
   STATE_TOKEN,
   credentialsFor,
   taskFor,
 } from "./fixtures.ts";
 import {
   AGENTS_POOL,
+  BROWSER_PORT,
+  BROWSER_RESOURCES,
   MAX_LOOKUP_HOSTS,
+  MAX_SITE_ZIP_BYTES,
   REPO_MAP_HOSTS,
   agentStage,
+  browserStage,
   checkRunSpec,
   checkSettings,
   fetchStage,
   repoMapSecret,
   repoMapStage,
   runSecrets,
+  siteSecret,
   taskSecret,
   workspaceClaim,
   type KubernetesRunSpec,
@@ -40,6 +49,8 @@ import type { EnvVar, Job, NetworkPolicy, RunObject } from "./objects.ts";
 // Unit: the run's manifests as pure functions (ADR 0106 sections 2 to 6). No cluster.
 
 const PROXY_IP = "10.245.0.10";
+/** The browser Service's address in a browser run (ADR 0119 slice 5b). */
+const BROWSER_IP = "10.245.0.11";
 
 /** One repo map read (D-275 (2)). */
 const REPO_MAP: RepoMapJobSpec = {
@@ -69,7 +80,9 @@ function value(job: Job, name: string): string | undefined {
 
 function secretRefs(job: Job): string[] {
   return [...envOf(job).values()].flatMap((e) =>
-    "valueFrom" in e ? [e.valueFrom.secretKeyRef.name] : [],
+    "valueFrom" in e && "secretKeyRef" in e.valueFrom
+      ? [e.valueFrom.secretKeyRef.name]
+      : [],
   );
 }
 
@@ -78,17 +91,25 @@ function everything(): { jobs: Job[]; objects: RunObject[] } {
   const dev = agentStage(DEVELOPER, LIMITS, SETTINGS);
   const council = agentStage(COUNCIL, LIMITS, SETTINGS);
   const qa = agentStage(QA, QA_LIMITS, SETTINGS);
+  const qaBrowser = agentStage(QA_BROWSER, QA_LIMITS, SETTINGS, BROWSER_IP);
   const fetch = fetchStage(QA, SETTINGS);
   const repoMap = repoMapStage(REPO_MAP, SETTINGS);
   const repoScan = repoMapStage(REPO_SCAN, SETTINGS);
-  const stages = [dev, council, qa, fetch, repoMap, repoScan];
-  const jobs = stages.flatMap((s) => [s.proxyJob, s.clientJob(PROXY_IP)]);
+  const browser = browserStage(QA_BROWSER, QA_LIMITS, SETTINGS);
+  const stages = [dev, council, qa, qaBrowser, fetch, repoMap, repoScan];
+  const jobs = [
+    ...stages.flatMap((s) => [s.proxyJob, s.clientJob(PROXY_IP)]),
+    browser.job,
+  ];
   const objects: RunObject[] = [
     ...jobs,
     ...stages.flatMap((s) => [...s.policies, s.proxyService]),
+    ...browser.policies,
+    browser.service,
     ...runSecrets(DEVELOPER, credentialsFor(DEVELOPER)),
     ...runSecrets(QA, credentialsFor(QA)),
     ...runSecrets(COUNCIL, credentialsFor(COUNCIL)),
+    siteSecret(QA_BROWSER, SITE_ZIP),
     repoMapSecret(REPO_MAP, GITHUB_TOKEN),
     repoMapSecret(REPO_SCAN, GITHUB_TOKEN),
     workspaceClaim(QA, SETTINGS),
@@ -143,7 +164,8 @@ describe("run pods (unit: pod hardening, ADR 0106 section 4)", () => {
         }
         expect(container.image).toMatch(/@sha256:[0-9a-f]{64}$/);
       }
-      // Only emptyDir, the run's own claim and the run's own task Secret: never a host path.
+      // Only emptyDir, the run's own claim and the run's own task Secret, or for the browser pod
+      // its site Secret: never a host path.
       for (const volume of pod.volumes) {
         expect(Object.keys(volume).sort()).toSatisfy(
           (keys: string[]) =>
@@ -152,7 +174,11 @@ describe("run pods (unit: pod hardening, ADR 0106 section 4)", () => {
             JSON.stringify(keys) === '["name","secret"]',
         );
         if ("secret" in volume) {
-          expect(volume.secret.secretName).toMatch(/^run-[a-z0-9-]+-task$/);
+          expect(volume.secret.secretName).toMatch(
+            job.metadata.name.endsWith("-browser")
+              ? /^run-[a-z0-9-]+-site$/
+              : /^run-[a-z0-9-]+-task$/,
+          );
         }
       }
       expect(JSON.stringify(job)).not.toContain("hostPath");
@@ -961,6 +987,238 @@ describe("run objects (unit: labels, names and determinism)", () => {
   });
 });
 
+describe("QA's browser pod (unit: the sealed pod, ADR 0119 slice 5b, D-476)", () => {
+  const n = runNames(QA_BROWSER.runId);
+  const stage = browserStage(QA_BROWSER, QA_LIMITS, SETTINGS);
+  const agentPods = {
+    podSelector: {
+      matchLabels: { [LABEL_RUN_ID]: QA_BROWSER.runId, "foreman/component": "agent" },
+    },
+  };
+  const browserPods = {
+    podSelector: {
+      matchLabels: { [LABEL_RUN_ID]: QA_BROWSER.runId, "foreman/component": "browser" },
+    },
+  };
+
+  it("gives the browser pod no egress at all, and ingress from the run's agent pod only, on the host's port", () => {
+    expect(stage.policies[0]).toEqual({
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: {
+        name: n.browserPolicy,
+        namespace: "agents-rehearsal",
+        labels: expect.objectContaining({ "foreman/component": "browser" }),
+      },
+      spec: {
+        podSelector: browserPods.podSelector,
+        policyTypes: ["Ingress", "Egress"],
+        ingress: [
+          { from: [agentPods], ports: [{ protocol: "TCP", port: BROWSER_PORT }] },
+        ],
+        // No DNS, no proxy, no state API: nothing.
+        egress: [],
+      },
+    });
+    // The browser pod's own pods carry the labels the policy selects.
+    expect(stage.job.spec.template.metadata.labels).toMatchObject(
+      browserPods.podSelector.matchLabels,
+    );
+  });
+
+  it("lets the run's agent pod reach the browser pod on that port, and leaves the agent's other policies as they were", () => {
+    expect(stage.policies[1]).toEqual({
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: {
+        name: n.agentBrowserPolicy,
+        namespace: "agents-rehearsal",
+        labels: expect.objectContaining({ "foreman/component": "agent" }),
+      },
+      spec: {
+        podSelector: agentPods.podSelector,
+        policyTypes: ["Egress"],
+        ingress: [],
+        egress: [
+          { to: [browserPods], ports: [{ protocol: "TCP", port: BROWSER_PORT }] },
+        ],
+      },
+    });
+    const withBrowser = agentStage(QA_BROWSER, QA_LIMITS, SETTINGS, BROWSER_IP);
+    const without = agentStage(
+      { ...QA_BROWSER, browser: undefined },
+      QA_LIMITS,
+      SETTINGS,
+    );
+    expect(withBrowser.policies).toEqual(without.policies);
+  });
+
+  it("runs the browser host from the agent's own image, hardened, with no token, model key, task file, workspace or proxy variable", () => {
+    const job = stage.job;
+    const pod = job.spec.template.spec;
+    const container = pod.containers[0];
+    expect(container?.image).toBe(QA_BROWSER.image);
+    expect(container?.command).toEqual([
+      "node",
+      "src/agent-images/claude-api/browser-host.ts",
+    ]);
+    expect(container?.ports).toEqual([
+      { name: "browser", containerPort: BROWSER_PORT, protocol: "TCP" },
+    ]);
+    expect(pod.automountServiceAccountToken).toBe(false);
+    expect([...envOf(job).keys()].sort()).toEqual([
+      "FOREMAN_BROWSER_DEADLINE_SECONDS",
+      "FOREMAN_BROWSER_LISTEN",
+      "FOREMAN_BROWSER_PORT",
+      "FOREMAN_SITE_DIR",
+      "FOREMAN_SITE_ZIP",
+      "HOME",
+      "TMPDIR",
+    ]);
+    // No Secret is read into its environment; it listens on its own pod's address.
+    expect(secretRefs(job)).toEqual([]);
+    expect(envOf(job).get("FOREMAN_BROWSER_LISTEN")).toEqual({
+      name: "FOREMAN_BROWSER_LISTEN",
+      valueFrom: { fieldRef: { fieldPath: "status.podIP" } },
+    });
+    // Its one Secret is the site's zip, read-only; the site goes into memory, the rest into /tmp.
+    expect(pod.volumes).toEqual([
+      { name: "tmp", emptyDir: { sizeLimit: SETTINGS.scratchSizeLimit } },
+      { name: "site", emptyDir: { sizeLimit: "64Mi", medium: "Memory" } },
+      {
+        name: "site-zip",
+        secret: {
+          secretName: n.siteSecret,
+          items: [{ key: "site.zip", path: "site.zip" }],
+          defaultMode: 0o440,
+        },
+      },
+    ]);
+    expect(container?.volumeMounts).toEqual([
+      { name: "tmp", mountPath: "/tmp", readOnly: false },
+      { name: "site", mountPath: "/site", readOnly: false },
+      { name: "site-zip", mountPath: "/site-zip", readOnly: true },
+    ]);
+    const text = JSON.stringify(job);
+    for (const absent of [
+      n.stateTokenSecret,
+      n.githubTokenSecret,
+      n.modelSecret,
+      n.taskSecret,
+      n.workspaceClaim,
+      "HTTPS_PROXY",
+      "https_proxy",
+      "NO_PROXY",
+      "FOREMAN_STATE_API",
+      "FOREMAN_TASK_FILE",
+      "FOREMAN_WORKSPACE",
+      "/workspace",
+      "/task",
+      "ANTHROPIC",
+      "GITHUB_TOKEN",
+    ]) {
+      expect(text, absent).not.toContain(absent);
+    }
+  });
+
+  it("gives the browser host exactly the settings it reads", () => {
+    const env: Record<string, string> = {};
+    for (const entry of envOf(stage.job).values()) {
+      env[entry.name] = "value" in entry ? entry.value : "10.244.1.7";
+    }
+    expect(readConfig(BROWSER_HOST_SETTINGS, env)).toEqual({
+      siteZip: "/site-zip/site.zip",
+      siteDir: "/site",
+      listen: "10.244.1.7",
+      port: BROWSER_PORT,
+      deadlineSeconds: 20 * 60 + 30,
+    });
+  });
+
+  it("stops the host after the agent's deadline and grace, and Kubernetes a margin later, never retried", () => {
+    expect(value(stage.job, "FOREMAN_BROWSER_DEADLINE_SECONDS")).toBe(
+      String(20 * 60 + 30),
+    );
+    expect(stage.job.spec.activeDeadlineSeconds).toBe(20 * 60 + 30 + 120);
+    expect(stage.job.spec.backoffLimit).toBe(0);
+  });
+
+  it("takes resources.browser when it is set, and D-480's sizes otherwise", () => {
+    expect(stage.job.spec.template.spec.containers[0]?.resources).toEqual(
+      BROWSER_RESOURCES,
+    );
+    expect(BROWSER_RESOURCES).toMatchObject({
+      requests: { cpu: "250m", memory: "384Mi" },
+      limits: { cpu: "1", memory: "768Mi" },
+    });
+    const sized = {
+      requests: { cpu: "500m", memory: "512Mi", "ephemeral-storage": "512Mi" },
+      limits: { cpu: "1", memory: "1Gi", "ephemeral-storage": "1Gi" },
+    };
+    const set = browserStage(QA_BROWSER, QA_LIMITS, {
+      ...SETTINGS,
+      resources: { ...SETTINGS.resources, browser: sized },
+    });
+    expect(set.job.spec.template.spec.containers[0]?.resources).toEqual(sized);
+  });
+
+  it("puts a ClusterIP Service in front of the browser pod alone", () => {
+    expect(stage.service.metadata.name).toBe(n.browserService);
+    expect(stage.service.spec).toEqual({
+      type: "ClusterIP",
+      selector: browserPods.podSelector.matchLabels,
+      ports: [
+        {
+          name: "browser",
+          protocol: "TCP",
+          port: BROWSER_PORT,
+          targetPort: BROWSER_PORT,
+        },
+      ],
+    });
+  });
+
+  it("gives the agent FOREMAN_BROWSER_URL on a browser run only", () => {
+    const agent = agentStage(QA_BROWSER, QA_LIMITS, SETTINGS, BROWSER_IP).clientJob(
+      PROXY_IP,
+    );
+    expect(value(agent, "FOREMAN_BROWSER_URL")).toBe(
+      `http://${BROWSER_IP}:${BROWSER_PORT}`,
+    );
+    for (const job of everything().jobs) {
+      if (job.metadata.name === agent.metadata.name) continue;
+      expect(envOf(job).has("FOREMAN_BROWSER_URL"), job.metadata.name).toBe(false);
+    }
+    expect(() => agentStage(QA_BROWSER, QA_LIMITS, SETTINGS)).toThrow(
+      /needs its browser's address/,
+    );
+    expect(() => agentStage(QA, QA_LIMITS, SETTINGS, BROWSER_IP)).toThrow(
+      /only a browser run's agent/,
+    );
+  });
+
+  it("puts the site's zip in its own Secret as bytes, and refuses an empty or oversized zip or a run with no browser", () => {
+    const secret = siteSecret(QA_BROWSER, SITE_ZIP);
+    expect(secret.metadata.name).toBe(n.siteSecret);
+    expect(secret.immutable).toBe(true);
+    expect(secret.stringData).toEqual({});
+    expect(Buffer.from(secret.data?.["site.zip"] ?? "", "base64")).toEqual(
+      Buffer.from(SITE_ZIP),
+    );
+    expect(
+      siteSecret(QA_BROWSER, new Uint8Array(MAX_SITE_ZIP_BYTES)).data,
+    ).toBeDefined();
+    expect(() => siteSecret(QA_BROWSER, new Uint8Array(0))).toThrow(
+      /1 to 921600 bytes/,
+    );
+    expect(() =>
+      siteSecret(QA_BROWSER, new Uint8Array(MAX_SITE_ZIP_BYTES + 1)),
+    ).toThrow(/1 to 921600 bytes/);
+    expect(() => siteSecret(QA, SITE_ZIP)).toThrow(/only a browser run/);
+    expect(() => browserStage(QA, QA_LIMITS, SETTINGS)).toThrow(/only a browser run/);
+  });
+});
+
 describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
   it.each<[string, KubernetesRunSpec, RegExp]>([
     [
@@ -1137,6 +1395,33 @@ describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
       { ...DEVELOPER, providers: [{ ...DEVELOPER.providers[0]!, name: "state-api" }] },
       /invalid name/,
     ],
+    // QA's review alone runs a browser (ADR 0119 slice 5b, D-476).
+    [
+      "a Developer run with a browser",
+      { ...DEVELOPER, browser: true },
+      /only QA's review/,
+    ],
+    [
+      "a Designer run with a browser",
+      { ...DEVELOPER, role: "designer", browser: true },
+      /only QA's review/,
+    ],
+    ["a Council run with a browser", { ...COUNCIL, browser: true }, /only QA's review/],
+    [
+      "a Triage run with a browser",
+      { ...COUNCIL, role: "triage", browser: true },
+      /only QA's review/,
+    ],
+    [
+      "QA's visual comparison with a browser",
+      { ...QA, visual: true, fetchAllowedHosts: undefined, browser: true },
+      /only QA's review/,
+    ],
+    [
+      "a browser that is not exactly true",
+      { ...QA, browser: "yes" as unknown as true },
+      /only QA's review/,
+    ],
   ])("refuses %s", (_label, spec, pattern) => {
     expect(() => checkRunSpec(spec, LIMITS)).toThrow(pattern);
   });
@@ -1144,6 +1429,7 @@ describe("checkRunSpec (unit: refusing a run that breaks ADR 0106)", () => {
   it("accepts each fixture", () => {
     expect(() => checkRunSpec(DEVELOPER, LIMITS)).not.toThrow();
     expect(() => checkRunSpec(QA, QA_LIMITS)).not.toThrow();
+    expect(() => checkRunSpec(QA_BROWSER, QA_LIMITS)).not.toThrow();
     expect(() => checkRunSpec(COUNCIL, LIMITS)).not.toThrow();
   });
 });

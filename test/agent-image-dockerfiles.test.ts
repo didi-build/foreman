@@ -295,13 +295,76 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
     expect(copied.sort()).toEqual(["package.json", ...imported].sort());
   });
 
+  it("installs Chromium's headless shell in the Messages API image at the revision playwright-core pins, checked by SHA-256 (ADR 0119 slice 5b)", () => {
+    const root = JSON.parse(readFileSync("package.json", "utf8")) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    // The browser host needs playwright-core at run time, at its exact pin, and the image's
+    // `npm ci --omit=dev` installs it.
+    const version = root.dependencies["playwright-core"];
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(root.devDependencies["playwright-core"]).toBeUndefined();
+    const lock = JSON.parse(readFileSync("package-lock.json", "utf8")) as {
+      packages: Record<string, { version?: string; dev?: boolean; integrity?: string }>;
+    };
+    const locked = lock.packages["node_modules/playwright-core"];
+    expect(locked?.version).toBe(version);
+    expect(locked?.dev).toBeUndefined();
+    expect(locked?.integrity).toMatch(/^sha512-/);
+    const installed = JSON.parse(
+      readFileSync("node_modules/playwright-core/package.json", "utf8"),
+    ) as { version: string };
+    expect(installed.version).toBe(version);
+
+    const { browsers } = JSON.parse(
+      readFileSync("node_modules/playwright-core/browsers.json", "utf8"),
+    ) as { browsers: { name: string; revision: string; browserVersion?: string }[] };
+    const shell = browsers.find((b) => b.name === "chromium-headless-shell");
+    expect(shell?.browserVersion).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+    const text = dockerfile("claude-api");
+    // Where playwright-core looks: the browsers path, then the revision's own folder.
+    expect(text).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright");
+    const folders = new Set(
+      [...text.matchAll(/chromium_headless_shell-(\d+)/g)].map((m) => m[1]),
+    );
+    expect([...folders]).toEqual([shell?.revision]);
+    // The Chrome for Testing build of that revision, by its browser version, and no other.
+    const urls = [...text.matchAll(/https:\/\/\S+\.zip/g)].map((m) => m[0]);
+    expect(urls).toEqual([
+      `https://storage.googleapis.com/chrome-for-testing-public/${shell?.browserVersion}/linux64/chrome-headless-shell-linux64.zip`,
+    ]);
+    // Every revision and version the comments name is that one too, so none goes stale.
+    expect(
+      new Set([...text.matchAll(/\b\d{3}\.\d+\.\d{4}\.\d+\b/g)].map((m) => m[0])),
+    ).toEqual(new Set([shell?.browserVersion]));
+    expect(new Set([...text.matchAll(/revision (\d+)/g)].map((m) => m[1]))).toEqual(
+      new Set([shell?.revision]),
+    );
+    // The build fails unless the archive is the pinned one: no placeholder, a real SHA-256.
+    expect(text).toMatch(
+      /echo "[0-9a-f]{64} {2}\/tmp\/chrome-headless-shell-linux64\.zip" \| sha256sum -c -/,
+    );
+    // Installed as root, read-only, before the switch to the node user; the download tools go.
+    const user = text.indexOf("USER node");
+    expect(text.indexOf("sha256sum -c -")).toBeLessThan(user);
+    expect(text).toContain("chmod -R a-w /opt/ms-playwright");
+    expect(text).toContain("apt-get purge -y --auto-remove curl unzip");
+  });
+
   it("copies into each image only folders whose values it imports", () => {
     // An image starts with Node's type stripping, so a value import from a folder its Dockerfile
     // does not copy crashes it at start. `import type` lines are erased and may point anywhere.
     for (const image of images) {
       const copied = instructions(image, "COPY")
         .map((line) => line.split(/\s+/).at(-2) ?? "")
-        .filter((source) => source.startsWith("src/") || source.startsWith("scripts/"));
+        .filter(
+          (source) =>
+            source.startsWith("src/") ||
+            source.startsWith("scripts/") ||
+            // CI's static server, which the browser host reuses (ADR 0119 slice 5b).
+            source.startsWith(".github/scripts/"),
+        );
       const files = readdirSync(join(ROOT, image), {
         recursive: true,
         encoding: "utf8",
@@ -328,6 +391,23 @@ describe("agent image Dockerfiles (unit: job image conventions, ADR 0106 section
       };
       files.forEach(visit);
     }
+  });
+
+  it("runs the browser canary inside the built Messages API image, unprivileged, read-only and offline (ADR 0119 slice 5b)", () => {
+    const script = readFileSync("scripts/check-agent-container.sh", "utf8");
+    const step = script.slice(script.indexOf('if [ "${name}" = "claude-api" ]; then'));
+    for (const flag of [
+      "--read-only",
+      "--user 1000:1000",
+      "--cap-drop ALL",
+      "--security-opt no-new-privileges",
+      "--network none",
+      '"${PWD}/test/fixtures:/fixtures:ro"',
+      "/fixtures/browser-canary/canary.mjs /app/src/agent-images/claude-api/browser-host.ts",
+    ]) {
+      expect(step, flag).toContain(flag);
+    }
+    expect(script).not.toMatch(/--privileged|--cap-add|--network host/);
   });
 
   it("is built and checked in CI by the agent container script", () => {

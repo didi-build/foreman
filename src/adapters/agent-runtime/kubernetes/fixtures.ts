@@ -101,6 +101,16 @@ export const QA: KubernetesRunSpec = {
   fetchAllowedHosts: ["api.github.com", "codeload.github.com"],
 };
 
+/** QA's review with a browser pod (ADR 0119 slice 5b, D-476). */
+export const QA_BROWSER: KubernetesRunSpec = {
+  ...QA,
+  runId: "6f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9",
+  browser: true,
+};
+
+/** A stand-in for the site's zip: the bytes only matter to the browser host. Not a real site. */
+export const SITE_ZIP = new Uint8Array(Buffer.from("PK\u0005\u0006fixture-site-zip"));
+
 export const COUNCIL: KubernetesRunSpec = {
   ...base,
   runId: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",

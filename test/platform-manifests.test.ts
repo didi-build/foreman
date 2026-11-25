@@ -349,10 +349,12 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
       for (const env of d.spec.template.spec.containers.flatMap((c) => c.env)) {
         if ("value" in env) {
           expect(env.name, env.name).not.toMatch(CREDENTIAL_ENV);
-        } else {
+        } else if ("secretKeyRef" in env.valueFrom) {
           refs.push(
             `${env.valueFrom.secretKeyRef.name}/${env.valueFrom.secretKeyRef.key}`,
           );
+        } else {
+          throw new Error(`${env.name} reads a field of its pod, not a Secret`);
         }
       }
     }
@@ -399,7 +401,11 @@ describe("no secret values (unit: AGENTS.md section 5)", () => {
     const used = (name: string) =>
       deploymentOf(name)
         .spec.template.spec.containers.flatMap((c) => c.env)
-        .flatMap((e) => ("valueFrom" in e ? [e.valueFrom.secretKeyRef.name] : []));
+        .flatMap((e) =>
+          "valueFrom" in e && "secretKeyRef" in e.valueFrom
+            ? [e.valueFrom.secretKeyRef.name]
+            : [],
+        );
     expect(used(STATE_API.name)).toEqual([
       PLATFORM_SECRETS.stateApiDatabase.name,
       PLATFORM_SECRETS.stateApiPlanningToken.name,

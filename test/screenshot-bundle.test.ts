@@ -452,9 +452,12 @@ describe("the screenshots workflow (.github/workflows/screenshots.yml)", () => {
 
   it("drives the browser through playwright-core at an exact version", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+      dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
     };
-    expect(pkg.devDependencies["playwright-core"]).toMatch(/^\d+\.\d+\.\d+$/);
+    // A runtime dependency since QA's browser host needs it too (ADR 0119 slice 5b), still exact.
+    expect(pkg.dependencies["playwright-core"]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.devDependencies["playwright-core"]).toBeUndefined();
     const runs = job.steps.flatMap((s) => (s.run ? [s.run] : [])).join("\n");
     expect(runs).toContain("--kind gallery");
     expect(runs).toContain("--kind options");

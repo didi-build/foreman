@@ -21,13 +21,17 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
-import { stateApiRunSettings } from "../infra/kubernetes/platform.ts";
+import {
+  stateApiRunSettings,
+  type PlatformSettings,
+} from "../infra/kubernetes/platform.ts";
 import type { KubernetesRunSettings } from "../src/adapters/agent-runtime/kubernetes/manifests.ts";
 import {
   AGENT_RUNS_FILE,
   DEPLOYED_VALUES,
   FORM_SCHEMA_DRAFT,
   FORM_USERNAME_PLACEHOLDER,
+  agentRunSettings,
   bundleForWindmill,
   summary,
   writeBundleResult,
@@ -364,6 +368,40 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
       }),
     ).rejects.toThrow(/evalImage is not an image reference pinned by digest/);
   }, 120_000);
+
+  it("takes QA's browser pod resources when the file has them, leaves them out when it does not, and refuses malformed ones (ADR 0119 slice 5b)", () => {
+    const { runSettings } = filledAgentRuns();
+    const base = (runSettings as Record<string, unknown>).resources as Record<
+      string,
+      unknown
+    >;
+    const read = (resources: unknown) => {
+      const result = agentRunSettings(
+        { ...runSettings, resources },
+        platform.platform as unknown as PlatformSettings,
+      );
+      if (!("value" in result)) throw new Error(result.reason);
+      return (JSON.parse(result.value) as KubernetesRunSettings).resources;
+    };
+    expect(read(base)).not.toHaveProperty("browser");
+    const browser = {
+      requests: { cpu: "250m", memory: "384Mi", "ephemeral-storage": "256Mi" },
+      limits: { cpu: "1", memory: "768Mi", "ephemeral-storage": "1Gi" },
+    };
+    expect(read({ ...base, browser }).browser).toEqual(browser);
+    expect(() => read({ ...base, browser: { requests: browser.requests } })).toThrow(
+      /resources\.browser must hold exactly limits, requests/,
+    );
+    expect(() =>
+      read({
+        ...base,
+        browser: { ...browser, limits: { ...browser.limits, memory: "lots" } },
+      }),
+    ).toThrow(/resources\.browser\.limits\.memory is not a quantity/);
+    expect(() => read({ ...base, gpu: browser })).toThrow(
+      /resources must hold exactly/,
+    );
+  });
 
   it("holds the committed run settings at D-372's sizes and ADR 0106's starting values, each image pinned by digest from this repository's packages", () => {
     const { agentImages, runSettings } = committedAgentRuns();

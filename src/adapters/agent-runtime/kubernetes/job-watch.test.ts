@@ -61,6 +61,7 @@ function runJob(
     proxy: names.proxyJob,
     fetch: names.fetchJob,
     "fetch-proxy": names.fetchProxyJob,
+    browser: names.browserJob,
     "repo-map": `map-${runId}`,
   };
   return {
@@ -119,9 +120,15 @@ describe("which Jobs are a run's stop (unit: D-330)", () => {
     expect(runJobStop(NS, deleting)).toBeNull();
   });
 
-  it("reports no proxy, no repo map read and nothing the runner did not label", () => {
+  it("reports no proxy, no browser pod, no repo map read and nothing the runner did not label", () => {
     for (const component of ["proxy", "fetch-proxy"] as const) {
       expect(runJobStop(NS, runJob(RUN, component, COMPLETE))).toBeNull();
+    }
+    // QA's browser pod ends after its agent; its end is never the run's (ADR 0119 slice 5b).
+    for (const conditions of [COMPLETE, FAILED, DEADLINE]) {
+      expect(
+        runJobStop(NS, runJob(RUN, "browser", conditions, { role: "qa" })),
+      ).toBeNull();
     }
     expect(
       runJobStop(NS, runJob(RUN, "repo-map", COMPLETE, { role: "repo-map" })),

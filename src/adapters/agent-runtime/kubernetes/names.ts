@@ -21,7 +21,8 @@ export const MANAGED_BY = "foreman-runner";
 
 /**
  * The pods of a run. The QA fetch step has its own proxy, so the QA pod's proxy never allows
- * GitHub (ADR 0106 sections 3 and 5). The repo map Job and its proxy are the pods of one map read
+ * GitHub (ADR 0106 sections 3 and 5). QA's review may have a browser pod with no network but its
+ * agent pod (ADR 0119 slice 5b, D-476). The repo map Job and its proxy are the pods of one map read
  * (D-275 (2)), which is not a run.
  */
 export type Component =
@@ -29,6 +30,7 @@ export type Component =
   | "proxy"
   | "fetch"
   | "fetch-proxy"
+  | "browser"
   | "repo-map"
   | "repo-map-proxy"
   | "eval"
@@ -87,6 +89,12 @@ export function runNames(runId: string) {
     githubTokenSecret: `${base}-github-token`,
     modelSecret: `${base}-model-credentials`,
     taskSecret: `${base}-task`,
+    // QA's browser (ADR 0119 slice 5b, D-476).
+    browserJob: `${base}-browser`,
+    browserService: `${base}-browser`,
+    browserPolicy: `${base}-browser`,
+    agentBrowserPolicy: `${base}-agent-browser`,
+    siteSecret: `${base}-site`,
   };
 }
 

@@ -57,6 +57,11 @@ export type EnvVar =
       name: string;
       /** `optional`: the pod starts while the Secret does not exist yet, with the variable unset. */
       valueFrom: { secretKeyRef: { name: string; key: string; optional?: boolean } };
+    }
+  | {
+      name: string;
+      /** A field of the pod itself (the downward API), such as its IP address `status.podIP`. */
+      valueFrom: { fieldRef: { fieldPath: "status.podIP" } };
     };
 
 export interface VolumeMount {
@@ -68,7 +73,8 @@ export interface VolumeMount {
 }
 
 export type Volume =
-  | { name: string; emptyDir: { sizeLimit: string } }
+  /** `medium: Memory` keeps the folder in memory, where it counts against the memory limit. */
+  | { name: string; emptyDir: { sizeLimit: string; medium?: "Memory" } }
   | { name: string; persistentVolumeClaim: { claimName: string; readOnly: boolean } }
   | {
       name: string;
@@ -83,6 +89,8 @@ export interface Container {
   name: string;
   image: string;
   imagePullPolicy: "IfNotPresent";
+  /** Replaces the image's entrypoint and command; absent runs the image's own. */
+  command?: string[];
   env: EnvVar[];
   ports?: { name: string; containerPort: number; protocol: "TCP" }[];
   readinessProbe?: {
@@ -139,7 +147,10 @@ export interface Service {
   };
 }
 
-/** Values go in `stringData`; the API server stores them. Never logged, never read back. */
+/**
+ * Values go in `stringData`, or base64 encoded in `data` for bytes that are not text (the site's
+ * zip, ADR 0119 slice 5b); the API server stores them. Never logged, never read back.
+ */
 export interface Secret {
   apiVersion: "v1";
   kind: "Secret";
@@ -147,6 +158,7 @@ export interface Secret {
   type: "Opaque";
   immutable: true;
   stringData: Record<string, string>;
+  data?: Record<string, string>;
 }
 
 export interface NetworkPolicyPeer {
