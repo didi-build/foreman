@@ -1,12 +1,12 @@
 {
   "agentImages": {
     "opencode": "ghcr.io/didi-build/foreman-agent-opencode@sha256:c61a7e4abf53916006fb47d1078fcfc52a8e666258e2768d61092af8634eb1da",
-    "claude-api": "ghcr.io/didi-build/foreman-agent-claude-api@sha256:475184552204e94acc183498ebdf430ddace3334384b39375455b908e1d17fa6"
+    "claude-api": "ghcr.io/didi-build/foreman-agent-claude-api@sha256:84365bef206e2165b80e5828e956b927140b70cd58c9a9a566817c9b9bfec9c2"
   },
   "runSettings": {
     "fetchImage": "ghcr.io/didi-build/foreman-qa-fetch@sha256:9c5f6e6da938bda1fe568aa91257cdd6e1cbe16f58e968fa0543e472e88e2a87",
     "repoMapImage": "ghcr.io/didi-build/foreman-repo-map@sha256:502484006a20c3a6462ad8d38f6480a1994f3be51ae710c0d9513485398deaaa",
-    "evalImage": "ghcr.io/didi-build/foreman-eval@sha256:6811aa518f790187959e52ade5ec202cae053adf0ec7995d23d5bb17e3dbb8d2",
+    "evalImage": "ghcr.io/didi-build/foreman-eval@sha256:d97d3508bd965d7575eaa4e61dff445202666ca39cb31c6d733525c6a8d0bc71",
     "proxyPort": 8080,
     "runAsUser": 1000,
     "resources": {
@@ -25,6 +25,10 @@
       "repoMap": {
         "requests": { "cpu": "250m", "memory": "1Gi", "ephemeral-storage": "256Mi" },
         "limits": { "cpu": "1", "memory": "1536Mi", "ephemeral-storage": "1Gi" }
+      },
+      "browser": {
+        "requests": { "cpu": "250m", "memory": "384Mi", "ephemeral-storage": "256Mi" },
+        "limits": { "cpu": "1", "memory": "768Mi", "ephemeral-storage": "1Gi" }
       }
     },
     "scratchSizeLimit": "1Gi",
