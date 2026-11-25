@@ -5,6 +5,6 @@
   "description": "The OpenCode CLI pinned for the OpenCode agent image only. Not a dependency of the repo.",
   "license": "UNLICENSED",
   "dependencies": {
-    "opencode-ai": "1.19.5"
+    "opencode-ai": "1.19.6"
   }
 }
