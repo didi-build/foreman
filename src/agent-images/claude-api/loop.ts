@@ -28,6 +28,15 @@
 // Its input, as JSON, is the run's final text. A provider that takes `prompt_cache_key` gets the
 // run's id on every request. Neither changes a default request, which is sent byte for byte as
 // before.
+//
+// A Council discussion (ADR 0119 slice 6, D-483) runs one loop per speaker, each on the same
+// tools, system text and input (./discussion.ts). Two options serve it, and without them every
+// request is today's, byte for byte. `turn` adds a second block to the first message, after the
+// input: who speaks now. The input's last block then carries a cache breakpoint of its own, so
+// every call of the discussion reads the tools, the system text and the input from the cache.
+// `spend` is what the run has used so far, shared by every loop of the run, so the turn, dollar
+// and minute limits and the Flex capacity retries hold for the whole run (D-490), and each loop's
+// result reports the run's totals.
 import Anthropic from "@anthropic-ai/sdk";
 
 import type { RunTokens } from "../../core/runs.ts";
@@ -109,6 +118,63 @@ export interface LoopOptions {
   /** Sent as `prompt_cache_key` on every request when set: the run's id (O-152). */
   promptCacheKey?: string;
   runTool?: (name: string, input: unknown) => Promise<ToolOutput>;
+  /**
+   * A Council discussion's call (ADR 0119 slice 6): the first message's second block, after the
+   * input and its images, which then end with a cache breakpoint.
+   */
+  turn?: string;
+  /** What the run has used so far, when several loops make one run. Unset: this loop's own. */
+  spend?: RunSpend;
+}
+
+/**
+ * What a run has used so far: its requests, cost, tokens, the tier each response reported, and
+ * its Flex capacity retries and waits, from the run's start. A loop counts into it and checks the
+ * run's limits against it before each request.
+ */
+export interface RunSpend {
+  /** The clock's time when the run started, for the minute limit. */
+  startedAt: number;
+  turns: number;
+  costUsd: number;
+  tokens: RunTokens;
+  tiers: (ServiceTier | null)[];
+  capacityRetries: number;
+  capacityWaitedMs: number;
+}
+
+/** Nothing used yet, from now. */
+export const startSpend = (clock: LoopClock = realClock): RunSpend => ({
+  startedAt: clock.now(),
+  turns: 0,
+  costUsd: 0,
+  tokens: { ...NO_TOKENS },
+  tiers: [],
+  capacityRetries: 0,
+  capacityWaitedMs: 0,
+});
+
+/** A run's result from what it used: the run's totals, whichever loop ends it. */
+export function spentResult(
+  spend: RunSpend,
+  status: AgentResult["status"],
+  finalText: string,
+  errorText = "",
+  providerError: AgentResult["providerError"] = null,
+): AgentResult {
+  const served = servedTier(spend.tiers);
+  return {
+    status,
+    finalText,
+    turns: spend.turns,
+    costUsd: Math.round(spend.costUsd * 1_000_000) / 1_000_000,
+    tokens: spend.tokens,
+    errorText,
+    providerError,
+    ...(served === null ? {} : { serviceTierServed: served }),
+    capacityRetries: spend.capacityRetries,
+    capacityWaitSeconds: Math.round(spend.capacityWaitedMs / 1000),
+  };
 }
 
 /**
@@ -169,7 +235,7 @@ const textOf = (message: Anthropic.Message): string =>
     .join("");
 
 /** The input as text, or as text followed by each labelled image (multi-image input). */
-export function firstMessage(
+function inputBlocks(
   options: Pick<LoopOptions, "input" | "images">,
 ): string | Anthropic.ContentBlockParam[] {
   if (!options.images || options.images.length === 0) return options.input;
@@ -182,6 +248,25 @@ export function firstMessage(
         source: { type: "base64", media_type: image.mediaType, data: image.data },
       },
     ]),
+  ];
+}
+
+/**
+ * The first message: the input, with its images. With a discussion's turn, the input's blocks
+ * end with a cache breakpoint and the turn follows as the last block.
+ */
+export function firstMessage(
+  options: Pick<LoopOptions, "input" | "images" | "turn">,
+): string | Anthropic.ContentBlockParam[] {
+  const input = inputBlocks(options);
+  if (options.turn === undefined) return input;
+  const blocks: Anthropic.ContentBlockParam[] =
+    typeof input === "string" ? [{ type: "text", text: input }] : input;
+  const last = blocks.at(-1) as Anthropic.TextBlockParam | Anthropic.ImageBlockParam;
+  return [
+    ...blocks.slice(0, -1),
+    { ...last, cache_control: { type: "ephemeral" } },
+    { type: "text", text: options.turn },
   ];
 }
 
@@ -232,37 +317,19 @@ export function buildRequest(
 
 export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
   const clock = options.clock ?? realClock;
-  const startedAt = clock.now();
+  const spend = options.spend ?? startSpend(clock);
   const minuteLimitMs = options.maxMinutes * 60_000;
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: firstMessage(options) },
   ];
-  let turns = 0;
-  let costUsd = 0;
-  let tokens: RunTokens = { ...NO_TOKENS };
   let lastText = "";
-  const tiers: (ServiceTier | null)[] = [];
-  let capacityRetries = 0;
-  let capacityWaitedMs = 0;
 
   const end = (
     status: AgentResult["status"],
     errorText = "",
     providerError: AgentResult["providerError"] = null,
-    served = servedTier(tiers),
   ): LoopEnd => ({
-    result: {
-      status,
-      finalText: lastText,
-      turns,
-      costUsd: Math.round(costUsd * 1_000_000) / 1_000_000,
-      tokens,
-      errorText,
-      providerError,
-      ...(served === null ? {} : { serviceTierServed: served }),
-      capacityRetries,
-      capacityWaitSeconds: Math.round(capacityWaitedMs / 1000),
-    },
+    result: spentResult(spend, status, lastText, errorText, providerError),
   });
 
   /** Waits before a retry if this rejection may be retried, and says whether it did. */
@@ -270,20 +337,20 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
     error: AgentResult["providerError"],
   ): Promise<boolean> {
     if (!isFlexCapacityRejection(options.serviceTier, error)) return false;
-    if (capacityRetries >= options.flexCapacityRetries) return false;
-    const wait = capacityWaitMs(capacityRetries);
-    if (clock.now() - startedAt + wait >= minuteLimitMs) return false;
+    if (spend.capacityRetries >= options.flexCapacityRetries) return false;
+    const wait = capacityWaitMs(spend.capacityRetries);
+    if (clock.now() - spend.startedAt + wait >= minuteLimitMs) return false;
     const before = clock.now();
     await clock.sleep(wait);
-    capacityWaitedMs += clock.now() - before;
-    capacityRetries += 1;
+    spend.capacityWaitedMs += clock.now() - before;
+    spend.capacityRetries += 1;
     return true;
   }
 
   for (;;) {
-    if (turns >= options.maxTurns)
+    if (spend.turns >= options.maxTurns)
       return end("max_turns", "the run reached its turn limit");
-    if (costUsd >= options.maxUsd)
+    if (spend.costUsd >= options.maxUsd)
       return end("max_budget", "the run reached its dollar limit");
     let response: Anthropic.Message;
     try {
@@ -307,12 +374,12 @@ export async function runLoop(options: LoopOptions): Promise<LoopEnd> {
       }
       throw error;
     }
-    turns += 1;
+    spend.turns += 1;
     const tier = reportedTier(response);
-    tiers.push(tier);
+    spend.tiers.push(tier);
     const used = tokensFromUsage(response.usage);
-    tokens = addTokens(tokens, used);
-    costUsd += requestCostUsd(options.price, tier, used);
+    spend.tokens = addTokens(spend.tokens, used);
+    spend.costUsd += requestCostUsd(options.price, tier, used);
     lastText = textOf(response) || lastText;
     // The reply goes back exactly as it came, thinking blocks included.
     messages.push({ role: "assistant", content: response.content });

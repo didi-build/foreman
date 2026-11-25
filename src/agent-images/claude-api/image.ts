@@ -14,6 +14,9 @@
 // (FOREMAN_LOOKUP_URL). QA's visual comparison and the Council never get either. When QA's review
 // task has the browser (ADR 0119 slice 5c), its browser tools (./browser-tools.ts) come after the
 // lookup, through the run's browser pod (FOREMAN_BROWSER_URL), and before the answer tool.
+// A Council task with a `discussion` (ADR 0119 slice 6, D-483) runs as one discussion that
+// Product chairs (./discussion.ts): each persona of its cast gives a view, then the chair answers.
+// Without one, the Council runs as before. No flow sets it until slice 6e.
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -62,6 +65,7 @@ import {
   isBrowserToolName,
   type BrowserTools,
 } from "./browser-tools.ts";
+import { runDiscussion } from "./discussion.ts";
 import { WORKSPACE_TOOLS, createWorkspace, type Workspace } from "./files.ts";
 import {
   runLoop,
@@ -534,6 +538,29 @@ async function structuredRun(
   }
 }
 
+/** A Council task with a discussion (ADR 0119 slice 6): every call on the run's one budget. */
+function discussionRun(
+  settings: ImageSettings,
+  task: AgentTaskFile,
+  client: MessagesClient,
+  common: Common,
+  deps: ApiImageDeps,
+  secrets: readonly string[],
+): Promise<AgentResult> {
+  return runDiscussion(
+    {
+      client,
+      model: settings.model,
+      maxTurns: settings.maxTurns,
+      maxUsd: settings.maxUsd,
+      ...common,
+      ...(deps.clock ? { clock: deps.clock } : {}),
+    },
+    task,
+    secrets,
+  );
+}
+
 export async function runClaudeApiImage(
   env: NodeJS.ProcessEnv,
   deps: ApiImageDeps = {},
@@ -601,7 +628,17 @@ export async function runClaudeApiImage(
               lookup,
               browser,
             )
-          : await structuredRun(settings, task, client, common, deps, context, lookup);
+          : settings.role === "council" && task.discussion !== undefined
+            ? await discussionRun(settings, task, client, common, deps, secrets)
+            : await structuredRun(
+                settings,
+                task,
+                client,
+                common,
+                deps,
+                context,
+                lookup,
+              );
   } catch (error) {
     // Setting and task errors name the problem, never a value.
     result = errorResult(error instanceof Error ? error.message : "the run failed");

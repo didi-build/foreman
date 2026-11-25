@@ -100,6 +100,63 @@ describe("parseAgentResult (unit: defensive parsing)", () => {
   });
 });
 
+describe("a Council discussion's record (unit: parsed strictly, ADR 0119 slice 6, D-488)", () => {
+  const RECORD = {
+    chair: "product",
+    cast: ["developer", "quality"],
+    views: [
+      { persona: "developer", text: "Build it." },
+      { persona: "quality", text: "Test it." },
+    ],
+    pullIns: [],
+    refusedPullIns: [],
+  };
+  const answered = (discussion: unknown) =>
+    line({ status: "success", structured: { outcome: "resolve" }, discussion });
+
+  it("reads the record beside the answer and passes it on with a success", () => {
+    const result = parseAgentResult(answered(RECORD));
+    expect(result).toMatchObject({
+      structured: { outcome: "resolve" },
+      discussion: RECORD,
+    });
+    expect(mapRunEnd("complete", JOB, result, "m")).toMatchObject({
+      outcome: "success",
+      structured: { outcome: "resolve" },
+      discussion: RECORD,
+    });
+    expect(parseAgentResult(line({ status: "success" }))).not.toHaveProperty(
+      "discussion",
+    );
+    expect(
+      mapRunEnd("complete", JOB, parseAgentResult(line({ status: "success" })), "m"),
+    ).not.toHaveProperty("discussion");
+  });
+
+  it.each([
+    ["not an object", "a discussion"],
+    ["null", null],
+    ["another chair", { ...RECORD, chair: "quality" }],
+    [
+      "a view over 2,000 characters",
+      { ...RECORD, views: [{ persona: "developer", text: "v".repeat(2001) }] },
+    ],
+    ["an unknown persona", { ...RECORD, cast: ["analyst"] }],
+    ["another field", { ...RECORD, transcript: [] }],
+  ])(
+    "refuses the whole line for a record that is %s: bad output, never a guess",
+    (_, discussion) => {
+      expect(parseAgentResult(answered(discussion))).toBeNull();
+      expect(
+        mapRunEnd("complete", JOB, parseAgentResult(answered(discussion)), "m"),
+      ).toMatchObject({
+        outcome: "fail",
+        detail: "bad_output",
+      });
+    },
+  );
+});
+
 describe("jobState (unit: Job conditions)", () => {
   const withCondition = (type: string, reason?: string): JobStatus => ({
     metadata: { name: "j" },

@@ -33,9 +33,9 @@ export interface RunFailure {
 }
 
 /**
- * The agent images' fixed error sentences, whole (src/agent-images/claude-api/loop.ts and
- * image.ts, claude-code/parse.ts and image.ts, opencode/result.ts and image.ts, the shared
- * settings reader in src/service-kit/config.ts, and the egress proxy's ceilings).
+ * The agent images' fixed error sentences, whole (src/agent-images/claude-api/loop.ts, image.ts
+ * and discussion.ts, claude-code/parse.ts and image.ts, opencode/result.ts and image.ts, the
+ * shared settings reader in src/service-kit/config.ts, and the egress proxy's ceilings).
  */
 export const FIXED_RUN_ERRORS: readonly RegExp[] = [
   /^the run reached its (turn|dollar) limit$/,
@@ -48,6 +48,10 @@ export const FIXED_RUN_ERRORS: readonly RegExp[] = [
   /^the state API could not be reached to record the verdict$/,
   /^the state API refused the verdict with status \d{3}$/,
   /^a visual comparison task needs its answer schema$/,
+  // A Council discussion's (ADR 0119 slice 6).
+  /^a discussion task needs its discussion and its answer schema$/,
+  /^a view did not follow the view schema$/,
+  /^the discussion refused more pull-ins than its record holds$/,
   /^the run failed( before (Claude Code|OpenCode) started)?$/,
   /^Claude Code exited with (a signal|code \d{1,3}) and printed no result$/,
   /^Claude Code ended with [a-z_]{1,40}$/,

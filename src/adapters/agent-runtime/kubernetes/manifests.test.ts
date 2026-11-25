@@ -335,6 +335,33 @@ describe("run credentials (unit: mounted only where needed, ADR 0106 section 5)"
     );
   });
 
+  it("gives a Council task file its discussion as given, and no other role's, with the run's objects unchanged (ADR 0119 slice 6)", () => {
+    const discussion = {
+      chair: "product" as const,
+      cast: ["developer" as const],
+      maxPullIns: 2,
+    };
+    const secret = taskSecret(COUNCIL, { ...taskFor(COUNCIL), discussion });
+    expect(JSON.parse(secret.stringData["task.json"] ?? "")).toEqual({
+      ...taskFor(COUNCIL),
+      discussion,
+    });
+    expect(() => taskSecret(QA, { ...taskFor(QA), discussion })).toThrow(
+      "only a Council task has a discussion",
+    );
+    expect(() =>
+      taskSecret(COUNCIL, {
+        ...taskFor(COUNCIL),
+        discussion: { ...discussion, cast: ["product"] },
+      }),
+    ).toThrow("a council task's discussion cast must be personas other than the chair");
+    // The discussion lives in the task file only: the Job and its proxy are as before.
+    const stage = agentStage(COUNCIL, LIMITS, SETTINGS);
+    expect(JSON.stringify([stage.clientJob(PROXY_IP), stage.proxyJob])).not.toMatch(
+      /discussion|pull_?in/i,
+    );
+  });
+
   it("mounts the model credential into the proxy pod only", () => {
     for (const spec of [DEVELOPER, QA, COUNCIL]) {
       const stage = agentStage(spec, spec === QA ? QA_LIMITS : LIMITS, SETTINGS);

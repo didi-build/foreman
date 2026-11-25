@@ -39,8 +39,8 @@ export const COUNCIL_QUESTION_KINDS = Object.keys(
   KINDS,
 ) as readonly CouncilQuestionKind[];
 
-/** The most personas a discussion may pull in beyond its base cast (D-464). */
-export const MAX_PULL_INS = 2;
+/** The most personas a discussion may pull in beyond its base cast (D-464), one bound with the image's record. */
+export { MAX_PULL_INS } from "./discussion-record.ts";
 
 /** Each rule token: the one question kind whose cast may hold it, and every persona it may name. */
 export const CAST_TOKENS = {

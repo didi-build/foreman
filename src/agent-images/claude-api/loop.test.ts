@@ -6,7 +6,9 @@ import { WORKSPACE_TOOLS } from "./files.ts";
 import {
   ANSWER_TOOL,
   buildRequest,
+  firstMessage,
   runLoop,
+  startSpend,
   type LoopOptions,
   type MessagesClient,
 } from "./loop.ts";
@@ -288,5 +290,124 @@ describe("tool mode (unit: the answer tool for a provider with no structured out
     const { result } = await runLoop(options({ client, runTool: tools.runTool }));
     expect(tools.ran).toEqual([{ name: "answer", input: { decision: "x" } }]);
     expect(result).toMatchObject({ status: "success", finalText: '{"decision":"y"}' });
+  });
+});
+
+describe("a Council discussion's calls (unit: the turn block and the run's one budget, ADR 0119 slice 6)", () => {
+  const IMAGE = {
+    label: "Image 1: option a",
+    mediaType: "image/png" as const,
+    data: "iVBORw0KGgo=",
+  };
+
+  it("sends today's first message without a turn, byte for byte", () => {
+    expect(firstMessage({ input: "The input." })).toBe("The input.");
+    expect(JSON.stringify(firstMessage({ input: "The input.", images: [IMAGE] }))).toBe(
+      JSON.stringify([
+        { type: "text", text: "The input." },
+        { type: "text", text: IMAGE.label },
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: IMAGE.data },
+        },
+      ]),
+    );
+  });
+
+  it("runs today's requests without a turn or a shared spend, each loop counting its own", async () => {
+    const { client, requests } = fakeClient([
+      message([text('{"decision":"a"}')], "end_turn"),
+      message([text('{"decision":"b"}')], "end_turn"),
+    ]);
+    const first = await runLoop(options({ client, tools: [] }));
+    const second = await runLoop(options({ client, tools: [] }));
+    expect(first.result.turns).toBe(1);
+    expect(second.result).toMatchObject({ turns: 1, costUsd: 0.0007 });
+    const expected = JSON.stringify(
+      buildRequest(options({ tools: [] }), [{ role: "user", content: "The input." }]),
+    );
+    expect(requests.map((request) => JSON.stringify(request))).toEqual([
+      expected,
+      expected,
+    ]);
+  });
+
+  it("puts the turn after the input, with the breakpoint on the input's last block", () => {
+    expect(firstMessage({ input: "The input.", turn: "Now give a view." })).toEqual([
+      { type: "text", text: "The input.", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "Now give a view." },
+    ]);
+    expect(
+      firstMessage({ input: "The input.", images: [IMAGE], turn: "Now decide." }),
+    ).toEqual([
+      { type: "text", text: "The input." },
+      { type: "text", text: IMAGE.label },
+      {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: IMAGE.data },
+        cache_control: { type: "ephemeral" },
+      },
+      { type: "text", text: "Now decide." },
+    ]);
+  });
+
+  it("sends the turn in the first message and keeps the system and top-level breakpoints", async () => {
+    const { client, requests } = fakeClient([
+      message([text('{"decision":"a"}')], "end_turn"),
+    ]);
+    await runLoop(options({ client, tools: [], turn: "Now give a view." }));
+    const [request] = requests;
+    expect(request?.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "The input.", cache_control: { type: "ephemeral" } },
+          { type: "text", text: "Now give a view." },
+        ],
+      },
+    ]);
+    expect(request?.system).toEqual([
+      {
+        type: "text",
+        text: "The frame.\n\nThe instructions.",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    expect(request?.cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("holds the turn and dollar limits across loops that share one spend, and reports the run's totals", async () => {
+    let now = 0;
+    const clock = { now: () => now, sleep: async () => undefined };
+    const spend = startSpend(clock);
+    now = 5;
+    const { client, requests } = fakeClient([
+      message([text('{"decision":"a"}')], "end_turn"),
+      message([toolUse("read_file", { path: "a.ts" }, "toolu_1")], "tool_use"),
+      message([text('{"decision":"b"}')], "end_turn"),
+    ]);
+    const tools = toolRecorder();
+    const first = await runLoop(options({ client, spend, clock, maxTurns: 2 }));
+    expect(first.result).toMatchObject({
+      status: "success",
+      turns: 1,
+      costUsd: 0.0007,
+    });
+    // The second loop starts on the run's count: one request left before the turn limit.
+    const second = await runLoop(
+      options({ client, spend, clock, maxTurns: 2, runTool: tools.runTool }),
+    );
+    expect(second.result).toMatchObject({
+      status: "max_turns",
+      turns: 2,
+      costUsd: 0.0014,
+      tokens: { uncachedInput: 200, cachedInput: 0, output: 100 },
+    });
+    expect(requests).toHaveLength(2);
+    expect(spend).toMatchObject({ startedAt: 0, turns: 2 });
+    // The dollar limit is the run's too.
+    const third = await runLoop(options({ client, spend, clock, maxUsd: 0.0014 }));
+    expect(third.result).toMatchObject({ status: "max_budget", turns: 2 });
+    expect(requests).toHaveLength(2);
   });
 });

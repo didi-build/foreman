@@ -8,6 +8,8 @@
 // QA's input (the diff and its context) can be larger. A Secret, not a ConfigMap, because the
 // runner's Role can already create and delete Secrets by name (ADR 0106 section 1), so its rights
 // do not grow, and the input may hold private repository text.
+import { DISCUSSION_CHAIR, MAX_PULL_INS } from "../../../core/discussion-record.ts";
+import { PERSONAS, isPersonaId, type PersonaId } from "../../../core/personas.ts";
 import { isCanonicalHost } from "../../../core/site-requests.ts";
 import type { AgentRole } from "../runtime.ts";
 
@@ -71,6 +73,23 @@ export interface AgentTaskFile {
    * and the fixed comment (src/core/pr-close.ts), and its branch is the item's branch.
    */
   mode?: TaskMode;
+  /**
+   * A Council task only (`council` and `council:visual`): the run is one discussion that Product
+   * chairs (ADR 0119 slice 6, D-483). Each persona of the cast gives one view, in this order, and
+   * then the chair answers in the task's output schema. Without it the run is one answer, as
+   * before. No flow sets it until slice 6e.
+   */
+  discussion?: TaskDiscussion;
+}
+
+/** A Council discussion's chair, cast and pull-in limit (D-483, D-484). */
+export interface TaskDiscussion {
+  /** Always `product` (D-462). */
+  chair: PersonaId;
+  /** Distinct personas other than the chair, in the order they speak. Empty: the chair alone. */
+  cast: PersonaId[];
+  /** How many personas the discussion may pull in: a whole number from 0 to `MAX_PULL_INS`. */
+  maxPullIns: number;
 }
 
 /** The one mode a task may name. Without it a builder's run is its model's work. */
@@ -253,6 +272,10 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     if (task.browser !== true)
       throw new Error("a task's browser must be true when given");
   }
+  if (task.discussion !== undefined) {
+    if (role !== "council") throw new Error("only a Council task has a discussion");
+    checkDiscussion(task.discussion);
+  }
   const structured = role === "council" || role === "triage" || visual;
   if (structured && !isObject(task.outputSchema)) {
     throw new Error(`a ${role} task needs its output schema`);
@@ -265,4 +288,45 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     throw new Error("the task file is too large");
   }
   return json;
+}
+
+/** A Council task's discussion (D-483, D-484). Errors name the part, never a value. */
+function checkDiscussion(discussion: unknown): void {
+  if (
+    !isObject(discussion) ||
+    Object.keys(discussion).length !== 3 ||
+    !("chair" in discussion && "cast" in discussion && "maxPullIns" in discussion)
+  ) {
+    throw new Error(
+      "a council task's discussion must have its chair, cast and maxPullIns only",
+    );
+  }
+  if (discussion.chair !== DISCUSSION_CHAIR) {
+    throw new Error(`a council task's discussion chair must be ${DISCUSSION_CHAIR}`);
+  }
+  const cast: unknown = discussion.cast;
+  if (!Array.isArray(cast) || cast.length > PERSONAS.length - 1) {
+    throw new Error(
+      `a council task's discussion cast must be a list of at most ${PERSONAS.length - 1} personas`,
+    );
+  }
+  if (!cast.every((persona) => isPersonaId(persona) && persona !== DISCUSSION_CHAIR)) {
+    throw new Error(
+      "a council task's discussion cast must be personas other than the chair",
+    );
+  }
+  if (new Set(cast).size !== cast.length) {
+    throw new Error("a council task's discussion cast lists a persona twice");
+  }
+  const max = discussion.maxPullIns;
+  if (
+    typeof max !== "number" ||
+    !Number.isInteger(max) ||
+    max < 0 ||
+    max > MAX_PULL_INS
+  ) {
+    throw new Error(
+      `a council task's discussion maxPullIns must be a whole number from 0 to ${MAX_PULL_INS}`,
+    );
+  }
 }
