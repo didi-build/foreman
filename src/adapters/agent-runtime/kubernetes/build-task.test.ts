@@ -1,12 +1,14 @@
 // Seam: unit. The task `start` takes, built from an admitted run (ADR 0106 section 5, ADR 0107,
 // ADR 0114 section 5): the route's model, only the route's provider and only its credential, the
 // credentials each role holds, and a task that `start` accepts. QA's review with a site gets the
-// browser (ADR 0119 slice 5c). Fake values only.
+// browser (ADR 0119 slice 5c). A Council run's discussion goes into its task file only, and no
+// other role's run takes one (ADR 0119 slice 6e). Fake values only.
 import { describe, expect, it } from "vitest";
 
 import { buildKubernetesTask, type KubernetesTaskParts } from "./build-task.ts";
 import { createFakeKubernetes } from "./fake.ts";
 import {
+  COUNCIL,
   DEVELOPER,
   GITHUB_TOKEN,
   LIMITS,
@@ -391,6 +393,79 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
       expect(JSON.stringify(browser)).not.toContain(n.stateTokenSecret);
       expect(JSON.stringify(browser)).not.toContain(STATE_TOKEN);
       expect(JSON.stringify(browser)).not.toContain(n.taskSecret);
+    });
+  });
+
+  describe("a Council run's discussion (ADR 0119 slice 6e, D-483)", () => {
+    const councilRun = (taskType = "council") => ({
+      id: COUNCIL.runId,
+      bot: "council" as const,
+      model: "claude-sonnet-5-5",
+      provider: "anthropic",
+      serviceTierRequested: "standard" as const,
+      modelPrice: firstRunPrice("claude-sonnet-5-5"),
+      nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      headSha: null,
+      prNumber: null,
+      taskType,
+    });
+    const councilBot = {
+      image: COUNCIL.image,
+      instructions: "Fixture instructions.",
+      allowedHosts: [],
+      outputSchema: { type: "object" },
+    };
+    const discussion = {
+      chair: "product" as const,
+      cast: ["developer" as const, "quality" as const],
+      maxPullIns: 2,
+    };
+
+    it("puts it in the task file, copied, and never in the run's spec", async () => {
+      const given = structuredClone(discussion);
+      const task = buildKubernetesTask(
+        parts({
+          run: councilRun(),
+          bot: councilBot,
+          discussion: given,
+          githubToken: undefined,
+        }),
+      );
+      expect(task.task.discussion).toEqual(discussion);
+      expect(task.task.discussion?.cast).not.toBe(given.cast);
+      expect(task).not.toHaveProperty("discussion");
+      const client = createFakeKubernetes();
+      const runtime = createKubernetesRuntime({ client, settings: SETTINGS });
+      const handle = await runtime.start(task, LIMITS);
+      expect(handle.spec).not.toHaveProperty("discussion");
+      const file = client.get<Secret>(
+        "Secret",
+        handle.namespace,
+        runNames(COUNCIL.runId).taskSecret,
+      );
+      expect(JSON.parse(file?.stringData?.["task.json"] ?? "{}")).toMatchObject({
+        discussion,
+      });
+      // A visual call is a discussion too.
+      const visual = buildKubernetesTask(
+        parts({
+          run: councilRun("council:visual"),
+          bot: councilBot,
+          discussion: { ...discussion, cast: ["designer", "quality"] },
+          images: [
+            { label: "Image 1: option a", mediaType: "image/png", data: "iVBORw==" },
+          ],
+          githubToken: undefined,
+        }),
+      );
+      expect(visual.task.discussion?.cast).toEqual(["designer", "quality"]);
+    });
+
+    it("refuses one for any other role", () => {
+      expect(() => buildKubernetesTask(parts({ discussion }))).toThrow(
+        "a developer run has no discussion",
+      );
+      expect(buildKubernetesTask(parts()).task).not.toHaveProperty("discussion");
     });
   });
 });

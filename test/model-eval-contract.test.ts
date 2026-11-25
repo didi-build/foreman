@@ -4,6 +4,11 @@
 // the same reason codes, bounds and answers, field by field; it holds the runner's plan to what
 // the image's plan reader and its bot files accept; the runner's run count to the image's own
 // order; and the runner's case list, read the way a flow reads it, to the image's case loader.
+// Since ADR 0119 slice 6e a Council run's facts also name its discussion's cast and pull-ins, by
+// persona id only, and a refused discussion has its own code, `discussion_rejected`; both checks
+// still take a Council run's facts with neither, as a test image from before slice 6e gives them
+// until slice 6f pins the new one; every role's largest facts stay within the 2,048 bytes the
+// results table takes (migration 0027).
 import { describe, expect, it } from "vitest";
 
 import { readBotFiles } from "../src/adapters/contracts-file/bot-files.ts";
@@ -17,7 +22,9 @@ import { checkPlan, parsePlan } from "../src/agent-images/eval/plan.ts";
 import {
   EVAL_RESULT_LOG_BYTES as IMAGE_LOG_BYTES,
   FACT_PATH,
+  MAX_CAST,
   MAX_FINDING_PATHS,
+  MAX_PULL_IN_FACTS,
   MAX_PLAN_ENTRIES as IMAGE_MAX_PLAN_ENTRIES,
   MAX_RUNS,
   OUTCOMES,
@@ -125,6 +132,8 @@ function valid(): Record<string, unknown> {
           outcome: "cannot_resolve",
           changesProductDirection: true,
           passesGate: false,
+          cast: ["developer", "quality"],
+          pullIns: [{ persona: "designer", by: "developer" }],
         },
       },
       {
@@ -233,7 +242,73 @@ const EDITS: [string, Edit][] = [
         outcome: "resolve",
         changesProductDirection: "no",
         passesGate: false,
+        cast: [],
+        pullIns: [],
       }),
+  ],
+  [
+    "Council facts with no cast and no pull-ins, as before slice 6e",
+    (r) =>
+      (runAt(r, 2).facts = {
+        outcome: "resolve",
+        changesProductDirection: false,
+        passesGate: false,
+      }),
+  ],
+  [
+    "Council facts with a cast and no pull-ins",
+    (r) => delete (runAt(r, 2).facts as Record<string, unknown>).pullIns,
+  ],
+  [
+    "Council facts with pull-ins and no cast",
+    (r) => delete (runAt(r, 2).facts as Record<string, unknown>).cast,
+  ],
+  [
+    "Council facts with a cast of four",
+    (r) =>
+      ((runAt(r, 2).facts as Record<string, unknown>).cast = [
+        "product",
+        "developer",
+        "designer",
+        "quality",
+      ]),
+  ],
+  [
+    "Council facts with a cast entry that is not a persona",
+    (r) => ((runAt(r, 2).facts as Record<string, unknown>).cast = ["the CTO"]),
+  ],
+  [
+    "Council facts with three pull-ins",
+    (r) =>
+      ((runAt(r, 2).facts as Record<string, unknown>).pullIns = Array.from(
+        { length: 3 },
+        () => ({ persona: "designer", by: "developer" }),
+      )),
+  ],
+  [
+    "Council facts with a pull-in's reason",
+    (r) =>
+      ((runAt(r, 2).facts as Record<string, unknown>).pullIns = [
+        { persona: "designer", by: "developer", reason: "How it reads." },
+      ]),
+  ],
+  [
+    "Council facts with a pull-in by no persona",
+    (r) =>
+      ((runAt(r, 2).facts as Record<string, unknown>).pullIns = [
+        { persona: "designer", by: "didi" },
+      ]),
+  ],
+  [
+    "a discussion refused with facts",
+    (r) => {
+      runAt(r, 3).facts = runAt(r, 2).facts;
+      runAt(r, 3).reason = "discussion_rejected";
+    },
+  ],
+  [
+    "a discussion refused, unusable",
+    (r) => (runAt(r, 3).reason = "discussion_rejected"),
   ],
   [
     "a provider error with a message",
@@ -280,6 +355,12 @@ describe("the runner's check and the image's check of the test job's result (uni
     expect(EVAL_RESULT_BOUNDS.maxRuns).toBe(MAX_RUNS);
     expect(EVAL_RESULT_BOUNDS.maxPlanEntries).toBe(IMAGE_MAX_PLAN_ENTRIES);
     expect(EVAL_RESULT_BOUNDS.maxFindingPaths).toBe(MAX_FINDING_PATHS);
+    expect(EVAL_RESULT_BOUNDS.maxCast).toBe(MAX_CAST);
+    expect(EVAL_RESULT_BOUNDS.maxPullIns).toBe(MAX_PULL_IN_FACTS);
+    // A refused discussion is unusable in both, and the table's reason form takes the code.
+    expect(EVAL_REASONS.discussion_rejected).toBe("unusable");
+    expect(REASONS.discussion_rejected).toBe("unusable");
+    expect(/^[a-z_]{1,40}$/.test("discussion_rejected")).toBe(true);
     expect(EVAL_RESULT_LOG_BYTES).toBe(IMAGE_LOG_BYTES);
     expect(EVAL_MAX_RUNS).toBe(MAX_RUNS);
     expect(MAX_PLAN_ENTRIES).toBe(IMAGE_MAX_PLAN_ENTRIES);
@@ -287,14 +368,59 @@ describe("the runner's check and the image's check of the test job's result (uni
     expect(EVAL_TASK_TYPES).toEqual(TASK_TYPE_OF);
   });
 
+  /** Edits both checks take: every other edit is refused by both. */
+  const TAKEN = new Set([
+    "nothing",
+    "a discussion refused, unusable",
+    "Council facts with no cast and no pull-ins, as before slice 6e",
+  ]);
+
   it.each(EDITS)("give the same answer for %s", (_label, edit) => {
     const value = valid();
     edit(value);
     const image = verdict(checkEvalResult, structuredClone(value));
     const runner = verdict(readEvalJobResult, structuredClone(value));
     expect(runner).toBe(image);
-    if (_label === "nothing") expect(runner).toBe("taken");
+    if (TAKEN.has(_label)) expect(runner).toBe("taken");
     else expect(runner).not.toBe("taken");
+  });
+
+  it("keep every role's largest facts within the 2,048 bytes the results table takes, as Postgres writes jsonb", () => {
+    // Postgres's text form of jsonb puts a space after each colon and comma; this is wider.
+    const asStored = (facts: unknown) =>
+      Buffer.byteLength(JSON.stringify(facts).replace(/([:,])/g, "$1 "), "utf8");
+    const path = `${"a".repeat(99)}/${"b".repeat(100)}`;
+    // Each role's largest facts, on the valid result's run of that role (QA, Triage, the Council).
+    const largest: [number, unknown][] = [
+      [
+        0,
+        {
+          verdict: "fail",
+          findingPaths: Array.from({ length: MAX_FINDING_PATHS }, () => path),
+        },
+      ],
+      [1, { itemCount: EVAL_RESULT_BOUNDS.maxItemCount }],
+      [
+        2,
+        {
+          outcome: "cannot_resolve",
+          changesProductDirection: false,
+          passesGate: false,
+          cast: ["developer", "designer", "quality"].slice(0, MAX_CAST),
+          pullIns: Array.from({ length: MAX_PULL_IN_FACTS }, () => ({
+            persona: "developer",
+            by: "developer",
+          })),
+        },
+      ],
+    ];
+    for (const [at, facts] of largest) {
+      const value = valid();
+      runAt(value, at).facts = facts;
+      expect(verdict(readEvalJobResult, structuredClone(value))).toBe("taken");
+      expect(verdict(checkEvalResult, value)).toBe("taken");
+      expect(asStored(facts)).toBeLessThanOrEqual(2048);
+    }
   });
 
   it("read a valid result into the same value", () => {

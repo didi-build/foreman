@@ -4,9 +4,10 @@
 // answer that is re-run once and then goes to Didi; a reversal's question answered through the
 // reconcile flow's Council pass and the run-end flow; a redo that cancels the item's run, sends it
 // back to the start of its track and lets the dispatch start it again on the same branch (D-231);
-// and the switches. A run's Council discussion (ADR 0119 slice 6c): kept in the decision's scope
-// at the run's end, or, when it fails the runner's check, the run ends `fail`, is re-run once and
-// then goes to Didi. The rules themselves are in test/council.test.ts and
+// and the switches. A run's Council discussion (ADR 0119 slices 6c and 6e): every Council run's
+// task carries its question's discussion, and the record is kept in the decision's scope at the
+// run's end; a run with none, or one that fails the runner's check, ends `fail`, is re-run once
+// and then goes to Didi. The rules themselves are in test/council.test.ts and
 // test/council-discussion-record.test.ts.
 import { describe, expect, it } from "vitest";
 
@@ -18,12 +19,16 @@ import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts
 import type { DiscussionRecord } from "../../src/core/discussion-record.ts";
 import type { PersonaId } from "../../src/core/personas.ts";
 import { redoPass } from "../../flows/lib/council-runs.ts";
-import { createCouncil } from "../../src/core/council.ts";
+import { createCouncil, NO_DISCUSSION } from "../../src/core/council.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
 import { createLibrary, reversalTopic } from "../../src/core/library.ts";
 import { COUNCIL_SCHEMAS, HEAD } from "../reconcile-fixture.ts";
-import { createFlowFixture, type FlowFixture } from "./flow-fixture.ts";
+import {
+  createFlowFixture,
+  discussionAsSent,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -51,10 +56,15 @@ function ticking(t: FlowFixture) {
   };
 }
 
+/** A run's end, with the discussion its task carried when it was the Council's (slice 6e). */
 function finish(f: FlowFixture, runId: string, structured?: unknown) {
   f.runtime.status.set(runId, {
     state: "finished",
-    result: { ...RESULT, ...(structured === undefined ? {} : { structured }) },
+    result: {
+      ...RESULT,
+      ...(structured === undefined ? {} : { structured }),
+      ...discussionAsSent(f, runId),
+    },
   });
   return recordRunEnd(f.deps, { runId });
 }
@@ -271,7 +281,12 @@ describe("a Council discussion at the run's end (flow: fake adapters, ADR 0119 s
     const node = await escalated(f);
     await reconcileFlow(f.deps);
     const start = lastCouncilStart(f);
-    // A code item: its builder is the Developer, then Quality (D-463).
+    // A code item: its builder is the Developer, then Quality (D-463), as its task said.
+    expect(start.discussion).toEqual({
+      chair: "product",
+      cast: ["developer", "quality"],
+      maxPullIns: 2,
+    });
     const discussion = discussionOf(["developer", "quality"]);
     expect(
       await finishWithDiscussion(f, start.run.id, RESOLVE, discussion),
@@ -341,6 +356,55 @@ describe("a Council discussion at the run's end (flow: fake adapters, ADR 0119 s
     expect(
       await f.store.findOpenGateRequest(f.projectId, escalationTopic(node.id)),
     ).toMatchObject({ owner: "didi", payload: { lastCouncilRunId: second.run.id } });
+    expect(
+      (await f.store.listDecisionsForNode(node.id)).filter(
+        (d) => d.kind === "council_decision",
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("a Council run with no discussion (flow: fake adapters, ADR 0119 slice 6e, O-181)", () => {
+  it("ends the run fail, re-runs once, and then sends the item to Didi, recording nothing", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const node = await escalated(f);
+    await reconcileFlow(f.deps);
+    const first = lastCouncilStart(f);
+    // An answer that fits its schema, with no discussion beside it: not usable any more.
+    f.runtime.status.set(first.run.id, {
+      state: "finished",
+      result: { ...RESULT, structured: RESOLVE },
+    });
+    expect(await recordRunEnd(f.deps, { runId: first.run.id })).toMatchObject({
+      outcome: "recorded",
+      report: { outcome: "fail" },
+      council: {
+        answer: { recorded: false, reason: "invalid", problem: NO_DISCUSSION },
+        council: [{ step: "start", result: { outcome: "started" } }],
+      },
+    });
+    expect((await f.store.getRun(first.run.id))?.outcome).toBe("fail");
+    const second = lastCouncilStart(f);
+    expect(second.run.id).not.toBe(first.run.id);
+    expect(second.discussion).toEqual(first.discussion);
+    f.runtime.status.set(second.run.id, {
+      state: "finished",
+      result: { ...RESULT, structured: RESOLVE },
+    });
+    expect(await recordRunEnd(f.deps, { runId: second.run.id })).toMatchObject({
+      report: { outcome: "fail" },
+      council: {
+        answer: { reason: "invalid", problem: NO_DISCUSSION },
+        council: [
+          {
+            step: "to_didi",
+            didi: { move: { outcome: "applied", toState: "escalated_to_didi" } },
+          },
+        ],
+      },
+    });
     expect(
       (await f.store.listDecisionsForNode(node.id)).filter(
         (d) => d.kind === "council_decision",

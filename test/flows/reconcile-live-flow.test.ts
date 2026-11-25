@@ -22,7 +22,12 @@ import { FIRST_ROUTING_POLICY } from "../../src/core/routing-testing.ts";
 import type { Node } from "../../src/core/store.ts";
 import { HEAD, REPO } from "../reconcile-fixture.ts";
 import { setupStaging } from "../staging-fixture.ts";
-import { createFlowFixture, flowDepsFor, type FlowFixture } from "./flow-fixture.ts";
+import {
+  createFlowFixture,
+  discussionAsSent,
+  flowDepsFor,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -435,6 +440,7 @@ describe("a move that makes an item ready starts its first run in the same flow 
           changesProductDirection: false,
           passesGate: false,
         },
+        ...discussionAsSent(f, council.id),
       },
     });
     const ended = await recordRunEnd(f.deps, { runId: council.id });
@@ -537,6 +543,7 @@ describe("a move that makes an item ready starts its first run in the same flow 
           verdicts: [{ nodeId: item.id, verdict: "still_valid", note: "Unaffected." }],
           note: "The item does not rely on the layout.",
         },
+        ...discussionAsSent(f, council.id),
       },
     });
     expect(await recordRunEnd(f.deps, { runId: council.id })).toMatchObject({

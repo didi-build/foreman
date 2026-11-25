@@ -13,8 +13,11 @@
 // - Triage: the repo map built from the case's tree at the case's commit by the repo map adapter
 //   and checked as the runner checks one, then `triageInput` with the plan; the answer schema from
 //   the bot file, which the runner's answer check also uses.
-// - The Council: `escalationInput` over the escalation as the runner gathers it, and the bot
-//   file's escalation schema.
+// - The Council: `escalationInput` over the escalation as the runner gathers it, the bot file's
+//   escalation schema, and the question's discussion (ADR 0119 slice 6e): the bot file's chair and
+//   pull-in limit and the cast `councilCast` gives for the escalated item (`questionDiscussion`,
+//   src/core/council-cast.ts), as the runner's `taskFor` gives a real Council task. The scoring
+//   checks the run's discussion against the same (./scoring.ts).
 //
 // QA's and Triage's inputs end with the short summary of the project's records, as a real run's
 // do (ADR 0119 slice 3a, src/core/run-context.ts). The case format holds no project records yet,
@@ -39,6 +42,7 @@ import {
   type BotFiles,
 } from "../adapters/contracts-file/bot-files.ts";
 import { buildRepoMap, readCheckout } from "../adapters/repo-map/typescript.ts";
+import { questionDiscussion, type QuestionDiscussion } from "../core/council-cast.ts";
 import { escalationInput } from "../core/council-input.ts";
 import type { OutputSchema } from "../core/output-schema.ts";
 import type { PullRequestChange } from "../core/github.ts";
@@ -78,6 +82,8 @@ export interface TriageRun extends RunCommon {
 export interface CouncilRun extends RunCommon {
   role: "council";
   outputSchema: OutputSchema;
+  /** The question's discussion the task file carries, which the run's record is checked against. */
+  discussion: QuestionDiscussion;
 }
 
 export type CaseRun = QaRun | TriageRun | CouncilRun;
@@ -181,6 +187,12 @@ function triageRun(c: TriageCase, bots: BotFiles): TriageRun {
 function councilRun(c: CouncilCase, bots: BotFiles): CouncilRun {
   const { item, ...escalation } = c.input;
   const outputSchema = schemaOf(bots.council, c.input.question);
+  const table = bots.council.discussion;
+  if (!table) throw new Error("the council bot file has no discussion table");
+  const discussion = questionDiscussion(table, {
+    kind: c.input.question,
+    node: { track: item.track },
+  });
   const task: AgentTaskFile = {
     foremanTask: 1,
     instructions: instructionsFor(bots.council, c.taskType),
@@ -202,9 +214,17 @@ function councilRun(c: CouncilCase, bots: BotFiles): CouncilRun {
       stagingFails: escalation.stagingFails,
     }),
     outputSchema,
+    discussion: { ...discussion, cast: [...discussion.cast] },
   };
   taskFileJson("council", task);
-  return { caseId: c.id, role: "council", taskType: c.taskType, task, outputSchema };
+  return {
+    caseId: c.id,
+    role: "council",
+    taskType: c.taskType,
+    task,
+    outputSchema,
+    discussion,
+  };
 }
 
 /**

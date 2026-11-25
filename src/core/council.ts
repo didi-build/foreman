@@ -111,16 +111,17 @@
 // then the idea's latest, which closes the question, so each answer gets one replan; the plan
 // approval step takes it under D-315. No usable replan opens Didi's request as above (D-316 (2)).
 //
-// A Council run may be a discussion that Product chairs (ADR 0119 slice 6, D-483): its result then
-// carries the discussion's record beside the answer (./discussion-record.ts). After the kind's
-// reader accepts the answer, the runner checks the record against the question
-// (./council-discussion.ts, D-484): the cast `councilCast` resolves from the Council's discussion
-// table (./council-cast.ts) and the data the run's input was built from, each speaker once, the
-// chair never, the pull-ins within the table's limit, and the kind's way to Didi after a pull-in
-// refused for the limit. A record that fails makes the answer unusable, as a wrong answer does. A
-// checked record is kept in the decision's `scope.discussion` (D-488); the plan keeps it on its
-// `plan_proposal` decision, not on the product direction. A run without one records as before:
-// no flow sends a discussion before slice 6e, which sets `requireDiscussion` (O-180). A dropped
+// Every Council run is a discussion that Product chairs (ADR 0119 slices 6 and 6e, D-483, O-181):
+// its task carries the question's discussion (`taskFor`: the table's chair and pull-in limit, and
+// the cast `councilCast` resolves from the Council's discussion table, ./council-cast.ts, and the
+// data the run's input is built from), and its result carries the discussion's record beside the
+// answer (./discussion-record.ts). After the kind's reader accepts the answer, the runner checks
+// the record against the question (./council-discussion.ts, D-484): the same cast, each speaker
+// once, the chair never, the pull-ins within the table's limit, and the kind's way to Didi after a
+// pull-in refused for the limit. A record that fails makes the answer unusable, as a wrong answer
+// does. A checked record is kept in the decision's `scope.discussion` (D-488); the plan keeps it
+// on its `plan_proposal` decision, not on the product direction. With `requireDiscussion`, which
+// the run-end flow sets (flows/lib/council-runs.ts), a run without one is unusable too. A dropped
 // visual call has no answer, so it records no discussion.
 //
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
@@ -136,7 +137,11 @@ import {
   type ScopeUpdateView,
 } from "./council-input.ts";
 import { CANCEL_REQUEST_PREFIX, STILL_NEEDED_PREFIX } from "./cancel.ts";
-import { councilCast, type CastQuestion } from "./council-cast.ts";
+import {
+  questionDiscussion,
+  type CastQuestion,
+  type QuestionDiscussion,
+} from "./council-cast.ts";
 import {
   checkDiscussion,
   discussionScope,
@@ -536,8 +541,9 @@ export interface CouncilOptions {
   /** CI's screenshot bundles, for the visual call's option screenshots (D-270). */
   screenshots?: ScreenshotBundles;
   /**
-   * Whether a Council run's answer needs its discussion (O-180). Until slice 6e sends every
-   * Council task a discussion, it is unset, and a run without one records as before.
+   * Whether a Council run's answer needs its discussion (O-180, O-181). The run-end flow sets it
+   * (flows/lib/council-runs.ts), since every Council task carries its discussion (ADR 0119 slice
+   * 6e); unset, a run without one records as before.
    */
   requireDiscussion?: boolean;
 }
@@ -1197,11 +1203,12 @@ export function createCouncil(options: CouncilOptions) {
   /**
    * What the question's cast is resolved from (./council-cast.ts, O-178), read as the run's input
    * reads it: the escalated item; the reversal's stale items the store still has; the plan's idea,
-   * the scope updates recorded by `asOf` (the run's start, so an update the run's input did not
-   * show does not change the cast), and for an idea from a bot's finding the item it was found on
+   * its scope updates, and for an idea from a bot's finding the item it was found on
    * (`body.foundBy.nodeId`), whose track is read from the store, never guessed from the finder.
+   * The task reads every scope update, as its input does; the check reads those recorded by
+   * `asOf` (the run's start), so an update the run's input did not show does not change the cast.
    */
-  async function castQuestion(q: CouncilQuestion, asOf: Date): Promise<CastQuestion> {
+  async function castQuestion(q: CouncilQuestion, asOf?: Date): Promise<CastQuestion> {
     if (q.kind === "escalation") {
       return {
         kind: q.kind,
@@ -1251,9 +1258,7 @@ export function createCouncil(options: CouncilOptions) {
     const table = options.bots.council.discussion;
     if (!table) return { problem: NO_DISCUSSION_TABLE };
     const checked = checkDiscussion(discussion, {
-      chair: table.chair,
-      cast: councilCast(table, await castQuestion(q, run.startedAt)),
-      maxPullIns: table.maxPullIns,
+      ...questionDiscussion(table, await castQuestion(q, run.startedAt)),
       answer,
     });
     return "refused" in checked
@@ -2228,8 +2233,10 @@ export function createCouncil(options: CouncilOptions) {
     next,
 
     /**
-     * What a Council run on the topic starts with: its input (src/core/council-input.ts) and the
-     * output schema of its question's kind. Null when the question is not open.
+     * What a Council run on the topic starts with: its input (src/core/council-input.ts), the
+     * output schema of its question's kind and its discussion (ADR 0119 slice 6e): the chair, the
+     * question's cast and the pull-in limit, from the Council's discussion table, which its bot
+     * file must have. Null when the question is not open.
      */
     async taskFor(topicKey: string): Promise<
       | {
@@ -2238,6 +2245,8 @@ export function createCouncil(options: CouncilOptions) {
           outputSchema: Record<string, unknown>;
           /** `council`, or `council:visual` for a visual call (D-270). */
           taskType: string;
+          /** Who chairs, who speaks in order, and how many may be pulled in (D-462 to D-464). */
+          discussion: QuestionDiscussion;
           /** A visual call: the option screenshots, labelled, one per option. */
           images?: VisualImage[];
         }
@@ -2253,6 +2262,8 @@ export function createCouncil(options: CouncilOptions) {
       const q = await question(topicKey);
       if (!q) return null;
       const outputSchema = structuredClone(councilSchema(options.bots, q.kind));
+      const table = options.bots.council.discussion;
+      if (!table) throw new Error("the Council's bot file has no discussion table");
       if (q.kind === "visual_call") {
         const read = await visualCallImages(store, options.screenshots, q);
         if ("refused" in read) return { question: q, refused: read.refused };
@@ -2265,6 +2276,7 @@ export function createCouncil(options: CouncilOptions) {
           }),
           outputSchema,
           taskType: VISUAL_CALL_TASK_TYPE,
+          discussion: questionDiscussion(table, await castQuestion(q)),
           images: read.images,
         };
       }
@@ -2278,7 +2290,13 @@ export function createCouncil(options: CouncilOptions) {
               : q.kind === "plan"
                 ? await councilPlanTaskInput(q)
                 : await reversalTaskInput(q);
-      return { question: q, input, outputSchema, taskType: "council" };
+      return {
+        question: q,
+        input,
+        outputSchema,
+        taskType: "council",
+        discussion: questionDiscussion(table, await castQuestion(q)),
+      };
     },
 
     /**

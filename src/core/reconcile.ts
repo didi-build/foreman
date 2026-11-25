@@ -132,9 +132,9 @@ export interface BotProfile {
    */
   browser?: true;
   /**
-   * The Council only: its discussion table (`discussion`, ADR 0119 slice 6a). The runner's check
-   * of a run's discussion resolves the question's cast from it (slice 6c, ./council-discussion.ts);
-   * no Council task carries a discussion before slice 6e.
+   * The Council only: its discussion table (`discussion`, ADR 0119 slice 6a). The runner sends
+   * each question's cast from it in the Council's task file (slice 6e, ./council.ts `taskFor`) and
+   * checks the run's discussion against it (slice 6c, ./council-discussion.ts).
    */
   discussion?: CouncilDiscussion;
 }

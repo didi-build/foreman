@@ -622,9 +622,9 @@ export function runEndSteps(deps: FlowDeps, run: Run) {
         : report;
     }
     if (!isCouncil || report.outcome !== "success") return report;
-    // A discussion's record, when the run was one, is checked and kept beside the answer
-    // (ADR 0119 slice 6c); until slice 6e no run is sent one, so it is absent.
-    answer = await createCouncil(deps).recordAnswer(
+    // Every Council run is a discussion (ADR 0119 slice 6e): its record is checked and kept beside
+    // the answer (slice 6c), and a run without one gives no usable answer (O-181).
+    answer = await createCouncil({ ...deps, requireDiscussion: true }).recordAnswer(
       run.id,
       result.structured,
       result.discussion,

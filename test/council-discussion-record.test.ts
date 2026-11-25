@@ -6,8 +6,10 @@
 // nothing and counts as invalid, as a bad answer does. The cast is read from the store as the
 // run's input shows it: the escalated item's track, the stale items' tracks, and for a plan the
 // idea's paths, the scope updates recorded by the run's start, and the track of the item a run
-// finding was found on. Each reader of a Council decision still reads it with the new key. The
-// pure rules are in src/core/council-discussion.test.ts; the flows in test/flows/.
+// finding was found on. Each reader of a Council decision still reads it with the new key. Since
+// slice 6e (O-181), every Council task carries its question's discussion (`taskFor`): the chair,
+// the same cast the check expects, and the pull-in limit, for every kind. The pure rules are in
+// src/core/council-discussion.test.ts; the flows in test/flows/.
 import { describe, expect, it } from "vitest";
 
 import { standingStop, stillNeededTopic } from "../src/core/cancel.ts";
@@ -91,6 +93,8 @@ interface Asked {
   council: ReturnType<typeof createCouncil>;
   runId: string;
   nodeId: string;
+  /** The question's topic, which its task is built for. */
+  topic: string;
   answer: Json;
   /** The question's cast with the real table. */
   cast: PersonaId[];
@@ -128,6 +132,7 @@ async function escalation(
     council: createCouncil({ ...f.deps, ...options }),
     runId: run.id,
     nodeId: node.id,
+    topic,
     answer: {
       outcome: "resolve",
       note: "Split the change in two and retry.",
@@ -180,6 +185,7 @@ async function reversal(tracks: Track[] = ["code", "code"]): Promise<Asked> {
     council: createCouncil(f.deps),
     runId: run.id,
     nodeId: owner.id,
+    topic,
     answer: { verdicts, note: "The layout change affects none of them." },
     cast,
     today: () => ({
@@ -203,6 +209,7 @@ async function visualCall(): Promise<Asked> {
     council: createCouncil({ ...f.deps, screenshots: v.screenshots }),
     runId: run.id,
     nodeId: v.nodeId,
+    topic,
     answer: CALL,
     cast: ["designer", "quality"],
     today: () => ({
@@ -247,6 +254,7 @@ async function scannerGone(): Promise<Asked> {
     council: createCouncil(f.deps),
     runId: run.id,
     nodeId: node.id,
+    topic,
     answer: { verdict: "keep", note: "The link check is still worth adding." },
     cast: ["developer"],
     today: () => ({
@@ -273,6 +281,7 @@ async function stillNeeded(verdict = "keep"): Promise<Asked> {
     council: createCouncil(f.deps),
     runId: run.id,
     nodeId: node.id,
+    topic,
     answer: { verdict, note: "Nothing on main builds the form yet." },
     cast: ["developer"],
     today: () => ({
@@ -331,6 +340,7 @@ async function plan(
     council: createCouncil(f.deps),
     runId: run.id,
     nodeId: node.id,
+    topic,
     answer: PLAN_ANSWER,
     cast: uiPath || designOn ? ["developer", "designer"] : ["developer"],
     today: (decision) => ({
@@ -593,7 +603,83 @@ describe("a pull-in refused for the limit, through the record (unit: D-484)", ()
   });
 });
 
-describe("when the discussion is required, or cannot be checked (unit: the slice 6e seam, O-180)", () => {
+describe("the discussion every Council task carries (unit: taskFor, ADR 0119 slice 6e, D-463, D-486, D-487, O-181)", () => {
+  /** The discussion the question's task carries. */
+  const sent = async (asked: Asked) => {
+    const task = await asked.council.taskFor(asked.topic);
+    if (!task || "refused" in task) throw new Error(`no ${asked.kind} task`);
+    return task.discussion;
+  };
+
+  it("sends Product as chair, the question's cast and two pull-ins at most, for every kind", async () => {
+    for (const [kind, ask] of KINDS) {
+      const asked = await ask();
+      expect(await sent(asked), kind).toEqual({
+        chair: "product",
+        cast: asked.cast,
+        maxPullIns: 2,
+      });
+    }
+  });
+
+  it("sends the cast the runner's check then expects, so a discussion on it records", async () => {
+    for (const [kind, ask] of KINDS) {
+      const asked = await ask();
+      const { cast } = await sent(asked);
+      expect(
+        await asked.council.recordAnswer(asked.runId, asked.answer, discussionOf(cast)),
+        kind,
+      ).toMatchObject({ recorded: true });
+    }
+  });
+
+  it("reads each kind's cast as its input does: a design item's builder, no stale item, a plan found on a design item, a UI path", async () => {
+    expect((await sent(await escalation("design"))).cast).toEqual([
+      "designer",
+      "quality",
+    ]);
+    expect((await sent(await reversal([]))).cast).toEqual([]);
+    expect((await sent(await reversal(["design", "code"]))).cast).toEqual([
+      "developer",
+      "designer",
+    ]);
+    expect(
+      (await sent(await plan("run_finding", { foundOnTrack: "design" }))).cast,
+    ).toEqual(["developer", "designer"]);
+    expect(
+      (await sent(await plan("run_finding", { foundOnTrack: "code" }))).cast,
+    ).toEqual(["developer"]);
+    expect(
+      (await sent(await plan("scanner", { path: "components/button/index.ts" }))).cast,
+    ).toEqual(["developer", "designer"]);
+    expect((await sent(await visualCall())).cast).toEqual(["designer", "quality"]);
+  });
+
+  it("reads a scanner idea's scope updates as the task's input shows them, all those recorded so far", async () => {
+    const asked = await plan();
+    await asked.f.evidence(asked.nodeId, "scan_scope_update", {
+      check: "doc_link_missing",
+      path: "design/button/spec.md",
+      line: 1,
+      target: "docs/gone.md",
+    });
+    const task = await asked.council.taskFor(asked.topic);
+    if (!task || "refused" in task) throw new Error("no plan task");
+    expect(task.input).toContain("design/button/spec.md");
+    expect(task.discussion.cast).toEqual(["developer", "designer"]);
+  });
+
+  it("refuses to build a task when the Council's profile has no discussion table", async () => {
+    const asked = await escalation();
+    const council = { ...asked.f.deps.bots.council };
+    delete council.discussion;
+    await expect(
+      createCouncil({ ...asked.f.deps, bots: { council } }).taskFor(asked.topic),
+    ).rejects.toThrow("the Council's bot file has no discussion table");
+  });
+});
+
+describe("when the discussion is required, or cannot be checked (unit: the run-end flow's option, O-180, O-181)", () => {
   it("refuses a run with no discussion once one is required, and takes one that fits", async () => {
     const asked = await escalation("code", { requireDiscussion: true });
     expect(await asked.council.recordAnswer(asked.runId, asked.answer)).toEqual({

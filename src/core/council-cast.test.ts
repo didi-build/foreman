@@ -2,7 +2,8 @@
 // `councilCast` resolves each question kind's cast from the table the Council's bot file holds,
 // over question data shaped as the runner builds each kind's input (./council-input.ts): the
 // escalated item, the stale items of a reversal, and a plan's idea as the Scanner or the
-// run-finding step writes its body. The table's own check is in
+// run-finding step writes its body. `questionDiscussion` gives the chair, the cast and the pull-in
+// limit a Council task carries (ADR 0119 slice 6e). The table's own check is in
 // src/adapters/contracts-file/bot-files.test.ts.
 import { describe, expect, it } from "vitest";
 
@@ -12,6 +13,7 @@ import {
   MAX_PULL_INS,
   councilCast,
   isCastToken,
+  questionDiscussion,
   type CastQuestion,
   type CouncilDiscussion,
 } from "./council-cast.ts";
@@ -313,5 +315,33 @@ describe("a question's base cast (unit, ADR 0119 slice 6a)", () => {
     expect(() => councilCast(wrong, { kind: "visual_call" })).toThrow(
       "the rule token builder is for the escalation cast only",
     );
+  });
+});
+
+describe("a question's discussion (unit, ADR 0119 slice 6e)", () => {
+  it("gives the table's chair and pull-in limit with the question's cast, a new list each time", () => {
+    expect(questionDiscussion(TABLE, escalation("design"))).toEqual({
+      chair: "product",
+      cast: ["designer", "quality"],
+      maxPullIns: 2,
+    });
+    expect(questionDiscussion(TABLE, reversal())).toEqual({
+      chair: "product",
+      cast: [],
+      maxPullIns: 2,
+    });
+    const one = { ...TABLE, maxPullIns: 1 };
+    const first = questionDiscussion(one, { kind: "visual_call" });
+    expect(first).toEqual({
+      chair: "product",
+      cast: ["designer", "quality"],
+      maxPullIns: 1,
+    });
+    first.cast.push("developer");
+    expect(questionDiscussion(one, { kind: "visual_call" }).cast).toEqual([
+      "designer",
+      "quality",
+    ]);
+    expect(TABLE.casts.visual_call).toEqual(["designer", "quality"]);
   });
 });

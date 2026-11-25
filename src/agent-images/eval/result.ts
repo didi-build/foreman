@@ -14,8 +14,12 @@
 // Everything in it is bounded and checked: counts, amounts, fixed codes, ids and names in their
 // forms, and from each answer only facts the runner's own checks read (src/eval/scoring.ts):
 // QA's verdict and the files its findings name (at most `MAX_FINDING_PATHS`, each a plain path),
-// Triage's item count, the Council's outcome and its two flags. No text the model wrote is in it,
-// and no provider error message: a provider error gives only its status and its type.
+// Triage's item count, the Council's outcome and its two flags, and its discussion's cast and
+// pull-ins as persona ids (at most `MAX_CAST` and `MAX_PULL_IN_FACTS`, ADR 0119 slice 6e; both or
+// neither, since a test image from before slice 6e gives neither). No text the model wrote is in
+// it, and no provider error message: a provider error gives only its status and its type.
+import { MAX_PULL_INS } from "../../core/discussion-record.ts";
+import { PERSONAS } from "../../core/personas.ts";
 import type { RunTokens } from "../../core/runs.ts";
 import type { ServedTier, ServiceTier } from "../../core/store.ts";
 import { CASE_ID, type EvalRole } from "../../eval/cases.ts";
@@ -66,6 +70,10 @@ export const PROVIDER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const ERROR_TYPE = /^[a-z0-9_]{0,64}$/;
 /** The most Triage items the facts count, far above any plan's. */
 const MAX_ITEM_COUNT = 1000;
+/** The most personas a Council discussion's cast holds in the facts: every one but the chair. */
+export const MAX_CAST = PERSONAS.length - 1;
+/** The most pull-ins a Council discussion's facts name (D-464). */
+export const MAX_PULL_IN_FACTS = MAX_PULL_INS;
 /**
  * The most bytes of the job's log the runner reads: the result line, which its bounds keep below
  * this (result.test.ts builds the largest line they allow), and room for the line's frame.
@@ -264,17 +272,38 @@ function checkFacts(value: unknown, at: string, role: EvalRole): AnswerFacts {
     const f = object(value, at, ["itemCount"]);
     return { itemCount: count(f.itemCount, `${at}.itemCount`, MAX_ITEM_COUNT) };
   }
-  const f = object(value, at, ["outcome", "changesProductDirection", "passesGate"]);
+  const f = object(
+    value,
+    at,
+    ["outcome", "changesProductDirection", "passesGate"],
+    ["cast", "pullIns"],
+  );
   if (
     typeof f.changesProductDirection !== "boolean" ||
     typeof f.passesGate !== "boolean"
   ) {
     fail(at, "has a flag that is not true or false");
   }
-  return {
+  const facts = {
     outcome: oneOf(f.outcome, `${at}.outcome`, ["resolve", "cannot_resolve"] as const),
     changesProductDirection: f.changesProductDirection as boolean,
     passesGate: f.passesGate as boolean,
+  };
+  // The discussion's two facts come together, or not at all from an image before slice 6e.
+  if ("cast" in f !== "pullIns" in f) fail(at, "has one of cast and pullIns only");
+  if (!("cast" in f)) return facts;
+  return {
+    ...facts,
+    cast: list(f.cast, `${at}.cast`, MAX_CAST).map((id, i) =>
+      oneOf(id, `${at}.cast[${i}]`, PERSONAS),
+    ),
+    pullIns: list(f.pullIns, `${at}.pullIns`, MAX_PULL_IN_FACTS).map((entry, i) => {
+      const p = object(entry, `${at}.pullIns[${i}]`, ["persona", "by"]);
+      return {
+        persona: oneOf(p.persona, `${at}.pullIns[${i}].persona`, PERSONAS),
+        by: oneOf(p.by, `${at}.pullIns[${i}].by`, PERSONAS),
+      };
+    }),
   };
 }
 

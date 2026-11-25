@@ -12,23 +12,29 @@
 //   to its own answer item that covers all its paths, each matched item blocked by exactly the
 //   matched items the case names, and needsDidi and hold as expected.
 // - The Council: the escalation schema and `readEscalationAnswer`, as the runner reads an answer.
-//   Then where the item goes: the runner's rule (`council_decision_recorded`) keeps it with the
-//   Council only for `resolve` with both flags false, and sends it to Didi otherwise. A case
-//   routed to Didi also names the reasons that count: an answer that reaches Didi for another
-//   reason is wrong.
+//   Then the run's discussion (ADR 0119 slice 6e): `checkDiscussion` against the chair, the cast
+//   and the pull-in limit the case's task carried, as the runner checks a Council run's record
+//   before it records the answer (src/core/council-discussion.ts); one it refuses makes the answer
+//   unusable (`discussion_rejected`). Then where the item goes: the runner's rule
+//   (`council_decision_recorded`) keeps it with the Council only for `resolve` with both flags
+//   false, and sends it to Didi otherwise. A case routed to Didi also names the reasons that
+//   count: an answer that reaches Didi for another reason is wrong.
 //
 // Each score also carries a fixed code for its reason (`SCORE_CODES`), and for a usable answer a
 // few facts the runner's check has already read (`AnswerFacts`): QA's verdict and the files its
-// findings name, Triage's item count, the Council's outcome and flags. The weekly test job puts
-// the code and the facts in its result line (src/agent-images/eval/), never the detail sentence
-// or any other text of the answer.
+// findings name, Triage's item count, the Council's outcome and flags, and who took part in its
+// discussion: the cast and each pull-in's persona and who asked for it, persona ids only, never a
+// reason or a view. The weekly test job puts the code and the facts in its result line
+// (src/agent-images/eval/), never the detail sentence or any other text of the answer.
 //
 // The answer is the run's final text: the model's JSON, or in tool mode the answer tool's input as
-// JSON (src/agent-images/claude-api/loop.ts).
+// JSON (src/agent-images/claude-api/loop.ts). A Council run's discussion record comes beside it.
 import { parseVerdict } from "../agent-images/claude-api/verdict.ts";
 import { readEscalationAnswer, type EscalationAnswer } from "../core/council.ts";
+import { checkDiscussion } from "../core/council-discussion.ts";
 import { COUNCIL_CANNOT_RESOLVE } from "../core/guards/escalation.ts";
 import { outputProblem } from "../core/output-schema.ts";
+import type { PersonaId } from "../core/personas.ts";
 import { checkTriageAnswer, type TriageItem } from "../core/triage.ts";
 import type {
   CouncilCase,
@@ -57,6 +63,7 @@ export const SCORE_CODES = {
   answer_not_json: "unusable",
   answer_rejected: "unusable",
   citation_not_at_head: "unusable",
+  discussion_rejected: "unusable",
 } as const satisfies Record<string, ScoreOutcome>;
 export type ScoreCode = keyof typeof SCORE_CODES;
 
@@ -66,11 +73,18 @@ export type AnswerFacts =
   | { verdict: "pass" | "fail"; findingPaths: string[] }
   /** Triage: how many items it made. */
   | { itemCount: number }
-  /** The Council: its outcome and the two flags the runner routes by. */
+  /**
+   * The Council: its outcome and the two flags the runner routes by, then its discussion's cast in
+   * speaking order and each pull-in, in order, by persona id only (ADR 0119 slice 6e). This scorer
+   * always gives both; a weekly test image from before slice 6e gives neither, and the result's
+   * checks still take its facts.
+   */
   | {
       outcome: EscalationAnswer["outcome"];
       changesProductDirection: boolean;
       passesGate: boolean;
+      cast?: PersonaId[];
+      pullIns?: { persona: PersonaId; by: PersonaId }[];
     };
 
 export interface Score {
@@ -243,7 +257,12 @@ const REASON_HOLDS: Record<DidiReason, (answer: EscalationAnswer) => boolean> = 
   passes_gate: (a) => a.passesGate,
 };
 
-function scoreCouncil(c: CouncilCase, run: CouncilRun, text: string): Score {
+function scoreCouncil(
+  c: CouncilCase,
+  run: CouncilRun,
+  text: string,
+  discussion: unknown,
+): Score {
   const parsed = json(text);
   if (!parsed) return score("answer_not_json", "the answer is not JSON");
   const problem = outputProblem(run.outputSchema, parsed.value);
@@ -252,8 +271,24 @@ function scoreCouncil(c: CouncilCase, run: CouncilRun, text: string): Score {
   const read = readEscalationAnswer(parsed.value);
   if ("problem" in read)
     return score("answer_rejected", `the answer is unusable: ${read.problem}`);
+  const checked = checkDiscussion(discussion, {
+    ...run.discussion,
+    answer: { kind: "escalation", answer: read.answer },
+  });
+  if ("refused" in checked) {
+    return score(
+      "discussion_rejected",
+      `the runner rejects the discussion: ${checked.refused}`,
+    );
+  }
   const { outcome, changesProductDirection, passesGate } = read.answer;
-  const facts: AnswerFacts = { outcome, changesProductDirection, passesGate };
+  const facts: AnswerFacts = {
+    outcome,
+    changesProductDirection,
+    passesGate,
+    cast: [...checked.discussion.cast],
+    pullIns: checked.discussion.pullIns.map(({ persona, by }) => ({ persona, by })),
+  };
   const toDidi = goesToDidi(read.answer);
   if (c.expected.route === "council") {
     return toDidi
@@ -285,8 +320,16 @@ function scoreCouncil(c: CouncilCase, run: CouncilRun, text: string): Score {
   );
 }
 
-/** Scores the run's final text against the case. The run must be the case's own. */
-export function scoreAnswer(c: EvalCase, run: CaseRun, finalText: string): Score {
+/**
+ * Scores the run's final text against the case, with a Council run's discussion record. The run
+ * must be the case's own.
+ */
+export function scoreAnswer(
+  c: EvalCase,
+  run: CaseRun,
+  finalText: string,
+  discussion?: unknown,
+): Score {
   if (run.caseId !== c.id || run.role !== c.role) {
     throw new Error("the run is not this case's run");
   }
@@ -296,6 +339,6 @@ export function scoreAnswer(c: EvalCase, run: CaseRun, finalText: string): Score
     case "triage":
       return scoreTriage(c, run as TriageRun, finalText);
     case "council":
-      return scoreCouncil(c, run as CouncilRun, finalText);
+      return scoreCouncil(c, run as CouncilRun, finalText, discussion);
   }
 }

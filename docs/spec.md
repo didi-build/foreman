@@ -17,16 +17,16 @@ Draft, Oct 26, 2026. Owner: Didi (operator). This is meant to become a plain fil
 
 ## 2. Roles
 
-| Role            | What it does                                                                                                       |
-| --------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Operator (Didi) | Submits ideas, answers questions, approves gates, can look at a daily summary                                      |
-| Council         | One combined role (analyst, PM, designer, CTO). Interviews Didi about the product, then turns the idea into a plan |
-| Triage          | PM-type role. Splits a plan into work items and picks the track for each                                           |
-| Designer        | Explores visuals, writes the spec after approval, builds components                                                |
-| Developer       | Wires components into the app, builds code and infrastructure                                                      |
-| QA              | Checks work against the spec or plan. Sends failures back to the owner                                             |
-| Runner          | Deterministic code (Windmill). Owns all transitions and enforces guards                                            |
-| Scanner         | Later. A daily scan for bugs, gaps and misalignment                                                                |
+| Role            | What it does                                                                                                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Operator (Didi) | Submits ideas, answers questions, approves gates, can look at a daily summary                                                                                                               |
+| Council         | A discussion of the four personas (Product, the Developer, the Designer and Quality) that Product chairs (D-462, D-485). Interviews Didi about the product, then turns the idea into a plan |
+| Triage          | PM-type role. Splits a plan into work items and picks the track for each                                                                                                                    |
+| Designer        | Explores visuals, writes the spec after approval, builds components                                                                                                                         |
+| Developer       | Wires components into the app, builds code and infrastructure                                                                                                                               |
+| QA              | Checks work against the spec or plan. Sends failures back to the owner                                                                                                                      |
+| Runner          | Deterministic code (Windmill). Owns all transitions and enforces guards                                                                                                                     |
+| Scanner         | Later. A daily scan for bugs, gaps and misalignment                                                                                                                                         |
 
 A bot is a coordinator that represents one role, like a team lead. It can dispatch several agents under it to do the work. The runner still decides every transition, so a bot never moves an item itself.
 

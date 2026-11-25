@@ -21,7 +21,10 @@ import type { GitHubGetRequest } from "../../src/adapters/github/runner-app-toke
 import { RunnerAppTokenError } from "../../src/adapters/github/runner-read-tokens.ts";
 import { readJwt, testAppKey, type TestAppKey } from "../github-app-key-fixture.ts";
 import { readApprovalReply } from "../../flows/lib/approval.ts";
-import { readBotFiles } from "../../src/adapters/contracts-file/bot-files.ts";
+import {
+  instructionsFor,
+  readBotFiles,
+} from "../../src/adapters/contracts-file/bot-files.ts";
 import { storedZip } from "../zip-fixture.ts";
 import {
   DatabaseTlsError,
@@ -76,6 +79,8 @@ const COUNCIL_START = {
   capacity: { flexCapacityRetries: 3, maxRejectedModelRequests: 6 },
   stateApiToken: "state-token-value-not-real-0123456789",
   outputSchema: readBotFiles().council.outputSchemas?.escalation,
+  // A code item's escalation: its builder, then Quality (ADR 0119 slice 6e).
+  discussion: { chair: "product", cast: ["developer", "quality"], maxPullIns: 2 },
 } as unknown as RunToStart;
 
 /** The Apps' made-up ids, as Didi stores them: decimal text, here with a trailing newline. */
@@ -617,7 +622,7 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         image: string;
         providers: { secretPath?: string }[];
         credentials: { models: Record<string, string>; githubToken?: string };
-        task: { instructions: string; outputSchema?: unknown };
+        task: { instructions: string; outputSchema?: unknown; discussion?: unknown };
       };
       expect(task.image).toBe(`registry.example.com/foreman/claude-api${DIGEST}`);
       expect(task.providers.map((p) => p.secretPath)).toEqual([
@@ -627,8 +632,11 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         "projects/rehearsal/models/anthropic",
       ]);
       expect(task.credentials.githubToken).toBeUndefined();
-      expect(task.task.instructions).toBe(readBotFiles().council.instructions);
+      expect(task.task.instructions).toBe(
+        instructionsFor(readBotFiles().council, "council"),
+      );
       expect(task.task.outputSchema).toEqual(COUNCIL_START.outputSchema);
+      expect(task.task.discussion).toEqual(COUNCIL_START.discussion);
       expect(secretsRead).toEqual([
         SECRET_PATHS.database,
         "projects/rehearsal/models/anthropic",

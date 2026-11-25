@@ -3,9 +3,11 @@
 // pull-ins a discussion may make (D-464) and each question kind's base cast: personas by id, and
 // rule tokens resolved from the question. The contracts-file adapter checks the table
 // (src/adapters/contracts-file/bot-files.ts) with the names below; `councilCast` resolves one
-// question's cast to personas. The runner's check of a run's discussion resolves the cast it
-// expects with it (./council-discussion.ts, slice 6c, O-180). No run is sent a cast until slice
-// 6e, so every Council run keeps today's text and behaviour.
+// question's cast to personas, and `questionDiscussion` gives the chair, the cast and the pull-in
+// limit together. Since slice 6e (O-181) the runner sends that in every Council task file
+// (./council.ts `taskFor`), and its check of a run's discussion expects the same
+// (./council-discussion.ts, slice 6c, O-180); the weekly model test builds its Council cases'
+// tasks with it too (src/eval/inputs.ts).
 //
 // The rule tokens, each valid for one question kind only:
 // - `builder` (escalation, D-463, D-466): the Designer when the item's track is design, else the
@@ -167,4 +169,27 @@ export function councilCast(
     }
   }
   return cast;
+}
+
+/** One question's discussion: who chairs, who speaks in order, and how many may be pulled in. */
+export interface QuestionDiscussion {
+  chair: PersonaId;
+  cast: PersonaId[];
+  maxPullIns: number;
+}
+
+/**
+ * The discussion a question gets (D-462 to D-464): the table's chair and pull-in limit, and the
+ * question's cast. The task file carries it as `discussion` (ADR 0119 slice 6e), and the runner's
+ * check of the run's record expects it.
+ */
+export function questionDiscussion(
+  table: CouncilDiscussion,
+  question: CastQuestion,
+): QuestionDiscussion {
+  return {
+    chair: table.chair,
+    cast: councilCast(table, question),
+    maxPullIns: table.maxPullIns,
+  };
 }

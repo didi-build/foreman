@@ -25,7 +25,12 @@ import {
 import { scannerGoneTopic } from "../../src/core/scan-ideas.ts";
 import { setupMerge } from "../merge-fixture.ts";
 import { HEAD } from "../reconcile-fixture.ts";
-import { createFlowFixture, flowDepsFor, type FlowFixture } from "./flow-fixture.ts";
+import {
+  createFlowFixture,
+  discussionAsSent,
+  flowDepsFor,
+  type FlowFixture,
+} from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -99,6 +104,7 @@ async function stoppedIdea(acceptedBy: "council" | "didi") {
   if (council?.bot !== "council") throw new Error("the Council was not started");
   const ended = await finish(f, council.id, {
     structured: { verdict: "stop", note: "Fixed by another change." },
+    ...discussionAsSent(f, council.id),
   });
   return { f, idea, free, busy, builder, ended };
 }

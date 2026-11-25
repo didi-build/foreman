@@ -16,7 +16,7 @@ import {
 } from "../../src/core/routing-testing.ts";
 import { visualCallTopic } from "../../src/core/visual-call.ts";
 import { CALL, CALL_OPTION_COMMIT, setupVisualCall } from "../visual-call-fixture.ts";
-import { createFlowFixture } from "./flow-fixture.ts";
+import { createFlowFixture, discussionAsSent } from "./flow-fixture.ts";
 
 const RESULT: AgentRunResult = {
   outcome: "success",
@@ -53,7 +53,7 @@ async function setup(routed = true) {
   const finish = async (runId: string, structured: unknown) => {
     f.runtime.status.set(runId, {
       state: "finished",
-      result: { ...RESULT, structured },
+      result: { ...RESULT, structured, ...discussionAsSent(f, runId) },
     });
     f.advanceMinutes(1);
     return recordRunEnd(f.deps, { runId });
@@ -125,6 +125,12 @@ describe("the Council's visual call through the flows (flow: fake adapters, D-27
     ]);
     expect(start?.outputSchema).toHaveProperty("properties.call");
     expect(start?.input).toContain("does it need Didi?");
+    // A visual call is a discussion too: the Designer and Quality, then Product (ADR 0119 6e).
+    expect(start?.discussion).toEqual({
+      chair: "product",
+      cast: ["designer", "quality"],
+      maxPullIns: 2,
+    });
 
     const node = await f.store.getNode(v.nodeId);
     const runId = (step?.result as { runId: string }).runId;
@@ -138,7 +144,15 @@ describe("the Council's visual call through the flows (flow: fake adapters, D-27
       (d) => d.kind === "council_decision",
     );
     expect(calls).toMatchObject([
-      { scope: { topicKey: topic, gateRequestId: v.gate.id, call: CALL.call, runId } },
+      {
+        scope: {
+          topicKey: topic,
+          gateRequestId: v.gate.id,
+          call: CALL.call,
+          runId,
+          discussion: { chair: "product", cast: ["designer", "quality"] },
+        },
+      },
     ]);
     // The request, the item and what is open for Didi are unchanged.
     expect(await f.store.getGateRequest(v.gate.id)).toEqual(v.gate);

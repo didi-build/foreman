@@ -77,7 +77,7 @@ export interface AgentTaskFile {
    * A Council task only (`council` and `council:visual`): the run is one discussion that Product
    * chairs (ADR 0119 slice 6, D-483). Each persona of the cast gives one view, in this order, and
    * then the chair answers in the task's output schema. Without it the run is one answer, as
-   * before. No flow sets it until slice 6e.
+   * before. The runner sets it on every Council task since slice 6e (flows/lib/tasks.ts).
    */
   discussion?: TaskDiscussion;
 }
