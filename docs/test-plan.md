@@ -351,6 +351,11 @@ Every Council run, of either task type, is a discussion: its text, its task, the
 8. Unit, the result's two checks (`test/model-eval-contract.test.ts`): `discussion_rejected` is unusable in both; both take the Council's facts with `cast` and `pullIns`, and with neither, as the image from before this slice gives them, and refuse one without the other, a cast of four, an entry that is not a persona, three pull-ins, a pull-in with a reason or by no persona, and facts on a refused discussion; each role's largest facts stay within 2,048 bytes as Postgres writes jsonb.
 9. Database integration (`test/db/model-eval.test.ts`, as `factory_runner`): a Council row with a cast of three and two pull-ins, and a `discussion_rejected` row with no facts, store and read back whole, so migration 0027 needs no change.
 
+### Text Postgres can store (O-182)
+
+1. Unit (`src/core/storable-text.test.ts`): text within the rules is kept exactly, emoji, accents, tabs and newlines included; NUL and each lone surrogate half become U+FFFD; a cut at a length never splits a surrogate pair; every string in a JSON value, keys included, is made storable and other values are kept.
+2. Database integration (`test/db/store.test.ts`, as `factory_runner`): a node's title (text) and body (jsonb) and an evidence payload holding NUL and a lone surrogate half are stored with U+FFFD in their place; a node with emoji and accents round-trips unchanged. Without the fix the same writes fail with Postgres's own errors (O-182's mutation checks).
+
 ### Windmill flows (build plan M3.1)
 
 Tests are in `test/flows/`, with fake adapters on the memory store (`flow-fixture.ts`): the real machine-2 contracts and guards, a fake agent runtime that can be made to fail a start or a cancel, a fake task source, generated state API tokens and a Windmill execution count the test sets. Nothing reaches Windmill, a cluster, a model or GitHub.
