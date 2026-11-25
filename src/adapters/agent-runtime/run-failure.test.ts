@@ -1,6 +1,7 @@
 // What a failed run keeps of its cause (D-385, ./run-failure.ts). Unit: the fixed sentences
 // built as the images build them, and made-up text that must not be kept.
 import { describe, expect, it } from "vitest";
+import { DISCUSSION_ERRORS } from "../../agent-images/claude-api/discussion.ts";
 import { FINISH_FAILURES } from "../../agent-images/opencode/finish.ts";
 import { CEILING_MESSAGE, REJECTED_CEILING_MESSAGE } from "../../egress-proxy/proxy.ts";
 import { readConfig, text } from "../../service-kit/config.ts";
@@ -39,6 +40,7 @@ describe("a failed run's cause (unit: run-failure.ts, D-385)", () => {
     "the state API could not be reached to record the verdict",
     "the state API refused the verdict with status 403",
     "a visual comparison task needs its answer schema",
+    ...Object.values(DISCUSSION_ERRORS),
     "the run failed",
     "the run failed before Claude Code started",
     "Claude Code exited with code 1 and printed no result",

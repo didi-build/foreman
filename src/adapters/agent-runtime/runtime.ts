@@ -2,6 +2,7 @@
 // this. `start` returns at once, `poll` reports, `cancel` stops. Kubernetes reports and the runner
 // decides (ADR 0106, essential 1): nothing here records a run or writes to the store.
 import type { RunFailure } from "./run-failure.ts";
+import type { DiscussionRecord } from "../../core/discussion-record.ts";
 import type { RunLimits, RunTokens } from "../../core/runs.ts";
 import type {
   AgentRole,
@@ -34,6 +35,11 @@ export interface AgentRunResult {
   finalText: string;
   /** For example a QA verdict. Unchecked: the caller validates it against its schema. */
   structured?: unknown;
+  /**
+   * A Council discussion's record beside its answer (ADR 0119 slice 6, D-488), checked for shape
+   * and bounds only. Whether the right personas spoke is the runner's check.
+   */
+  discussion?: DiscussionRecord;
   turns: number | null;
   costUsd: number | null;
   minutes: number | null;

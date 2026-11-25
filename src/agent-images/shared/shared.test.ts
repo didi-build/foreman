@@ -441,6 +441,87 @@ describe("result line (unit: round trip through the runtime's parser, ADR 0106 s
     expect(resultLine(sample, [])).not.toContain("capacityRetries");
   });
 
+  describe("a Council discussion's record (ADR 0119 slice 6, D-488)", () => {
+    const discussed: AgentResult = {
+      ...sample,
+      structured: { outcome: "resolve" },
+      discussion: {
+        chair: "product",
+        cast: ["developer"],
+        views: [
+          { persona: "designer", pulledInBy: "developer", text: "Use the card." },
+          { persona: "developer", text: "Build it." },
+        ],
+        pullIns: [
+          { persona: "designer", by: "developer", reason: "It adds a screen." },
+        ],
+        refusedPullIns: [
+          { persona: "quality", by: "developer", reason: "Tests?", why: "limit" },
+        ],
+      },
+    };
+
+    it("round-trips beside the chair's answer, and is left out without one", () => {
+      expect(parseAgentResult(resultLine(discussed, []))).toEqual(discussed);
+      expect(resultLine(sample, [])).not.toContain("discussion");
+    });
+
+    it("removes every credential value from it", () => {
+      const leaky: AgentResult = {
+        ...discussed,
+        discussion: {
+          ...(discussed.discussion as NonNullable<AgentResult["discussion"]>),
+          views: [{ persona: "developer", text: `It printed ${STATE_TOKEN}.` }],
+          pullIns: [
+            {
+              persona: "designer",
+              by: "developer",
+              reason: `Is ${GITHUB_TOKEN} safe?`,
+            },
+          ],
+        },
+      };
+      const line = resultLine(leaky, [STATE_TOKEN, GITHUB_TOKEN]);
+      expect(line).not.toContain(STATE_TOKEN);
+      expect(line).not.toContain(GITHUB_TOKEN);
+      expect(parseAgentResult(line)?.discussion).toMatchObject({
+        views: [{ text: "It printed [redacted]." }],
+        pullIns: [{ reason: "Is [redacted] safe?" }],
+      });
+    });
+
+    it("stays far below the 256 KiB of log the runtime reads, even at its bounds", () => {
+      // A control character takes six bytes in JSON: the most a character can take.
+      const widest = (length: number) => "\u0001".repeat(length);
+      const full: AgentResult = {
+        ...sample,
+        discussion: {
+          chair: "product",
+          cast: ["developer", "designer", "quality"],
+          views: Array.from({ length: 5 }, () => ({
+            persona: "developer" as const,
+            pulledInBy: "designer" as const,
+            text: widest(2000),
+          })),
+          pullIns: Array.from({ length: 2 }, () => ({
+            persona: "designer" as const,
+            by: "developer" as const,
+            reason: widest(300),
+          })),
+          refusedPullIns: Array.from({ length: 5 }, () => ({
+            persona: "quality" as const,
+            by: "developer" as const,
+            reason: widest(300),
+            why: "limit" as const,
+          })),
+        },
+      };
+      const line = resultLine(full, []);
+      expect(parseAgentResult(line)).toEqual(full);
+      expect(Buffer.byteLength(line, "utf8")).toBeLessThan(80 * 1024);
+    });
+  });
+
   it("removes every credential value, at any depth", () => {
     const leaky: AgentResult = {
       ...sample,

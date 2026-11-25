@@ -1,6 +1,9 @@
 // The one result line an agent image prints last (ADR 0106 section 4). Its shape is version 1 of
 // `AgentResult`, which the Kubernetes runtime parses (src/adapters/agent-runtime/kubernetes/
-// result.ts). Every credential value is removed before the line is written.
+// result.ts). Every credential value is removed before the line is written. A Council discussion's
+// record (ADR 0119 slice 6) goes in as the image built it, within its bounds and with its secret
+// values already removed (src/agent-images/claude-api/discussion.ts), and is removed again here
+// with the rest of the line.
 import type {
   AgentResult,
   ProviderError,
@@ -60,6 +63,7 @@ export function resultLine(result: AgentResult, secrets: readonly string[]): str
     status: result.status,
     finalText: result.finalText,
     ...(result.structured === undefined ? {} : { structured: result.structured }),
+    ...(result.discussion === undefined ? {} : { discussion: result.discussion }),
     ...(result.turns === null ? {} : { turns: result.turns }),
     ...(result.costUsd === null ? {} : { costUsd: result.costUsd }),
     ...(result.tokens === null ? {} : { tokens: tokensJson(result.tokens) }),

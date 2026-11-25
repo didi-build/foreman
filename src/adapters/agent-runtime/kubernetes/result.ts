@@ -1,6 +1,10 @@
 // Reading how a run ended (ADR 0106 sections 4 and 6, ADR 0107). The agent image prints one JSON
 // object as its last line of output: its result. This file defines that shape, parses it
 // without ever throwing, and maps the Job's state and the result to a `runs.outcome`.
+import {
+  readDiscussionRecord,
+  type DiscussionRecord,
+} from "../../../core/discussion-record.ts";
 import type { RunTokens } from "../../../core/runs.ts";
 import type {
   ServedTier,
@@ -41,11 +45,17 @@ export { jobState, type JobState } from "./job-state.ts";
  * runtime measured about the route (ADR 0114 sections 2, 8 and 9), each only where it can: the
  * tier the provider's responses reported (one tier, or `mixed`), the Flex capacity rejections it
  * retried and the whole seconds it waited on them, and the time to the first output token.
+ *
+ * A Council run that was a discussion (ADR 0119 slice 6, D-488) adds `discussion`, its record
+ * beside the chair's answer in `structured`: the chair, the cast, each view, each pull-in and each
+ * refused one, within the bounds `readDiscussionRecord` checks (../../../core/discussion-record.ts).
+ * A line whose record is not exactly that shape is no result at all.
  */
 export interface AgentResult {
   status: "success" | "error" | "max_turns" | "max_budget" | "needs_decision";
   finalText: string;
   structured?: unknown;
+  discussion?: DiscussionRecord;
   turns: number | null;
   costUsd: number | null;
   tokens: RunTokens | null;
@@ -157,10 +167,16 @@ export function parseAgentResult(log: string | null): AgentResult | null {
     }
     if (!isObject(value) || value.foremanResult !== 1) continue;
     if (typeof value.status !== "string" || !STATUSES.has(value.status)) return null;
+    const discussion =
+      value.discussion === undefined
+        ? undefined
+        : readDiscussionRecord(value.discussion);
+    if (discussion === null) return null;
     return {
       status: value.status as AgentResult["status"],
       finalText: text(value.finalText, MAX_FINAL_TEXT),
       ...(value.structured === undefined ? {} : { structured: value.structured }),
+      ...(discussion === undefined ? {} : { discussion }),
       turns: isCount(value.turns) ? value.turns : null,
       costUsd: isAmount(value.costUsd) ? value.costUsd : null,
       tokens: tokens(value.tokens),
@@ -231,6 +247,7 @@ function mapOutcome(
   const base = {
     finalText: result?.finalText ?? "",
     ...(result?.structured === undefined ? {} : { structured: result.structured }),
+    ...(result?.discussion === undefined ? {} : { discussion: result.discussion }),
     turns: result?.turns ?? null,
     costUsd: result?.costUsd ?? null,
     minutes: jobMinutes(job),

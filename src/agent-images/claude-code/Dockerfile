@@ -31,6 +31,11 @@ COPY src/adapters/agent-runtime/kubernetes/task.ts ./src/adapters/agent-runtime/
 # The task file's check of the trusted documentation hosts' names (ADR 0119 slice 4): one file
 # with no imports.
 COPY src/core/site-requests.ts ./src/core/site-requests.ts
+# The task file's check of a Council discussion's chair, cast and pull-in limit (ADR 0119 slice
+# 6): the discussion record's bounds and the personas, two files, the first importing only the
+# second.
+COPY src/core/discussion-record.ts ./src/core/discussion-record.ts
+COPY src/core/personas.ts ./src/core/personas.ts
 COPY src/agent-images/shared ./src/agent-images/shared
 COPY src/agent-images/claude-code ./src/agent-images/claude-code
 

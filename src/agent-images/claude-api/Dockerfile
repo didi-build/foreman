@@ -57,6 +57,10 @@ COPY src/core/out-of-scope-findings.ts ./src/core/out-of-scope-findings.ts
 # The check of the documentation sites a run asks to add, and of the trusted hosts' names
 # (ADR 0119 slice 4): one file with no imports.
 COPY src/core/site-requests.ts ./src/core/site-requests.ts
+# A Council discussion (ADR 0119 slice 6): its record's bounds, which the task file's check and the
+# discussion both read, and the personas it names. Two files, the first importing only the second.
+COPY src/core/discussion-record.ts ./src/core/discussion-record.ts
+COPY src/core/personas.ts ./src/core/personas.ts
 # The browser host's site (ADR 0119 slice 5b): the runner's own zip reader with its path check,
 # and CI's static server for the built site, reused as they are.
 COPY src/adapters/screenshots/zip.ts ./src/adapters/screenshots/zip.ts

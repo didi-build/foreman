@@ -43,6 +43,8 @@ COPY src/agent-images/opencode/permissions.ts ./src/agent-images/opencode/permis
 COPY src/agent-images/shared ./src/agent-images/shared
 COPY src/agent-images/claude-api/image.ts ./src/agent-images/claude-api/image.ts
 COPY src/agent-images/claude-api/loop.ts ./src/agent-images/claude-api/loop.ts
+COPY src/agent-images/claude-api/discussion.ts ./src/agent-images/claude-api/discussion.ts
+COPY src/agent-images/claude-api/discussion-turns.ts ./src/agent-images/claude-api/discussion-turns.ts
 COPY src/agent-images/claude-api/files.ts ./src/agent-images/claude-api/files.ts
 COPY src/agent-images/claude-api/prompts.ts ./src/agent-images/claude-api/prompts.ts
 COPY src/agent-images/claude-api/browser-tools.ts ./src/agent-images/claude-api/browser-tools.ts
