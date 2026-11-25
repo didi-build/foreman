@@ -31,6 +31,7 @@ import {
   toSpecVersion,
   toTransition,
 } from "./rows.ts";
+import { storableText } from "../../core/storable-text.ts";
 
 type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
 
@@ -69,13 +70,26 @@ const evidenceValues = (e: Evidence): unknown[] => [
   e.supersedesId,
 ];
 
+/**
+ * Each text parameter made storable (O-182): a text column refuses NUL. jsonb parameters are
+ * already storable, through `json`.
+ */
+const storableValues = (values: unknown[]): unknown[] =>
+  values.map((value) => (typeof value === "string" ? storableText(value) : value));
+
 function ops(db: Queryable): StoreOps {
   const rows = async (text: string, values: unknown[] = []) =>
-    run(async () => (await db.query(text, values)).rows as Record<string, unknown>[]);
+    run(
+      async () =>
+        (await db.query(text, storableValues(values))).rows as Record<
+          string,
+          unknown
+        >[],
+    );
   const one = async (text: string, values: unknown[] = []) =>
     (await rows(text, values))[0] ?? null;
   const exec = async (text: string, values: unknown[] = []) =>
-    run(async () => (await db.query(text, values)).rowCount ?? 0);
+    run(async () => (await db.query(text, storableValues(values))).rowCount ?? 0);
 
   return {
     async insertProject(p) {

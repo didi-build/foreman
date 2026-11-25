@@ -126,6 +126,7 @@
 //
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
+import { cutStorable } from "./storable-text.ts";
 import {
   councilPlanInput,
   escalationInput,
@@ -570,10 +571,11 @@ const isObject = (value: unknown): value is { [key: string]: unknown } =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const scopeOf = (decision: Pick<Decision, "scope">): { [key: string]: Json } =>
   isObject(decision.scope) ? (decision.scope as { [key: string]: Json }) : {};
+// The cut never splits a surrogate pair (O-182); the store makes the rest storable.
 const noteOf = (text: string): string =>
   text.length <= COUNCIL_NOTE_CHARS
     ? text
-    : `${text.slice(0, COUNCIL_NOTE_CHARS)} [cut at ${COUNCIL_NOTE_CHARS} characters]`;
+    : `${cutStorable(text, COUNCIL_NOTE_CHARS)} [cut at ${COUNCIL_NOTE_CHARS} characters]`;
 const textList = (value: Json | undefined): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 

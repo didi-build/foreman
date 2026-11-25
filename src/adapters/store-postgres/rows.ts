@@ -21,13 +21,18 @@ import type {
   SpecVersion,
   Transition,
 } from "../../core/store.ts";
+import { storableJson } from "../../core/storable-text.ts";
 
 type Row = Record<string, unknown>;
 
 const num = (value: unknown): number | null => (value === null ? null : Number(value));
 
-/** jsonb parameters are sent as text, so arrays are not mistaken for Postgres arrays. */
-export const json = (value: Json): string => JSON.stringify(value);
+/**
+ * jsonb parameters are sent as text, so arrays are not mistaken for Postgres arrays. Every string
+ * in the value, keys included, is made storable first (O-182): jsonb refuses NUL and a lone
+ * surrogate half, which `JSON.stringify` would send as escapes.
+ */
+export const json = (value: Json): string => JSON.stringify(storableJson(value));
 
 export const toProject = (r: Row): Project => ({
   id: r.id as string,

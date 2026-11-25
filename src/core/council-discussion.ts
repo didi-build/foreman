@@ -30,6 +30,7 @@ import {
   type DiscussionRecord,
 } from "./discussion-record.ts";
 import type { PersonaId } from "./personas.ts";
+import { cutStorable } from "./storable-text.ts";
 import type { Json } from "./store.ts";
 import type { VisualCallAnswer } from "./visual-call.ts";
 
@@ -170,24 +171,6 @@ export function checkDiscussion(
   return { discussion: record };
 }
 
-/** A lone surrogate half, or NUL: Postgres's jsonb refuses either. */
-const UNSTORABLE =
-  /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\0/g;
-
-/**
- * A text cut to `max` characters without splitting a surrogate pair, with any lone surrogate half
- * or NUL replaced by U+FFFD, so the scope always stores. The image's own cut of a reason at its
- * bound can leave half a pair; a text within its bound is otherwise kept as it is.
- */
-function storable(text: string, max: number): string {
-  let cut = text;
-  if (cut.length > max) {
-    const last = cut.charCodeAt(max - 1);
-    cut = cut.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
-  }
-  return cut.replace(UNSTORABLE, "\ufffd");
-}
-
 /**
  * What a Council decision's `scope.discussion` holds of a checked record (D-488): the chair, the
  * cast, each view with who pulled it in, each pull-in and each refused one, exactly as the image's
@@ -200,17 +183,17 @@ export function discussionScope(record: DiscussionRecord): Json {
     views: record.views.map((view) => ({
       persona: view.persona,
       ...(view.pulledInBy === undefined ? {} : { pulledInBy: view.pulledInBy }),
-      text: storable(view.text, MAX_VIEW_CHARS),
+      text: cutStorable(view.text, MAX_VIEW_CHARS),
     })),
     pullIns: record.pullIns.map((pullIn) => ({
       persona: pullIn.persona,
       by: pullIn.by,
-      reason: storable(pullIn.reason, MAX_REASON_CHARS),
+      reason: cutStorable(pullIn.reason, MAX_REASON_CHARS),
     })),
     refusedPullIns: record.refusedPullIns.map((refused) => ({
       persona: refused.persona,
       by: refused.by,
-      reason: storable(refused.reason, MAX_REASON_CHARS),
+      reason: cutStorable(refused.reason, MAX_REASON_CHARS),
       why: refused.why,
     })),
   };

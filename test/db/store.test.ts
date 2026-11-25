@@ -248,6 +248,35 @@ describe.skipIf(!adminUrl)(
       expect((await store.getNode(n.id))?.state).toBe("in_development");
     });
 
+    it("stores NUL and a lone surrogate half as U+FFFD in text and jsonb, and keeps the rest (O-182)", async () => {
+      // Postgres refuses NUL in text and NUL or a lone surrogate half in jsonb; model text can hold
+      // either, and such a write would fail on every retry.
+      const high = "\ud83d";
+      const n = node({ title: "a\0b", body: { note: `cut ${high}`, ["k\0"]: ["\0"] } });
+      await store.insertNode(n);
+      const back = await store.getNode(n.id);
+      expect(back?.title).toBe("a\ufffdb");
+      expect(back?.body).toEqual({ note: "cut \ufffd", "k\ufffd": ["\ufffd"] });
+      const kept = node({ title: "Emoji 😀 and café", body: { note: "😀" } });
+      await store.insertNode(kept);
+      expect(await store.getNode(kept.id)).toEqual(kept);
+      const evidence = {
+        id: id(),
+        nodeId: n.id,
+        runId: null,
+        kind: "docs_note" as const,
+        ref: "r",
+        commitSha: null,
+        payload: { text: `x\0${high}` },
+        recordedBy: "runner",
+        recordedAt: T0,
+        supersedesId: null,
+      };
+      await store.insertEvidence(evidence);
+      const [stored] = await store.listEvidence({ nodeId: n.id, kind: "docs_note" });
+      expect(stored?.payload).toEqual({ text: "x\ufffd\ufffd" });
+    });
+
     it("filters evidence by commit and kind", async () => {
       const n = node();
       await store.insertNode(n);
