@@ -8,9 +8,11 @@
 // ADR 0119 slice 4b, declared by none yet), whether QA's review gets the browser (`browser`, ADR
 // 0119 slice 5c, declared by none yet), its hosts, its model providers with each key's secret path (D-142,
 // D-143), its per-run limits (D-185), its task types with each one's persona (`task_personas`,
-// D-458) and, for the Council, Triage and QA's visual comparison, its output schemas. A task type
-// other than the role's default may have its own instructions (`task_instructions`, QA's
-// `qa:visual`, D-242, and the Council's `council:visual`, D-270), and limits of its own
+// D-458), for the Council its discussion's chair, pull-in bound and cast table (`discussion`, ADR
+// 0119 slice 6a, read by no run before slice 6e) and, for the Council, Triage and QA's visual
+// comparison, its output schemas. A task type other than the role's default may have its own
+// instructions (`task_instructions`, QA's `qa:visual`, D-242, and the Council's
+// `council:visual`, D-270), and limits of its own
 // (`task_limits`: only the Developer's and the Designer's close task type, the close-only run of a
 // cancelled item's pull request, D-318, which must have them). It never holds a model (each run's
 // route names it, ADR 0114) or a credential value.
@@ -42,6 +44,15 @@ import {
   type ImageKind,
   type ModelApi,
 } from "../../agent-images/shared/settings.ts";
+import {
+  CAST_TOKENS,
+  COUNCIL_QUESTION_KINDS,
+  MAX_PULL_INS,
+  isCastToken,
+  type CastEntry,
+  type CouncilDiscussion,
+  type CouncilQuestionKind,
+} from "../../core/council-cast.ts";
 import { outputSchemaProblems, type OutputSchema } from "../../core/output-schema.ts";
 import {
   PERSONAS,
@@ -99,14 +110,7 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const PUSHING: readonly AgentRole[] = ["developer", "designer"];
 /** The roles with structured output, and the schema names each must give (D-228). */
 const SCHEMA_NAMES: Partial<Record<AgentRole, readonly string[]>> = {
-  council: [
-    "escalation",
-    "reversal",
-    "visual_call",
-    "scanner_gone",
-    "still_needed",
-    "plan",
-  ],
+  council: COUNCIL_QUESTION_KINDS,
   triage: ["answer"],
   qa: ["visual"],
 };
@@ -168,6 +172,7 @@ const FIELDS = [
   "context_tools",
   "docs_lookup",
   "browser",
+  "discussion",
   "mcp",
   "fetch_allowed_hosts",
   "output_schemas",
@@ -222,6 +227,12 @@ export interface BotFile {
    * approves (D-196); none is declared before slice 5e.
    */
   browser?: true;
+  /**
+   * Council only: the discussion's chair, its pull-in bound and each question kind's base cast
+   * (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487), resolved by the core's `councilCast`. No
+   * run reads it before slice 6e, and it changes no run's instructions.
+   */
+  discussion?: CouncilDiscussion;
   /** Designer: whether MagicPath is on. Always false until D-190's gate. */
   magicPath?: boolean;
   /** QA: the fetch step's GitHub hosts. */
@@ -604,6 +615,120 @@ function checkBrowser(
   return true;
 }
 
+/** The fields of the Council's `discussion`, all three needed. */
+const DISCUSSION_FIELDS = ["chair", "max_pull_ins", "casts"] as const;
+
+/** Whether two lists hold the same names, in any order. */
+const sameNames = (keys: readonly string[], names: readonly string[]): boolean =>
+  [...keys].sort().join() === [...names].sort().join();
+
+/**
+ * One question kind's base cast (D-463): a list of unique entries, each a persona other than the
+ * chair or a rule token of this kind that can never name the chair. Only reversal's may be empty,
+ * since its token can name nobody (D-486). Problems name the position, never the value.
+ */
+function checkCast(
+  kind: CouncilQuestionKind,
+  raw: unknown,
+  chair: unknown,
+  add: (p: string) => void,
+): CastEntry[] | undefined {
+  const at = `discussion.casts.${kind}`;
+  if (!Array.isArray(raw)) {
+    add(`${at} must be a list of personas and rule tokens`);
+    return undefined;
+  }
+  if (raw.length === 0 && kind !== "reversal") {
+    add(`${at} must name a persona or a rule token: only reversal's cast may be empty`);
+    return undefined;
+  }
+  let ok = true;
+  const fail = (problem: string) => {
+    add(problem);
+    ok = false;
+  };
+  raw.forEach((entry: unknown, i) => {
+    const where = `${at}[${i}]`;
+    if (isPersonaId(entry)) {
+      if (entry === chair)
+        fail(`${where} is the chair, who is never in a cast (D-462)`);
+    } else if (isCastToken(entry)) {
+      const token = CAST_TOKENS[entry];
+      if (token.kind !== kind) {
+        fail(`${where} is a rule token for the ${token.kind} cast only`);
+      } else if ((token.mayName as readonly unknown[]).includes(chair)) {
+        fail(`${where} is a rule token that can name the chair`);
+      }
+    } else {
+      fail(
+        `${where} must be a persona (${PERSONAS.join(", ")}) or a rule token (${Object.keys(CAST_TOKENS).join(", ")})`,
+      );
+      return;
+    }
+    if (raw.indexOf(entry) !== i) fail(`${where} repeats an earlier entry`);
+  });
+  return ok ? (raw as CastEntry[]).slice() : undefined;
+}
+
+/**
+ * The Council's discussion table (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487): optional,
+ * for the Council only, and when given exactly its chair (a persona), its pull-in bound (a whole
+ * number from 0 to 2) and a base cast for each question kind the Council answers. Problems name
+ * the field and the position, never a value.
+ */
+function checkDiscussion(
+  role: AgentRole,
+  raw: unknown,
+  add: (p: string) => void,
+): CouncilDiscussion | undefined {
+  if (raw === undefined) return undefined;
+  if (role !== "council") {
+    add(`discussion: a ${role} run has no discussion; only the Council's does`);
+    return undefined;
+  }
+  if (!isRecord(raw)) {
+    add(`discussion must be a mapping of ${DISCUSSION_FIELDS.join(", ")}`);
+    return undefined;
+  }
+  let ok = true;
+  const fail = (problem: string) => {
+    add(problem);
+    ok = false;
+  };
+  if (!sameNames(Object.keys(raw), DISCUSSION_FIELDS)) {
+    fail(`discussion must give exactly: ${DISCUSSION_FIELDS.join(", ")}`);
+  }
+  const { chair, max_pull_ins: maxPullIns, casts } = raw;
+  if (!isPersonaId(chair))
+    fail(`discussion.chair must be one of: ${PERSONAS.join(", ")}`);
+  if (
+    !Number.isSafeInteger(maxPullIns) ||
+    (maxPullIns as number) < 0 ||
+    (maxPullIns as number) > MAX_PULL_INS
+  ) {
+    fail(
+      `discussion.max_pull_ins must be a whole number from 0 to ${MAX_PULL_INS} (D-464)`,
+    );
+  }
+  if (!isRecord(casts) || !sameNames(Object.keys(casts), COUNCIL_QUESTION_KINDS)) {
+    fail(`discussion.casts must give exactly: ${COUNCIL_QUESTION_KINDS.join(", ")}`);
+    return undefined;
+  }
+  const checked = {} as Record<CouncilQuestionKind, CastEntry[]>;
+  for (const kind of COUNCIL_QUESTION_KINDS) {
+    const cast = checkCast(kind, casts[kind], chair, add);
+    if (cast) checked[kind] = cast;
+    else ok = false;
+  }
+  return ok
+    ? {
+        chair: chair as CouncilDiscussion["chair"],
+        maxPullIns: maxPullIns as number,
+        casts: checked,
+      }
+    : undefined;
+}
+
 function checkMagicPath(raw: unknown, add: (p: string) => void): boolean | undefined {
   const magicpath = isRecord(raw) ? raw.magicpath : undefined;
   if (
@@ -930,6 +1055,8 @@ function checkBotFile(
   if (contextTools) bot.contextTools = contextTools;
   if (checkDocsLookup(role, data.docs_lookup, add)) bot.docsLookup = true;
   if (checkBrowser(role, data.browser, add)) bot.browser = true;
+  const discussion = checkDiscussion(role, data.discussion, add);
+  if (discussion) bot.discussion = discussion;
   if (role === "qa") {
     const hosts = checkHosts("fetch_allowed_hosts", data.fetch_allowed_hosts, add);
     if (hosts && hosts.length === 0)

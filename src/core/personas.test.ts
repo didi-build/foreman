@@ -1,14 +1,17 @@
-// Seam: unit. The persona check (ADR 0119, D-455, D-456) and the composition of a run's
-// instructions (ADR 0119 slice 2) over synthetic files. The real files in contracts/personas/ are
+// Seam: unit. The persona check (ADR 0119, D-455, D-456), the composition of a run's
+// instructions (ADR 0119 slice 2) and of a Council discussion's (slice 6a) over synthetic files. The real files in contracts/personas/ are
 // checked in test/contracts-personas.test.ts, and composed with the real bot files in
 // src/adapters/contracts-file/bot-files.test.ts.
 import { describe, expect, it } from "vitest";
 
 import {
   COMPOSED_HEADINGS,
+  DISCUSSION_HEADINGS,
   PERSONA_NAMES,
   PERSONAS,
+  composeDiscussionInstructions,
   composeInstructions,
+  discussionPersonaHeading,
   validatePersonas,
   type Personas,
   type RawPersonaFiles,
@@ -292,5 +295,103 @@ describe("composed instructions (unit, ADR 0119 slice 2)", () => {
     expect(text).not.toMatch(/[ \t]$/m);
     expect(text).not.toMatch(/\n\n\n/);
     expect(text).not.toMatch(/\s$/);
+  });
+});
+
+describe("a Council discussion's composed instructions (unit, ADR 0119 slice 6a, D-462, D-483)", () => {
+  /** What `composeInstructions` gives for one persona: the blocks under "## Your persona". */
+  const personaPart = (personas: Personas, id: (typeof PERSONAS)[number]): string => {
+    const text = composeInstructions({ personas, persona: id, task: TASK });
+    const start =
+      text.indexOf(COMPOSED_HEADINGS.persona) + COMPOSED_HEADINGS.persona.length;
+    return text.slice(start, text.indexOf(COMPOSED_HEADINGS.task)).trim();
+  };
+
+  it("gives the shared base, every persona under its heading with the chair first, then the task", () => {
+    const personas = checked();
+    const text = composeDiscussionInstructions({
+      personas,
+      chair: "product",
+      task: TASK,
+    });
+    const shared = composeInstructions({ personas, persona: "product", task: TASK });
+    expect(text).toBe(
+      [
+        shared.slice(0, shared.indexOf(COMPOSED_HEADINGS.persona)).trimEnd(),
+        "## The personas in this discussion",
+        "### Product, the chair",
+        personaPart(personas, "product"),
+        "### The Developer",
+        personaPart(personas, "developer"),
+        "### The Designer",
+        personaPart(personas, "designer"),
+        "### Quality",
+        personaPart(personas, "quality"),
+        "## Your task",
+        "Review the change.\n\nThen answer.",
+      ].join("\n\n"),
+    );
+    expect(text.indexOf(DISCUSSION_HEADINGS.shared)).toBe(0);
+    expect(text).toContain(
+      "## The personas in this discussion\n\n### Product, the chair\n\nYou are product.\n\nWhat you care about most, most important first:\n- First.\n- Second.\n\nHow you do good work:\n- A standard.",
+    );
+    expect(text).toContain(
+      "### The Developer\n\nYou are developer.\n\nWhat you care about most, most important first:\n- First.\n- Second.\n\nHow you do good work:\n- Name each constant.\n- Keep the change small.",
+    );
+    // The Designer's notes come with it, and no other persona's craft standards are added.
+    expect(text).toContain("Notes:\n- A note.\n- Another note.\n\n### Quality");
+    expect(text).not.toContain("which you also hold the work to");
+    expect(text).not.toContain(COMPOSED_HEADINGS.persona);
+    expect(text).not.toMatch(/[ \t]$/m);
+    expect(text).not.toMatch(/\n\n\n/);
+    expect(text).not.toMatch(/\s$/);
+  });
+
+  it("puts any chair first, the others in the personas' order, with one chair heading", () => {
+    const text = composeDiscussionInstructions({
+      personas: checked(),
+      chair: "quality",
+      task: TASK,
+    });
+    const headings = text.split("\n").filter((line) => line.startsWith("#"));
+    expect(headings).toEqual([
+      "## What every agent shares",
+      "## The personas in this discussion",
+      "### Quality, the chair",
+      "### Product",
+      "### The Developer",
+      "### The Designer",
+      "## Your task",
+    ]);
+    expect(discussionPersonaHeading("designer", "product")).toBe("### The Designer");
+    expect(discussionPersonaHeading("product", "product")).toBe(
+      "### Product, the chair",
+    );
+  });
+
+  it("puts the task's text last and unchanged but for its trailing whitespace", () => {
+    const task = "  Step one.\n\n```text\nkeep this\n```\n\n";
+    const text = composeDiscussionInstructions({
+      personas: checked(),
+      chair: "product",
+      task,
+    });
+    expect(text.endsWith(`${DISCUSSION_HEADINGS.task}\n\n${task.trimEnd()}`)).toBe(
+      true,
+    );
+    expect(text.indexOf(DISCUSSION_HEADINGS.task)).toBe(
+      text.lastIndexOf(DISCUSSION_HEADINGS.task),
+    );
+  });
+
+  it("leaves a run's composed instructions as they were", () => {
+    // The exact text above ("gives the shared base, the persona and the task ...") pins
+    // composeInstructions; the discussion's frame shares only its blocks and headings.
+    const personas = checked();
+    for (const id of PERSONAS) {
+      const text = composeInstructions({ personas, persona: id, task: TASK });
+      expect(text).not.toContain(DISCUSSION_HEADINGS.personas);
+      expect(text).not.toContain("### ");
+    }
   });
 });

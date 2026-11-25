@@ -12,6 +12,9 @@
 // task's persona, then the task's own instructions from its bot file, in one fixed frame.
 // `composeInstructions` is the only place that frame is written. The runner and the weekly model
 // test both read its text through the bot file loader, so the test measures what runs get.
+// `composeDiscussionInstructions` (ADR 0119 slice 6) is the Council discussion's frame: the shared
+// base, every persona with the chair first, then the discussion's task. No run reads it until
+// slice 6e.
 
 /** The first four personas (D-456). Adding one is a change to this list and a new file. */
 export const PERSONAS = ["product", "developer", "designer", "quality"] as const;
@@ -250,16 +253,34 @@ const PERSONA_LABELS: Readonly<Record<PersonaList, string>> = {
   notes: "Notes:",
 };
 
-/** The label before another persona's craft standards, which the task also holds. */
-const otherStandardsLabel = (id: PersonaId): string => {
+/** A persona's name at the start of a heading or a sentence: "The Developer", "Quality". */
+const capitalized = (id: PersonaId): string => {
   const name = PERSONA_NAMES[id];
-  return `${name.charAt(0).toUpperCase()}${name.slice(1)}'s craft standards, which you also hold the work to:`;
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
 };
+
+/** The label before another persona's craft standards, which the task also holds. */
+const otherStandardsLabel = (id: PersonaId): string =>
+  `${capitalized(id)}'s craft standards, which you also hold the work to:`;
 
 const BLOCK_SEPARATOR = "\n\n";
 
 const labelledList = (label: string, entries: readonly string[]): string =>
   [label, ...entries.map((entry) => `- ${entry}`)].join("\n");
+
+/** The shared base's blocks: each of its lists after its label. */
+const sharedBlocks = (shared: SharedBase): string[] =>
+  (Object.keys(SHARED_LABELS) as (keyof SharedBase)[]).map((part) =>
+    labelledList(SHARED_LABELS[part], shared[part]),
+  );
+
+/** A persona's blocks: its lens, then each of its lists after its label, notes only if any. */
+const personaBlocks = (persona: Persona): string[] => [
+  persona.lens,
+  ...(Object.keys(PERSONA_LABELS) as PersonaList[])
+    .filter((part) => persona[part].length > 0)
+    .map((part) => labelledList(PERSONA_LABELS[part], persona[part])),
+];
 
 /**
  * A run's instructions (ADR 0119 slice 2): the shared base, then the persona, with another
@@ -273,14 +294,6 @@ export function composeInstructions({
   withCraftStandardsOf,
   task,
 }: ComposeInput): string {
-  const { shared } = personas;
-  const persona = personas.personas[id];
-  const sharedBlocks = (Object.keys(SHARED_LABELS) as (keyof SharedBase)[]).map(
-    (part) => labelledList(SHARED_LABELS[part], shared[part]),
-  );
-  const personaBlocks = (Object.keys(PERSONA_LABELS) as PersonaList[])
-    .filter((part) => persona[part].length > 0)
-    .map((part) => labelledList(PERSONA_LABELS[part], persona[part]));
   const otherStandards = withCraftStandardsOf
     ? [
         labelledList(
@@ -291,12 +304,56 @@ export function composeInstructions({
     : [];
   return [
     COMPOSED_HEADINGS.shared,
-    ...sharedBlocks,
+    ...sharedBlocks(personas.shared),
     COMPOSED_HEADINGS.persona,
-    persona.lens,
-    ...personaBlocks,
+    ...personaBlocks(personas.personas[id]),
     ...otherStandards,
     COMPOSED_HEADINGS.task,
+    task.trimEnd(),
+  ].join(BLOCK_SEPARATOR);
+}
+
+/** The sections of a Council discussion's composed text (ADR 0119 slice 6), in order. */
+export const DISCUSSION_HEADINGS = {
+  shared: COMPOSED_HEADINGS.shared,
+  personas: "## The personas in this discussion",
+  task: COMPOSED_HEADINGS.task,
+} as const;
+
+/** The heading over one persona in a discussion's text: "### Product, the chair" for the chair. */
+export const discussionPersonaHeading = (id: PersonaId, chair: PersonaId): string =>
+  id === chair ? `### ${capitalized(id)}, the chair` : `### ${capitalized(id)}`;
+
+export interface ComposeDiscussionInput {
+  personas: Personas;
+  /** Who chairs the discussion (D-462): the Council's bot file's `discussion.chair`. */
+  chair: PersonaId;
+  /** The discussion's task, from the Council's bot file. */
+  task: string;
+}
+
+/**
+ * A Council discussion's instructions (ADR 0119 slice 6, D-462, D-483): the shared base, then
+ * every persona, the chair first and the others in `PERSONAS` order, each under its heading and
+ * as `composeInstructions` gives a persona, then the task's own instructions, last and unchanged
+ * but for their trailing whitespace. Every call of one discussion has the same text, so it stays
+ * in the cached prefix. No run reads it until slice 6e.
+ */
+export function composeDiscussionInstructions({
+  personas,
+  chair,
+  task,
+}: ComposeDiscussionInput): string {
+  const order = [chair, ...PERSONAS.filter((id) => id !== chair)];
+  return [
+    DISCUSSION_HEADINGS.shared,
+    ...sharedBlocks(personas.shared),
+    DISCUSSION_HEADINGS.personas,
+    ...order.flatMap((id) => [
+      discussionPersonaHeading(id, chair),
+      ...personaBlocks(personas.personas[id]),
+    ]),
+    DISCUSSION_HEADINGS.task,
     task.trimEnd(),
   ].join(BLOCK_SEPARATOR);
 }
