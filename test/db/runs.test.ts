@@ -609,7 +609,8 @@ describe.skipIf(!adminUrl)(
         runId: result.run.id,
         role: "qa",
         revokedAt: null,
-        expiresAt: new Date(now + (20 + 15) * 60_000),
+        // QA's 30 minutes (D-480) and the 15-minute margin.
+        expiresAt: new Date(now + (30 + 15) * 60_000),
       });
       expect(await runs.recordRunnerEnd(result.run.id, "cancelled")).toBe(true);
       expect((await store.getRunToken(tokenHash))?.revokedAt).toEqual(new Date(now));
