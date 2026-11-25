@@ -8,7 +8,8 @@
 // the discussion's chair, cast and pull-in limit (src/adapters/agent-runtime/kubernetes/task.ts),
 // and the Kubernetes runtime reads the record back from the result line with
 // `readDiscussionRecord`. That reader checks the shape and the bounds only, strictly: anything
-// else is no record. Whether the right personas spoke is the runner's check (slice 6c).
+// else is no record. Whether the right personas spoke is the runner's check (slice 6c,
+// ./council-discussion.ts).
 //
 // It imports only the personas, so each image's Dockerfile copies these two files alone.
 import { PERSONAS, isPersonaId, type PersonaId } from "./personas.ts";

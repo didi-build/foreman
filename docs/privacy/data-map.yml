@@ -6,8 +6,13 @@ other_items:
     whose: operator
     data: >-
       Ideas, work items, transitions, evidence, runs and settings for Project Factory projects, and
-      decisions that copy the operator's own answers word for word. No end-user personal data:
-      agents work from synthetic data (D-154).
+      decisions that copy the operator's own answers word for word. A Council decision's scope also
+      keeps the record of its discussion (ADR 0119 slice 6c, D-488): who chaired it, the cast, each
+      pull-in and refused pull-in with its one-line reason, and each persona's view, cut at 2,000
+      characters. Those reasons and views are model text from the Council's personas and may quote
+      the run's input, such as an item's text and Didi's words quoted there; the Messages API image
+      removes known secret values from them. No end-user personal data: agents work from synthetic
+      data (D-154).
     purpose: The source of truth for every item's state, and the audit record of who decided what.
     storage: Supabase Postgres, ca-central-1, schema factory (ADR 0103)
     processors: [Supabase]
@@ -20,7 +25,8 @@ other_items:
       cut, and never a decision's scope, such as an approval's page link and approvers (ADR 0119
       slice 3a), and the read-only context tools' results, cut and framed as data (ADR 0119 slices
       3b to 3d). A run's input and its tool results go to the model provider its route names
-      (Anthropic or DeepInfra), as runs' inputs already do.
+      (Anthropic or DeepInfra), as runs' inputs already do. A Council discussion's record is in
+      its decision's scope, so no run is shown it (D-468).
     source: db/migrations/0001_factory_schema.sql
     verified: false
   # The documentation lookup (ADR 0119 slice 4, D-460, D-472). A run reads a page from a site on

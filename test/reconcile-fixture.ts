@@ -46,13 +46,19 @@ export const COUNCIL_SCHEMAS = readBotFiles().council.outputSchemas ?? {};
 export const TRIAGE_SCHEMAS = readBotFiles().triage.outputSchemas ?? {};
 /** QA's visual answer schema, from its real bot file (contracts/bots/qa.yaml, D-242). */
 export const QA_SCHEMAS = readBotFiles().qa.outputSchemas ?? {};
+/** The Council's discussion table, from its real bot file (ADR 0119 slices 6a and 6c). */
+export const COUNCIL_DISCUSSION = readBotFiles().council.discussion;
 
 const BOT: BotProfile = { runtime: "claude_code", botVersion: "v1" };
 const BOTS: Record<AgentRole, BotProfile> = {
   developer: BOT,
   designer: BOT,
   qa: { ...BOT, outputSchemas: QA_SCHEMAS },
-  council: { ...BOT, outputSchemas: COUNCIL_SCHEMAS },
+  council: {
+    ...BOT,
+    outputSchemas: COUNCIL_SCHEMAS,
+    ...(COUNCIL_DISCUSSION ? { discussion: COUNCIL_DISCUSSION } : {}),
+  },
   triage: { ...BOT, outputSchemas: TRIAGE_SCHEMAS },
 };
 
