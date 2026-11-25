@@ -8,7 +8,9 @@
 // and the planning reads say who accepted it. And the switches. And D-316: an idea from a bot's
 // out-of-scope finding planned the same way; Didi's Request changes or Reject starting the
 // Council's replan at once from the approval resume step, accepted by the Council when Didi is
-// not needed (D-315); and the scan's withdrawal cancelling Didi's open plan-approval request. The rules are in
+// not needed (D-315); and the scan's withdrawal cancelling Didi's open plan-approval request. A plan's
+// Council discussion is checked against the cast read from the item the finding was found on
+// (ADR 0119 slice 6c). The rules are in
 // test/council-plan.test.ts; the API's side of the field is in src/api/planning.test.ts.
 import { describe, expect, it } from "vitest";
 
@@ -19,6 +21,7 @@ import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import { run as scanFlow } from "../../flows/scan.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
 import { generateDailyCheck } from "../../src/core/daily-check.ts";
+import type { PersonaId } from "../../src/core/personas.ts";
 import { FINDING_SOURCE } from "../../src/core/finding-ideas.ts";
 import {
   COUNCIL_FINDING_PLAN_APPROVAL_QUESTION,
@@ -362,6 +365,87 @@ describe("the Council plans an idea from a bot's finding (flow: Council pass and
     await reconcileFlow(f.deps);
     expect(f.tasksFor).toEqual([]);
     expect(await f.store.listDecisionsForNode(idea.id)).toEqual([]);
+  });
+});
+
+describe("the Council's discussion on a plan (flow: run end, ADR 0119 slice 6c, D-487, O-178, O-180)", () => {
+  /** A run end whose result carries a discussion of this cast beside the plan. */
+  const finishWithCast = (f: FlowFixture, runId: string, cast: PersonaId[]) => {
+    f.runtime.status.set(runId, {
+      state: "finished",
+      result: {
+        ...RESULT,
+        structured: { plan: PLAN, productDirection: DIRECTION, needsDidi: NOT_NEEDED },
+        discussion: {
+          chair: "product",
+          cast,
+          views: cast.map((persona) => ({ persona, text: `The ${persona}'s view.` })),
+          pullIns: [],
+          refusedPullIns: [],
+        },
+      },
+    });
+    return recordRunEnd(f.deps, { runId });
+  };
+
+  it("reads the track of the item the finding was found on: on a design item, the Designer is in the cast", async () => {
+    const f = await live();
+    // QA found it on a design item: its track, read from the store, brings the Designer in.
+    const item = await f.node("waiting_for_didi", {
+      track: "design",
+      ownerRole: "didi",
+    });
+    const idea = await f.node("submitted", {
+      type: "idea",
+      track: null,
+      ownerRole: "runner",
+      agentReady: false,
+      title: "The login screen logs the session cookie",
+      body: {
+        source: FINDING_SOURCE,
+        description: "The login screen writes the session cookie to the console.",
+        foundBy: { role: "qa", nodeId: item.id, runId: "run-1" },
+      },
+    });
+    await reconcileFlow(f.deps);
+    const first = f.tasksFor.at(-1)!;
+    expect(first.run).toMatchObject({ bot: "council", nodeId: idea.id });
+    expect(await finishWithCast(f, first.run.id, ["developer"])).toMatchObject({
+      report: { outcome: "fail" },
+      council: {
+        answer: {
+          reason: "invalid",
+          problem: "the discussion fails the runner's check: wrong_cast",
+        },
+      },
+    });
+    await reconcileFlow(f.deps);
+    const second = f.tasksFor.at(-1)!;
+    expect(second.run.id).not.toBe(first.run.id);
+    expect(
+      await finishWithCast(f, second.run.id, ["developer", "designer"]),
+    ).toMatchObject({
+      report: { outcome: "success" },
+      council: {
+        answer: { recorded: true, kind: "plan" },
+        plan: { step: "council_accepted", move: { outcome: "applied" } },
+      },
+    });
+    const proposal = (await f.store.listDecisionsForNode(idea.id)).find(
+      (d) =>
+        d.kind === "council_decision" &&
+        (d.scope as Record<string, unknown>).kind === "plan_proposal",
+    );
+    expect(proposal?.scope).toMatchObject({
+      runId: second.run.id,
+      discussion: { chair: "product", cast: ["developer", "designer"] },
+    });
+    // The product direction is the same answer's: the discussion is kept once, on the plan.
+    const direction = (await f.store.listDecisionsForNode(idea.id)).find(
+      (d) => d.kind === "product_direction",
+    );
+    expect(direction?.scope).not.toHaveProperty("discussion");
+    expect(await stateOf(f, idea.id)).toBe("triage");
   });
 });
 

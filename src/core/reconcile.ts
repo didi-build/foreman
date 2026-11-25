@@ -61,6 +61,7 @@ import {
 } from "./contracts.ts";
 import { createBuilderRuns } from "./builder-runs.ts";
 import { CANCEL_GUARD, createCancels, type CancelStep } from "./cancel.ts";
+import type { CouncilDiscussion } from "./council-cast.ts";
 import type { GitHub } from "./github.ts";
 import { pollRepository, type PollResult } from "./github-ingest.ts";
 import {
@@ -130,6 +131,12 @@ export interface BotProfile {
    * review then reads and checks the head's site (./qa-site.ts); without it, no site is read.
    */
   browser?: true;
+  /**
+   * The Council only: its discussion table (`discussion`, ADR 0119 slice 6a). The runner's check
+   * of a run's discussion resolves the question's cast from it (slice 6c, ./council-discussion.ts);
+   * no Council task carries a discussion before slice 6e.
+   */
+  discussion?: CouncilDiscussion;
 }
 
 export interface ReconcileDeps {

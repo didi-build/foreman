@@ -175,6 +175,7 @@ describe("the bot files in contracts/bots (unit: contracts-file adapter)", () =>
       runtime: "claude-api",
       botVersion: bots.council.version,
       outputSchemas: bots.council.outputSchemas,
+      discussion: bots.council.discussion,
     });
     // Triage's answer schema, which the runner checks every answer against (D-262, M3.6).
     expect(botProfiles(bots).triage.outputSchemas).toEqual(bots.triage.outputSchemas);
@@ -1079,10 +1080,12 @@ describe("the Council's discussion table (unit: contracts-file adapter, ADR 0119
         plan: ["developer", "designer_if_ui"],
       },
     });
-    // No run reads it before slice 6e: it is on the bot file only, never on a profile.
-    expect(botProfiles(bots).council).not.toHaveProperty("discussion");
+    // The Council's profile carries it for the runner's check of a discussion (slice 6c); no run
+    // is sent it before slice 6e. No other role's file or profile has one.
+    expect(botProfiles(bots).council.discussion).toEqual(bots.council.discussion);
     for (const role of BOT_ROLES.filter((r) => r !== "council")) {
       expect(bots[role].discussion, role).toBeUndefined();
+      expect(botProfiles(bots)[role], role).not.toHaveProperty("discussion");
       expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
         "discussion",
       );

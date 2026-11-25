@@ -3,8 +3,9 @@
 // pull-ins a discussion may make (D-464) and each question kind's base cast: personas by id, and
 // rule tokens resolved from the question. The contracts-file adapter checks the table
 // (src/adapters/contracts-file/bot-files.ts) with the names below; `councilCast` resolves one
-// question's cast to personas. No run reads either until slice 6e, so every Council run keeps
-// today's text and behaviour.
+// question's cast to personas. The runner's check of a run's discussion resolves the cast it
+// expects with it (./council-discussion.ts, slice 6c, O-180). No run is sent a cast until slice
+// 6e, so every Council run keeps today's text and behaviour.
 //
 // The rule tokens, each valid for one question kind only:
 // - `builder` (escalation, D-463, D-466): the Designer when the item's track is design, else the
@@ -86,8 +87,8 @@ export type CastQuestion =
       scopeUpdates: readonly Pick<ScopeUpdateView, "path">[];
       /**
        * The item a bot's run found the idea on (`body.foundBy.nodeId`), with its track, or null
-       * for a scanner idea or an item the store no longer has. The runner's plan input does not
-       * read that item today; the slice that first resolves a cast (6c) reads it (O-178).
+       * for a scanner idea or an item the store no longer has. The runner reads that item from
+       * the store when it resolves the cast (./council.ts, O-178, O-180).
        */
       foundOn: Pick<Node, "track"> | null;
     }

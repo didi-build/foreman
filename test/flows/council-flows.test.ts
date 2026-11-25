@@ -4,7 +4,10 @@
 // answer that is re-run once and then goes to Didi; a reversal's question answered through the
 // reconcile flow's Council pass and the run-end flow; a redo that cancels the item's run, sends it
 // back to the start of its track and lets the dispatch start it again on the same branch (D-231);
-// and the switches. The rules themselves are in test/council.test.ts.
+// and the switches. A run's Council discussion (ADR 0119 slice 6c): kept in the decision's scope
+// at the run's end, or, when it fails the runner's check, the run ends `fail`, is re-run once and
+// then goes to Didi. The rules themselves are in test/council.test.ts and
+// test/council-discussion-record.test.ts.
 import { describe, expect, it } from "vitest";
 
 import { run as resume } from "../../flows/approval-resume.ts";
@@ -12,6 +15,8 @@ import { run as dispatch } from "../../flows/dispatch.ts";
 import { run as reconcileFlow } from "../../flows/reconcile.ts";
 import { run as recordRunEnd } from "../../flows/record-run-end.ts";
 import type { AgentRunResult } from "../../src/adapters/agent-runtime/runtime.ts";
+import type { DiscussionRecord } from "../../src/core/discussion-record.ts";
+import type { PersonaId } from "../../src/core/personas.ts";
 import { redoPass } from "../../flows/lib/council-runs.ts";
 import { createCouncil } from "../../src/core/council.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
@@ -232,6 +237,115 @@ describe("an unusable Council answer (flow: fake adapters, D-228)", () => {
       "council",
       "council",
     ]);
+  });
+});
+
+/** A run end whose result carries the Council discussion's record beside the answer. */
+function finishWithDiscussion(
+  f: FlowFixture,
+  runId: string,
+  structured: unknown,
+  discussion: DiscussionRecord,
+) {
+  f.runtime.status.set(runId, {
+    state: "finished",
+    result: { ...RESULT, structured, discussion },
+  });
+  return recordRunEnd(f.deps, { runId });
+}
+
+/** A discussion in which each persona of the cast gives one view. */
+const discussionOf = (cast: PersonaId[]): DiscussionRecord => ({
+  chair: "product",
+  cast,
+  views: cast.map((persona) => ({ persona, text: `The ${persona}'s view.` })),
+  pullIns: [],
+  refusedPullIns: [],
+});
+
+describe("a Council discussion at the run's end (flow: fake adapters, ADR 0119 slice 6c, D-484, D-488)", () => {
+  it("records the discussion in the decision's scope, and the item returns to work", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const node = await escalated(f);
+    await reconcileFlow(f.deps);
+    const start = lastCouncilStart(f);
+    // A code item: its builder is the Developer, then Quality (D-463).
+    const discussion = discussionOf(["developer", "quality"]);
+    expect(
+      await finishWithDiscussion(f, start.run.id, RESOLVE, discussion),
+    ).toMatchObject({
+      report: { outcome: "success" },
+      council: {
+        answer: { recorded: true, kind: "escalation" },
+        escalation: { step: "returned", move: { outcome: "applied" } },
+      },
+    });
+    const [decision] = (await f.store.listDecisionsForNode(node.id)).filter(
+      (d) => d.kind === "council_decision",
+    );
+    expect(decision?.scope).toEqual({
+      topicKey: escalationTopic(node.id),
+      runId: start.run.id,
+      outcome: "resolve",
+      changesProductDirection: false,
+      passesGate: false,
+      discussion,
+    });
+    expect((await f.store.getNode(node.id))?.state).toBe("in_development");
+  });
+
+  it("ends a run whose discussion fails the check fail, re-runs once, and then sends the item to Didi", async () => {
+    const f = await createFlowFixture();
+    ticking(f);
+    await f.live();
+    const node = await escalated(f);
+    await reconcileFlow(f.deps);
+    const first = lastCouncilStart(f);
+    // The Designer is not a code item's builder: the cast is wrong.
+    const wrong = discussionOf(["designer", "quality"]);
+    expect(await finishWithDiscussion(f, first.run.id, RESOLVE, wrong)).toMatchObject({
+      outcome: "recorded",
+      report: { outcome: "fail" },
+      council: {
+        answer: {
+          recorded: false,
+          reason: "invalid",
+          problem: "the discussion fails the runner's check: wrong_cast",
+        },
+        council: [{ step: "start", result: { outcome: "started" } }],
+      },
+    });
+    expect((await f.store.getRun(first.run.id))?.outcome).toBe("fail");
+    const second = lastCouncilStart(f);
+    expect(second.run.id).not.toBe(first.run.id);
+    // The chair gave a view: refused too, and the question goes to Didi.
+    const chair = discussionOf(["developer", "quality"]);
+    chair.views.push({ persona: "product", text: "Product's own view." });
+    expect(await finishWithDiscussion(f, second.run.id, RESOLVE, chair)).toMatchObject({
+      report: { outcome: "fail" },
+      council: {
+        answer: {
+          reason: "invalid",
+          problem: "the discussion fails the runner's check: chair_view",
+        },
+        council: [
+          {
+            step: "to_didi",
+            didi: { move: { outcome: "applied", toState: "escalated_to_didi" } },
+          },
+        ],
+      },
+    });
+    expect(
+      await f.store.findOpenGateRequest(f.projectId, escalationTopic(node.id)),
+    ).toMatchObject({ owner: "didi", payload: { lastCouncilRunId: second.run.id } });
+    expect(
+      (await f.store.listDecisionsForNode(node.id)).filter(
+        (d) => d.kind === "council_decision",
+      ),
+    ).toEqual([]);
   });
 });
 

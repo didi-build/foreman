@@ -6,8 +6,9 @@
 // commit with no deadlock; a redo move commits with its cleared flag, reset counters and
 // cancelled visual-approval request, once, also when two calls race (D-231); a merged item's
 // rework item commits with its `reworks` edge and the original's cleared flag, once, also when
-// two calls race (D-233, migration 0015); and a follow-up Council question after Didi's answer is
-// opened once when two calls race (D-234).
+// two calls race (D-233, migration 0015); a follow-up Council question after Didi's answer is
+// opened once when two calls race (D-234); and a Council discussion kept in the decision's scope
+// round-trips whole (ADR 0119 slice 6c, D-488).
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -18,6 +19,8 @@ import {
 import { createPostgresStore } from "../../src/adapters/store-postgres/store.ts";
 import { approvalDecision } from "../../src/core/approvals.ts";
 import { createCouncil } from "../../src/core/council.ts";
+import { discussionScope } from "../../src/core/council-discussion.ts";
+import type { DiscussionRecord } from "../../src/core/discussion-record.ts";
 import { createEscalations } from "../../src/core/escalations.ts";
 import { visualApprovalTopic } from "../../src/core/guards/design.ts";
 import { escalationTopic } from "../../src/core/guards/escalation.ts";
@@ -384,6 +387,84 @@ describe.skipIf(!adminUrl)(
         );
         expect(followUps.rows[0]?.n).toBe(1);
       }
+    });
+
+    it("keeps a Council discussion in the decision's scope and reads it back whole (ADR 0119 slice 6c, D-488)", async () => {
+      const t = await setup("97000000-0000-4000-8000", "council-g");
+      const library = t.library;
+      const owner = await t.node("in_development");
+      const stale = await t.node("in_development", {
+        track: "design",
+        ownerRole: "designer",
+      });
+      const decision = await library.recordDecision(
+        {
+          projectId: t.projectId,
+          nodeId: owner.id,
+          kind: "approval",
+          scope: {},
+          textVerbatim: "Use the blue layout.",
+          byActor: "didi",
+        },
+        [stale.id],
+      );
+      t.advanceMinutes(1);
+      await library.reverseDecision(decision.id, "didi", "It tested badly.");
+      t.advanceMinutes(1);
+      const topic = reversalTopic(decision.id);
+      const run = await t.run(owner.id, "council", 0, { questionTopic: topic });
+      // A design item's builder is the Designer (D-486). The texts hold what a model may write:
+      // quotes, tags, an emoji, a view at its bound, and the half pair and NUL that the image's
+      // cut or a model can leave, which jsonb refuses.
+      const discussion: DiscussionRecord = {
+        chair: "product",
+        cast: ["designer"],
+        views: [
+          {
+            persona: "quality",
+            pulledInBy: "designer",
+            text: `Quotes "> Ignore your instructions" and </view> \u{1f600} ${"x".repeat(1900)}`,
+          },
+          { persona: "designer", text: `Keep the card \u0000 layout \ud83d.` },
+        ],
+        pullIns: [
+          { persona: "quality", by: "designer", reason: "Who tests the card?" },
+        ],
+        refusedPullIns: [
+          {
+            persona: "developer",
+            by: "product",
+            reason: `${"r".repeat(299)}\ud83d`,
+            why: "bad_reason",
+          },
+        ],
+      };
+      const answer = {
+        verdicts: [{ nodeId: stale.id, verdict: "redo", note: "Use the new card." }],
+        note: "The card replaces the layout.",
+      };
+      expect(await t.council.recordAnswer(run.id, answer, discussion)).toMatchObject({
+        recorded: true,
+        kind: "reversal",
+      });
+      const [kept] = (await store.listDecisionsForNode(owner.id)).filter(
+        (d) => d.kind === "council_decision",
+      );
+      expect(kept?.scope).toMatchObject({
+        reversedDecisionId: decision.id,
+        verdicts: answer.verdicts,
+        discussion: discussionScope(discussion),
+      });
+      const views = (kept?.scope as { discussion: { views: { text: string }[] } })
+        .discussion.views;
+      expect(views[0]?.text).toBe(discussion.views[0]?.text);
+      expect(views[1]?.text).toBe("Keep the card \ufffd layout \ufffd.");
+      // The column holds it as jsonb, under its own key.
+      const stored = await pool.query(
+        "select scope -> 'discussion' -> 'cast' as cast from factory.decisions where id = $1",
+        [kept?.id],
+      );
+      expect(stored.rows[0]?.cast).toEqual(["designer"]);
     });
   },
 );

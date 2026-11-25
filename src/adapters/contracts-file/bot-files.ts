@@ -229,8 +229,9 @@ export interface BotFile {
   browser?: true;
   /**
    * Council only: the discussion's chair, its pull-in bound and each question kind's base cast
-   * (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487), resolved by the core's `councilCast`. No
-   * run reads it before slice 6e, and it changes no run's instructions.
+   * (ADR 0119 slice 6a, D-462 to D-464, D-482 to D-487), resolved by the core's `councilCast`.
+   * The Council's profile carries it for the runner's check of a discussion (slice 6c). No run is
+   * sent it before slice 6e, and it changes no run's instructions.
    */
   discussion?: CouncilDiscussion;
   /** Designer: whether MagicPath is on. Always false until D-190's gate. */
@@ -1148,8 +1149,9 @@ export function instructionsFor(bot: BotFile, taskType: string): string {
 }
 
 /**
- * What the core records and reads for each role: runtime, version, Council and QA schemas, and
- * whether the role's runs have the documentation lookup.
+ * What the core records and reads for each role: runtime, version, Council and QA schemas,
+ * whether the role's runs have the documentation lookup or the browser, and the Council's
+ * discussion table, which the runner's check of a discussion reads (ADR 0119 slice 6c).
  */
 export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
   const profiles = {} as Record<AgentRole, BotProfile>;
@@ -1164,6 +1166,7 @@ export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
         : {}),
       ...(bot.docsLookup ? { docsLookup: true as const } : {}),
       ...(bot.browser ? { browser: true as const } : {}),
+      ...(role === "council" && bot.discussion ? { discussion: bot.discussion } : {}),
     };
   }
   return profiles;

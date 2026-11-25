@@ -10,7 +10,7 @@ import {
 
 // Unit: a Council discussion's record as the Kubernetes runtime reads it back from the result
 // line (ADR 0119 slice 6, D-488): its shape and bounds, strictly. Whether the right personas
-// spoke is the runner's check (slice 6c).
+// spoke is the runner's check (slice 6c, ./council-discussion.test.ts).
 
 const RECORD: DiscussionRecord = {
   chair: "product",

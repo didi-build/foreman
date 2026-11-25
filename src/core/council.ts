@@ -111,6 +111,18 @@
 // then the idea's latest, which closes the question, so each answer gets one replan; the plan
 // approval step takes it under D-315. No usable replan opens Didi's request as above (D-316 (2)).
 //
+// A Council run may be a discussion that Product chairs (ADR 0119 slice 6, D-483): its result then
+// carries the discussion's record beside the answer (./discussion-record.ts). After the kind's
+// reader accepts the answer, the runner checks the record against the question
+// (./council-discussion.ts, D-484): the cast `councilCast` resolves from the Council's discussion
+// table (./council-cast.ts) and the data the run's input was built from, each speaker once, the
+// chair never, the pull-ins within the table's limit, and the kind's way to Didi after a pull-in
+// refused for the limit. A record that fails makes the answer unusable, as a wrong answer does. A
+// checked record is kept in the decision's `scope.discussion` (D-488); the plan keeps it on its
+// `plan_proposal` decision, not on the product direction. A run without one records as before:
+// no flow sends a discussion before slice 6e, which sets `requireDiscussion` (O-180). A dropped
+// visual call has no answer, so it records no discussion.
+//
 // Dry run and the kill switch write nothing, read inside the transaction that writes.
 import type { Contracts, GuardRegistry, TransitionContract } from "./contracts.ts";
 import {
@@ -124,6 +136,13 @@ import {
   type ScopeUpdateView,
 } from "./council-input.ts";
 import { CANCEL_REQUEST_PREFIX, STILL_NEEDED_PREFIX } from "./cancel.ts";
+import { councilCast, type CastQuestion } from "./council-cast.ts";
+import {
+  checkDiscussion,
+  discussionScope,
+  type DiscussedAnswer,
+} from "./council-discussion.ts";
+import type { DiscussionRecord } from "./discussion-record.ts";
 import {
   COUNCIL_RETURNS_BEFORE_DIDI,
   createEscalations,
@@ -509,10 +528,18 @@ export interface CouncilOptions {
   guards: GuardRegistry;
   clock: Clock;
   ids: IdSource;
-  /** The Council's bot profile gives the output schema of each question kind (D-228). */
+  /**
+   * The Council's bot profile gives the output schema of each question kind (D-228), and the
+   * discussion table a run's discussion is checked against (ADR 0119 slice 6c).
+   */
   bots: Pick<Record<AgentRole, BotProfile>, "council">;
   /** CI's screenshot bundles, for the visual call's option screenshots (D-270). */
   screenshots?: ScreenshotBundles;
+  /**
+   * Whether a Council run's answer needs its discussion (O-180). Until slice 6e sends every
+   * Council task a discussion, it is unset, and a run without one records as before.
+   */
+  requireDiscussion?: boolean;
 }
 
 /** What a visual call records, or why not (D-270). */
@@ -727,6 +754,17 @@ const field = (value: Json | undefined, key: string): Json | undefined =>
   isObject(value) ? (value as { [key: string]: Json })[key] : undefined;
 const textOf = (value: Json | undefined): string | null =>
   typeof value === "string" ? value : null;
+
+/** The `scope.discussion` of a decision whose run had a checked discussion (D-488); else none. */
+const discussionOf = (discussion: DiscussionRecord | null): { discussion?: Json } =>
+  discussion ? { discussion: discussionScope(discussion) } : {};
+
+/** What the runner says of a run with no discussion when one is required (O-180). */
+export const NO_DISCUSSION = "the run gave no discussion";
+
+/** What the runner says of a discussion it has no table to check against. */
+export const NO_DISCUSSION_TABLE =
+  "the run gave a discussion, and the Council's bot file has no discussion table";
 
 export function createCouncil(options: CouncilOptions) {
   const { store, contracts, clock, ids } = options;
@@ -1072,10 +1110,18 @@ export function createCouncil(options: CouncilOptions) {
     });
   }
 
-  /** The findings folded into a scanner idea, as the Council's input shows them (D-301). */
-  async function scopeUpdatesOf(nodeId: string): Promise<ScopeUpdateView[]> {
-    return (await store.listEvidence({ nodeId, kind: "scan_scope_update" })).map(
-      (e) => {
+  /**
+   * The findings folded into a scanner idea, as the Council's input shows them (D-301): with
+   * `asOf`, only those recorded by then.
+   */
+  async function scopeUpdatesOf(
+    nodeId: string,
+    asOf?: Date,
+  ): Promise<ScopeUpdateView[]> {
+    const updates = await store.listEvidence({ nodeId, kind: "scan_scope_update" });
+    return updates
+      .filter((e) => !asOf || e.recordedAt.getTime() <= asOf.getTime())
+      .map((e) => {
         const line = field(e.payload, "line");
         return {
           check: textOf(field(e.payload, "check")) ?? "",
@@ -1084,8 +1130,7 @@ export function createCouncil(options: CouncilOptions) {
           target: textOf(field(e.payload, "target")),
           commitSha: e.commitSha,
         };
-      },
-    );
+      });
   }
 
   async function scannerGoneTaskInput(q: ScannerGoneQuestion): Promise<string> {
@@ -1149,6 +1194,73 @@ export function createCouncil(options: CouncilOptions) {
     });
   }
 
+  /**
+   * What the question's cast is resolved from (./council-cast.ts, O-178), read as the run's input
+   * reads it: the escalated item; the reversal's stale items the store still has; the plan's idea,
+   * the scope updates recorded by `asOf` (the run's start, so an update the run's input did not
+   * show does not change the cast), and for an idea from a bot's finding the item it was found on
+   * (`body.foundBy.nodeId`), whose track is read from the store, never guessed from the finder.
+   */
+  async function castQuestion(q: CouncilQuestion, asOf: Date): Promise<CastQuestion> {
+    if (q.kind === "escalation") {
+      return {
+        kind: q.kind,
+        node: { track: (await store.getNode(q.nodeId))?.track ?? null },
+      };
+    }
+    if (q.kind === "reversal") {
+      const staleItems: Node[] = [];
+      for (const id of q.staleNodeIds) {
+        const node = await store.getNode(id);
+        if (node) staleItems.push(node);
+      }
+      return { kind: q.kind, staleItems };
+    }
+    if (q.kind !== "plan") return { kind: q.kind };
+    const node = (await store.getNode(q.nodeId)) as Node;
+    const foundOnId =
+      q.source === "run_finding"
+        ? textOf(field(field(node.body, "foundBy"), "nodeId"))
+        : null;
+    const foundOn = foundOnId ? await store.getNode(foundOnId) : null;
+    return {
+      kind: q.kind,
+      node,
+      source: q.source,
+      scopeUpdates: q.source === "scanner" ? await scopeUpdatesOf(node.id, asOf) : [],
+      foundOn: foundOn ? { track: foundOn.track } : null,
+    };
+  }
+
+  /**
+   * A run's discussion checked against its question (D-484, O-180): null when the run had none
+   * and none is required; else the record, or the problem that makes the answer unusable. The
+   * problem names the rule, never the record's text.
+   */
+  async function checkedDiscussion(
+    run: Run,
+    q: CouncilQuestion,
+    answer: DiscussedAnswer,
+    discussion: unknown,
+  ): Promise<{ discussion: DiscussionRecord | null } | { problem: string }> {
+    if (discussion === undefined) {
+      return options.requireDiscussion
+        ? { problem: NO_DISCUSSION }
+        : { discussion: null };
+    }
+    const table = options.bots.council.discussion;
+    if (!table) return { problem: NO_DISCUSSION_TABLE };
+    const checked = checkDiscussion(discussion, {
+      chair: table.chair,
+      cast: councilCast(table, await castQuestion(q, run.startedAt)),
+      maxPullIns: table.maxPullIns,
+      answer,
+    });
+    return "refused" in checked
+      ? { problem: `the discussion fails the runner's check: ${checked.refused}` }
+      : checked;
+  }
+
   async function reversalTaskInput(q: ReversalQuestion): Promise<string> {
     const decision = await store.getDecision(q.decisionId);
     const staleItems: Node[] = [];
@@ -1206,6 +1318,7 @@ export function createCouncil(options: CouncilOptions) {
     run: Run & { nodeId: string },
     q: EscalationQuestion,
     answer: EscalationAnswer,
+    discussion: DiscussionRecord | null,
   ): Promise<CouncilAnswer> {
     const decision: Decision = {
       id: ids.next(),
@@ -1218,6 +1331,7 @@ export function createCouncil(options: CouncilOptions) {
         outcome: answer.outcome,
         changesProductDirection: answer.changesProductDirection,
         passesGate: answer.passesGate,
+        ...discussionOf(discussion),
       },
       textVerbatim: answer.note,
       byActor: "council",
@@ -1254,7 +1368,8 @@ export function createCouncil(options: CouncilOptions) {
   /**
    * Records a visual call, or its drop, on the call's own topic (D-270): once per run and once per
    * visual-approval request, while the request is still open. The item's row is the only lock, so
-   * two answers for the same request write one. It never touches the request.
+   * two answers for the same request write one. It never touches the request. A drop has no
+   * answer, so no discussion.
    */
   async function writeVisualCall(
     q: VisualCallQuestion,
@@ -1262,6 +1377,7 @@ export function createCouncil(options: CouncilOptions) {
     call: string,
     text: string,
     unsure?: boolean,
+    discussion: DiscussionRecord | null = null,
   ): Promise<VisualCallRecord> {
     const decision: Decision = {
       id: ids.next(),
@@ -1274,6 +1390,7 @@ export function createCouncil(options: CouncilOptions) {
         call,
         runId,
         ...(unsure === undefined ? {} : { unsure }),
+        ...discussionOf(discussion),
       },
       textVerbatim: text,
       byActor: "council",
@@ -1306,6 +1423,7 @@ export function createCouncil(options: CouncilOptions) {
     run: Run,
     q: VisualCallQuestion,
     answer: VisualCallAnswer,
+    discussion: DiscussionRecord | null,
   ): Promise<CouncilAnswer> {
     const written = await writeVisualCall(
       q,
@@ -1313,6 +1431,7 @@ export function createCouncil(options: CouncilOptions) {
       answer.call,
       answer.reason,
       answer.unsure,
+      discussion,
     );
     return written.recorded === false
       ? { recorded: false, reason: written.reason }
@@ -1361,6 +1480,7 @@ export function createCouncil(options: CouncilOptions) {
     run: Run & { nodeId: string },
     q: ScannerGoneQuestion | StillNeededQuestion,
     answer: ScannerGoneAnswer,
+    discussion: DiscussionRecord | null,
   ): Promise<CouncilAnswer> {
     const at = clock.now();
     const decision: Decision = {
@@ -1376,6 +1496,7 @@ export function createCouncil(options: CouncilOptions) {
         ...(q.kind === "still_needed"
           ? { reason: q.reason }
           : { commitSha: q.commitSha }),
+        ...discussionOf(discussion),
       },
       textVerbatim: answer.note,
       byActor: "council",
@@ -1441,6 +1562,7 @@ export function createCouncil(options: CouncilOptions) {
     run: Run & { nodeId: string },
     q: CouncilPlanQuestion,
     answer: CouncilPlanAnswer,
+    discussion: DiscussionRecord | null,
   ): Promise<CouncilAnswer> {
     const at = clock.now();
     const direction: Decision = {
@@ -1467,6 +1589,7 @@ export function createCouncil(options: CouncilOptions) {
         directionDecisionId: direction.id,
         // A replan names Didi's answer it follows (D-316 (3)).
         ...(q.replan ? { replanOf: q.replan.answerId } : {}),
+        ...discussionOf(discussion),
       },
       textVerbatim: answer.plan,
       byActor: "council",
@@ -1512,6 +1635,7 @@ export function createCouncil(options: CouncilOptions) {
     run: Run & { nodeId: string },
     q: ReversalQuestion,
     answer: ReversalAnswer,
+    discussion: DiscussionRecord | null,
   ): Promise<CouncilAnswer> {
     const at = clock.now();
     const decisionId = ids.next();
@@ -1520,6 +1644,7 @@ export function createCouncil(options: CouncilOptions) {
       runId: run.id,
       reversedDecisionId: q.decisionId,
       verdicts: answer.verdicts.map((v) => ({ ...v })),
+      ...discussionOf(discussion),
     };
     return store
       .transaction(async (tx): Promise<CouncilAnswer> => {
@@ -2159,9 +2284,16 @@ export function createCouncil(options: CouncilOptions) {
     /**
      * Validates a finished Council run's structured answer against its question's schema and
      * records the `council_decision` (D-228), once per run. A reversal answer is applied in the
-     * same transaction (D-229). The agent's text outside the answer is never read.
+     * same transaction (D-229). The agent's text outside the answer is never read. A run that was
+     * a discussion gives its record as `discussion` (ADR 0119 slice 6c): it is checked after the
+     * answer and kept in the decision's scope (D-488), and one that fails makes the answer
+     * unusable. Without one, the answer is recorded as before, unless `requireDiscussion`.
      */
-    async recordAnswer(runId: string, structured: unknown): Promise<CouncilAnswer> {
+    async recordAnswer(
+      runId: string,
+      structured: unknown,
+      discussion?: unknown,
+    ): Promise<CouncilAnswer> {
       const found = await store.getRun(runId);
       if (!found) return { recorded: false, reason: "no_run" };
       if (found.bot !== "council" || !found.questionTopic || !found.nodeId) {
@@ -2204,37 +2336,60 @@ export function createCouncil(options: CouncilOptions) {
       ) {
         return { recorded: false, reason: "question_closed" };
       }
-      // First the bot file's schema, then the reader's own checks (D-228).
+      // First the bot file's schema, then the reader's own checks (D-228), then the run's
+      // discussion against the read answer (ADR 0119 slice 6c), and only then the record.
       const problem = outputProblem(councilSchema(options.bots, q.kind), structured);
       if (problem) return { recorded: false, reason: "invalid", problem };
-      if (q.kind === "visual_call") {
-        const read = readVisualCallAnswer(structured);
+      const checkThenRecord = async <A>(
+        read: { answer: A } | { problem: string },
+        discussed: (answer: A) => DiscussedAnswer,
+        record: (answer: A, checked: DiscussionRecord | null) => Promise<CouncilAnswer>,
+      ): Promise<CouncilAnswer> => {
         if ("problem" in read)
           return { recorded: false, reason: "invalid", problem: read.problem };
-        return recordVisualCall(run, q, read.answer);
+        const checked = await checkedDiscussion(
+          run,
+          q,
+          discussed(read.answer),
+          discussion,
+        );
+        if ("problem" in checked)
+          return { recorded: false, reason: "invalid", problem: checked.problem };
+        return record(read.answer, checked.discussion);
+      };
+      if (q.kind === "visual_call") {
+        return checkThenRecord(
+          readVisualCallAnswer(structured),
+          (answer) => ({ kind: q.kind, answer }),
+          (answer, checked) => recordVisualCall(run, q, answer, checked),
+        );
       }
       if (q.kind === "plan") {
-        const read = readCouncilPlanAnswer(structured);
-        if ("problem" in read)
-          return { recorded: false, reason: "invalid", problem: read.problem };
-        return recordCouncilPlan(run, q, read.answer);
+        return checkThenRecord(
+          readCouncilPlanAnswer(structured),
+          (answer) => ({ kind: q.kind, answer }),
+          (answer, checked) => recordCouncilPlan(run, q, answer, checked),
+        );
       }
       if (q.kind === "scanner_gone" || q.kind === "still_needed") {
-        const read = readScannerGoneAnswer(structured);
-        if ("problem" in read)
-          return { recorded: false, reason: "invalid", problem: read.problem };
-        return recordScannerGone(run, q, read.answer);
+        return checkThenRecord(
+          readScannerGoneAnswer(structured),
+          (answer) => ({ kind: q.kind, answer }),
+          (answer, checked) => recordScannerGone(run, q, answer, checked),
+        );
       }
       if (q.kind === "escalation") {
-        const read = readEscalationAnswer(structured);
-        if ("problem" in read)
-          return { recorded: false, reason: "invalid", problem: read.problem };
-        return recordEscalation(run, q, read.answer);
+        return checkThenRecord(
+          readEscalationAnswer(structured),
+          (answer) => ({ kind: q.kind, answer }),
+          (answer, checked) => recordEscalation(run, q, answer, checked),
+        );
       }
-      const read = readReversalAnswer(structured, q.staleNodeIds);
-      if ("problem" in read)
-        return { recorded: false, reason: "invalid", problem: read.problem };
-      return recordReversal(run, q, read.answer);
+      return checkThenRecord(
+        readReversalAnswer(structured, q.staleNodeIds),
+        (answer) => ({ kind: q.kind, answer }),
+        (answer, checked) => recordReversal(run, q, answer, checked),
+      );
     },
 
     /**
