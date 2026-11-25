@@ -66,13 +66,13 @@
     "react-router-dom": "7.18.6",
     "secretlint": "10.2.2",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.72.2",
+    "typescript-eslint": "8.73.0",
     "vite": "7.3.8",
     "vitest": "4.1.12",
-    "wrangler": "4.160.1"
+    "wrangler": "4.164.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "1.8.0",
+    "@anthropic-ai/sdk": "1.10.0",
     "pg": "8.23.1",
     "playwright-core": "1.65.1",
     "yaml": "2.9.1"
