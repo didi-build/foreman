@@ -371,10 +371,9 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
 
   it("takes QA's browser pod resources when the file has them, leaves them out when it does not, and refuses malformed ones (ADR 0119 slice 5b)", () => {
     const { runSettings } = filledAgentRuns();
-    const base = (runSettings as Record<string, unknown>).resources as Record<
-      string,
-      unknown
-    >;
+    // The committed file holds D-480's sizes since slice 5d; without them the value leaves them out.
+    const { browser: committed, ...base } = (runSettings as Record<string, unknown>)
+      .resources as Record<string, unknown>;
     const read = (resources: unknown) => {
       const result = agentRunSettings(
         { ...runSettings, resources },
@@ -388,6 +387,7 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
       requests: { cpu: "250m", memory: "384Mi", "ephemeral-storage": "256Mi" },
       limits: { cpu: "1", memory: "768Mi", "ephemeral-storage": "1Gi" },
     };
+    expect(committed).toEqual(browser);
     expect(read({ ...base, browser }).browser).toEqual(browser);
     expect(() => read({ ...base, browser: { requests: browser.requests } })).toThrow(
       /resources\.browser must hold exactly limits, requests/,
@@ -430,6 +430,8 @@ describe("the bundle job's manifest (integration: esbuild on the real entries, D
       proxy: ["50m", "64Mi", "250m", "128Mi"],
       fetch: ["100m", "128Mi", "500m", "256Mi"],
       repoMap: ["250m", "1Gi", "1", "1536Mi"],
+      // QA's browser pod (D-480, ADR 0119 slice 5d).
+      browser: ["250m", "384Mi", "1", "768Mi"],
     });
     expect(runSettings).toMatchObject({
       terminationGracePeriodSeconds: 30,
