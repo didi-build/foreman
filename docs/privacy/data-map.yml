@@ -66,7 +66,7 @@ other_items:
       ends; the browser pod holds the site in memory only. Each page's text goes into the run, and
       so to the model provider its route names. The run's log holds each call's tool, status, size
       and time only.
-    processors: [Anthropic, DeepInfra]
+    processors: [GitHub, Anthropic, DeepInfra]
     retention: >-
       The artifact 3 days in the project's repository; the Secret until the run ends. Foreman keeps
       no page text.
