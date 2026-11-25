@@ -337,7 +337,7 @@ describe("QA's browser (adapter contract: the sealed pod, ADR 0119 slice 5b, D-4
     expect(fake.has("Job", NS, n.agentJob)).toBe(true);
   });
 
-  it("refuses a browser run without its site, a site on any other run, and a browser outside QA's review, creating nothing", async () => {
+  it("refuses a browser run without its site or its task file's browser, a site or a browser task file on any other run, and a browser outside QA's review, creating nothing", async () => {
     await expect(runtime.start(task(QA_BROWSER), QA_LIMITS)).rejects.toThrow(
       "a browser run needs its site",
     );
@@ -350,6 +350,16 @@ describe("QA's browser (adapter contract: the sealed pod, ADR 0119 slice 5b, D-4
     await expect(
       runtime.start({ ...browserTask(), site: new Uint8Array(0) }, QA_LIMITS),
     ).rejects.toThrow(/site zip/);
+    // The task file and the spec agree on the browser (ADR 0119 slice 5c).
+    await expect(
+      runtime.start({ ...browserTask(), task: taskFor(QA) }, QA_LIMITS),
+    ).rejects.toThrow("a browser run's task file needs its browser");
+    await expect(
+      runtime.start(
+        { ...task(QA), task: { ...taskFor(QA), browser: true } },
+        QA_LIMITS,
+      ),
+    ).rejects.toThrow("only a browser run's task file has a browser");
     expect(fake.calls).toEqual([]);
   });
 

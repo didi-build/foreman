@@ -31,6 +31,11 @@
 //   route that is never on the network: every page answers "This page is not available in the
 //   weekly model test." So the frame, the URL rules and the limits are a real run's, and no case
 //   depends on what a live site says that week.
+// - **Browser.** No case has a site to browse (ADR 0119 slice 5c): the case format holds no built
+//   site, and a real run gets the browser only when the runner's check of its head gives one. So
+//   no case's task has `browser`, QA's frame never names the browser tools here, and the test
+//   does not yet measure a QA review with a browser. A known gap (docs/test-plan.md), for a later
+//   slice that gives cases a site.
 import type { BotFiles } from "../../adapters/contracts-file/bot-files.ts";
 import type { EvalCase } from "../../eval/cases.ts";
 import type { CaseRun } from "../../eval/inputs.ts";

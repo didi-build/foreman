@@ -544,6 +544,46 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(text).toContain('add "siteRequests" to the object');
   });
 
+  it("take browser: true for QA only, and nothing else (ADR 0119 slice 5c)", () => {
+    const { bots, problems } = check(
+      withData("qa", (d) => {
+        d.browser = true;
+      }),
+    );
+    expect(problems).toEqual([]);
+    expect(bots?.qa.browser).toBe(true);
+    // The start of QA's review reads it from the role's profile (flows/lib/start-run.ts).
+    if (bots) expect(botProfiles(bots).qa.browser).toBe(true);
+    const problemsOf = (role: (typeof BOT_ROLES)[number], value: unknown) =>
+      check(
+        withData(role, (d) => {
+          d.browser = value;
+        }),
+      ).problems;
+    for (const role of BOT_ROLES.filter((r) => r !== "qa")) {
+      expect(problemsOf(role, true), role).toEqual([
+        `${role}.yaml: browser: a ${role} run gets no browser; only QA's review does`,
+      ]);
+    }
+    for (const value of [false, "true", 1, null, ["chromium"], { enabled: true }]) {
+      expect(problemsOf("qa", value), JSON.stringify(value)).toEqual([
+        "qa.yaml: browser must be true when given",
+      ]);
+    }
+    expect(JSON.stringify(problemsOf("qa", ["chromium"]))).not.toContain("chromium");
+  });
+
+  it("declare the browser in no bot file yet (ADR 0119 slice 5c; slice 5e declares it, D-196)", () => {
+    const bots = readBotFiles();
+    for (const role of BOT_ROLES) {
+      expect(bots[role].browser, role).toBeUndefined();
+      expect(botProfiles(bots)[role], role).not.toHaveProperty("browser");
+      expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
+        "browser",
+      );
+    }
+  });
+
   it("give QA's visual comparison its answer schema and its own instructions, and no other role any (D-242)", () => {
     const bots = readBotFiles();
     expect(Object.keys(bots.qa.outputSchemas ?? {})).toEqual(["visual"]);

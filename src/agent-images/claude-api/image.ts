@@ -11,7 +11,9 @@
 // slice 3c, ../shared/context-tools.ts): after QA's file tools, and before the answer tool, which
 // stays last. When their task lists documentation hosts (slice 4b), the documentation lookup
 // (../shared/docs-lookup.ts) comes after the context tools, through the proxy's lookup route
-// (FOREMAN_LOOKUP_URL). QA's visual comparison and the Council never get either.
+// (FOREMAN_LOOKUP_URL). QA's visual comparison and the Council never get either. When QA's review
+// task has the browser (ADR 0119 slice 5c), its browser tools (./browser-tools.ts) come after the
+// lookup, through the run's browser pod (FOREMAN_BROWSER_URL), and before the answer tool.
 import { waitForProxy } from "../shared/proxy-ready.ts";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -54,6 +56,12 @@ import {
 } from "../shared/docs-lookup.ts";
 import { isContextToolName } from "../../adapters/agent-runtime/kubernetes/task.ts";
 import type { AgentRole } from "../../adapters/agent-runtime/runtime.ts";
+import {
+  BROWSER_TOOLS,
+  createBrowserTools,
+  isBrowserToolName,
+  type BrowserTools,
+} from "./browser-tools.ts";
 import { WORKSPACE_TOOLS, createWorkspace, type Workspace } from "./files.ts";
 import {
   runLoop,
@@ -254,10 +262,23 @@ const lookupTools = (hosts: readonly string[]) =>
   hosts.length > 0 ? [docsLookupTool(hosts)] : [];
 
 /**
- * QA's review: the read-only tools over the tree, then the context tools the task lists and the
- * documentation lookup when it lists hosts, the head commit and the evidence ids after the fenced
- * input, and the verdict's schema. Exported for the weekly test job (ADR 0117), so its QA runs
- * get exactly a real run's frame.
+ * Whether QA's review frame offers the browser tools (ADR 0119 slice 5c): when its task has the
+ * browser, which needs their source, a real run's browser pod. A task with images never has it,
+ * as the task file check also says.
+ */
+function hasBrowser(task: AgentTaskFile, browser: BrowserTools | undefined): boolean {
+  const listed = task.browser === true && task.images === undefined;
+  if (listed && browser === undefined) {
+    throw new Error("a task with the browser needs its source");
+  }
+  return listed;
+}
+
+/**
+ * QA's review: the read-only tools over the tree, then the context tools the task lists, the
+ * documentation lookup when it lists hosts and the browser tools when it has the browser, the head
+ * commit and the evidence ids after the fenced input, and the verdict's schema. Exported for the
+ * weekly test job (ADR 0117), so its QA runs get exactly a real run's frame.
  */
 export function qaReviewFrame(
   task: AgentTaskFile,
@@ -266,10 +287,12 @@ export function qaReviewFrame(
   workspace: Workspace,
   context?: ContextTools,
   lookup?: DocsLookup,
+  browser?: BrowserTools,
 ): RunFrame {
   const evidenceIds = task.evidenceIds ?? [];
   const listed = listedContextTools("qa", task, context);
   const hosts = listedDocsHosts("qa", task, lookup);
+  const withBrowser = hasBrowser(task, browser);
   return {
     system: systemText(
       "qa",
@@ -278,11 +301,13 @@ export function qaReviewFrame(
       answerVia,
       listed,
       hosts.length > 0,
+      withBrowser,
     ),
     tools: [
       ...WORKSPACE_TOOLS,
       ...contextToolDefinitions(listed),
       ...lookupTools(hosts),
+      ...(withBrowser ? BROWSER_TOOLS : []),
     ],
     input: fencedInput(task.input, [
       `Head commit: ${headSha}`,
@@ -293,9 +318,11 @@ export function qaReviewFrame(
     runTool: (name, input) =>
       lookup !== undefined && hosts.length > 0 && name === DOCS_LOOKUP_TOOL_NAME
         ? lookup.run(input)
-        : context !== undefined && listed.length > 0 && isContextToolName(name)
-          ? context.run(name, input)
-          : workspace.run(name, input),
+        : browser !== undefined && withBrowser && isBrowserToolName(name)
+          ? browser.run(name, input)
+          : context !== undefined && listed.length > 0 && isContextToolName(name)
+            ? context.run(name, input)
+            : workspace.run(name, input),
   };
 }
 
@@ -357,6 +384,7 @@ async function qaRun(
   secrets: readonly string[],
   context: ContextTools,
   lookup: DocsLookup | undefined,
+  browser: BrowserTools | undefined,
 ): Promise<AgentResult> {
   const qa = readConfig(qaSettings, env);
   const logger = createLogger("agent-qa", deps.write);
@@ -371,7 +399,15 @@ async function qaRun(
     maxUsd: settings.maxUsd,
     ...common,
     ...(deps.clock ? { clock: deps.clock } : {}),
-    ...qaReviewFrame(task, qa.headSha, common.answerVia, workspace, context, lookup),
+    ...qaReviewFrame(
+      task,
+      qa.headSha,
+      common.answerVia,
+      workspace,
+      context,
+      lookup,
+      browser,
+    ),
   });
   if (result.status !== "success") return result;
   const parsed = parseVerdict(result.finalText, evidenceIds);
@@ -537,6 +573,18 @@ export async function runClaudeApiImage(
             ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
           })
         : undefined;
+    // QA's browser, only when its review task has it (ADR 0119 slice 5c): through the run's
+    // browser pod, whose address the runtime gives only such a run. Each call is logged by tool,
+    // status, size and time only.
+    const browser =
+      task.browser === true
+        ? createBrowserTools({
+            browserUrl: readConfig({ url: baseUrl("FOREMAN_BROWSER_URL") }, env).url,
+            secrets,
+            log: (entry) => logger.info("browser tool call", { ...entry }),
+            ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+          })
+        : undefined;
     result =
       settings.role === "qa" && task.images !== undefined
         ? await visualRun(settings, task, client, common, deps, secrets)
@@ -551,6 +599,7 @@ export async function runClaudeApiImage(
               secrets,
               context,
               lookup,
+              browser,
             )
           : await structuredRun(settings, task, client, common, deps, context, lookup);
   } catch (error) {

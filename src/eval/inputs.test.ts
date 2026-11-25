@@ -151,6 +151,14 @@ describe("weekly model test set inputs (unit: each case's run, built by the runn
     }
   });
 
+  it("gives no case the browser, even when QA's bot file declares it: no case has a site (ADR 0119 slice 5c, a known gap)", () => {
+    const declared = { ...bots, qa: { ...bots.qa, browser: true as const } };
+    for (const c of cases) {
+      expect(buildCaseRun(c, bots, cases).task, c.id).not.toHaveProperty("browser");
+      expect(buildCaseRun(c, declared, cases).task, c.id).not.toHaveProperty("browser");
+    }
+  });
+
   it("records a builder's stop exactly as the runner does: its reason and the guard's detail", async () => {
     for (const c of of("council")) {
       const [reason, detail] = c.input.why;

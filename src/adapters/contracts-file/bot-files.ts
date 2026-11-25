@@ -5,7 +5,8 @@
 // A bot file holds the task's own instructions (the cached prefix of every run's task file), its
 // agent image, its tools, its read-only context tools if any (`context_tools`, ADR 0119 slice 3c,
 // none declared before slice 3d), whether its runs get the documentation lookup (`docs_lookup`,
-// ADR 0119 slice 4b, declared by none yet), its hosts, its model providers with each key's secret path (D-142,
+// ADR 0119 slice 4b, declared by none yet), whether QA's review gets the browser (`browser`, ADR
+// 0119 slice 5c, declared by none yet), its hosts, its model providers with each key's secret path (D-142,
 // D-143), its per-run limits (D-185), its task types with each one's persona (`task_personas`,
 // D-458) and, for the Council, Triage and QA's visual comparison, its output schemas. A task type
 // other than the role's default may have its own instructions (`task_instructions`, QA's
@@ -166,6 +167,7 @@ const FIELDS = [
   "allowed_tools",
   "context_tools",
   "docs_lookup",
+  "browser",
   "mcp",
   "fetch_allowed_hosts",
   "output_schemas",
@@ -214,6 +216,12 @@ export interface BotFile {
    * bot file change Didi approves (D-196); none is declared in slice 4b.
    */
   docsLookup?: true;
+  /**
+   * QA only: whether its review (`qa:review`) gets the browser over the pull request's own build,
+   * when the runner's check gives a site (ADR 0119 slice 5c, D-476, D-479). A bot file change Didi
+   * approves (D-196); none is declared before slice 5e.
+   */
+  browser?: true;
   /** Designer: whether MagicPath is on. Always false until D-190's gate. */
   magicPath?: boolean;
   /** QA: the fetch step's GitHub hosts. */
@@ -575,6 +583,27 @@ function checkDocsLookup(
   return true;
 }
 
+/**
+ * QA's browser (ADR 0119 slice 5c): optional, and when given exactly `true`, for QA only, whose
+ * review alone runs one (D-476). Problems never repeat the value.
+ */
+function checkBrowser(
+  role: AgentRole,
+  raw: unknown,
+  add: (p: string) => void,
+): true | undefined {
+  if (raw === undefined) return undefined;
+  if (role !== "qa") {
+    add(`browser: a ${role} run gets no browser; only QA's review does`);
+    return undefined;
+  }
+  if (raw !== true) {
+    add("browser must be true when given");
+    return undefined;
+  }
+  return true;
+}
+
 function checkMagicPath(raw: unknown, add: (p: string) => void): boolean | undefined {
   const magicpath = isRecord(raw) ? raw.magicpath : undefined;
   if (
@@ -900,6 +929,7 @@ function checkBotFile(
   const contextTools = checkContextTools(role, data.context_tools, add);
   if (contextTools) bot.contextTools = contextTools;
   if (checkDocsLookup(role, data.docs_lookup, add)) bot.docsLookup = true;
+  if (checkBrowser(role, data.browser, add)) bot.browser = true;
   if (role === "qa") {
     const hosts = checkHosts("fetch_allowed_hosts", data.fetch_allowed_hosts, add);
     if (hosts && hosts.length === 0)
@@ -1006,6 +1036,7 @@ export function botProfiles(bots: BotFiles): Record<AgentRole, BotProfile> {
         ? { outputSchemas: bot.outputSchemas }
         : {}),
       ...(bot.docsLookup ? { docsLookup: true as const } : {}),
+      ...(bot.browser ? { browser: true as const } : {}),
     };
   }
   return profiles;

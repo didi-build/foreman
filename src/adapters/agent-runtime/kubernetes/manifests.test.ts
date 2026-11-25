@@ -318,6 +318,23 @@ describe("run credentials (unit: mounted only where needed, ADR 0106 section 5)"
     ).toThrow(/too large/);
   });
 
+  it("gives a browser run's task file the browser, and no other run's (ADR 0119 slice 5c)", () => {
+    const secret = taskSecret(QA_BROWSER, taskFor(QA_BROWSER));
+    expect(JSON.parse(secret.stringData["task.json"] ?? "")).toMatchObject({
+      browser: true,
+    });
+    // The site's bytes go to the site Secret only, never into the task file.
+    expect(JSON.stringify(secret)).not.toContain(
+      Buffer.from(SITE_ZIP).toString("base64"),
+    );
+    expect(() =>
+      taskSecret(QA_BROWSER, { ...taskFor(QA_BROWSER), browser: undefined }),
+    ).toThrow("a browser run's task file needs its browser");
+    expect(() => taskSecret(QA, { ...taskFor(QA), browser: true })).toThrow(
+      "only a browser run's task file has a browser",
+    );
+  });
+
   it("mounts the model credential into the proxy pod only", () => {
     for (const spec of [DEVELOPER, QA, COUNCIL]) {
       const stage = agentStage(spec, spec === QA ? QA_LIMITS : LIMITS, SETTINGS);

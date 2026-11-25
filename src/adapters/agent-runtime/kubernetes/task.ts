@@ -34,6 +34,14 @@ export interface AgentTaskFile {
    */
   docsLookupHosts?: string[];
   /**
+   * QA's review (`qa:review`) only: the run has a browser pod with the pull request's own build
+   * (ADR 0119 slice 5c, D-476), which the image's browser tools reach at FOREMAN_BROWSER_URL. Set
+   * exactly when the run's spec has `browser`, for a bot file that declares it and a head whose
+   * site passed the runner's check. The site itself is never in the task file: it goes to the
+   * browser pod alone, in the run's site Secret.
+   */
+  browser?: true;
+  /**
    * QA: the node the verdict is for. Developer and Designer: the node the run works on, which
    * the OpenCode image's wrapper names when it posts the run's docs note (N-44, D-235).
    */
@@ -235,6 +243,15 @@ export function taskFileJson(role: AgentRole, task: AgentTaskFile): string {
     if (new Set(hosts).size !== hosts.length) {
       throw new Error(`a ${role} task lists a docs lookup host twice`);
     }
+  }
+  if (task.browser !== undefined) {
+    // QA's review alone has a browser (ADR 0119 slice 5c): never QA's visual comparison, the
+    // Council, Triage, the Developer or the Designer.
+    if (role !== "qa" || visual) {
+      throw new Error("only QA's review (qa:review) has a browser");
+    }
+    if (task.browser !== true)
+      throw new Error("a task's browser must be true when given");
   }
   const structured = role === "council" || role === "triage" || visual;
   if (structured && !isObject(task.outputSchema)) {

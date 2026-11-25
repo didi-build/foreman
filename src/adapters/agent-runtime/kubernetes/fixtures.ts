@@ -149,7 +149,13 @@ export function taskFor(spec: KubernetesRunSpec): AgentTaskFile {
     };
   }
   if (spec.role === "qa") {
-    return { ...base, nodeId: QA_NODE_ID, evidenceIds: [QA_EVIDENCE_ID] };
+    return {
+      ...base,
+      nodeId: QA_NODE_ID,
+      evidenceIds: [QA_EVIDENCE_ID],
+      // A browser run's task file says so (ADR 0119 slice 5c).
+      ...(spec.browser === true ? { browser: true as const } : {}),
+    };
   }
   return {
     ...base,

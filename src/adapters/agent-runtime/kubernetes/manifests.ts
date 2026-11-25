@@ -465,9 +465,18 @@ export function runSecrets(
 
 /**
  * The run's task file as a Secret, mounted read-only into the agent pod only (./task.ts). Built
- * apart from `runSecrets` because it holds the run's text, not a credential.
+ * apart from `runSecrets` because it holds the run's text, not a credential. A browser run's task
+ * file says so, and no other's does (ADR 0119 slice 5c), so the image offers the browser tools
+ * exactly when the run has a browser pod to reach.
  */
 export function taskSecret(spec: KubernetesRunSpec, task: AgentTaskFile): Secret {
+  if ((spec.browser === true) !== (task.browser === true)) {
+    throw new Error(
+      spec.browser === true
+        ? "a browser run's task file needs its browser"
+        : "only a browser run's task file has a browser",
+    );
+  }
   return {
     apiVersion: "v1",
     kind: "Secret",

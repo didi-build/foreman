@@ -1,6 +1,7 @@
 // Seam: unit. The task `start` takes, built from an admitted run (ADR 0106 section 5, ADR 0107,
 // ADR 0114 section 5): the route's model, only the route's provider and only its credential, the
-// credentials each role holds, and a task that `start` accepts. Fake values only.
+// credentials each role holds, and a task that `start` accepts. QA's review with a site gets the
+// browser (ADR 0119 slice 5c). Fake values only.
 import { describe, expect, it } from "vitest";
 
 import { buildKubernetesTask, type KubernetesTaskParts } from "./build-task.ts";
@@ -14,8 +15,11 @@ import {
   QA,
   QA_LIMITS,
   SETTINGS,
+  SITE_ZIP,
   STATE_TOKEN,
 } from "./fixtures.ts";
+import { runNames } from "./names.ts";
+import type { Job, Secret } from "./objects.ts";
 import { createKubernetesRuntime } from "./runtime.ts";
 import { firstRunPrice } from "../../../core/routing-testing.ts";
 
@@ -300,5 +304,93 @@ describe("the task built from a run (unit, ADR 0114 section 5)", () => {
     await expect(runtime.start(qa, QA_LIMITS)).rejects.toThrow(
       "a qa run has no documentation lookup",
     );
+  });
+
+  describe("QA's review with a site (ADR 0119 slice 5c, D-476)", () => {
+    const qaRun = (taskType = "qa:review") => ({
+      id: QA.runId,
+      bot: "qa" as const,
+      model: "claude-opus-5-5",
+      provider: "anthropic",
+      serviceTierRequested: "standard" as const,
+      modelPrice: firstRunPrice("claude-opus-5-5"),
+      nodeId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      headSha: QA.headSha ?? null,
+      prNumber: QA.prNumber ?? null,
+      taskType,
+    });
+    const qaBot = {
+      image: QA.image,
+      instructions: "Fixture instructions.",
+      allowedHosts: [],
+      fetchAllowedHosts: QA.fetchAllowedHosts,
+    };
+
+    it("gives the run's spec and its task file the browser, and the zip to start only", () => {
+      const task = buildKubernetesTask(
+        parts({ run: qaRun(), bot: qaBot, site: SITE_ZIP }),
+      );
+      expect(task.browser).toBe(true);
+      expect(task.task.browser).toBe(true);
+      expect(task.site).toBe(SITE_ZIP);
+      // The site is never in the task file, and the task file never in the spec.
+      const zip = Buffer.from(SITE_ZIP).toString("base64");
+      expect(JSON.stringify(task.task)).not.toContain(zip);
+      expect(JSON.stringify(task.task)).not.toContain("fixture-site-zip");
+      // Without a site, a QA review has no browser, as before.
+      const plain = buildKubernetesTask(parts({ run: qaRun(), bot: qaBot }));
+      expect(plain).not.toHaveProperty("browser");
+      expect(plain.task).not.toHaveProperty("browser");
+      expect(plain).not.toHaveProperty("site");
+    });
+
+    it("refuses a site for any other role and for QA's visual comparison", () => {
+      expect(() => buildKubernetesTask(parts({ site: SITE_ZIP }))).toThrow(
+        "only QA's review (qa:review) runs a browser",
+      );
+      expect(() =>
+        buildKubernetesTask(
+          parts({
+            run: qaRun("qa:visual"),
+            bot: { ...qaBot, outputSchema: { type: "object" } },
+            images: [{ label: "Image 1", mediaType: "image/png", data: "iVBORw==" }],
+            site: SITE_ZIP,
+          }),
+        ),
+      ).toThrow("only QA's review (qa:review) runs a browser");
+    });
+
+    it("starts a browser run: the site Secret at the start, then the browser pod and FOREMAN_BROWSER_URL beside the agent", async () => {
+      const client = createFakeKubernetes();
+      const runtime = createKubernetesRuntime({ client, settings: SETTINGS });
+      const task = buildKubernetesTask(
+        parts({ run: qaRun(), bot: qaBot, site: SITE_ZIP }),
+      );
+      const handle = await runtime.start(task, QA_LIMITS);
+      const n = runNames(QA.runId);
+      const ns = handle.namespace;
+      expect(handle.spec.browser).toBe(true);
+      const site = client.get<Secret>("Secret", ns, n.siteSecret);
+      expect(Buffer.from(site?.data?.["site.zip"] ?? "", "base64")).toEqual(
+        Buffer.from(SITE_ZIP),
+      );
+      const file = client.get<Secret>("Secret", ns, n.taskSecret);
+      expect(JSON.parse(file?.stringData?.["task.json"] ?? "{}")).toMatchObject({
+        browser: true,
+      });
+      client.finishJob(ns, n.fetchJob, { condition: "Complete" });
+      await runtime.poll(handle);
+      const agent = client.get<Job>("Job", ns, n.agentJob);
+      const env = agent?.spec.template.spec.containers[0]?.env ?? [];
+      expect(env.find((e) => e.name === "FOREMAN_BROWSER_URL")).toMatchObject({
+        value: expect.stringMatching(/^http:\/\/10\.\d+\.\d+\.\d+:8090$/),
+      });
+      // The token never reaches the browser pod.
+      const browser = client.get<Job>("Job", ns, n.browserJob);
+      expect(browser).toBeDefined();
+      expect(JSON.stringify(browser)).not.toContain(n.stateTokenSecret);
+      expect(JSON.stringify(browser)).not.toContain(STATE_TOKEN);
+      expect(JSON.stringify(browser)).not.toContain(n.taskSecret);
+    });
   });
 });
