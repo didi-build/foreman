@@ -376,19 +376,20 @@ describe("the Job's sizes (unit: D-432, O-156)", () => {
     weekPlan(settingsOf(), catalogOf(), baseline).entries;
 
   it("covers every planned run's turns and Flex retries, each run's 429 allowance and every minute limit", () => {
-    // 12 cases on 3 models: 36 runs. QA 7 x 3 x (50 + 3), Triage 3 x 3 x (40 + 3), Council 2 x 3 x 43.
+    // 12 cases on 3 models: 36 runs. QA 7 x 3 x (80 + 3), Triage 3 x 3 x (40 + 3), Council 2 x 3 x 43.
+    // Minutes: QA's 30 (D-480) on 21 runs, the others' 20 on 15.
     expect(evalSizing(CASES, plan(false), limits, CAPACITY)).toEqual({
       runs: 36,
-      maxModelRequests: 1113 + 387 + 258,
+      maxModelRequests: 1743 + 387 + 258,
       maxRejectedModelRequests: 36 * 6,
-      deadlineMinutes: 36 * 20 + 10,
+      deadlineMinutes: 21 * 30 + 15 * 20 + 10,
     });
     // With the baseline: Opus on 7 QA cases, Sonnet on 5 Triage and Council cases.
     expect(evalSizing(CASES, plan(true), limits, CAPACITY)).toEqual({
       runs: 48,
-      maxModelRequests: 1758 + 7 * 53 + 5 * 43,
+      maxModelRequests: 2388 + 7 * 83 + 5 * 43,
       maxRejectedModelRequests: 48 * 6,
-      deadlineMinutes: 48 * 20 + 10,
+      deadlineMinutes: 28 * 30 + 20 * 20 + 10,
     });
   });
 
@@ -427,7 +428,7 @@ describe("whether this week starts a Job (unit: O-156)", () => {
       },
     });
     expect(start.entries).toHaveLength(5);
-    expect(start.deadlineAt).toEqual(new Date(SUNDAY.getTime() + 970 * 60_000));
+    expect(start.deadlineAt).toEqual(new Date(SUNDAY.getTime() + 1250 * 60_000));
   });
 
   it("leaves Claude and its key out once the month's baseline ran", () => {

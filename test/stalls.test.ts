@@ -353,7 +353,7 @@ describe("the stall check, stalled runs (unit: section 2.5 step 5, D-302)", () =
         nodeId: older.nodeId,
         bot: "qa",
         lastActivityAt: new Date(START - 90 * MINUTE),
-        budgetMinutes: 20,
+        budgetMinutes: 30,
         idleMinutes: 90,
       },
       {

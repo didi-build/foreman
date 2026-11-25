@@ -6,6 +6,7 @@
 - **Updated 2026-11-11** (D-370, O-120): the token is a Windmill secret variable, encrypted with the workspace's key, and the cluster's address and CA certificate are plain variables, not resources (section 1).
 - **Updated 2026-11-24** (ADR 0119 slice 4a, D-460, D-471 to D-475, O-170): the egress proxy's documentation lookup route, a second exception to "does not decrypt": the proxy itself makes a GET to a listed documentation host and never tunnels it (sections 2 and 3). No role gets it yet.
 - **Updated 2026-11-24** (ADR 0119 slice 5b, D-476, D-480, O-175): QA's browser pod, a pod of its own in QA's review run with no egress at all, reached only by the run's agent pod, holding no credential and only the site's zip (sections 2, 4 and 5). No run asks for it yet.
+- **Updated 2026-11-25** (ADR 0119 slice 5e, D-196, D-476 to D-479): QA's bot file declares the browser, so a QA review whose head has a checked site gets the browser pod, and QA's row reaches its tool port (section 3).
 - **Date:** 2026-10-30
 - **Related:** O-03, [build plan M3.2](../build-plan.md#m32-dispatch-adapters-and-runs), `docs/architecture/technical-architecture.md` sections 2.8, 2.10, 4, 6 and 7, D-120, D-141, D-142, D-143, D-156, D-158, D-159, D-164, D-165, D-172, D-178, D-180, D-193, N-29, [ADR 0102](./0102-state-api-hosting-and-agent-auth.md), [ADR 0107](./0107-agent-dispatch-adapters.md), [ADR 0110](./0110-infrastructure-as-code.md), [ADR 0111](./0111-kubernetes-ready-conventions.md), [ADR 0112](./0112-qa-runtime-github-access-and-independence.md), [ADR 0113](./0113-github-evidence-ingestion.md), [M0.2 spike record](../spikes/m0.2-agent-dispatch.md)
 
@@ -111,7 +112,7 @@ No NetworkPolicy changes for it: the proxy pod already reaches public addresses 
 - `run-<id>-agent-browser` selects the run's agent pod, with `policyTypes` Egress only, and allows it TCP port 8090 to the browser pod. The agent pod's other two policies do not change.
 - The Service `run-<id>-browser` gives the browser pod a fixed address. The agent gets it as `FOREMAN_BROWSER_URL` (`http://<Service IP>:8090`), set only for a browser run, so the agent needs no DNS for it either.
 
-The browser host's tool API listens on the pod's own IP address (`status.podIP`) only. It takes POST with `content-type: application/json` and exactly its endpoint's fields, so a page's cross-origin request needs a preflight, which it refuses, and it refuses any request that carries an `Origin` header. Inside the pod, Chromium is driven by `playwright-core` over a pipe, so no DevTools port is open. Its proxy is a closed port on 127.0.0.1 that only the site's own host and port bypass, no name resolves, WebRTC sends no UDP outside the proxy, and its routes let through requests to the site's own origin only. The site is served on 127.0.0.1 only. The run watcher ignores the browser pod: only the agent Job and QA's fetch Job end a run (D-330). No flow sets `browser` yet (ADR 0119 slice 5c).
+The browser host's tool API listens on the pod's own IP address (`status.podIP`) only. It takes POST with `content-type: application/json` and exactly its endpoint's fields, so a page's cross-origin request needs a preflight, which it refuses, and it refuses any request that carries an `Origin` header. Inside the pod, Chromium is driven by `playwright-core` over a pipe, so no DevTools port is open. Its proxy is a closed port on 127.0.0.1 that only the site's own host and port bypass, no name resolves, WebRTC sends no UDP outside the proxy, and its routes let through requests to the site's own origin only. The site is served on 127.0.0.1 only. The run watcher ignores the browser pod: only the agent Job and QA's fetch Job end a run (D-330). The runner sets `browser` for a QA review whose head has a site that passed its check (ADR 0119 slice 5c), since QA's bot file declares it (slice 5e).
 
 The served tier (D-423, ADR 0114 section 8, O-151): the proxy reads the top-level `service_tier` of each model response the upstream answered with 2xx, from a copy of the body taken after each chunk has gone to the agent, so what the agent receives does not change. It reads JSON and streamed bodies, and gzip, deflate and br bodies from a bounded decompressed copy; anything else counts as unknown. After each counted request it logs one `served tiers` line with the run's counts per tier, and nothing else of the response. The runtime adapter reads the newest such line from the proxy container's log at the run's end and fills the run's served tier when the agent image reported none. GitHub tunnels and the state API route are never read.
 
@@ -121,7 +122,8 @@ The served tier (D-423, ADR 0114 section 8, O-151): the proxy reads the top-leve
 
 | Role               | May reach                                                                                                                                                           |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| QA                 | The model endpoint and the state API. Nothing else (ADR 0112)                                                                                                       |
+| QA                 | The model endpoint and the state API, and in a review with the browser, its own browser pod's tool port (ADR 0119 slice 5). Nothing else (ADR 0112)                 |
+| QA's browser pod   | Nothing: no egress at all, not even DNS (D-476)                                                                                                                     |
 | Council and Triage | The model endpoint and the state API                                                                                                                                |
 | Developer          | The model endpoint, the state API, the GitHub hosts git and the API need, and the package registries named in the project's settings (for example the npm registry) |
 | Designer           | The Developer's list, plus the MagicPath MCP host named in the Designer's bot file                                                                                  |
@@ -194,9 +196,11 @@ Rehearsal values (D-185). They are settings in each bot file. The dollar caps ar
 | --------- | ----- | ------- | ------- |
 | Developer | 100   | 50      | 5       |
 | Designer  | 100   | 50      | 5       |
-| QA        | 50    | 20      | 2       |
+| QA        | 80    | 30      | 2       |
 | Council   | 40    | 20      | 3       |
 | Triage    | 40    | 20      | 3       |
+
+QA's were 50 turns and 20 minutes until ADR 0119's slice 5e gave its review the browser, which takes more turns and time for the same 2 dollars (D-480).
 
 **Models.** Runs start on the lower-cost models (D-185): Claude Sonnet 5.5 by default, and Claude Haiku 5.5 for a role where a rehearsal comparison shows it holds quality (Triage is the first candidate). The model is a setting in each bot file. QA runs on Claude Opus 5.5 (D-186): its model must differ from the Developer's (D-158), and a reviewer stronger than the coder catches more. QA runs are short and capped at 2 USD, so a review costs about 0.50 to 1 USD.
 

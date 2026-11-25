@@ -573,15 +573,27 @@ describe("a malformed bot file (unit: contracts-file adapter)", () => {
     expect(JSON.stringify(problemsOf("qa", ["chromium"]))).not.toContain("chromium");
   });
 
-  it("declare the browser in no bot file yet (ADR 0119 slice 5c; slice 5e declares it, D-196)", () => {
+  it("declare the browser in QA's bot file only, whose task text says when to use it and how to cite it (ADR 0119 slice 5e, D-196)", () => {
     const bots = readBotFiles();
-    for (const role of BOT_ROLES) {
+    expect(bots.qa.browser).toBe(true);
+    expect(botProfiles(bots).qa.browser).toBe(true);
+    for (const role of BOT_ROLES.filter((r) => r !== "qa")) {
       expect(bots[role].browser, role).toBeUndefined();
       expect(botProfiles(bots)[role], role).not.toHaveProperty("browser");
       expect(real()[role].data as Record<string, unknown>, role).not.toHaveProperty(
         "browser",
       );
     }
+    // The review's text (instructions); the visual comparison's own text never names it.
+    const review = bots.qa.instructions.replace(/\s+/g, " ");
+    expect(review).toContain("When your run has a browser");
+    expect(review).toContain("a failed request to /api/ is not a defect on its own");
+    expect(review).toContain("When your input says there is no browser");
+    expect(review).toContain(
+      "For a problem you saw in the browser, cite the code lines",
+    );
+    expect(review).not.toContain("This task gives you no browser");
+    expect(bots.qa.taskInstructions?.["qa:visual"]).not.toContain("browser");
   });
 
   it("give QA's visual comparison its answer schema and its own instructions, and no other role any (D-242)", () => {

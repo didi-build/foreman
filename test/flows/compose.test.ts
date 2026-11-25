@@ -212,10 +212,12 @@ describe("flow composition (unit: flow layer, build plan M3.1)", () => {
         runtime: "claude-api",
         botVersion: bots.qa.version,
         outputSchemas: bots.qa.outputSchemas,
+        // QA's bot file declares the browser (ADR 0119 slice 5e).
+        browser: true,
       });
       expect(deps.bots.developer.runtime).toBe("opencode");
       expect(deps.bots.council.outputSchemas).toEqual(bots.council.outputSchemas);
-      expect(deps.limits.qa).toEqual({ maxTurns: 50, maxMinutes: 20, maxUsd: 2 });
+      expect(deps.limits.qa).toEqual({ maxTurns: 80, maxMinutes: 30, maxUsd: 2 });
       expect(deps.taskTypes.version).toBe("e".repeat(40));
       expect(deps.taskTypes.roles.developer.default).toBe("developer:code");
       expect(await deps.executionsThisMonth()).toBe(42);

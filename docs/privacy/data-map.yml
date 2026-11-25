@@ -43,6 +43,32 @@ other_items:
       the run, and the model provider its route names
     source: src/egress-proxy/lookup.ts
     verified: false
+  # QA's browser (ADR 0119 slice 5, D-476 to D-479). A QA review reads the pull request's own built
+  # site in a browser pod with no network; Foreman stores none of its pages.
+  - id: agent_runs.browser
+    whose: operator
+    data: >-
+      The pull request's own built site, which CI keeps as the artifact qa-site, and the text QA's
+      browser reads from it: each page's accessibility snapshot or visible text, its console errors
+      and its failed or blocked requests. No secret: a tool input that holds a known secret value
+      is refused, and each result has secret values removed. No end-user personal data: agents
+      work from synthetic data (D-154).
+    purpose: Letting QA try the pull request's work as a user would (ADR 0119, D-461).
+    storage: >-
+      The artifact stays in the project's own GitHub repository for 3 days. The runner puts its zip
+      in the run's site Secret, which only the browser pod mounts and which is deleted when the run
+      ends; the browser pod holds the site in memory only. Each page's text goes into the run, and
+      so to the model provider its route names. The run's log holds each call's tool, status, size
+      and time only.
+    processors: [Anthropic, DeepInfra]
+    retention: >-
+      The artifact 3 days in the project's repository; the Secret until the run ends. Foreman keeps
+      no page text.
+    who_can_see: >-
+      the project's repository readers (the artifact), the runner, the run, and the model provider
+      its route names
+    source: src/agent-images/claude-api/browser-tools.ts
+    verified: false
   # Windmill's job history (D-294). Flow inputs and results stay in Windmill after each run.
   - id: windmill.job_history
     whose: operator

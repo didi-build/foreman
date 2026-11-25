@@ -40,6 +40,16 @@ const ALL_TOOLS_LINE =
   "For details beyond the short summary at the end of the input, you can look up this project's records with the read-only tools search_decisions, find_similar_items and read_item_history. Each result comes between <context_result> and </context_result>.";
 
 /** Today's frame with the data rule's line replaced by `lines`. */
+/** With the browser, QA's file tools line says what still cannot run (ADR 0119 slice 5e). */
+const CANNOT_RUN = "They are read-only. You cannot run code.";
+const withBrowserFiles = (text: string) => {
+  expect(text.split(CANNOT_RUN)).toHaveLength(2);
+  return text.replace(
+    CANNOT_RUN,
+    "They are read-only. You cannot run the repository's code or its tests.",
+  );
+};
+
 const withLines = (key: string, lines: readonly string[]) => {
   const today = TODAY[key] as string;
   expect(today.split("\n").filter((l) => l === TODAY_DATA_RULE)).toHaveLength(1);
@@ -176,7 +186,10 @@ describe("the frames with the browser (unit: ADR 0119 slice 5c, QA's review only
     "QA's review gains one line naming the three tools, and the data rule covers their results, answering by %s",
     (via) => {
       const text = systemText("qa", "INSTRUCTIONS", false, via, [], false, true);
-      expect(text).toBe(withLines(`qa-${via}`, [BROWSER_LINE, DATA_RULE_WITH_TOOLS]));
+      expect(text).toBe(
+        withBrowserFiles(withLines(`qa-${via}`, [BROWSER_LINE, DATA_RULE_WITH_TOOLS])),
+      );
+      expect(text).not.toContain("You cannot run code.");
       // Exactly one more line than today's frame, the data rule changed to name tool results.
       expect(text.split("\n")).toHaveLength(
         (TODAY[`qa-${via}`] as string).split("\n").length + 1,
@@ -192,12 +205,14 @@ describe("the frames with the browser (unit: ADR 0119 slice 5c, QA's review only
       expect(
         systemText("qa", "INSTRUCTIONS", false, via, CONTEXT_TOOL_NAMES, true, true),
       ).toBe(
-        withLines(`qa-${via}`, [
-          ALL_TOOLS_LINE,
-          LOOKUP_LINE,
-          BROWSER_LINE,
-          DATA_RULE_WITH_TOOLS,
-        ]),
+        withBrowserFiles(
+          withLines(`qa-${via}`, [
+            ALL_TOOLS_LINE,
+            LOOKUP_LINE,
+            BROWSER_LINE,
+            DATA_RULE_WITH_TOOLS,
+          ]),
+        ),
       );
     }
   });

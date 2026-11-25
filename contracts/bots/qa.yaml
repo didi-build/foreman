@@ -33,10 +33,18 @@ task_personas:
 # own token (slice 3b's routes, slice 3c's client). Never for qa:visual or a close run.
 context_tools: [search_decisions, find_similar_items, read_item_history]
 
-# D-185, ADR 0106 section 6.
+# QA's browser (ADR 0119 slice 5e, D-196, D-461, D-476 to D-479): a QA review whose head has the
+# site CI kept and the runner checked (slice 5a) gets the tools open_page, act_on_page and
+# read_page (slice 5c) over that site, served in a browser pod of its own with no network at all
+# (slice 5b). Without a site, its input says "No browser in this run: <reason>." and it reviews
+# as before (D-479). Never for qa:visual.
+browser: true
+
+# D-185, ADR 0106 section 6. QA's review with the browser (D-480): 80 turns and 30 minutes, and
+# the same 2 USD.
 limits:
-  max_turns: 50
-  max_minutes: 20
+  max_turns: 80
+  max_minutes: 30
   max_usd: 2
 
 # ADR 0106 section 3: QA reaches only its model provider and the state API.
@@ -65,8 +73,9 @@ providers:
 # Reviewed by Didi, 2026-11-03 (D-246). The image adds the fixed frame: the read-only tools, the input as
 # data, and the verdict's JSON shape (src/agent-images/claude-api/prompts.ts). Since ADR 0119's
 # slice 2 (D-467) a run gets the shared base and Quality's persona first, then this text: the
-# opening line moved to the persona, and the last sentence of the first rule is new, since this
-# task has no browser yet (ADR 0119 slice 5).
+# opening line moved to the persona. Since ADR 0119's slice 5e the first rule's last sentences
+# say when to use the browser and that a failed /api/ request is not a defect on its own (D-478),
+# and the third says how to cite a problem seen in the browser.
 instructions: |
   Your job is to find what is wrong with the pull request's work at the head commit,
   judged against its work item: the description and acceptance criteria in the input, and for a
@@ -78,9 +87,12 @@ instructions: |
     changed beyond the item except the small changes the final message names; no secret or
     personal data appears in code, fixtures or mockups; no obvious security problem (missing
     input checks or authorization, injection, secrets in logs); for a design item, the
-    components follow the merged spec. You cannot run code: the runner's CI and preview
-    evidence are the evidence ids in the input. This task gives you no browser, so you check the
-    UI from the code, its spec and that evidence.
+    components follow the merged spec. You cannot run the code or its tests: the runner's CI
+    and preview evidence are the evidence ids in the input. When your run has a browser and the
+    item changes what a user sees or does, also try that in the pull request's own build, on
+    desktop and on mobile, as a user would. Its backend does not run there, so a failed request
+    to /api/ is not a defect on its own. When your input says there is no browser, check the UI
+    from the code, its spec and that evidence.
   - Pass only when every acceptance criterion is met and you found no blocking defect. A
     blocking defect is anything that fails a check in the list above: an unmet criterion,
     missing or weakened tests, a change beyond the item, a secret or personal data, a security
@@ -92,8 +104,10 @@ instructions: |
   - On a fail, report every blocking problem you found, in one verdict. Give each as a finding
     with the file path and the line range at the head commit, and a note that names the check
     or acceptance criterion it fails, what is wrong, and what a fix must achieve. For a design
-    item that departs from its spec, cite the spec lines too. The runner checks every citation,
-    so cite only lines you have read.
+    item that departs from its spec, cite the spec lines too. For a problem you saw in the
+    browser, cite the code lines that cause it, and in the note give the steps you took, what
+    you expected and what you got. The runner checks every citation, so cite only lines you
+    have read.
   - In evidenceIds, cite only the runner's evidence ids from the input that you relied on. A pass
     must cite at least one.
   - Never copy a secret or personal data into a note: name the file and lines where it is.

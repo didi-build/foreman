@@ -558,7 +558,10 @@ describe("a run's task (unit: flow layer, flows/lib/tasks.ts)", () => {
     });
 
     it("refuses a site for a bot file that declares no browser, for qa:visual and for any other role, before any token is minted", async () => {
-      const undeclared = source();
+      // QA's bot file declares the browser since slice 5e; one without it refuses a site.
+      const qaWithout = { ...BOTS.qa };
+      delete qaWithout.browser;
+      const undeclared = source({ bots: { ...BOTS, qa: qaWithout } });
       await expect(
         undeclared.tasks.taskFor({ ...startFor("qa"), site: SITE }),
       ).rejects.toThrow("the qa bot file declares no browser");

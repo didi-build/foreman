@@ -75,7 +75,7 @@ states:
     input: A PR with CI green on its head commit.
     output: A QA verdict naming the commit it covers, with findings on a fail.
     evidence_to_exit: CI run, test report, preview check, QA verdict, GitHub's mergeable state for the head, and any privileged-path approval. The runner merges on a pass.
-    tools: Read-only repository access at the head commit (ADR 0112), and the read-only context tools (ADR 0119).
+    tools: Read-only repository access at the head commit (ADR 0112), the read-only context tools, and a browser over the pull request's own build, in a pod with no network, when CI kept the site (ADR 0119).
     budget: not set
     side_effects: None. QA never edits the work.
     failure: A failed round goes back to the building state and counts toward the third-round escalation.

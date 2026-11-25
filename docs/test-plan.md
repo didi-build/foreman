@@ -299,6 +299,14 @@ None of these uses the network beyond 127.0.0.1. The test with real Chromium nee
 11. Repo guard (`test/agent-image-dockerfiles.test.ts`): every image copies what its code imports, now with `src/agent-images/claude-api/browser-tools.ts` in the weekly test's image, whose frame imports it.
 12. Mutation checks by hand, recorded in O-176: 15, each applied alone and restored, all caught.
 
+### QA's browser declared (ADR 0119 slice 5e, D-196, D-480, O-177)
+
+1. Unit, the bot files (`src/adapters/contracts-file/bot-files.test.ts`): QA's bot file declares `browser` and its profile carries it, and no other bot file does; QA's review text says when to use the browser, that a failed `/api/` request is not a defect on its own, what to do with no browser and how to cite a problem seen in it, and no longer says the task has no browser; the visual comparison's text never names it; the limits equal `REHEARSAL_RUN_LIMITS`, QA's now 80 turns, 30 minutes and 2 USD.
+2. Unit, the frames (`src/agent-images/claude-api/prompts.test.ts`): with the browser, QA's review says it cannot run the repository's code or its tests, in place of "You cannot run code.", and gains the browser line; without it every frame is the exact text generated from commit 879c3b0.
+3. Unit, composition and the task source (`test/flows/compose.test.ts`, `test/flows/tasks.test.ts`): QA's profile from the real bot files has `browser` and its limits are D-480's; a bot file without the browser still refuses a site.
+4. Unit, the limits' consequences (`src/core/runs.test.ts`, `test/stalls.test.ts`, `src/core/model-eval.test.ts`, `test/flows/weekly-model-test-flow.test.ts`): a QA run records the new budget, its token lives 30 minutes plus the margin, the stall check reads 30 minutes, and the weekly test's Job covers 80 turns and 30 minutes for each QA run, a deadline of 1,250 minutes with the baseline.
+5. Privacy check (`npm run nodrift`): the data map's `agent_runs.browser` is accepted.
+
 ### Windmill flows (build plan M3.1)
 
 Tests are in `test/flows/`, with fake adapters on the memory store (`flow-fixture.ts`): the real machine-2 contracts and guards, a fake agent runtime that can be made to fail a start or a cancel, a fake task source, generated state API tokens and a Windmill execution count the test sets. Nothing reaches Windmill, a cluster, a model or GitHub.
