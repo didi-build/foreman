@@ -72,7 +72,8 @@ const QA_FRAME = (
 ) =>
   [
     "You are the QA reviewer for one pull request at one commit.",
-    "You can read the repository at that commit with the list_files, read_file and search_files tools. They are read-only. You cannot run code.",
+    // With the browser, the site's build runs in it, so the frame says what still cannot run.
+    `You can read the repository at that commit with the list_files, read_file and search_files tools. They are read-only. ${browser ? "You cannot run the repository's code or its tests." : "You cannot run code."}`,
     ...contextLines(tools),
     ...lookupLines(docsLookup),
     ...browserLines(browser),

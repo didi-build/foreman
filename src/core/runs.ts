@@ -63,7 +63,8 @@ export type RoleRunLimits = Record<AgentRole, RunLimits>;
 export const REHEARSAL_RUN_LIMITS: RoleRunLimits = {
   developer: { maxTurns: 100, maxMinutes: 50, maxUsd: 5 },
   designer: { maxTurns: 100, maxMinutes: 50, maxUsd: 5 },
-  qa: { maxTurns: 50, maxMinutes: 20, maxUsd: 2 },
+  // QA's review with the browser (D-480, ADR 0119 slice 5e): 80 turns and 30 minutes.
+  qa: { maxTurns: 80, maxMinutes: 30, maxUsd: 2 },
   council: { maxTurns: 40, maxMinutes: 20, maxUsd: 3 },
   triage: { maxTurns: 40, maxMinutes: 20, maxUsd: 3 },
 };

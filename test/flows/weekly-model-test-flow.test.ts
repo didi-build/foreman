@@ -144,7 +144,8 @@ describe("the weekly model test flow (flow: fake Job port, D-432, D-433, O-156)"
     const [started] = f.modelEval.started;
     expect(started?.keys).toEqual(Object.fromEntries(f.modelEval.keyValues));
     expect(started?.spec.caseIds).toEqual(f.modelEval.caseList.map((c) => c.id));
-    expect(started?.spec.sizing).toMatchObject({ runs: 48, deadlineMinutes: 970 });
+    // QA's 30 minutes on 28 runs (D-480), the others' 20 on 20, and the start's 10.
+    expect(started?.spec.sizing).toMatchObject({ runs: 48, deadlineMinutes: 1250 });
     // No key in the result, the Job's row or anything the flow returns.
     const shown = JSON.stringify({ result, job });
     for (const key of f.modelEval.keyValues.values()) expect(shown).not.toContain(key);

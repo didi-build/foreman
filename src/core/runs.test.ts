@@ -214,7 +214,7 @@ describe("dispatch admission (ADR 0106 section 7)", () => {
   it.each([
     ["developer", { maxTurns: 100, maxMinutes: 50, maxUsd: 5 }],
     ["designer", { maxTurns: 100, maxMinutes: 50, maxUsd: 5 }],
-    ["qa", { maxTurns: 50, maxMinutes: 20, maxUsd: 2 }],
+    ["qa", { maxTurns: 80, maxMinutes: 30, maxUsd: 2 }],
     ["council", { maxTurns: 40, maxMinutes: 20, maxUsd: 3 }],
     ["triage", { maxTurns: 40, maxMinutes: 20, maxUsd: 3 }],
   ] as const)("records the %s budget", async (role, budget) => {
@@ -405,13 +405,13 @@ describe("the run's state API token (ADR 0102, ADR 0106 section 5)", () => {
     });
     if (!result.admitted) throw new Error(result.reason);
     const stored = await t.store.getRunToken(hashRunToken(token));
-    // The QA limit is 20 minutes; the token lives 20 minutes plus the margin.
+    // The QA limit is 30 minutes (D-480); the token lives 30 minutes plus the margin.
     expect(stored).toEqual({
       tokenHash: hashRunToken(token),
       runId: result.run.id,
       role: "qa",
       projectId: PROJECT,
-      expiresAt: new Date(START + (20 + RUN_TOKEN_MARGIN_MINUTES) * 60_000),
+      expiresAt: new Date(START + (30 + RUN_TOKEN_MARGIN_MINUTES) * 60_000),
       revokedAt: null,
     });
     expect(JSON.stringify(stored)).not.toContain(token);
