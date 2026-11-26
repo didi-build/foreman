@@ -15,6 +15,11 @@ subprocessors:
     data: Each such run's instructions, input and tool results, which can quote the operator's decisions and a project's repository (docs/privacy/data-map.yml)
     location: United States, to confirm
     verified: false
+  - name: GitHub
+    purpose: Hosts Foreman's and each project's repositories, their pull requests and their CI (GitHub Actions), with the artifacts CI keeps, such as the qa-site build QA's browser reads (ADR 0119 slice 5, D-493)
+    data: Each project's code, pull requests, review comments and CI logs, written by Didi and by Foreman's agents, and CI's artifacts, the qa-site build kept 3 days (docs/privacy/data-map.yml)
+    location: United States, to confirm
+    verified: false
   - name: DeepInfra
     purpose: Model provider for agent runs whose route names it (D-421, D-425)
     data: Each such run's instructions, input and tool results, which can quote the operator's decisions and a project's repository (docs/privacy/data-map.yml)
